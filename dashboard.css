@@ -1,0 +1,24 @@
+/* this side is for the background image*/
+body {
+    background-image: url('all_image/BACKLOGO.BMP');
+    background-size: cover;
+    background-repeat: no-repeat;
+    background-position: above;
+}
+
+.dropdown-menu li {
+position: relative;
+}
+.dropdown-menu .dropdown-submenu {
+display: none;
+position: absolute;
+left: 100%;
+top: -7px;
+}
+.dropdown-menu .dropdown-submenu-left {
+right: 100%;
+left: auto;
+}
+.dropdown-menu > li:hover > .dropdown-submenu {
+display: block;
+}
