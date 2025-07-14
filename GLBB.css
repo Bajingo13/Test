@@ -1,0 +1,82 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: Arial, sans-serif;
+  background-color: #dfe4ea;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+  margin: 0;
+}
+
+.modal {
+  background-color: white;
+  border: 2px solid #666;
+  border-radius: 6px;
+  padding: 30px 40px;
+  width: 350px;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3);
+  text-align: center;
+}
+
+.modal h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: bold;
+}
+
+.sub {
+  margin: 5px 0 20px;
+  font-size: 14px;
+  color: #111;
+}
+
+.form-group {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 15px 0;
+}
+
+label {
+  font-weight: bold;
+  font-size: 14px;
+  width: 100px;
+  text-align: left;
+}
+
+input[type="date"],
+select {
+  padding: 5px;
+  width: 150px;
+  font-size: 14px;
+}
+
+.button-group {
+  margin-top: 25px;
+  display: flex;
+  justify-content: center;
+  gap: 20px;
+}
+
+button {
+  padding: 6px 16px;
+  font-size: 14px;
+  border: 1px solid #ccc;
+  box-shadow: 2px 2px 2px #999;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+button.done {
+  color: blue;
+  background-color: white;
+}
+
+button.cancel {
+  color: red;
+  background-color: white;
+}

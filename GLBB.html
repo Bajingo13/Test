@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>GL Beginning Balance</title>
+  <link rel="stylesheet" href="GLBB.css">
+</head>
+<body>
+  <div class="modal">
+    <h2>GL BEGINNING BALANCE</h2>
+    <p class="sub">Abort</p>
+
+    <div class="form-group">
+      <label for="filter">FILTER CODE</label>
+      <select id="filter">
+        <option>NON</option>
+        <option>ALL</option>
+        <option>SPECIFIC</option>
+      </select>
+    </div>
+
+    <div class="form-group">
+      <label for="date">DATE</label>
+      <input type="date" id="date" value="2024-09-30">
+    </div>
+
+    <div class="form-group">
+      <label for="currency">CURRENCY</label>
+      <select id="currency">
+        <option>PHP</option>
+        <option>USD</option>
+        <option>EUR</option>
+        <option>JPY</option>
+        <option>GBP</option>
+        <option>AUD</option>
+        <option>CAD</option>
+        <option>CNY</option>
+      </select>
+    </div>
+
+    <div class="button-group">
+      <button class="done">Done</button>
+      <button class="cancel">Cancel</button>
+    </div>
+  </div>
+</body>
+</html>
