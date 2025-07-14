@@ -68,6 +68,13 @@
     <label for="description">Description</label>
     <textarea id="description" rows="2"></textarea>
 
+    
+    <div class="group-buttons">
+      <button onclick="openModal('insert')">Insert Group Code</button>
+      <button onclick="openModal('remove')">Remove Group Code</button>
+      <button onclick="openModal('edit')">Edit Group Code</button>
+    </div>
+
     <div class="group-table">
       <h3>Group Codes</h3>
       <table>
@@ -84,9 +91,22 @@
           </tr>
         </tbody>
       </table>
+      <br>
+      <label for="code">GROUP CODE</label>
+        <input type="text" id="code" value="101001"> <BR> <BR>
+        <label for="title">DESCRIPTION</label>
+        <select id="title">
+          <option selected>CAPITAL EXPENDITURES</option>
+          <option>CASH AND CASH EQUIVALENTS</option>
+          <option>ACCOUNTS RECEIVABLE</option>
+          <option>INVENTORY</option>
+          <option>FIXED ASSETS</option>
+          <option>OTHER ASSETS</option>
+        </select>
     </div>
   </div>
+  
 
-  <script src="script.js"></script>
+  
 </body>
 </html>
