@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Receivable Beginning Balances Schedule</title>
+  <link rel="stylesheet" href="ARBB.css" />
+</head>
+<body>
+  <div class="container">
+    <header class="header-bar">
+      RECEIVABLE BEGINNING BALANCES SCHEDULE
+    </header>
+
+    <nav class="button-bar">
+      <button>F2 Add</button>
+      <button>F3 Edit</button>
+      <button>F4 Delete</button>
+      <button>F5 View</button>
+      <button>F6 Print</button>
+      <button>F7 Previous</button>
+      <button>F8 Next</button>
+    <a href="dashboard.html"><button>F10 Exit</button></a>
+    </nav>
+
+    <div class="form-row">
+      <button class="view-payments-btn">View Payments/Collection</button>
+      <label for="date">Date</label>
+      <input type="date" id="date" value="2024-03-26" />
+      <label for="received-date">Received Date</label>
+      <input type="date" id="received-date" value="2024-09-30" />
+    </div>
+
+    <div class="form-group">
+      <label for="bill-no">Bill No.</label>
+      <input type="text" id="bill-no" value="2568" />
+    </div>
+
+    <div class="form-group">
+      <label for="currency">Currency</label>
+      <input type="text" id="currency" value="PHP" />
+      <span class="arrow">▸</span>
+    </div>
+
+    <div class="form-group">
+      <label for="amount-orig">Amount in Orig.Currency</label>
+      <input type="number" id="amount-orig" value="514.64" step="0.01" />
+      <label for="exchange-rate">Exchange Rate</label>
+      <input type="number" id="exchange-rate" value="1.0000" step="0.0001" />
+      <span>PHP Equivalent</span>
+      <input type="number" id="equivalent" value="514.64" step="0.01" />
+    </div>
+
+    <div class="form-group wide">
+      <label for="amount-words">Amount in Words</label>
+      <textarea id="amount-words" readonly>
+FIVE HUNDRED FOURTEEN AND 64/100
+      </textarea>
+    </div>
+
+    <div class="form-group wide">
+      <label for="particulars">Particulars</label>
+      <input type="checkbox" id="particulars-checkbox" />
+      <textarea id="particulars" readonly>COLLECTION PER BS. #3808</textarea>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>CODE</th>
+          <th>TITLE</th>
+          <th>DEBIT</th>
+          <th>CREDIT</th>
+          <th>GEN. REF.</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr class="highlighted-row">
+          <td>103002</td>
+          <td>ADVANCES TO CLIENTS</td>
+          <td>514.64</td>
+          <td>0.00</td>
+          <td>CUS-030</td>
+        </tr>
+        <tr class="highlighted-row"><td colspan="5"></td></tr>
+        <tr class="highlighted-row"><td colspan="5"></td></tr>
+        <tr class="highlighted-row"><td colspan="5"></td></tr>
+        <tr class="highlighted-row"><td colspan="5"></td></tr>
+      </tbody>
+    </table>
+
+   <div class="summary-container">
+  <div class="grid-row">
+    <div><b>PROJECT CODE</b> <a href="#">002</a></div>
+    <div><b>CODE</b> <a href="#">103002</a></div>
+    <div><a href="#">ADVANCES TO CLIENTS</a></div>
+  </div>
+
+  <div class="grid-row">
+    <div><b>DEPT CODE</b> <a href="#">001</a></div>
+    <div><b>ALLOCATION</b></div>
+    <div><b>LINE REMARKS</b></div>
+  </div>
+
+  <div class="grid-row">
+    <div><b>DEBIT</b> <a href="#">514.6400</a></div>
+    <div><b>DEBIT IN PHP</b></div>
+    <div><b>CREDIT IN PHP</b> <a href="#">0.00</a></div>
+  </div>
+
+  <div class="grid-row">
+    <div><b>CREDIT</b> <a href="#">0.0000</a></div>
+    <div><b>GEN REF</b> <a href="#">CUS-030</a></div>
+    <div><a href="#">NAGUE, MALIC, MAGNAWA & ASSOC</a></div>
+  </div>
+
+  <div class="grid-row">
+    <div><b>SUB GEN</b> <a href="#" class="arrow">▸</a></div>
+    <div></div>
+    <div></div>
+  </div>
+</div>

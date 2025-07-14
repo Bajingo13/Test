@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Payable Beginning Balances Schedule</title>
+<link rel="stylesheet" href="APBB.css" />
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="status">Paid</div>
+      <h1>PAYABLE BEGINNING BALANCES SCHEDULE</h1>
+    </header>
+
+    <div class="buttons">
+      <button>F2 Add</button>
+      <button>F3 Edit</button>
+      <button>F4 Delete</button>
+      <button>F5 View</button>
+      <button>F6 Print</button>
+      <button>F7 Previous</button>
+      <button>F8 Next</button>
+    <a href="dashboard.html"><button>F10 Exit</button></a>
+    </div>
+
+    <button class="view-payments">View Payments/Collection</button>
+
+    <div class="form-grid">
+      <label>Bill No.</label>
+      <div class="colon">:</div>
+      <input type="text" value="3545" />
+      <label>Date</label>
+      <div class="colon">:</div>
+      <input type="date" value="2024-09-30" />
+      <div></div>
+
+      <label>Currency</label>
+      <div class="colon">:</div>
+      <input type="text" value="PHP" />
+      <div class="arrow">▸</div>
+      <label>Received Date</label>
+      <div class="colon">:</div>
+      <input type="date" value="2024-09-30" />
+      <div></div>
+
+      <label>Amount in Orig.Currency</label>
+      <div class="colon">:</div>
+      <input type="text" value="93,962.00" />
+      <label>Exchange Rate</label>
+      <div class="colon"></div>
+      <input type="text" value="1.0000" />
+      <label>PHP Equivalent</label>
+      <input type="text" value="93,962.00" />
+
+      <label>Amount in Words</label>
+      <div class="colon">:</div>
+      <textarea class="full-width-text" readonly>NINETY THREE THOUSAND NINE HUNDRED SIXTY TWO AND 0/100</textarea>
+      <div></div>
+      <div></div>
+      <div></div>
+
+      <label>Particulars</label>
+      <div class="colon">:</div>
+      <div class="checkbox-cell"><input type="checkbox" /></div>
+      <textarea class="full-width-textarea" readonly>This is to bill you for the assistance in registration with Securities and Exchange Commission and Bureau of Internal Revenue.</textarea>
+      <div></div>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>CODE</th>
+          <th>TITLE</th>
+          <th>DEBIT</th>
+          <th>CREDIT</th>
+          <th>GEN. REF.</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>201004</td>
+          <td>UNEARNT INCOME</td>
+          <td>0.00</td>
+          <td>84,230.00</td>
+          <td>CUS-364</td>
+        </tr>
+        <tr class="selected">
+          <td>207007</td>
+          <td>DEFERRED OUTPUT VAT</td>
+          <td>0.00</td>
+          <td>9,732.00</td>
+          <td>CUS-364</td>
+        </tr>
+        <tr><td colspan="5">&nbsp;</td></tr>
+        <tr><td colspan="5">&nbsp;</td></tr>
+      </tbody>
+      <tfoot>
+        <tr>
+          <td colspan="2"></td>
+          <td>0.00</td>
+          <td>93,962.00</td>
+          <td></td>
+        </tr>
+      </tfoot>
+    </table>
+
+    <div class="details">
+      <div class="details-grid">
+        <div><b>PROJECT CODE :</b> <a href="#">003</a></div>
+        <div><b>CODE :</b> <a href="#">207007</a></div>
+        <div><a href="#">DEFERRED OUTPUT VAT :</a></div>
+
+        <div><b>DEPT CODE :</b> <a href="#">001</a></div>
+        <div><b>ALLOCATION :</b></div>
+        <div><b>LINE REMARKS :</b></div>
+
+        <div><b>DEBIT :</b> <a href="#">0.0000</a></div>
+        <div><b>DEBIT IN PHP :</b></div>
+        <div><b>CREDIT IN PHP :</b> <a href="#">9,732.00</a></div>
+
+        <div><b>CREDIT :</b> <a href="#">9,732.0000</a></div>
+        <div><b>GEN REF :</b> <a href="#">CUS-364 :</a></div>
+        <div><a href="#">JOHN BATTERSBY PARTNERSHIP INC</a></div>
+
+        <div><b>SUB GEN :</b> <a href="#" class="arrow">▸</a></div>
+        <div></div>
+        <div></div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
