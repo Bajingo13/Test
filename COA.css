@@ -1,0 +1,82 @@
+body {
+  font-family: Arial, sans-serif;
+  background-color: #f5f5ff;
+  margin: 0;
+  padding: 20px;
+}
+
+.container {
+  max-width: 950px;
+  margin: auto;
+  background: white;
+  border: 1px solid #aaa;
+  padding: 20px;
+  box-shadow: 0 0 10px #ccc;
+}
+
+h1 {
+  text-align: center;
+}
+
+.top-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 20px;
+  justify-content: center;
+}
+
+.top-bar button {
+  padding: 6px 10px;
+  font-size: 14px;
+}
+
+.form-section {
+  margin-bottom: 20px;
+}
+
+.form-row {
+  display: flex;
+  gap: 15px;
+  margin-bottom: 10px;
+  align-items: center;
+}
+
+.form-row label {
+  width: 60px;
+}
+
+.form-row input,
+.form-row select {
+  flex: 1;
+  padding: 5px;
+}
+
+.validation-section {
+  margin-bottom: 20px;
+}
+
+.checkboxes {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 5px;
+  margin-top: 10px;
+}
+
+textarea {
+  width: 100%;
+  padding: 5px;
+  margin-bottom: 20px;
+}
+
+.group-table table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.group-table th,
+.group-table td {
+  border: 1px solid #aaa;
+  padding: 8px;
+  text-align: left;
+}

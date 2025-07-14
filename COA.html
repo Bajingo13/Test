@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Chart of Accounts</title>
+  <link rel="stylesheet" href="COA.css">
+</head>
+<body>
+  <div class="container">
+    <h1>Chart of Accounts</h1>
+
+    <div class="top-bar">
+      <button>F2 Add</button>
+      <button>F3 Edit</button>
+      <button>F4 Delete</button>
+      <button>F5 View</button>
+      <button>F6 Print</button>
+      <button>F7 Previous</button>
+      <button>F8 Next</button>
+      <button>F10 Exit</button>
+    </div>
+
+    <div class="form-section">
+      <div class="form-row">
+        <label for="code">CODE</label>
+        <input type="text" id="code" value="101001">
+        <label for="date">DATE</label>
+        <input type="date" id="date" value="2025-07-10">
+      </div>
+
+      <div class="form-row">
+        <label for="title">TITLE</label>
+        <input type="text" id="title" value="CASH ON HAND">
+        <label for="class">CLASS</label>
+        <select id="class">
+          <option selected>ASSET</option>
+          <option>LIABILITY</option>
+          <option>EQUITY</option>
+          <option>INCOME</option>
+          <option>EXPENSE</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="validation-section">
+      <h3>VALIDATION</h3>
+      <div class="checkboxes">
+        <label><input type="checkbox"> BANK / CASH</label>
+        <label><input type="checkbox"> OTHER ACCOUNTS</label>
+        <label><input type="checkbox"> PREPAYMENT</label>
+        <label><input type="checkbox"> ALLOCATION</label>
+        <label><input type="checkbox"> AR CODE</label>
+        <label><input type="checkbox"> EXPANDED TAX</label>
+        <label><input type="checkbox"> FIXED ASSET</label>
+        <label><input type="checkbox"> BEG. INVENTORY</label>
+        <label><input type="checkbox"> AP CODE</label>
+        <label><input type="checkbox"> FINAL TAX</label>
+        <label><input type="checkbox"> GAIN OR LOSS</label>
+        <label><input type="checkbox"> END INVENTORY</label>
+        <label><input type="checkbox"> INCOME</label>
+        <label><input type="checkbox"> INPUT VAT</label>
+        <label><input type="checkbox"> RESTATEMENT</label>
+        <label><input type="checkbox"> EXPENSE</label>
+        <label><input type="checkbox"> OUTPUT VAT</label>
+      </div>
+    </div>
+
+    <label for="description">Description</label>
+    <textarea id="description" rows="2"></textarea>
+
+    <div class="group-table">
+      <h3>Group Codes</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Group Code</th>
+            <th>Description</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>10</td>
+            <td>CASH AND CASH EQUIVALENTS</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
+<!-- Example navigation bar linking to this form -->
+<nav>
+    <ul>
+        <li><a class="dropdown-item" href="COA.html">Chart of Accounts</a></li>
+    </ul>
+</nav>
