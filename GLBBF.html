@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>GL Beginning Balance</title>
+  <link rel="stylesheet" href="GLBBF.css" />
+</head>
+<body>
+  <div class="container">
+    <h1>GL BEGINNING BALANCE</h1>
+
+    <div class="info-bar">
+      <div><strong>FILTER CODE:</strong> NON</div>
+      <div><strong>DATE:</strong> 09/30/2024</div>
+      <div><strong>CURRENCY:</strong> PHP PESOS</div>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>CODE</th>
+          <th>TITLE</th>
+          <th>OTHRDEBIT</th>
+          <th>OTHRCREDIT</th>
+          <th>DEBIT BASED</th>
+          <th>CREDIT BASED</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td colspan="6" class="highlighted-row"></td></tr>
+        <tr><td colspan="6" class="highlighted-row"></td></tr>
+        <tr><td colspan="6" class="highlighted-row"></td></tr>
+      </tbody>
+    </table>
+
+    <div class="buttons">
+      <button>Insert an Entry</button>
+      <button>Edit an Entry</button>
+      <button>Remove an Entry</button>
+    </div>
+
+    <div class="totals">
+      <span>Total Debit: 0.0000</span>
+      <span>Total Credit: 0.0000</span>
+    </div>
+
+    <!-- GL Bottom Section -->
+    <div class="gl-bottom">
+      <div class="gl-row">
+        <div class="gl-label">PROJECT</div>
+        <div class="gl-label">DEPT</div>
+      </div>
+
+      <div class="gl-row">
+        <div class="gl-label">CODE</div>
+        <div class="gl-value">▸</div>
+      </div>
+
+      <div class="gl-row">
+        <div class="gl-label">DEBIT</div>
+        <div class="gl-blue">0.0000</div>
+        <div class="gl-label">DEBIT BASED</div>
+        <div class="gl-blue">0.0000</div>
+        <div class="gl-label">DEBIT ORIG CURR</div>
+        <div class="gl-blue">0.0000</div>
+      </div>
+
+      <div class="gl-row">
+        <div class="gl-label">CREDIT</div>
+        <div class="gl-blue">0.0000</div>
+        <div class="gl-label">CREDIT BASED</div>
+        <div class="gl-blue">0.0000</div>
+        <div class="gl-label">CREDIT ORIG CURR</div>
+        <div class="gl-blue">0.0000</div>
+      </div>
+
+      <div class="gl-row">
+        <div class="gl-label">DEBIT FUNCTIONAL</div>
+        <div class="gl-blue">0.0000</div>
+        <div class="gl-label">CREDIT FUNCTIONAL</div>
+        <div class="gl-blue">0.0000</div>
+        <div class="gl-buttons">
+          <button disabled>Finished</button>
+          <button disabled>Replace</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bottom Action Buttons (Save, Exit, Print, Refresh) -->
+    <div class="gl-action-buttons">
+      <button class="btn save">Save</button>
+    <a href="dashboard.html"><button class="btn exit">Exit</button></a>
+      <button class="btn print">Print</button>
+      <button class="btn refresh">Refresh</button>
+    </div>
+  </div>
+</body>
+</html>

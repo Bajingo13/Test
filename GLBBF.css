@@ -1,0 +1,195 @@
+body {
+    font-family: Arial, sans-serif;
+    background-color: #f4f4f4;
+    margin: 20px;
+}
+
+.container {
+    background-color: #fff;
+    padding: 20px;
+    border: 2px solid #ccc;
+    width: 900px;
+    margin: auto;
+    box-shadow: 2px 2px 10px rgba(0,0,0,0.1);
+}
+
+h1 {
+    text-align: center;
+    margin-bottom: 20px;
+}
+
+.info-bar {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 10px;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 10px;
+    border: 2px solid #333;
+    background-color: #fff;
+    font-size: 14px;
+}
+
+th {
+    background-color: #d3d3d3; /* light gray for headers */
+    border: 1px solid #666;
+    padding: 10px;
+    text-align: center;
+    font-weight: bold;
+    color: #000;
+}
+
+td {
+    border: 1px solid #999;
+    padding: 10px;
+    text-align: center;
+    color: #000;
+}
+
+tbody tr:nth-child(even):not(.highlighted-row) {
+    background-color: #f2f2f2; /* zebra striping */
+}
+
+.highlighted-row {
+    background-color: cyan !important;
+    height: 30px;
+}
+
+
+.buttons {
+    margin: 10px 0;
+    text-align: left;
+}
+
+.buttons button {
+    margin-right: 10px;
+}
+
+.totals {
+    text-align: right;
+    margin-bottom: 10px;
+}
+
+.bottom-panel {
+    display: flex;
+    justify-content: space-between;
+    padding: 10px 0;
+    border-top: 1px solid #ccc;
+    border-bottom: 1px solid #ccc;
+}
+
+.panel-left p, .panel-right p {
+    margin: 4px 0;
+}
+
+.panel-right {
+    text-align: right;
+}
+
+.action-buttons {
+    text-align: center;
+    margin-top: 20px;
+}
+
+.action-buttons button {
+    margin: 0 10px;
+    padding: 6px 16px;
+    font-weight: bold;
+}
+
+.save {
+    background-color: lightgreen;
+}
+
+.exit {
+    background-color: lightgray;
+}
+
+.print {
+    color: magenta;
+}
+
+.refresh {
+    background-color: lightblue;
+}
+.gl-bottom {
+    border: 1px solid #999;
+    padding: 15px;
+    margin-top: 20px;
+    background-color: #f9f9f9;
+    font-size: 14px;
+    font-family: Arial, sans-serif;
+}
+
+.gl-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+}
+
+.gl-label {
+    font-weight: bold;
+    min-width: 130px;
+}
+
+.gl-value {
+    font-weight: bold;
+    color: #000;
+}
+
+.gl-blue {
+    color: blue;
+    min-width: 80px;
+    font-family: monospace;
+}
+
+.gl-buttons {
+    margin-left: auto;
+    display: flex;
+    gap: 5px;
+}
+
+.gl-buttons button {
+    padding: 4px 12px;
+    font-size: 13px;
+}
+.gl-action-buttons {
+    display: flex;
+    justify-content: center;
+    margin-top: 20px;
+    gap: 10px;
+}
+
+.gl-action-buttons .btn {
+    min-width: 70px;
+    padding: 4px 12px;
+    font-family: Arial, sans-serif;
+    font-size: 14px;
+    font-weight: bold;
+    border: 2px outset #999;
+    background-color: #fff;
+    cursor: pointer;
+    text-align: center;
+}
+
+.gl-action-buttons .save {
+    color: red;
+}
+
+.gl-action-buttons .exit {
+    color: black;
+}
+
+.gl-action-buttons .print {
+    color: magenta;
+}
+
+.gl-action-buttons .refresh {
+    color: #000080;
+    font-weight: bold;
+}
