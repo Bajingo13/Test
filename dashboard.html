@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ASTREA ACCOUNTING SYSTEM</title>
+  <!-- Bootstrap CSS -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <!-- MDB CSS (Optional, if using MDB features) -->
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/mdb-ui-kit/6.4.2/mdb.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+<nav class="navbar navbar-expand-lg bg-body-tertiary">
+  <div class="container-fluid">
+    <ul class="navbar-nav">
+      <!-- Dropdown -->
+      <li class="nav-item dropdown">
+        <a data-mdb-dropdown-init class="nav-link dropdown-toggle" href="#"
+          id="navbarDropdownMenuLink" role="button" data-mdb-toggle="dropdown" aria-expanded="false">
+          File Setup
+        </a>
+        <ul class="dropdown-menu" aria-labelledby="navbarDropdownMenuLink">
+          <li>
+            <a class="dropdown-item" href="#">Chart of Accounts</a>
+          </li>
+          <li>
+            <a class="dropdown-item" href="#">General Libraries</a>
+          </li>
+          <li>
+            <a class="dropdown-item" href="#">Group Code &raquo;</a>
+            <ul class="dropdown-menu dropdown-submenu">
+              <li>
+            <a class="dropdown-item" href="#">Group Code</a>
+              </li>
+              <li>
+            <a class="dropdown-item" href="#">Group Project Relationship</a>
+              </li>
+            </ul>
+
+            <!-- Next dropdown after the dropdown navbar-->
+           <li>
+            <a class="dropdown-item" href="#">Industry</a>
+          </li>
+          <li>
+            <a class="dropdown-item" href="#">Category Code</a>
+          </li>
+
+          <!-- Another dropdown navbar after the next drop down-->
+          <li>
+            <a class="dropdown-item" href="#">Beginning Balances &raquo; </a>
+            <ul class="dropdown-menu dropdown-submenu">
+              <li>
+                <a class="dropdown-item" href="#">Multi level 1</a>
+              </li>
+              <li>
+                <a class="dropdown-item" href="#">Multi level 2</a>
+              </li>
+            </ul>
+              </li>
+
+               <!-- Next dropdown after the dropdown navbar-->
+           <li>
+            <a class="dropdown-item" href="#">Book Template</a>
+          </li>
+          <li>
+            <a class="dropdown-item" href="#">Particulars Template</a>
+          </li>
+          <li>
+            <a class="dropdown-item" href="#">Bank Codes</a>
+          </li>
+
+          <!-- Another dropdown navbar after the next drop down-->
+          <li>
+            <a class="dropdown-item" href="#">Transaction Setup &raquo; </a>
+            <ul class="dropdown-menu dropdown-submenu">
+              <li>
+                <a class="dropdown-item" href="#">Multi level 1</a>
+              </li>
+              <li>
+                <a class="dropdown-item" href="#">Multi level 2</a>
+              </li>
+            </ul>
+              </li>
+
+              <!-- Another dropdown navbar after the next dropdown navbar-->
+          <li>
+            <a class="dropdown-item" href="#">Currency File Setup &raquo; </a>
+            <ul class="dropdown-menu dropdown-submenu">
+              <li>
+                <a class="dropdown-item" href="#">Multi level 1</a>
+              </li>
+              <li>
+                <a class="dropdown-item" href="#">Multi level 2</a>
+              </li>
+            </ul>
+              </li>
+
+              <!-- Another dropdown navbar after the next dropdown navbar-->
+          <li>
+            <a class="dropdown-item" href="#">Additional File Setup &raquo; </a>
+            <ul class="dropdown-menu dropdown-submenu">
+              <li>
+                <a class="dropdown-item" href="#">Multi level 1</a>
+              </li>
+              <li>
+                <a class="dropdown-item" href="#">Multi level 2</a>
+              </li>
+            </ul>
+              </li>
+
+              <!-- Another dropdown navbar after the next dropdown navbar-->
+          <li>
+            <a class="dropdown-item" href="#">Tax File Setup &raquo; </a>
+            <ul class="dropdown-menu dropdown-submenu">
+              <li>
+                <a class="dropdown-item" href="#">Multi level 1</a>
+              </li>
+              <li>
+                <a class="dropdown-item" href="#">Multi level 2</a>
+              </li>
+            </ul>
+              </li>
+
+          </li>
+        </ul>
+          </li>
+
+          <!-- Second Dropdown (right side) -->
+          <li class="nav-item dropdown ms-auto">
+        <a data-mdb-dropdown-init class="nav-link dropdown-toggle" href="#"
+          id="navbarDropdownMenuLinkRight" role="button" data-mdb-toggle="dropdown" aria-expanded="false">
+          Transactions
+        </a>
+        <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="navbarDropdownMenuLinkRight">
+          <li>
+            <a class="dropdown-item" href="#">
+              Transaction &raquo;
+            </a>
+            <ul class="dropdown-menu dropdown-submenu">
+              <li>
+            <a class="dropdown-item" href="#">Invoice</a>
+              </li>
+              <li>
+            <a class="dropdown-item" href="#">Official Receipts</a>
+              </li>
+              <li>
+            <a class="dropdown-item" href="#">Check Voucher</a>
+              </li>
+              <li>
+            <a class="dropdown-item" href="#">Journal Voucher</a>
+              </li>
+              <li>
+            <a class="dropdown-item" href="#">Accounts Payable Voucher</a>
+              </li>
+              <li>
+            <a class="dropdown-item" href="#">Petty Cash Voucher</a>
+              </li>
+              <li>
+            <a class="dropdown-item" href="#">Debit Credit Memo</a>
+              </li>
+            </ul>
+
+               <li>
+            <a class="dropdown-item" href="#">Journalization</a>
+          </li>
+          
+          </li>
+        </ul>
+      </li>
+
+      <!-- Third Dropdown (right side) -->
+          <li class="nav-item dropdown ms-auto">
+        <a data-mdb-dropdown-init class="nav-link dropdown-toggle" href="#"
+          id="navbarDropdownMenuLinkRight" role="button" data-mdb-toggle="dropdown" aria-expanded="false">
+          Posting
+        </a>
+        <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="navbarDropdownMenuLinkRight">
+          <li>
+            <a class="dropdown-item" href="#">
+              Transaction &raquo;
+            </a>
+            <ul class="dropdown-menu dropdown-submenu">
+              <li>
+            <a class="dropdown-item" href="#">Invoice</a>
+              </li>
+              <li>
+            <a class="dropdown-item" href="#">Official Receipts</a>
+              </li>
+              <li>
+            <a class="dropdown-item" href="#">Check Voucher</a>
+              </li>
+              <li>
+            <a class="dropdown-item" href="#">Journal Voucher</a>
+              </li>
+              <li>
+            <a class="dropdown-item" href="#">Accounts Payable Voucher</a>
+              </li>
+              <li>
+            <a class="dropdown-item" href="#">Petty Cash Voucher</a>
+              </li>
+              <li>
+            <a class="dropdown-item" href="#">Debit Credit Memo</a>
+              </li>
+            </ul>
+
+               <li>
+            <a class="dropdown-item" href="#">Journalization</a>
+          </li>
+
+          </li>
+        </ul>
+      </li>
+
+      <!-- Fourth Dropdown (right side) -->
+          <li class="nav-item dropdown ms-auto">
+        <a data-mdb-dropdown-init class="nav-link dropdown-toggle" href="#"
+          id="navbarDropdownMenuLinkRight" role="button" data-mdb-toggle="dropdown" aria-expanded="false">
+          Reports
+        </a>
+        <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="navbarDropdownMenuLinkRight">
+          <li>
+            <a class="dropdown-item" href="#">
+              Transaction &raquo;
+            </a>
+            <ul class="dropdown-menu dropdown-submenu">
+              <li>
+            <a class="dropdown-item" href="#">Invoice</a>
+              </li>
+              <li>
+            <a class="dropdown-item" href="#">Official Receipts</a>
+              </li>
+              <li>
+            <a class="dropdown-item" href="#">Check Voucher</a>
+              </li>
+              <li>
+            <a class="dropdown-item" href="#">Journal Voucher</a>
+              </li>
+              <li>
+            <a class="dropdown-item" href="#">Accounts Payable Voucher</a>
+              </li>
+              <li>
+            <a class="dropdown-item" href="#">Petty Cash Voucher</a>
+              </li>
+              <li>
+            <a class="dropdown-item" href="#">Debit Credit Memo</a>
+              </li>
+            </ul>
+
+               <li>
+            <a class="dropdown-item" href="#">Journalization</a>
+          </li>
+
+          </li>
+        </ul>
+      </li>
+
+      <!-- Fifth Dropdown (right side) -->
+          <li class="nav-item dropdown ms-auto">
+        <a data-mdb-dropdown-init class="nav-link dropdown-toggle" href="#"
+          id="navbarDropdownMenuLinkRight" role="button" data-mdb-toggle="dropdown" aria-expanded="false">
+          Utilities
+        </a>
+        <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="navbarDropdownMenuLinkRight">
+          <li>
+            <a class="dropdown-item" href="#">
+              Transaction &raquo;
+            </a>
+            <ul class="dropdown-menu dropdown-submenu">
+              <li>
+            <a class="dropdown-item" href="#">Invoice</a>
+              </li>
+              <li>
+            <a class="dropdown-item" href="#">Official Receipts</a>
+              </li>
+              <li>
+            <a class="dropdown-item" href="#">Check Voucher</a>
+              </li>
+              <li>
+            <a class="dropdown-item" href="#">Journal Voucher</a>
+              </li>
+              <li>
+            <a class="dropdown-item" href="#">Accounts Payable Voucher</a>
+              </li>
+              <li>
+            <a class="dropdown-item" href="#">Petty Cash Voucher</a>
+              </li>
+              <li>
+            <a class="dropdown-item" href="#">Debit Credit Memo</a>
+              </li>
+            </ul>
+
+               <li>
+            <a class="dropdown-item" href="#">Journalization</a>
+          </li>
+
+          </li>
+        </ul>
+      </li>
+
+      <!-- Sixth Dropdown (right side) -->
+          <li class="nav-item dropdown ms-auto">
+        <a data-mdb-dropdown-init class="nav-link dropdown-toggle" href="#"
+          id="navbarDropdownMenuLinkRight" role="button" data-mdb-toggle="dropdown" aria-expanded="false">
+          System Configuration
+        </a>
+        <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="navbarDropdownMenuLinkRight">
+          <li>
+            <a class="dropdown-item" href="#">
+              Transaction &raquo;
+            </a>
+            <ul class="dropdown-menu dropdown-submenu">
+              <li>
+            <a class="dropdown-item" href="#">Invoice</a>
+              </li>
+              <li>
+            <a class="dropdown-item" href="#">Official Receipts</a>
+              </li>
+              <li>
+            <a class="dropdown-item" href="#">Check Voucher</a>
+              </li>
+              <li>
+            <a class="dropdown-item" href="#">Journal Voucher</a>
+              </li>
+              <li>
+            <a class="dropdown-item" href="#">Accounts Payable Voucher</a>
+              </li>
+              <li>
+            <a class="dropdown-item" href="#">Petty Cash Voucher</a>
+              </li>
+              <li>
+            <a class="dropdown-item" href="#">Debit Credit Memo</a>
+              </li>
+            </ul>
+
+               <li>
+            <a class="dropdown-item" href="#">Journalization</a>
+          </li>
+
+          </li>
+        </ul>
+      </li>
+
+      <!-- Seventh Dropdown (right side) -->
+          <hr><li class="nav-item dropdown ms-auto"></hr>
+        <a data-mdb-dropdown-init class="nav-link dropdown-toggle" href="#"
+          id="navbarDropdownMenuLinkRight" role="button" data-mdb-toggle="dropdown" aria-expanded="false">
+          Logout
+        </a>
+        <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="navbarDropdownMenuLinkRight">
+          <li>
+            <a class="dropdown-item" href="#">
+              Transaction &raquo;
+            </a>
+            <ul class="dropdown-menu dropdown-submenu">
+              <li>
+            <a class="dropdown-item" href="#">Invoice</a>
+              </li>
+              <li>
+            <a class="dropdown-item" href="#">Official Receipts</a>
+              </li>
+              <li>
+            <a class="dropdown-item" href="#">Check Voucher</a>
+              </li>
+              <li>
+            <a class="dropdown-item" href="#">Journal Voucher</a>
+              </li>
+              <li>
+            <a class="dropdown-item" href="#">Accounts Payable Voucher</a>
+              </li>
+              <li>
+            <a class="dropdown-item" href="#">Petty Cash Voucher</a>
+              </li>
+              <li>
+            <a class="dropdown-item" href="#">Debit Credit Memo</a>
+              </li>
+            </ul>
+
+               <li>
+            <a class="dropdown-item" href="#">Journalization</a>
+          </li>
+
+          </li>
+        </ul>
+      </li>
+
+    </ul>
+  </div>
+</nav>
+
+<!-- Bootstrap JS Bundle -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<!-- MDB JS (Optional, if using MDB features) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mdb-ui-kit/6.4.2/mdb.min.js"></script>
+</body>
+</html>            <!-- Second Dropdown (to the right of the first) -->
