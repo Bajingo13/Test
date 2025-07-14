@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>General Libraries</title>
+  <link rel="stylesheet" href="GenLib.css">
+</head>
+<body>
+  <div class="form-window">
+    <div class="form-title-bar">General Libraries (File Setup)</div>
+
+    <h2>GENERAL LIBRARIES</h2>
+
+    <div class="button-bar">
+      <button>F2 Add</button>
+      <button>F3 Edit</button>
+      <button>F4 Delete</button>
+      <button>F5 View</button>
+      <button>F6 Print</button>
+      <button>F7Previous</button>
+      <button>F8 Next</button>
+    <button onclick="window.location.href='dashboard.html'">F10 Exit</button>
+    </div>
+
+    <div class="form-row">
+      <label>CODE</label>
+      <input type="text" value="AFF-001">
+    </div>
+
+    <div class="form-row">
+      <label>NAME</label>
+      <input type="text" value="ALASGROUP INC.">
+    </div>
+
+    <!-- Tabs -->
+    <div class="tabs">
+      <button class="tab active" onclick="switchTab('main')">Main Info1</button>
+      <button class="tab" onclick="switchTab('additional')">Additional Info2</button>
+      <button class="tab" onclick="switchTab('billing')">Billing Info3</button>
+    </div>
+
+    <!-- Tab Content -->
+    <div class="tab-content active" id="main">
+      <div class="form-row split">
+        <div>
+          <label>Status</label>
+          <select>
+            <option selected>ACTIVE</option>
+            <option>INACTIVE</option>
+          </select>
+        </div>
+        <div>
+          <label>Start Date</label>
+          <input type="date" value="2025-07-14">
+        </div>
+      </div>
+
+      <div class="form-row"><label>Address</label><input type="text"></div>
+      <div class="form-row"><input type="text"></div>
+      <div class="form-row"><input type="text"></div>
+      <div class="form-row"><input type="text"></div>
+
+      <div class="form-row"><label>Attention</label><input type="text"></div>
+      <div class="form-row"><label>Position</label><input type="text"></div>
+
+      <div class="form-row"><label>Telephone No.</label><input type="text"></div>
+      <div class="form-row"><label>Fax No.</label><input type="text"></div>
+      <div class="form-row"><label>Mobile No.</label><input type="text"></div>
+
+      <div class="form-row split">
+        <div>
+          <label>TIN</label>
+          <input type="text" value="002-013-406-000">
+        </div>
+        <div>
+          <label>Category</label>
+          <input type="text">
+        </div>
+      </div>
+
+      <div class="form-row"><label>Email</label><input type="email"></div>
+
+      <div class="form-row split">
+        <div>
+          <label>ATC Code</label>
+          <input type="text">
+        </div>
+        <div>
+          <label>EWT Code</label>
+          <input type="text">
+        </div>
+      </div>
+
+      <div class="form-row split checkbox-group">
+        <div>
+          <input type="checkbox" id="prospective">
+          <label for="prospective">Prospective Client</label>
+        </div>
+        <div>
+          <input type="checkbox" id="client">
+          <label for="client">Client</label>
+        </div>
+        <div>
+          <label>Branch Code</label>
+          <input type="text">
+        </div>
+        <div>
+          <label>RDO Code</label>
+          <input type="text">
+        </div>
+      </div>
+    </div>
+
+    <div class="tab-content" id="additional">
+      <p>Additional Info2 tab content goes here.</p>
+    </div>
+
+    <div class="tab-content" id="billing">
+      <p>Billing Info3 tab content goes here.</p>
+    </div>
+  </div>
+
+  <script>
+    function switchTab(tabId) {
+      document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(tc => tc.classList.remove('active'));
+      document.querySelector(`#${tabId}`).classList.add('active');
+      event.target.classList.add('active');
+    }
+  </script>
+</body>
+</html>

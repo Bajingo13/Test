@@ -1,0 +1,92 @@
+body {
+  font-family: Arial, sans-serif;
+  background: #e6f0ff;
+  padding: 30px;
+}
+
+.form-window {
+  background: white;
+  border: 1px solid #aaa;
+  max-width: 900px;
+  margin: auto;
+  padding: 20px;
+  box-shadow: 0 0 10px #ccc;
+}
+
+.form-title-bar {
+  font-size: 13px;
+  color: #555;
+  margin-bottom: 5px;
+}
+
+h2 {
+  text-align: center;
+  margin-bottom: 15px;
+}
+
+.button-bar {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  margin-bottom: 20px;
+}
+
+.button-bar button {
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
+.form-row {
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.form-row label {
+  width: 150px;
+  font-weight: bold;
+  font-size: 13px;
+}
+
+.form-row input,
+.form-row select {
+  flex: 1;
+  padding: 6px;
+  font-size: 13px;
+}
+
+.form-row.split > div {
+  flex: 1;
+}
+
+.checkbox-group label {
+  width: auto;
+}
+
+.tabs {
+  display: flex;
+  gap: 5px;
+  margin: 20px 0 10px 0;
+}
+
+.tabs .tab {
+  padding: 6px 12px;
+  background: #ddd;
+  border: 1px solid #aaa;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.tabs .tab.active {
+  background: #fff;
+  font-weight: bold;
+}
+
+.tab-content {
+  display: none;
+}
+
+.tab-content.active {
+  display: block;
+}
