@@ -1,0 +1,85 @@
+body {
+  font-family: Arial, sans-serif;
+  background-color: #dcd0e4;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+  margin: 0;
+}
+
+.window {
+  border: 2px solid #4040a1;
+  border-radius: 8px;
+  background-color: #f0f0f0;
+  box-shadow: 2px 2px 8px rgba(0,0,0,0.3);
+  width: 350px;
+  overflow: hidden;
+}
+
+.title-bar {
+  background-color: #d3dbe7;
+  padding: 6px 10px;
+  font-size: 14px;
+  font-weight: bold;
+  color: #333;
+  border-bottom: 1px solid #aaa;
+}
+
+.container {
+  padding: 20px;
+}
+
+h2 {
+  text-align: center;
+  font-size: 20px;
+  font-weight: bold;
+  margin-bottom: 25px;
+}
+
+.form-group {
+  display: flex;
+  align-items: center;
+  margin-bottom: 15px;
+}
+
+label {
+  width: 60px;
+  font-weight: bold;
+}
+
+select, input[type="number"] {
+  padding: 5px;
+  margin-left: 10px;
+  font-size: 14px;
+}
+
+.date-group {
+  justify-content: center;
+  gap: 10px;
+}
+
+.buttons {
+  display: flex;
+  justify-content: center;
+  gap: 20px;
+  margin-top: 20px;
+}
+
+.load-btn {
+  padding: 5px 20px;
+  font-weight: bold;
+  color: #00008B;
+  border: 2px dotted #00008B;
+  background-color: white;
+  cursor: pointer;
+}
+
+.exit-btn {
+  padding: 5px 20px;
+  font-weight: bold;
+  color: red;
+  border: 2px solid red;
+  background-color: white;
+  cursor: pointer;
+}
