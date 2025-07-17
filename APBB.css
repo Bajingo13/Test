@@ -76,12 +76,12 @@ h1 {
   border: 1px solid #999;
   padding: 3px 5px;
   font-size: 13px;
-  color: #2e2eff;
+  color: #000000;
   width: 100%;
   box-sizing: border-box;
 }
 .form-grid .arrow {
-  color: #0000cc;
+  color: #2323c7;
   font-weight: bold;
   cursor: pointer;
 }
@@ -90,7 +90,7 @@ h1 {
   border: 1px solid #999;
   padding: 6px 8px;
   font-size: 13px;
-  color: #2e2eff;
+  color: #030307;
   background: white;
 }
 .full-width-textarea {
@@ -98,7 +98,7 @@ h1 {
   border: 1px solid #999;
   padding: 6px 8px;
   font-size: 13px;
-  color: #2e2eff;
+  color: #000000;
   resize: none;
   min-height: 40px;
   background: white;

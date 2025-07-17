@@ -69,8 +69,8 @@ select, input[type="number"] {
 .load-btn {
   padding: 5px 20px;
   font-weight: bold;
-  color: #00008B;
-  border: 2px dotted #00008B;
+  color: #000000;
+  border: 2px solid #000000;
   background-color: white;
   cursor: pointer;
 }
