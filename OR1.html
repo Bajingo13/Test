@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Official Receipt Entry Form</title>
+  <link rel="stylesheet" href="OR1.css">
+</head>
+<body>
+  <div class="form-container">
+    <h1>OR <span class="book">BOOK 1</span></h1>
+
+    <div class="top-buttons">
+      <button class="highlight">F2 Add</button>
+      <button>F3 Edit</button>
+      <button>F4 Cancel</button>
+      <button>F5 View</button>
+      <button>F6 Print</button>
+      <button>F7 Previous</button>
+      <button>F8 Next</button>
+      <button onclick="window.location.href='OR.html'">F9 Settings</button>
+      <button onclick="window.location.href='dashboard.html'">F10 Exit</button>
+    </div>
+
+    <div class="top-row">
+      <button>View Payments/Collections</button>
+      <label>DATE:
+        <select>
+          <option>JULY</option>
+        </select>
+        <input type="text" value="17" size="2"> <input type="text" value="2025" size="4">
+      </label>
+      <label>REFERENCES IB <input type="text" value="001" size="3"></label>
+      <label><input type="checkbox"> ncv (no commercial value)</label>
+    </div>
+
+    <div class="fields">
+      <label>OR NO.: <input type="text"></label>
+      <label>CLIENT CODE: <input type="text"></label>
+      <label>TYPE OF CURRENCY: <input type="text"></label>
+      <label>AMOUNT OF ORIGINAL CURRENCY: <input type="text" value="0.0000"> EXCHANGE RATE , , PHP EQUIVALENT <input type="text" value="0.00"></label>
+      <label>AMOUNT IN WORDS: <input type="text" value="AND 0/100"></label>
+      <label>PARTICULARS: <input type="text" class="particulars"></label>
+    </div>
+
+    <table class="OR-table">
+      <thead>
+        <tr>
+          <th>ACCOUNT CODE </th>
+          <th>ACCOUNT TITLE</th>
+          <th>DEBIT</th>
+          <th>CREDIT</th>
+          <th>GEN REF</th>
+          <th>GEN. NAME</th>
+          <th>DN REF</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td></td>
+          <td class="highlight-cell"></td>
+          <td></td>
+          <td></td>
+          <td></td>
+          <td class="highlight-cell"></td>
+          <td></td>
+        </tr>
+        <!-- Add more rows as needed -->
+      </tbody>
+    </table>
+
+    <div class="summary">
+      <div>
+        <p>PROJECT<input type="text" value=""></p>
+        <p>DEPARTMENT<input type="text" value=""></p>
+        <p>DEBIT <input type="text" value="0.0000"></p>
+        <p>CREDIT <input type="text" value="0.0000"></p>
+        <p>DN REF<input type="text" value=""></p>
+      </div>
+      <div>
+        <p>CODE<input type="text" value=""></p>
+        <p>DEBIT IN PHP</p>
+        <p>GEN REF <input type="text" value=""></p>
+        <p>SUB GEN <input type="text" value=""></p>
+      </div>
+      <div>
+        <p>LINE REMARKS</p>
+        <p>CREDIT IN PHP </p>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

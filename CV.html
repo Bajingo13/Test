@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Check Voucher</title>
+  <link rel="stylesheet" href="CV.css">
+</head>
+<body>
+  <div class="window">
+    <div class="title-bar">CHECK VOUCHER ENTRY</div>
+    <div class="container">
+      <h2>CHECK VOUCHER ENTRY</h2>
+
+      <div class="form-group">
+        <label for="book">BOOK</label>
+        <select id="book">
+          <option>BOOK 1</option>
+          <option>BOOK 2</option>
+          <option>BOOK 3</option>
+        </select>
+      </div>
+
+      <div class="form-group date-group">
+        <select id="month">
+          <option>JANUARY</option>
+          <option>FEBRUARY</option>
+          <option>MARCH</option>
+          <option>APRIL</option>
+          <option>MAY</option>
+          <option>JUNE</option>
+          <option selected>JULY</option>
+          <option>AUGUST</option>
+          <option>SEPTEMBER</option>
+          <option>OCTOBER</option>
+          <option>NOVEMBER</option>
+          <option>DECEMBER</option>
+        </select>
+        <input type="number" id="year" value="2025" min="1900" max="2099">
+      </div>
+
+      <div class="buttons">
+        <button class="load-btn" onclick="window.location.href='CV1.html'">LOAD</button>
+        <button class="exit-btn" onclick="window.location.href='dashboard.html'">EXIT</button>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
