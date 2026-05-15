@@ -1,0 +1,393 @@
+.coa-page {
+  min-height: 100vh;
+  background: #f3f5f9;
+}
+
+.coa-layout {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: 24px;
+}
+
+.coa-sidebar-panel,
+.coa-main-panel {
+  background: #ffffff;
+  border: 1px solid #e3e8f0;
+  border-radius: 20px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+}
+
+.coa-sidebar-panel {
+  overflow: hidden;
+}
+
+.coa-sidebar-header {
+  padding: 20px;
+  border-bottom: 1px solid #eef2f7;
+}
+
+.coa-mini-label {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #4f46e5;
+}
+
+.coa-sidebar-header h2,
+.coa-header h1 {
+  margin: 0;
+  color: #0f172a;
+}
+
+.coa-search {
+  width: 100%;
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid #d9e1ec;
+  border-radius: 12px;
+  outline: none;
+  font-size: 14px;
+}
+
+.coa-search:focus,
+.field input:focus,
+.field select:focus,
+.group-form input:focus,
+.group-form select:focus,
+textarea:focus {
+  border-color: #4f46e5;
+}
+
+.coa-account-list {
+  max-height: 72vh;
+  overflow-y: auto;
+  padding: 14px;
+}
+
+.coa-account-card {
+  width: 100%;
+  text-align: left;
+  border: 1px solid #e5ebf3;
+  background: #ffffff;
+  border-radius: 16px;
+  padding: 14px;
+  margin-bottom: 12px;
+  cursor: pointer;
+  transition: 0.2s ease;
+}
+
+.coa-account-card:hover {
+  background: #f8fafc;
+}
+
+.coa-account-card.active {
+  border-color: #c7d2fe;
+  background: #eef2ff;
+}
+
+.coa-account-code {
+  font-size: 14px;
+  font-weight: 700;
+  color: #111827;
+}
+
+.coa-account-title {
+  margin-top: 6px;
+  font-size: 14px;
+  color: #475569;
+}
+
+.coa-account-class {
+  margin-top: 10px;
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 700;
+  color: #475569;
+  background: #f1f5f9;
+  padding: 6px 10px;
+  border-radius: 999px;
+}
+
+.coa-main-panel {
+  padding: 0;
+}
+
+.coa-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 24px;
+  border-bottom: 1px solid #eef2f7;
+}
+
+.coa-subtext {
+  margin-top: 8px;
+  color: #64748b;
+  font-size: 14px;
+}
+
+.coa-toolbar {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.coa-card {
+  padding: 24px;
+}
+
+.coa-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 18px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+}
+
+.field-wide {
+  grid-column: span 2;
+}
+
+.field label,
+.section-block h3 {
+  margin-bottom: 8px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #334155;
+}
+
+.field input,
+.field select,
+.group-form input,
+.group-form select,
+textarea {
+  padding: 12px 14px;
+  border: 1px solid #d9e1ec;
+  border-radius: 12px;
+  font-size: 14px;
+  outline: none;
+  background: #fff;
+}
+
+.field input:disabled,
+.field select:disabled,
+.group-form input:disabled,
+.group-form select:disabled,
+textarea:disabled {
+  background: #f8fafc;
+  color: #64748b;
+}
+
+.section-block {
+  margin-top: 28px;
+}
+
+.section-title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.section-title-row span {
+  font-size: 13px;
+  font-weight: 700;
+  color: #4f46e5;
+  background: #eef2ff;
+  padding: 8px 12px;
+  border-radius: 999px;
+}
+
+.validation-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+
+.validation-chip {
+  border: 1px solid #dbe2ea;
+  background: #ffffff;
+  color: #334155;
+  padding: 12px;
+  border-radius: 14px;
+  text-align: left;
+  cursor: pointer;
+  transition: 0.2s ease;
+}
+
+.validation-chip:hover {
+  background: #f8fafc;
+}
+
+.validation-chip.active {
+  background: #eef2ff;
+  border-color: #c7d2fe;
+  color: #4338ca;
+}
+
+.validation-chip:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 110px;
+}
+
+.group-section {
+  border: 1px solid #e8edf4;
+  border-radius: 18px;
+  padding: 20px;
+}
+
+.group-subtext {
+  margin: 6px 0 0;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.group-form {
+  display: grid;
+  grid-template-columns: 160px 1fr auto;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+.coa-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.coa-table th,
+.coa-table td {
+  padding: 14px;
+  border-top: 1px solid #edf2f7;
+  text-align: left;
+  font-size: 14px;
+}
+
+.coa-table th {
+  background: #f8fafc;
+  color: #475569;
+  font-weight: 700;
+}
+
+.empty-cell {
+  text-align: center;
+  color: #94a3b8;
+}
+
+.coa-actions {
+  margin-top: 28px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  border-top: 1px solid #eef2f7;
+  padding-top: 20px;
+}
+
+.btn {
+  border: 1px solid #d7deea;
+  background: #ffffff;
+  color: #334155;
+  padding: 11px 16px;
+  border-radius: 12px;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: 0.2s ease;
+}
+
+.btn:hover {
+  background: #f8fafc;
+}
+
+.btn-primary {
+  background: #4f46e5;
+  border-color: #4f46e5;
+  color: #ffffff;
+}
+
+.btn-primary:hover {
+  background: #4338ca;
+}
+
+.btn-danger {
+  background: #dc2626;
+  border-color: #dc2626;
+  color: #ffffff;
+}
+
+.btn-danger:hover {
+  background: #b91c1c;
+}
+
+.btn-dark {
+  background: #0f172a;
+  border-color: #0f172a;
+  color: #ffffff;
+}
+
+.btn-dark:hover {
+  background: #020617;
+}
+
+.btn-small {
+  padding: 8px 12px;
+  font-size: 12px;
+}
+
+@media (max-width: 1200px) {
+  .validation-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .coa-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 900px) {
+  .coa-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .validation-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .group-form {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .coa-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .field-wide {
+    grid-column: span 1;
+  }
+
+  .validation-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .coa-header {
+    flex-direction: column;
+  }
+}

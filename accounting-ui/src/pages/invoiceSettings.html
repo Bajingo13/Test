@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Invoice Settings</title>
+  <link rel="stylesheet" href="invoiceSettings.css" />
+</head>
+<body>
+  <main class="settings-container">
+    <h1>Invoice Settings</h1>
+
+    <!-- ================== INVOICE LAYOUT ================== -->
+    <section class="setting-box" id="layoutBox">
+      <h2>Invoice Layout</h2>
+      <p>Select the invoice layout for printing/exporting invoices.</p>
+
+      <div class="field">
+        <label for="invoiceLayout">Layout:</label>
+        <select id="invoiceLayout" name="invoiceLayout">
+          <option value="standard">Standard</option>
+          <option value="modern">Modern</option>
+          <option value="compact">Compact</option>
+        </select>
+      </div>
+
+      <button id="saveLayout" class="btn">Save Layout</button>
+      <span id="layoutMsg" class="save-msg"></span>
+    </section>
+
+    <!-- ================== INVOICE NUMBERING ================== -->
+    <section class="setting-box" id="prefixBox">
+      <h2>Invoice Prefix & Numbering</h2>
+      <p>Control how invoice numbers are generated and what prefix is used.</p>
+
+      <!-- Mode toggle -->
+      <div class="field">
+        <label>Numbering Mode:</label>
+
+        <div class="mode-toggle" role="group" aria-label="Numbering Mode">
+          <button type="button" id="modeAutoBtn" class="seg-btn" data-mode="auto">Auto</button>
+          <button type="button" id="modeManualBtn" class="seg-btn" data-mode="manual">Manual</button>
+        </div>
+
+        <button id="saveNumberingMode" class="btn">Save Mode</button>
+      </div>
+
+      <div class="helper" id="modeHelp">
+        In <b>AUTO</b> mode, the system generates invoice numbers. In <b>MANUAL</b> mode, users must type invoice numbers.
+      </div>
+      <span id="modeMsg" class="save-msg"></span>
+
+      <hr class="divider" />
+
+      <!-- Prefix -->
+      <div class="field">
+        <label for="invoicePrefix">Prefix:</label>
+        <input type="text" id="invoicePrefix" name="invoicePrefix" placeholder="e.g. INV-">
+        <button id="savePrefix" class="btn">Save Prefix</button>
+      </div>
+      <span id="prefixMsg" class="save-msg"></span>
+
+      <!-- Last number -->
+      <div class="field">
+        <label for="currentInvoiceNo">Last Number Used:</label>
+        <input type="text" id="currentInvoiceNo" name="currentInvoiceNo" readonly>
+        <span class="ghost-btn" aria-hidden="true"></span>
+      </div>
+
+      <!-- Next number (AUTO only) -->
+      <div class="field" id="nextNumberRow">
+        <label for="startNumber">Set Next Number (AUTO):</label>
+        <input type="number" id="startNumber" name="startNumber" placeholder="e.g. 100001" min="1">
+        <button id="saveStartNumber" class="btn">Save Next</button>
+      </div>
+
+      <div class="helper" id="startNumberHelp">
+        Sets the next generated invoice number in AUTO mode. Example: entering <b>100001</b> makes the next invoice become <b>INV-100001</b>.
+      </div>
+
+      <span id="nextNumberMsg" class="save-msg"></span>
+    </section>
+
+    <!-- ================== TAX DEFAULTS  ================== -->
+    <section class="setting-box" id="taxDefaultsBox">
+      <h2>Tax Defaults</h2>
+      <p>Sets the default tax treatment for new transactions.</p>
+
+      <div class="tax-default-row">
+        <div class="tax-default-left">
+          <label for="salesTaxDefault">For Sales</label>
+          <select id="salesTaxDefault" name="salesTaxDefault">
+            <option value="exclusive">Tax exclusive</option>
+            <option value="inclusive">Tax inclusive</option>
+            <option value="exempt">Tax exempt</option>
+            <option value="zero">Tax zero-rated</option>
+          </select>
+        </div>
+        <div class="tax-default-right">
+          Includes invoices, quotes, credit notes and receive money items
+        </div>
+      </div>
+
+      <div class="tax-default-row">
+        <div class="tax-default-left">
+          <label for="purchaseTaxDefault">For Purchases</label>
+          <select id="purchaseTaxDefault" name="purchaseTaxDefault">
+            <option value="exclusive">Tax exclusive</option>
+            <option value="inclusive">Tax inclusive</option>
+            <option value="exempt">Tax exempt</option>
+            <option value="zero">Tax zero-rated</option>
+          </select>
+        </div>
+        <div class="tax-default-right">
+          Includes bills, purchase orders, credit notes, and spend money items
+        </div>
+      </div>
+
+      <button id="saveTaxDefaults" class="btn">Save Tax Defaults</button>
+      <span id="taxDefaultsMsg" class="save-msg"></span>
+    </section>
+
+  </main>
+
+
+  <script type="module" src="/invoiceSettings.js"></script>
+</body>
+</html>

@@ -1,0 +1,394 @@
+.gl-page {
+  min-height: 100vh;
+  background: #f3f5f9;
+}
+
+.gl-layout {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: 24px;
+}
+
+.gl-sidebar,
+.gl-main {
+  background: #ffffff;
+  border: 1px solid #e3e8f0;
+  border-radius: 20px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+}
+
+.gl-sidebar {
+  overflow: hidden;
+}
+
+.gl-sidebar-header {
+  padding: 20px;
+  border-bottom: 1px solid #eef2f7;
+}
+
+.gl-mini-label {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #4f46e5;
+}
+
+.gl-sidebar-header h2,
+.gl-header h1 {
+  margin: 0;
+  color: #0f172a;
+}
+
+.gl-search {
+  width: 100%;
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid #d9e1ec;
+  border-radius: 12px;
+  outline: none;
+  font-size: 14px;
+}
+
+.gl-search:focus,
+.field input:focus,
+.field select:focus,
+.field textarea:focus {
+  border-color: #4f46e5;
+}
+
+.gl-list {
+  max-height: 72vh;
+  overflow-y: auto;
+  padding: 14px;
+}
+
+.gl-list-card {
+  width: 100%;
+  text-align: left;
+  border: 1px solid #e5ebf3;
+  background: #ffffff;
+  border-radius: 16px;
+  padding: 14px;
+  margin-bottom: 12px;
+  cursor: pointer;
+  transition: 0.2s ease;
+}
+
+.gl-list-card:hover {
+  background: #f8fafc;
+}
+
+.gl-list-card.active {
+  background: #eef2ff;
+  border-color: #c7d2fe;
+}
+
+.gl-list-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.gl-code {
+  font-size: 13px;
+  font-weight: 700;
+  color: #111827;
+}
+
+.gl-badge {
+  font-size: 11px;
+  font-weight: 700;
+  color: #4338ca;
+  background: #e0e7ff;
+  padding: 6px 10px;
+  border-radius: 999px;
+}
+
+.gl-name {
+  margin-top: 10px;
+  font-size: 15px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.gl-meta {
+  margin-top: 6px;
+  font-size: 13px;
+  color: #64748b;
+}
+
+.gl-empty-list {
+  padding: 20px;
+  color: #64748b;
+  text-align: center;
+}
+
+.gl-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 24px;
+  border-bottom: 1px solid #eef2f7;
+}
+
+.gl-subtext {
+  margin-top: 8px;
+  color: #64748b;
+  font-size: 14px;
+}
+
+.gl-toolbar {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.gl-card {
+  padding: 24px;
+}
+
+.gl-table-section {
+  margin-bottom: 24px;
+  border: 1px solid #e8edf4;
+  border-radius: 18px;
+  padding: 18px;
+}
+
+.gl-table-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.gl-table-top h3 {
+  margin: 0;
+  color: #0f172a;
+}
+
+.gl-table-top span {
+  font-size: 13px;
+  font-weight: 700;
+  color: #4f46e5;
+  background: #eef2ff;
+  padding: 8px 12px;
+  border-radius: 999px;
+}
+
+.gl-table-wrap {
+  overflow-x: auto;
+}
+
+.gl-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.gl-table th,
+.gl-table td {
+  padding: 14px;
+  border-top: 1px solid #edf2f7;
+  text-align: left;
+  font-size: 14px;
+}
+
+.gl-table th {
+  background: #f8fafc;
+  color: #475569;
+  font-weight: 700;
+}
+
+.gl-table tbody tr {
+  cursor: pointer;
+}
+
+.gl-table tbody tr:hover {
+  background: #f8fafc;
+}
+
+.selected-row {
+  background: #eef2ff;
+}
+
+.gl-top-grid,
+.gl-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 18px;
+}
+
+.gl-top-grid {
+  margin-bottom: 24px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+}
+
+.field-wide {
+  grid-column: span 2;
+}
+
+.field-span-2 {
+  grid-column: span 2;
+}
+
+.field label {
+  margin-bottom: 8px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #334155;
+}
+
+.field input,
+.field select,
+.field textarea {
+  padding: 12px 14px;
+  border: 1px solid #d9e1ec;
+  border-radius: 12px;
+  font-size: 14px;
+  outline: none;
+  background: #fff;
+}
+
+.field input:disabled,
+.field select:disabled,
+.field textarea:disabled {
+  background: #f8fafc;
+  color: #64748b;
+}
+
+.gl-tabs {
+  display: flex;
+  gap: 10px;
+  margin-top: 8px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+
+.gl-tab {
+  border: 1px solid #d7deea;
+  background: #fff;
+  color: #334155;
+  padding: 10px 16px;
+  border-radius: 12px;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.gl-tab.active {
+  background: #4f46e5;
+  border-color: #4f46e5;
+  color: #fff;
+}
+
+.tab-panel {
+  border: 1px solid #e8edf4;
+  border-radius: 18px;
+  padding: 20px;
+}
+
+.checkbox-field {
+  justify-content: flex-end;
+}
+
+.checkbox-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 46px;
+  font-weight: 600;
+  color: #334155;
+}
+
+.gl-actions {
+  margin-top: 24px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  border-top: 1px solid #eef2f7;
+  padding-top: 20px;
+}
+
+.btn {
+  border: 1px solid #d7deea;
+  background: #ffffff;
+  color: #334155;
+  padding: 11px 16px;
+  border-radius: 12px;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: 0.2s ease;
+}
+
+.btn:hover {
+  background: #f8fafc;
+}
+
+.btn-primary {
+  background: #4f46e5;
+  border-color: #4f46e5;
+  color: #ffffff;
+}
+
+.btn-primary:hover {
+  background: #4338ca;
+}
+
+.btn-danger {
+  background: #dc2626;
+  border-color: #dc2626;
+  color: #ffffff;
+}
+
+.btn-danger:hover {
+  background: #b91c1c;
+}
+
+.btn-dark {
+  background: #0f172a;
+  border-color: #0f172a;
+  color: #ffffff;
+}
+
+.btn-dark:hover {
+  background: #020617;
+}
+
+.empty-cell {
+  text-align: center;
+  color: #94a3b8;
+}
+
+@media (max-width: 1100px) {
+  .gl-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .gl-top-grid,
+  .gl-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 700px) {
+  .gl-top-grid,
+  .gl-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .field-wide,
+  .field-span-2 {
+    grid-column: span 1;
+  }
+
+  .gl-header {
+    flex-direction: column;
+  }
+}

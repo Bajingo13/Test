@@ -1,0 +1,165 @@
+.group-page {
+  min-height: 100vh;
+  background: #f5f7f8;
+  padding: 26px;
+}
+
+.group-header {
+  background: linear-gradient(135deg, #0b7fab, #13b5c8);
+  color: white;
+  border-radius: 12px;
+  padding: 26px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 18px;
+  margin-bottom: 22px;
+}
+
+.group-header h1 {
+  margin: 0;
+}
+
+.group-header p {
+  margin: 8px 0 0;
+}
+
+.group-mini {
+  text-transform: uppercase;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+}
+
+.group-header button {
+  border: none;
+  background: #ffffff;
+  color: #0b7fab;
+  padding: 12px 16px;
+  border-radius: 9px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.group-layout {
+  display: grid;
+  grid-template-columns: 380px 1fr;
+  gap: 18px;
+}
+
+.group-card {
+  background: white;
+  border: 1px solid #dce5ea;
+  border-radius: 12px;
+  padding: 22px;
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.05);
+}
+
+.group-card h2 {
+  margin: 0 0 18px;
+  color: #0f172a;
+}
+
+.group-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.group-form label {
+  font-size: 13px;
+  font-weight: 800;
+  color: #334155;
+}
+
+.group-form input,
+.group-form select,
+.group-list-header input {
+  padding: 12px;
+  border: 1px solid #ccdce3;
+  border-radius: 9px;
+  font-size: 14px;
+  outline: none;
+}
+
+.group-form input:focus,
+.group-form select:focus,
+.group-list-header input:focus {
+  border-color: #0b7fab;
+}
+
+.primary-btn {
+  border: none;
+  background: #0b7fab;
+  color: white;
+  padding: 12px 16px;
+  border-radius: 9px;
+  font-weight: 800;
+  cursor: pointer;
+  margin-top: 10px;
+}
+
+.group-list-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.group-list-header h2 {
+  margin: 0;
+}
+
+.group-table-wrap {
+  overflow-x: auto;
+}
+
+.group-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.group-table th,
+.group-table td {
+  border-bottom: 1px solid #e5edf2;
+  padding: 12px;
+  text-align: left;
+  font-size: 14px;
+}
+
+.group-table th {
+  color: #475569;
+  background: #f8fafc;
+}
+
+.group-table button {
+  margin-right: 8px;
+  border: 1px solid #ccdce3;
+  background: white;
+  padding: 8px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.danger-btn {
+  color: #dc2626;
+}
+
+.empty-cell {
+  text-align: center;
+  color: #64748b;
+  padding: 20px;
+}
+
+@media (max-width: 900px) {
+  .group-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .group-header,
+  .group-list-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}

@@ -1,0 +1,506 @@
+/* =========================================================
+   invoice-list.css (Dashboard layout compatible)
+   - Navbar + Page Header handled by /css/navbar.css + layout.js
+========================================================= */
+
+*{
+  box-sizing:border-box;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+body{
+  margin:0;
+  background:#f5f7fa;
+  color:#111827;
+  min-height:100vh;
+}
+
+/* Align content under the dashboard white page header */
+.page-body{
+  max-width:1200px;
+  margin:0 auto;
+  padding:18px;
+}
+
+/* ===================== Tabs (Pill Segmented) ===================== */
+.invoice-filters{
+  display:flex;
+  gap:10px;
+  padding:10px;
+  margin: 0 0 14px 0;
+
+  background:#fff;
+  border:1px solid #e6eaf2;
+  border-radius:16px;
+  box-shadow: 0 6px 18px rgba(15,23,42,0.06);
+
+  overflow-x:auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.invoice-filters::-webkit-scrollbar{ height:6px; }
+.invoice-filters::-webkit-scrollbar-thumb{ background:#e6eaf2; border-radius:999px; }
+
+.filter-tab{
+  border:1px solid transparent;
+  background:transparent;
+  padding:10px 14px;
+  border-radius:999px;
+
+  font-size:14px;
+  font-weight:800;
+  color:#334155;
+
+  cursor:pointer;
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+
+  transition: background .15s ease, color .15s ease, border-color .15s ease, transform .05s ease;
+  white-space:nowrap;
+}
+
+.filter-tab span{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  min-width:34px;
+  height:22px;
+  padding:0 8px;
+  border-radius:999px;
+  background:#f1f5f9;
+  color:#475569;
+  font-size:12px;
+  font-weight:900;
+}
+
+.filter-tab:hover{
+  background:#f8fafc;
+  border-color:#e6eaf2;
+}
+
+.filter-tab:active{ transform: translateY(1px); }
+
+.filter-tab.active{
+  background:#4338ca; /* matches navbar primary */
+  color:#fff;
+  border-color:#4338ca;
+  box-shadow: 0 10px 20px rgba(67,56,202,0.20);
+}
+.filter-tab.active span{
+  background: rgba(255,255,255,0.22);
+  color:#fff;
+}
+
+/* ===================== Search ===================== */
+.search-container{ margin-bottom:12px; }
+
+#searchInput{
+  width:100%;
+  padding:10px 14px;
+  font-size:14px;
+
+  border:1px solid #d7dce6;
+  border-radius:12px;
+  outline:none;
+
+  background:#fff;
+  transition: border .2s ease, box-shadow .2s ease;
+}
+
+#searchInput:focus{
+  border-color:#4338ca;
+  box-shadow: 0 0 0 4px rgba(67,56,202,0.12);
+}
+
+/* ===================== Bulk Actions ===================== */
+.bulk-actions{
+  margin: 10px 0 12px 0;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  flex-wrap:wrap;
+}
+
+.bulk-actions .btn{
+  height:40px;
+  padding:0 14px;
+  border-radius:10px;
+  border:1px solid #e5e7eb;
+  background:#fff;
+  color:#111827;
+
+  cursor:pointer;
+  font-size:13px;
+  font-weight:800;
+
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+
+  transition: background .2s ease, border-color .2s ease, transform .05s ease;
+}
+.bulk-actions .btn:active{ transform: translateY(1px); }
+
+.bulk-actions .btn-danger{
+  background:#dc3545;
+  border-color:#dc3545;
+  color:#fff;
+}
+.bulk-actions .btn-danger:hover{
+  background:#c82333;
+  border-color:#c82333;
+}
+
+.bulk-actions .btn-secondary{
+  background:#eef2ff;
+  border-color:#c7d2fe;
+  color:#3730a3;
+}
+.bulk-actions .btn-secondary:hover{
+  background:#4338ca;
+  border-color:#4338ca;
+  color:#fff;
+}
+
+.export-wrapper{ position:relative; }
+
+/* ===================== Export Dropdown ===================== */
+.export-dropdown{
+  position:absolute;
+  top: calc(100% + 8px);
+  right:0;
+
+  min-width: 220px;
+  background:#fff;
+  border-radius:12px;
+  border:1px solid rgba(0,0,0,0.08);
+  box-shadow: 0 14px 35px rgba(0,0,0,0.18);
+  padding:8px;
+  z-index:9999;
+}
+
+.export-dropdown button{
+  width:100%;
+  display:flex;
+  align-items:center;
+  gap:8px;
+
+  padding:10px 12px;
+  margin:6px 0;
+
+  border-radius:10px;
+  border:1px solid rgba(0,0,0,0.06);
+  background:#fff;
+  color:#111827;
+
+  cursor:pointer;
+  text-align:left;
+  font-weight:800;
+  font-size:13px;
+
+  transition: background .15s ease, border-color .15s ease;
+}
+
+.export-dropdown button:hover{
+  background:#eef2ff;
+  border-color:#c7d2fe;
+}
+
+/* ===================== Table ===================== */
+table{
+  width:100%;
+  border-collapse:collapse;
+  background:#fff;
+  border-radius:14px;
+  overflow:hidden;
+  box-shadow: 0 6px 20px rgba(15,23,42,0.07);
+}
+
+th, td{
+  padding:12px 14px;
+  border-bottom:1px solid #eef2f7;
+  text-align:left;
+  font-size:14px;
+}
+
+th{
+  background:#f8fafc;
+  color:#334155;
+  font-weight:900;
+}
+
+tr:hover{ background:#f3f6ff; }
+
+/* Sort arrows */
+.sortable{ cursor:pointer; }
+.sortable.asc::after{ content:" ▲"; font-size:12px; opacity:.8; }
+.sortable.desc::after{ content:" ▼"; font-size:12px; opacity:.8; }
+
+/* ===================== Status Badges ===================== */
+.status-badge{
+  display:inline-block;
+  padding:4px 10px;
+  border-radius:999px;
+  font-size:12px;
+  font-weight:900;
+  text-transform:uppercase;
+  letter-spacing:.4px;
+}
+ 
+.status-draft    { background:#f1f3f5; color:#495057; }
+.status-returned { background:#ffedd5; color:#7c2d12; }
+.status-pending  { background:#fff3cd; color:#856404; }
+.status-approved { background:#d1e7dd; color:#0f5132; }
+.status-paid     { background:#cfe2ff; color:#084298; }
+.status-void{ background:#f8d7da; color:#842029; }
+
+/* ===================== Action Buttons ===================== */
+.action-btn{
+  padding:6px 10px;
+  border-radius:10px;
+  border:none;
+  cursor:pointer;
+  margin:0 4px 4px 0;
+  font-size:12px;
+  font-weight:900;
+  transition: transform .05s ease, opacity .2s ease;
+}
+.action-btn:active{ transform: translateY(1px); }
+.action-btn:hover{ opacity:.92; }
+
+.action-btn.view    { background:#6c757d; color:#fff; }
+.action-btn.edit    { background:#0d6efd; color:#fff; }
+.action-btn.submit  { background:#0dcaf0; color:#000; }
+.action-btn.delete  { background:#dc3545; color:#fff; }
+.action-btn.approve { background:#198754; color:#fff; }
+.action-btn.pay     { background:#0d6efd; color:#fff; }
+.action-btn.cancel  { background:#ffc107; color:#000; }
+.action-btn.return  { background:#ff9900; color:#fff; }
+
+/* Focus row (from notifications) */
+.row-focus{
+  outline:3px solid #4338ca;
+  background:#eef2ff !important;
+}
+
+/* ===================== Responsive ===================== */
+@media (max-width: 768px){
+  .page-body{ padding:14px; }
+
+  th, td{ font-size:13px; padding:10px; }
+
+  .bulk-actions .btn{
+    width:100%;
+    justify-content:center;
+  }
+
+  .export-dropdown{
+    right:0;
+    left:0;
+    min-width:unset;
+  }
+}
+#exportMenuTop .export-item{
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  padding: 10px 14px;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  color: #111827;
+}
+#exportMenuTop .export-item:hover{
+  background: #f3f4f6;
+}
+/* ===================== Date Range UX ===================== */
+.filters-card{
+  background:#fff;
+  border:1px solid #e6eaf2;
+  border-radius:16px;
+  padding:14px;
+  margin-bottom:14px;
+  box-shadow: 0 6px 18px rgba(15,23,42,0.06);
+}
+
+.filters-head{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:12px;
+  margin-bottom:12px;
+  flex-wrap:wrap;
+}
+
+.filters-title{
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+  min-width: 220px;
+}
+
+.filters-label{
+  font-size:13px;
+  font-weight:900;
+  color:#0f172a;
+}
+
+.range-chip{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  width:fit-content;
+  padding:6px 10px;
+  border-radius:999px;
+  background:#eef2ff;
+  color:#3730a3;
+  border:1px solid #c7d2fe;
+  font-size:12px;
+  font-weight:900;
+}
+
+.filters-presets{
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+  align-items:center;
+}
+
+/* preset buttons (hover + active) */
+.preset-btn{
+  border:1px solid #e5e7eb;
+  background:#fff;
+  color:#111827;
+  padding:8px 12px;
+  border-radius:999px;
+  font-weight:800;
+  font-size:13px;
+  cursor:pointer;
+  transition: background .15s ease, border-color .15s ease, transform .05s ease, color .15s ease;
+}
+
+.preset-btn:hover{
+  background:#eef2ff;
+  border-color:#c7d2fe;
+  color:#3730a3;
+}
+
+.preset-btn:active{ transform: translateY(1px); }
+
+/* ✅ stays "hovered" after click */
+.preset-btn.active{
+  background:#4338ca;
+  border-color:#4338ca;
+  color:#fff;
+  box-shadow: 0 10px 20px rgba(67,56,202,0.20);
+}
+
+
+.filters-grid{
+  display:grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap:12px;
+  align-items:end;
+}
+
+.filters-card .field{
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+}
+
+.filters-card label{
+  font-size:12px;
+  font-weight:800;
+  color:#475569;
+}
+
+.filters-card input[type="date"]{
+  height:40px;
+  padding:0 12px;
+  border-radius:12px;
+  border:1px solid #d7dce6;
+  font-size:14px;
+  background:#fff;
+}
+
+.filters-card input[type="date"]:focus{
+  outline:none;
+  border-color:#4338ca;
+  box-shadow: 0 0 0 4px rgba(67,56,202,0.12);
+}
+
+#clearDateFilter.btn.btn-secondary{
+  height: 40px;
+  padding: 0 14px;
+  border-radius: 12px;
+
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: .2px;
+
+  border: 1px solid #c7d2fe;
+  background: #eef2ff;
+  color: #3730a3;
+
+  cursor: pointer;
+  user-select: none;
+
+  transition:
+    background .18s ease,
+    border-color .18s ease,
+    box-shadow .18s ease,
+    transform .06s ease,
+    color .18s ease;
+}
+
+/* Hover */
+#clearDateFilter.btn.btn-secondary:hover:not(:disabled){
+  background: #4338ca;
+  border-color: #4338ca;
+  color: #fff;
+  box-shadow: 0 10px 22px rgba(67,56,202,0.22);
+}
+
+/* Active / pressed */
+#clearDateFilter.btn.btn-secondary:active:not(:disabled){
+  transform: translateY(1px);
+  box-shadow: 0 6px 16px rgba(67,56,202,0.18);
+}
+
+/* Keyboard focus */
+#clearDateFilter.btn.btn-secondary:focus{
+  outline: none;
+}
+
+#clearDateFilter.btn.btn-secondary:focus-visible{
+  box-shadow:
+    0 0 0 4px rgba(67,56,202,0.18),
+    0 10px 22px rgba(67,56,202,0.16);
+}
+
+/* Disabled state (no date selected) */
+#clearDateFilter.btn.btn-secondary:disabled{
+  background: #f1f5f9;
+  border-color: #e2e8f0;
+  color: #64748b;
+  cursor: not-allowed;
+  box-shadow: none;
+  transform: none;
+}
+
+@media (max-width: 768px){
+  .filters-grid{
+    grid-template-columns: 1fr;
+  }
+  .filters-presets{
+    width:100%;
+  }
+}
