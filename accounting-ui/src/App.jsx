@@ -34,11 +34,11 @@ import DebitCreditMemo from "./pages/TRANSACTIONS/DebitCreditMemo";
 import PurchaseOrder from "./pages/TRANSACTIONS/PurchaseOrder";
 
 // REPORTS
-import ReportPage from "./pages/Reports/ReportPage";
-import TrialBalance from "./pages/Reports/TrialBalance";
-import AccountAnalysis from "./pages/Reports/AccountAnalysis";
-import { IncomeStatement } from "./pages/Reports/IncomeStatement.jsx";
-import BalanceSheet from "./pages/Reports/BalanceSheet.jsx";
+import ReportPage from "./pages/REPORTS/ReportPage";
+import TrialBalance from "./pages/REPORTS/TrialBalance";
+import AccountAnalysis from "./pages/REPORTS/AccountAnalysis";
+import { IncomeStatement } from "./pages/REPORTS/IncomeStatement.jsx";
+import BalanceSheet from "./pages/REPORTS/BalanceSheet.jsx";
 
 function PlaceholderPage({ title }) {
   return (
