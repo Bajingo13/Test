@@ -1,0 +1,283 @@
+.tb-page {
+padding: 28px;
+background: #f5f7fb;
+min-height: 100vh;
+color: #1f2937;
+}
+
+.tb-header {
+margin-bottom: 24px;
+}
+
+.tb-header h1 {
+margin: 0;
+font-size: 28px;
+font-weight: 800;
+}
+
+.tb-filters {
+background: white;
+padding: 22px;
+border-radius: 14px;
+margin-bottom: 20px;
+box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
+}
+
+.tb-filters h2 {
+margin: 0 0 20px;
+font-size: 22px;
+}
+
+.tb-filter-grid {
+display: grid;
+grid-template-columns: repeat(3, 1fr);
+gap: 22px;
+}
+
+.tb-filter-grid div {
+display: flex;
+flex-direction: column;
+}
+
+.tb-filter-grid label {
+font-size: 14px;
+font-weight: 700;
+margin-bottom: 8px;
+}
+
+.tb-filter-grid input,
+.tb-filter-grid select {
+height: 54px;
+padding: 0 16px;
+border: 1px solid #cbd5e1;
+border-radius: 12px;
+font-size: 16px;
+background: white;
+}
+
+.tb-actions {
+display: flex;
+gap: 14px;
+margin-top: 28px;
+}
+
+.tb-actions button {
+border: none;
+padding: 14px 22px;
+border-radius: 10px;
+font-weight: 700;
+font-size: 15px;
+cursor: pointer;
+}
+
+.tb-actions .primary {
+background: #2563eb;
+color: white;
+}
+
+.tb-actions .secondary {
+background: #e5e7eb;
+color: #111827;
+}
+
+.tb-actions .dark {
+background: #0f172a;
+color: white;
+}
+
+/* REPORT CARD */
+
+.tb-report-card {
+background: white;
+border-radius: 14px;
+padding: 20px 20px 20px 8px;
+box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
+color: black;
+}
+
+.tb-report-top {
+display: grid;
+grid-template-columns: 1fr 1.4fr 1fr;
+margin-bottom: 26px;
+}
+
+.tb-report-title {
+text-align: center;
+}
+
+.tb-report-title h2 {
+margin: 0 0 8px;
+font-size: 24px;
+font-weight: 900;
+}
+
+.tb-report-title h3 {
+margin: 0;
+font-size: 16px;
+font-weight: 900;
+}
+
+.tb-run-info {
+justify-self: end;
+font-size: 12px;
+line-height: 1.5;
+}
+
+.tb-run-info p {
+margin: 0;
+}
+
+.tb-run-info span {
+display: inline-block;
+width: 60px;
+}
+
+/* ==========================
+TRIAL BALANCE TABLE
+========================== */
+
+.tb-report-table {
+  width: calc(100% - 10px);
+  margin-left: 0;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.tb-report-table thead tr {
+  border: 3px solid #000;
+}
+
+.tb-report-table th {
+  padding: 10px 8px;
+  font-size: 15px;
+  font-weight: 900;
+}
+
+.tb-report-table td {
+  padding: 6px 8px;
+  border: none;
+  font-size: 14px;
+}
+
+/* CODE */
+.tb-report-table th:nth-child(1),
+.tb-report-table td:nth-child(1) {
+  width: 12%;
+  text-align: center;
+}
+
+/* TITLE */
+.tb-report-table th:nth-child(2),
+.tb-report-table td:nth-child(2) {
+  width: 38%;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* DEBIT */
+.tb-report-table th:nth-child(3),
+.tb-report-table td:nth-child(3) {
+  width: 16%;
+  text-align: right;
+  padding-right: 35px;
+}
+
+/* CREDIT */
+.tb-report-table th:nth-child(4),
+.tb-report-table td:nth-child(4) {
+  width: 16%;
+  text-align: right;
+  padding-right: 35px;
+}
+
+/* CLASS */
+.tb-report-table th:nth-child(5),
+.tb-report-table td:nth-child(5) {
+  width: 8%;
+  text-align: center;
+  font-weight: 700;
+}
+
+.amount {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.tb-report-table tfoot tr {
+  border-top: 3px solid #000;
+}
+
+.tb-report-table tfoot td {
+  padding: 10px 8px;
+  font-size: 16px;
+  font-weight: 900;
+  border-bottom: 3px double #000;
+}
+
+.tb-report-table tfoot td:nth-child(3),
+.tb-report-table tfoot td:nth-child(4) {
+  text-align: right;
+  padding-right: 35px;
+}
+
+/* PRINT */
+
+@media print {
+
+  .tb-header,
+  .tb-filters {
+    display: none;
+  }
+
+  @page {
+    size: auto;
+    margin: 5mm;
+  }
+
+  html,
+  body {
+    margin: 0;
+    padding: 0;
+    background: white;
+  }
+
+  .tb-page {
+    margin: 0;
+    padding: 0;
+    background: white;
+  }
+
+  .tb-report-card {
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    box-shadow: none;
+    border-radius: 0;
+  }
+
+  .tb-clickable-account {
+  color: #2563eb;
+  font-weight: 700;
+  cursor: pointer;
+  text-decoration: underline;
+}
+  
+  @media print {
+
+  .tb-report-card {
+    padding-left: 0 !important;
+  }
+
+  .tb-report-table {
+    margin-left: 0 !important;
+  }
+
+}
+
+.tb-report-table {
+width: 100%;
+}
+}

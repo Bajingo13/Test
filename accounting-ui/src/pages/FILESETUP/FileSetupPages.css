@@ -1,0 +1,120 @@
+.fs-page {
+  min-height: 100vh;
+  background: #f5f7fb;
+  padding: 24px;
+  font-family: Arial, sans-serif;
+}
+
+.fs-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+}
+
+.fs-header h1 {
+  margin: 0;
+  color: #111827;
+}
+
+.fs-header p {
+  margin: 6px 0 0;
+  color: #6b7280;
+}
+
+.fs-card {
+  background: white;
+  border-radius: 16px;
+  padding: 20px;
+  margin-bottom: 20px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+}
+
+.fs-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.fs-toolbar input,
+.fs-field input,
+.fs-field select,
+.fs-field textarea {
+  border: 1px solid #d1d5db;
+  border-radius: 10px;
+  padding: 11px 12px;
+  font-size: 14px;
+}
+
+.fs-toolbar input {
+  width: 320px;
+}
+
+.fs-btn {
+  border: none;
+  background: #e5e7eb;
+  color: #374151;
+  padding: 10px 16px;
+  border-radius: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.fs-btn.primary {
+  background: #2563eb;
+  color: white;
+}
+
+.fs-btn.danger {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.fs-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+}
+
+.fs-field {
+  display: flex;
+  flex-direction: column;
+}
+
+.fs-field label {
+  font-weight: 700;
+  margin-bottom: 6px;
+  color: #374151;
+}
+
+.fs-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.fs-table th,
+.fs-table td {
+  padding: 12px;
+  border-bottom: 1px solid #e5e7eb;
+  text-align: left;
+}
+
+.fs-table th {
+  background: #f9fafb;
+  color: #374151;
+}
+
+.fs-empty {
+  text-align: center;
+  color: #6b7280;
+  font-weight: 600;
+  padding: 30px;
+}
+
+.fs-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 18px;
+}

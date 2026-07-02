@@ -1,0 +1,156 @@
+.bs-page {
+  padding: 28px;
+  background: #f5f7fb;
+  min-height: 100vh;
+  color: #1f2937;
+}
+
+.bs-page h1 {
+  margin: 0 0 24px;
+  font-size: 28px;
+  font-weight: 800;
+}
+
+.bs-card,
+.bs-report {
+  background: white;
+  padding: 26px;
+  border-radius: 14px;
+  margin-bottom: 22px;
+  box-shadow: 0 4px 16px rgba(0,0,0,.06);
+}
+
+.bs-card h2 {
+  margin: 0 0 20px;
+}
+
+.bs-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 22px;
+}
+
+.bs-grid div {
+  display: flex;
+  flex-direction: column;
+}
+
+.bs-grid label {
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.bs-grid input,
+.bs-grid select {
+  height: 52px;
+  padding: 0 14px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  font-size: 15px;
+}
+
+.bs-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 26px;
+}
+
+.bs-actions button {
+  border: none;
+  padding: 13px 20px;
+  border-radius: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.primary {
+  background: #2563eb;
+  color: white;
+}
+
+.secondary {
+  background: #e5e7eb;
+  color: #111827;
+}
+
+.dark {
+  background: #0f172a;
+  color: white;
+}
+
+.bs-title {
+  text-align: center;
+  margin-bottom: 28px;
+}
+
+.bs-title h2 {
+  margin: 0 0 6px;
+  font-size: 24px;
+  font-weight: 900;
+}
+
+.section-title {
+  margin-top: 22px;
+  padding: 8px 0;
+  border-bottom: 2px solid #000;
+  font-weight: 900;
+}
+
+.report-row,
+.subtotal,
+.grand-total {
+  display: grid;
+  grid-template-columns: 1fr 190px;
+  gap: 20px;
+  padding: 6px 0;
+}
+
+.report-row span:last-child,
+.subtotal span:last-child,
+.grand-total span:last-child {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.subtotal {
+  margin-top: 8px;
+  border-top: 1px solid #000;
+  font-weight: 900;
+}
+
+.grand-total {
+  margin-top: 24px;
+  padding: 10px 0;
+  border-top: 3px solid #000;
+  border-bottom: 3px double #000;
+  font-weight: 900;
+}
+
+.clickable {
+  color: #2563eb;
+  cursor: pointer;
+  text-decoration: underline;
+  font-weight: 700;
+}
+
+@media print {
+  .no-print,
+  .bs-page > h1 {
+    display: none;
+  }
+
+  @page {
+    margin: 8mm;
+  }
+
+  .bs-page {
+    padding: 0;
+    background: white;
+  }
+
+  .bs-report {
+    box-shadow: none;
+    border-radius: 0;
+    padding: 0;
+  }
+}

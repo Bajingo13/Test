@@ -1,0 +1,176 @@
+.is-page {
+  padding: 28px;
+  background: #f5f7fb;
+  min-height: 100vh;
+  color: #1f2937;
+  box-sizing: border-box;
+}
+
+.is-page h1 {
+  margin: 0 0 24px;
+  font-size: 28px;
+  font-weight: 800;
+}
+
+.is-card,
+.is-report {
+  background: white;
+  padding: 26px;
+  border-radius: 14px;
+  margin-bottom: 22px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
+  box-sizing: border-box;
+}
+
+.is-card h2 {
+  margin: 0 0 20px;
+}
+
+/* MODIFIED */
+.is-grid {
+  display: grid !important;
+  grid-template-columns: repeat(3, minmax(220px, 1fr)) !important;
+  gap: 22px !important;
+  align-items: end;
+}
+
+/* MODIFIED */
+.is-grid > div {
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+/* MODIFIED */
+.is-grid label {
+  display: block;
+  font-size: 14px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+/* MODIFIED */
+.is-grid input,
+.is-grid select {
+  width: 100% !important;
+  height: 52px !important;
+  padding: 0 14px !important;
+  border: 1px solid #cbd5e1 !important;
+  border-radius: 10px !important;
+  font-size: 15px !important;
+  background: white !important;
+  box-sizing: border-box !important;
+}
+
+/* MODIFIED */
+.is-actions {
+  display: flex !important;
+  gap: 12px !important;
+  margin-top: 26px !important;
+  flex-wrap: wrap;
+}
+
+.is-actions button {
+  border: none;
+  padding: 13px 20px;
+  border-radius: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.primary {
+  background: #2563eb;
+  color: white;
+}
+
+.secondary {
+  background: #e5e7eb;
+  color: #111827;
+}
+
+.dark {
+  background: #0f172a;
+  color: white;
+}
+
+.is-title {
+  text-align: center;
+  margin-bottom: 28px;
+}
+
+.is-title h2 {
+  margin: 0 0 6px;
+  font-size: 24px;
+  font-weight: 900;
+}
+
+.section-title {
+  margin-top: 22px;
+  padding: 8px 0;
+  border-bottom: 2px solid #000;
+  font-weight: 900;
+}
+
+.report-row,
+.subtotal,
+.grand-total {
+  display: grid;
+  grid-template-columns: 1fr 190px;
+  gap: 20px;
+  padding: 6px 0;
+}
+
+.report-row span:last-child,
+.subtotal span:last-child,
+.grand-total span:last-child {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.subtotal {
+  margin-top: 8px;
+  border-top: 1px solid #000;
+  font-weight: 900;
+}
+
+.grand-total {
+  margin-top: 24px;
+  padding: 10px 0;
+  border-top: 3px solid #000;
+  border-bottom: 3px double #000;
+  font-weight: 900;
+}
+
+.clickable {
+  color: #2563eb;
+  cursor: pointer;
+  text-decoration: underline;
+  font-weight: 700;
+}
+
+@media print {
+  .no-print,
+  .is-page > h1 {
+    display: none;
+  }
+
+  @page {
+    margin: 8mm;
+  }
+
+  .is-page {
+    padding: 0;
+    background: white;
+  }
+
+  .is-report {
+    box-shadow: none;
+    border-radius: 0;
+    padding: 0;
+  }
+}
+
+@media (max-width: 900px) {
+  .is-grid {
+    grid-template-columns: 1fr !important;
+  }
+}

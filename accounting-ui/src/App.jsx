@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import Sidebar from "./components/Sidebar/Sidebar";
 import Dashboard from "./pages/Dashboard/Dashboard";
@@ -6,12 +7,38 @@ import GenLib from "./pages/Filesetup/GenLib";
 import GroupCodes from "./pages/Filesetup/GroupCodes";
 import Login from "./pages/login/login";
 
+// FILE SETUP
+import Industry from "./pages/Filesetup/Industry";
+import CategoryCode from "./pages/Filesetup/CategoryCode";
+import BeginningBalance from "./pages/Filesetup/BeginningBalance";
+import BeginningBalanceGL from "./pages/Filesetup/BeginningBalanceGL";
+import BeginningBalanceAR from "./pages/Filesetup/BeginningBalanceAR";
+import BeginningBalanceAP from "./pages/Filesetup/BeginningBalanceAP";
+import BookTemplate from "./pages/Filesetup/BookTemplate";
+import ParticularsTemplate from "./pages/Filesetup/ParticularsTemplate";
+import BankCodes from "./pages/Filesetup/BankCodes";
+import TransactionSetup from "./pages/Filesetup/TransactionSetup";
+import AdditionalFileSetup from "./pages/Filesetup/AdditionalFileSetup";
+import TaxFileSetup from "./pages/Filesetup/TaxFileSetup";
+import EWTLibrary from "./pages/Filesetup/EWTLibrary";
+
+
 // TRANSACTIONS
 import APV from "./pages/TRANSACTIONS/APV";
 import CV from "./pages/TRANSACTIONS/CV";
 import JV from "./pages/TRANSACTIONS/JV";
 import OR from "./pages/TRANSACTIONS/OR";
 import JournalEntry from "./pages/TRANSACTIONS/JournalEntry";
+import PettyCashVoucher from "./pages/TRANSACTIONS/PettyCashVoucher";
+import DebitCreditMemo from "./pages/TRANSACTIONS/DebitCreditMemo";
+import PurchaseOrder from "./pages/TRANSACTIONS/PurchaseOrder";
+
+// REPORTS
+import ReportPage from "./pages/Reports/ReportPage";
+import TrialBalance from "./pages/Reports/TrialBalance";
+import AccountAnalysis from "./pages/Reports/AccountAnalysis";
+import { IncomeStatement } from "./pages/Reports/IncomeStatement.jsx";
+import BalanceSheet from "./pages/Reports/BalanceSheet.jsx";
 
 function PlaceholderPage({ title }) {
   return (
@@ -26,6 +53,8 @@ function AppLayout() {
   const location = useLocation();
   const isLoginPage = location.pathname === "/login";
 
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
   return (
     <div
       style={{
@@ -34,89 +63,77 @@ function AppLayout() {
         fontFamily: "Arial, sans-serif",
       }}
     >
-      {!isLoginPage && <Sidebar />}
+      {!isLoginPage && (
+        <Sidebar sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen} />
+      )}
 
       <main
         style={{
-          marginLeft: isLoginPage ? "0" : "270px",
+          marginLeft: isLoginPage ? "0" : sidebarOpen ? "270px" : "110px",
           padding: isLoginPage ? "0" : "24px",
           flex: 1,
           background: isLoginPage ? "transparent" : "#f3f4f6",
           boxSizing: "border-box",
           minHeight: "100vh",
+          transition: "margin-left 0.3s ease",
         }}
       >
         <Routes>
-          {/* DEFAULT */}
           <Route path="/" element={<Navigate to="/login" replace />} />
           <Route path="/login" element={<Login />} />
           <Route path="/dashboard" element={<Dashboard />} />
 
-          {/* FILE SETUP */}
           <Route path="/coa" element={<COA />} />
           <Route path="/general-libraries" element={<GenLib />} />
           <Route path="/group-code" element={<GroupCodes />} />
           <Route path="/group-codes" element={<GroupCodes />} />
-          <Route path="/industry" element={<PlaceholderPage title="Industry" />} />
-          <Route path="/category-code" element={<PlaceholderPage title="Category Code" />} />
-          <Route
-            path="/beginning-balances"
-            element={<PlaceholderPage title="Beginning Balances" />}
-          />
-          <Route
-            path="/book-template"
-            element={<PlaceholderPage title="Book Template" />}
-          />
-          <Route
-            path="/particulars-template"
-            element={<PlaceholderPage title="Particulars Template" />}
-          />
-          <Route path="/bank-codes" element={<PlaceholderPage title="Bank Codes" />} />
-          <Route
-            path="/transaction-setup"
-            element={<PlaceholderPage title="Transaction Setup" />}
-          />
-          <Route
-            path="/currency-file-setup"
-            element={<PlaceholderPage title="Currency File Setup" />}
-          />
-          <Route
-            path="/additional-file-setup"
-            element={<PlaceholderPage title="Additional File Setup" />}
-          />
-          <Route
-            path="/tax-file-setup"
-            element={<PlaceholderPage title="Tax File Setup" />}
-          />
+          <Route path="/industry" element={<Industry />} />
+          <Route path="/category-code" element={<CategoryCode />} />
+          <Route path="/beginning-balances" element={<BeginningBalance />} />
+          <Route path="/book-template" element={<BookTemplate />} />
+          <Route path="/particulars-template" element={<ParticularsTemplate />} />
+          <Route path="/bank-codes" element={<BankCodes />} />
+          <Route path="/transaction-setup" element={<TransactionSetup />} />
+          <Route path="/additional-file-setup" element={<AdditionalFileSetup />} />
+          <Route path="/tax-file-setup" element={<TaxFileSetup />} />
+          <Route path="/ewt-library" element={<EWTLibrary />} />
 
-          {/* TRANSACTIONS */}
           <Route path="/transactions/invoice" element={<PlaceholderPage title="Invoice" />} />
           <Route path="/transactions/cv" element={<CV />} />
           <Route path="/transactions/jv" element={<JV />} />
           <Route path="/transactions/or" element={<OR />} />
           <Route path="/transactions/apv" element={<APV />} />
-          <Route
-            path="/transactions/accounts-payable-voucher"
-            element={<APV />}
-          />
-          <Route
-            path="/transactions/petty-cash-voucher"
-            element={<PlaceholderPage title="Petty Cash Voucher" />}
-          />
-          <Route
-            path="/transactions/debit-credit-memo"
-            element={<PlaceholderPage title="Debit Credit Memo" />}
-          />
-          <Route
-            path="/transactions/journalization"
-            element={<PlaceholderPage title="Journalization" />}
-          />
+          <Route path="/transactions/accounts-payable-voucher" element={<APV />} />
+          <Route path="/transactions/petty-cash-voucher" element={<PettyCashVoucher />} />
+          <Route path="/transactions/debit-credit-memo" element={<DebitCreditMemo />} />
+          <Route path="/transactions/journalization" element={<PlaceholderPage title="Journalization" />} />
           <Route path="/transactions/journal-entry" element={<JournalEntry />} />
+          <Route path="/transactions/purchase-order" element={<PurchaseOrder />} />
 
-          {/* ACCOUNTING / REPORTS */}
           <Route path="/posting" element={<PlaceholderPage title="Posting" />} />
           <Route path="/ledger" element={<PlaceholderPage title="Ledger" />} />
-          <Route path="/reports" element={<PlaceholderPage title="Reports" />} />
+
+          <Route path="/reports" element={<Navigate to="/reports/trial-balance" replace />} />
+          <Route path="/reports/trial-balance" element={<TrialBalance />} />
+          <Route path="/reports/account-analysis" element={<AccountAnalysis />} />
+          <Route path="/reports/bank-reconciliation" element={<ReportPage title="Bank Reconciliation" />} />
+          <Route path="/reports/balance-sheet" element={<BalanceSheet />} />
+          <Route path="/reports/income-statement" element={<IncomeStatement />} />
+
+          <Route
+  path="/beginning-balances/gl"
+  element={<BeginningBalanceGL />}
+/>
+
+<Route
+  path="/beginning-balances/ar"
+  element={<BeginningBalanceAR />}
+/>
+
+<Route
+  path="/beginning-balances/ap"
+  element={<BeginningBalanceAP />}
+/>
         </Routes>
       </main>
     </div>

@@ -1,0 +1,297 @@
+.aa-page {
+  padding: 28px;
+  background: #f5f7fb;
+  min-height: 100vh;
+  color: #1f2937;
+}
+
+.aa-header {
+  margin-bottom: 24px;
+}
+
+.aa-header h1 {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 800;
+}
+
+.aa-filters {
+  background: white;
+  padding: 22px;
+  border-radius: 14px;
+  margin-bottom: 20px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
+}
+
+.aa-filters h2 {
+  margin: 0 0 20px;
+  font-size: 22px;
+}
+
+.aa-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 22px;
+}
+
+.aa-filter-grid div {
+  display: flex;
+  flex-direction: column;
+}
+
+.aa-filter-grid label {
+  font-size: 14px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.aa-filter-grid input,
+.aa-filter-grid select {
+  height: 54px;
+  padding: 0 16px;
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  font-size: 16px;
+  background: white;
+}
+
+.aa-actions {
+  display: flex;
+  gap: 14px;
+  margin-top: 28px;
+}
+
+.aa-actions button {
+  border: none;
+  padding: 14px 22px;
+  border-radius: 10px;
+  font-weight: 700;
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.aa-actions .primary {
+  background: #2563eb;
+  color: white;
+}
+
+.aa-actions .secondary {
+  background: #e5e7eb;
+  color: #111827;
+}
+
+.aa-actions .dark {
+  background: #0f172a;
+  color: white;
+}
+
+.aa-report-card {
+  background: white;
+  border-radius: 14px;
+  padding: 28px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
+  color: black;
+}
+
+.aa-report-title {
+  text-align: center;
+  margin-bottom: 24px;
+}
+
+.aa-report-title h2 {
+  margin: 0 0 8px;
+  font-size: 24px;
+  font-weight: 900;
+}
+
+.aa-report-title h3 {
+  margin: 0 0 6px;
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.aa-report-title p {
+  margin: 0;
+  font-size: 14px;
+}
+
+/* 5-COLUMN ACCOUNT ANALYSIS TABLE:
+   DATE | DOC REF | PARTICULARS | DEBIT | CREDIT
+*/
+
+.aa-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.aa-table thead tr {
+  border: 3px solid #000;
+}
+
+.aa-table th {
+  padding: 10px 8px;
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.aa-table td {
+  padding: 7px 8px;
+  border-bottom: 1px solid #e5e7eb;
+  font-size: 14px;
+}
+
+/* DATE */
+.aa-table th:nth-child(1),
+.aa-table td:nth-child(1) {
+  width: 130px;
+  text-align: center;
+}
+
+/* DOC REF */
+.aa-table th:nth-child(2),
+.aa-table td:nth-child(2) {
+  width: 180px;
+  text-align: center;
+}
+
+/* PARTICULARS */
+.aa-table th:nth-child(3),
+.aa-table td:nth-child(3) {
+  width: auto;
+  text-align: left;
+  white-space: normal;
+  word-break: break-word;
+}
+
+/* DEBIT */
+.aa-table th:nth-child(4),
+.aa-table td:nth-child(4) {
+  width: 160px;
+  text-align: right;
+  padding-right: 18px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* CREDIT */
+.aa-table th:nth-child(5),
+.aa-table td:nth-child(5) {
+  width: 160px;
+  text-align: right;
+  padding-right: 18px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.amount {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.empty {
+  text-align: center;
+  padding: 24px;
+  color: #6b7280;
+}
+
+.aa-table tfoot tr {
+  border-top: 3px solid #000;
+}
+
+.aa-table tfoot td {
+  padding: 10px 8px;
+  font-weight: 900;
+  border-bottom: 3px double #000;
+}
+
+/* PRINT FIX — remove old 9-column print behavior */
+
+@media print {
+  .aa-header,
+  .aa-filters {
+    display: none;
+  }
+
+  @page {
+    margin: 5mm;
+  }
+
+  html,
+  body {
+    margin: 0;
+    padding: 0;
+    background: white;
+  }
+
+  .aa-page {
+    margin: 0;
+    padding: 0;
+    background: white;
+  }
+
+  .aa-report-card {
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    box-shadow: none;
+    border-radius: 0;
+  }
+
+  .aa-report-title {
+    margin-bottom: 16px;
+  }
+
+  .aa-report-title h2 {
+    font-size: 20px;
+  }
+
+  .aa-report-title h3 {
+    font-size: 14px;
+  }
+
+  .aa-report-title p {
+    font-size: 12px;
+  }
+
+  .aa-table {
+    width: 100%;
+    table-layout: fixed;
+  }
+
+  .aa-table th,
+  .aa-table td {
+    font-size: 11px;
+    padding: 5px 6px;
+  }
+
+  .aa-table th:nth-child(1),
+  .aa-table td:nth-child(1) {
+    width: 95px;
+    text-align: center;
+  }
+
+  .aa-table th:nth-child(2),
+  .aa-table td:nth-child(2) {
+    width: 140px;
+    text-align: center;
+  }
+
+  .aa-table th:nth-child(3),
+  .aa-table td:nth-child(3) {
+    width: auto;
+    text-align: left;
+  }
+
+  .aa-table th:nth-child(4),
+  .aa-table td:nth-child(4),
+  .aa-table th:nth-child(5),
+  .aa-table td:nth-child(5) {
+    width: 120px;
+    text-align: right !important;
+    padding-right: 10px !important;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+}

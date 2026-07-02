@@ -18,6 +18,52 @@ app.use(session({
   saveUninitialized: false
 }));
 
+async function updateApvPaymentStatus(conn, apvId) {
+  const [apvRows] = await conn.execute(
+    `SELECT 
+       total_debit AS totalDebit,
+       total_credit AS totalCredit
+     FROM apv_headers
+     WHERE id = ?`,
+    [apvId]
+  );
+
+  if (apvRows.length === 0) return;
+
+  const totalAmount = Math.max(
+    Number(apvRows[0].totalDebit || 0),
+    Number(apvRows[0].totalCredit || 0)
+  );
+
+  const [paymentRows] = await conn.execute(
+    `SELECT COALESCE(SUM(amount), 0) AS paidAmount
+     FROM transaction_applications
+     WHERE source_type = 'APV'
+       AND source_id = ?`,
+    [apvId]
+  );
+
+  const paidAmount = Number(paymentRows[0].paidAmount || 0);
+  const balanceAmount = Math.max(totalAmount - paidAmount, 0);
+
+  let paymentStatus = "Unpaid";
+
+  if (paidAmount > 0 && paidAmount < totalAmount) {
+    paymentStatus = "Partially Paid";
+  } else if (paidAmount >= totalAmount && totalAmount > 0) {
+    paymentStatus = "Paid";
+  }
+
+  await conn.execute(
+    `UPDATE apv_headers
+     SET paid_amount = ?,
+         balance_amount = ?,
+         payment_status = ?
+     WHERE id = ?`,
+    [paidAmount, balanceAmount, paymentStatus, apvId]
+  );
+}
+
 // ===================== LOGIN =====================
 
 app.post("/api/login", async (req, res) => {
@@ -412,6 +458,9 @@ app.get("/api/apv", async (req, res) => {
         remarks,
         total_debit AS totalDebit,
         total_credit AS totalCredit,
+        paid_amount AS paidAmount,
+        balance_amount AS balanceAmount,
+        payment_status AS paymentStatus,
         status,
         created_at AS createdAt,
         updated_at AS updatedAt
@@ -423,6 +472,70 @@ app.get("/api/apv", async (req, res) => {
   } catch (err) {
     console.error("GET APV ERROR:", err);
     res.status(500).json({ message: "Failed to load APV records" });
+  }
+});
+
+app.get("/api/apv/unpaid", async (req, res) => {
+  try {
+    const { supplierId, supplierName } = req.query;
+
+    const params = [];
+    let supplierFilterApv = "";
+    let supplierFilterBb = "";
+
+    if (supplierId) {
+      supplierFilterApv = " AND supplier_id = ? ";
+      supplierFilterBb = " AND l.party_id = ? ";
+      params.push(supplierId, supplierId);
+    } else if (supplierName) {
+      supplierFilterApv = " AND TRIM(LOWER(supplier_name)) = TRIM(LOWER(?)) ";
+      supplierFilterBb = " AND TRIM(LOWER(l.party_name)) = TRIM(LOWER(?)) ";
+      params.push(supplierName, supplierName);
+    }
+
+    const [rows] = await pool.execute(
+      `
+      SELECT
+        id,
+        'APV' AS sourceType,
+        voucher_no AS voucherNo,
+        supplier_id AS supplierId,
+        supplier_name AS supplierName,
+        total_credit AS totalAmount,
+        COALESCE(paid_amount, 0) AS paidAmount,
+        COALESCE(balance_amount, total_credit, 0) AS balanceAmount
+      FROM apv_headers
+      WHERE COALESCE(balance_amount, total_credit, 0) > 0
+        AND COALESCE(payment_status, 'Unpaid') != 'Paid'
+        ${supplierFilterApv}
+
+      UNION ALL
+
+      SELECT
+        l.id,
+        'AP_BEGINNING' AS sourceType,
+        l.reference_no AS voucherNo,
+        l.party_id AS supplierId,
+        l.party_name AS supplierName,
+        l.credit AS totalAmount,
+        COALESCE(l.paid_amount, 0) AS paidAmount,
+        COALESCE(l.balance_amount, l.credit, 0) AS balanceAmount
+      FROM arap_beginning_balance_lines l
+      JOIN arap_beginning_balance_headers h ON h.id = l.header_id
+      WHERE h.balance_type = 'AP'
+        AND COALESCE(l.balance_amount, l.credit, 0) > 0
+        AND COALESCE(l.status, 'Unpaid') != 'Paid'
+        ${supplierFilterBb}
+
+      ORDER BY voucherNo DESC
+      `,
+      params
+    );
+
+    res.json(rows);
+  } catch (err) {
+    console.error("GET UNPAID APV/AP BEGINNING ERROR:", err);
+    res.status(500).json({ message: "Failed to load outstanding payables" });
   }
 });
 
@@ -443,6 +556,9 @@ app.get("/api/apv/:id", async (req, res) => {
         remarks,
         total_debit AS totalDebit,
         total_credit AS totalCredit,
+        paid_amount AS paidAmount,
+        balance_amount AS balanceAmount,
+        payment_status AS paymentStatus,
         status,
         created_at AS createdAt,
         updated_at AS updatedAt
@@ -464,16 +580,36 @@ app.get("/api/apv/:id", async (req, res) => {
         account_title AS accountTitle,
         particulars,
         debit,
-        credit
+        credit,
+        gen_ref AS genRef,
+        gen_name AS genName
       FROM apv_lines
       WHERE apv_id = ?
       ORDER BY id ASC`,
       [id]
     );
 
+    const [applications] = await pool.execute(
+      `SELECT
+        id,
+        source_type AS sourceType,
+        source_id AS sourceId,
+        applied_type AS appliedType,
+        applied_id AS appliedId,
+        amount,
+        DATE_FORMAT(application_date, '%Y-%m-%d') AS applicationDate,
+        created_at AS createdAt
+      FROM transaction_applications
+      WHERE source_type = 'APV'
+        AND source_id = ?
+      ORDER BY id DESC`,
+      [id]
+    );
+
     res.json({
       ...headers[0],
       lines,
+      applications,
     });
   } catch (err) {
     console.error("GET APV DETAILS ERROR:", err);
@@ -502,6 +638,8 @@ app.post("/api/apv", async (req, res) => {
 
     await conn.beginTransaction();
 
+    const total = Number(totalCredit || 0);
+
     const [result] = await conn.execute(
       `INSERT INTO apv_headers (
         voucher_no,
@@ -514,8 +652,11 @@ app.post("/api/apv", async (req, res) => {
         remarks,
         total_debit,
         total_credit,
+        paid_amount,
+        balance_amount,
+        payment_status,
         status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         voucherNo,
         supplierId || null,
@@ -526,7 +667,10 @@ app.post("/api/apv", async (req, res) => {
         description || "",
         remarks || "",
         totalDebit || 0,
-        totalCredit || 0,
+        total,
+        0,
+        total,
+        "Unpaid",
         status || "DRAFT",
       ]
     );
@@ -542,8 +686,10 @@ app.post("/api/apv", async (req, res) => {
           account_title,
           particulars,
           debit,
-          credit
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          credit,
+          gen_ref,
+          gen_name
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           apvId,
           line.accountId || null,
@@ -552,6 +698,8 @@ app.post("/api/apv", async (req, res) => {
           line.particulars || "",
           Number(line.debit) || 0,
           Number(line.credit) || 0,
+          line.genRef || "",
+          line.genName || "",
         ]
       );
     }
@@ -641,8 +789,10 @@ app.put("/api/apv/:id", async (req, res) => {
           account_title,
           particulars,
           debit,
-          credit
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          credit,
+          gen_ref,
+          gen_name
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           id,
           line.accountId || null,
@@ -651,9 +801,13 @@ app.put("/api/apv/:id", async (req, res) => {
           line.particulars || "",
           Number(line.debit) || 0,
           Number(line.credit) || 0,
+          line.genRef || "",
+          line.genName || "",
         ]
       );
     }
+
+    await updateApvPaymentStatus(conn, id);
 
     await conn.commit();
 
@@ -676,18 +830,365 @@ app.put("/api/apv/:id", async (req, res) => {
 });
 
 app.delete("/api/apv/:id", async (req, res) => {
+  const conn = await pool.getConnection();
+
   try {
     const { id } = req.params;
 
-    await pool.execute("DELETE FROM apv_headers WHERE id = ?", [id]);
+    await conn.beginTransaction();
+
+    await conn.execute(
+      `DELETE FROM transaction_applications
+       WHERE source_type = 'APV'
+         AND source_id = ?`,
+      [id]
+    );
+
+    await conn.execute("DELETE FROM apv_headers WHERE id = ?", [id]);
+
+    await conn.commit();
 
     res.json({
       success: true,
       message: "APV deleted successfully",
     });
   } catch (err) {
+    await conn.rollback();
     console.error("DELETE APV ERROR:", err);
     res.status(500).json({ message: "Failed to delete APV" });
+  } finally {
+    conn.release();
+  }
+});
+
+// ===================== PAYMENT APPLICATION API =====================
+
+app.post("/api/apply-payment", async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const {
+      sourceType,
+      sourceId,
+      appliedType,
+      appliedId,
+      amount,
+      applicationDate,
+    } = req.body;
+
+    if (!sourceType || !sourceId || !appliedType || !appliedId || !amount) {
+      return res.status(400).json({
+        message: "Missing payment application data",
+      });
+    }
+
+    if (sourceType !== "APV") {
+      return res.status(400).json({
+        message: "Only APV payment application is available right now.",
+      });
+    }
+
+    await conn.beginTransaction();
+
+    const [apvRows] = await conn.execute(
+      `SELECT
+        id,
+        total_credit AS totalAmount,
+        COALESCE(paid_amount, 0) AS paidAmount,
+        COALESCE(balance_amount, total_credit) AS balanceAmount
+      FROM apv_headers
+      WHERE id = ?`,
+      [sourceId]
+    );
+
+    if (apvRows.length === 0) {
+      await conn.rollback();
+      return res.status(404).json({ message: "APV not found." });
+    }
+
+    const balanceAmount = Number(apvRows[0].balanceAmount || 0);
+    const paymentAmount = Number(amount || 0);
+
+    if (paymentAmount <= 0) {
+      await conn.rollback();
+      return res.status(400).json({ message: "Payment amount must be greater than zero." });
+    }
+
+    if (paymentAmount > balanceAmount) {
+      await conn.rollback();
+      return res.status(400).json({
+        message: `Payment amount cannot exceed APV balance of ${balanceAmount.toFixed(2)}.`,
+      });
+    }
+
+    await conn.execute(
+      `INSERT INTO transaction_applications
+       (source_type, source_id, applied_type, applied_id, amount, application_date)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [
+        "APV",
+        sourceId,
+        appliedType,
+        appliedId,
+        paymentAmount,
+        applicationDate || new Date().toISOString().split("T")[0],
+      ]
+    );
+
+    await updateApvPaymentStatus(conn, sourceId);
+
+    await conn.commit();
+
+    res.json({
+      success: true,
+      message: "Payment applied to APV successfully.",
+    });
+  } catch (err) {
+    await conn.rollback();
+    console.error("APPLY PAYMENT ERROR:", err);
+    res.status(500).json({ message: "Failed to apply payment." });
+  } finally {
+    conn.release();
+  }
+});
+
+// ===================== CV API =====================
+
+app.get("/api/cv", async (req, res) => {
+  try {
+    const [rows] = await pool.execute(`
+      SELECT
+        id,
+        voucher_no AS voucherNo,
+        payee_id AS payeeId,
+        payee_name AS payeeName,
+        DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate,
+        reference_no AS referenceNo,
+        check_no AS checkNo,
+        description,
+        total_debit AS totalDebit,
+        total_credit AS totalCredit,
+        status
+      FROM cv_headers
+      ORDER BY id DESC
+    `);
+
+    res.json(rows);
+  } catch (err) {
+    console.error("GET CV ERROR:", err);
+    res.status(500).json({ message: "Failed to load CV records" });
+  }
+});
+
+app.post("/api/cv", async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    await conn.beginTransaction();
+
+    const {
+      voucherNo,
+      payeeId,
+      payeeName,
+      transactionDate,
+      referenceNo,
+      checkNo,
+      description,
+      totalDebit,
+      totalCredit,
+      status,
+      lines = [],
+      apvApplications = [],
+    } = req.body;
+
+    const finalPayeeId = payeeId ?? req.body.supplierId ?? null;
+    const finalPayeeName = payeeName || req.body.supplierName || "";
+
+    const [result] = await conn.execute(
+      `INSERT INTO cv_headers(
+        voucher_no,
+        payee_id,
+        payee_name,
+        transaction_date,
+        reference_no,
+        check_no,
+        description,
+        total_debit,
+        total_credit,
+        status
+      )
+      VALUES(?,?,?,?,?,?,?,?,?,?)`,
+      [
+        voucherNo || "",
+        finalPayeeId,
+        finalPayeeName,
+        transactionDate || null,
+        referenceNo || "",
+        checkNo || "",
+        description || "",
+        Number(totalDebit) || 0,
+        Number(totalCredit) || 0,
+        status || "Draft",
+      ]
+    );
+
+    const cvId = result.insertId;
+
+    for (const line of lines) {
+      await conn.execute(
+        `INSERT INTO cv_lines(
+          cv_id,
+          account_id,
+          account_code,
+          account_title,
+          particulars,
+          gen_ref,
+          gen_name,
+          debit,
+          credit
+        )
+        VALUES(?,?,?,?,?,?,?,?,?)`,
+        [
+          cvId,
+          line.accountId ?? null,
+          line.accountCode || "",
+          line.accountTitle || "",
+          line.particulars || "",
+          line.genRef || "",
+          line.genName || "",
+          Number(line.debit) || 0,
+          Number(line.credit) || 0,
+        ]
+      );
+    }
+
+    for (const appItem of apvApplications) {
+      const sourceId = appItem.sourceId ?? appItem.apvId ?? null;
+      const paymentAmount = Number(appItem.amount || 0);
+
+      if (!sourceId || paymentAmount <= 0) continue;
+
+      await conn.execute(
+        `INSERT INTO transaction_applications
+         (source_type, source_id, applied_type, applied_id, amount, application_date)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+          "APV",
+          sourceId,
+          "CV",
+          cvId,
+          paymentAmount,
+          appItem.applicationDate || transactionDate || null,
+        ]
+      );
+
+      if (appItem.sourceType === "AP_BEGINNING") {
+  await conn.execute(
+    `
+    UPDATE arap_beginning_balance_lines
+    SET paid_amount = COALESCE(paid_amount, 0) + ?,
+        balance_amount = GREATEST(COALESCE(balance_amount, credit, 0) - ?, 0),
+        status = CASE
+          WHEN GREATEST(COALESCE(balance_amount, credit, 0) - ?, 0) <= 0 THEN 'Paid'
+          ELSE 'Partially Paid'
+        END
+    WHERE id = ?
+    `,
+    [paymentAmount, paymentAmount, paymentAmount, sourceId]
+  );
+} else {
+  await updateApvPaymentStatus(conn, sourceId);
+}
+    }
+
+    await conn.commit();
+
+    res.json({
+      success: true,
+      id: cvId,
+      message: "CV saved successfully",
+    });
+  } catch (err) {
+    await conn.rollback();
+    console.error("CREATE CV ERROR:", err);
+
+    res.status(500).json({
+      message: "Failed to save CV",
+    });
+  } finally {
+    conn.release();
+  }
+});
+
+app.get("/api/cv/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [headers] = await pool.execute(
+      `SELECT
+        id,
+        voucher_no AS voucherNo,
+        payee_id AS payeeId,
+        payee_name AS payeeName,
+        DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate,
+        reference_no AS referenceNo,
+        check_no AS checkNo,
+        description,
+        remarks,
+        total_debit AS totalDebit,
+        total_credit AS totalCredit,
+        status
+      FROM cv_headers
+      WHERE id = ?`,
+      [id]
+    );
+
+    if (headers.length === 0) {
+      return res.status(404).json({ message: "CV not found" });
+    }
+
+    const [lines] = await pool.execute(
+      `SELECT
+        id,
+        cv_id AS cvId,
+        account_id AS accountId,
+        account_code AS accountCode,
+        account_title AS accountTitle,
+        particulars,
+        debit,
+        credit,
+        gen_ref AS genRef,
+        gen_name AS genName
+      FROM cv_lines
+      WHERE cv_id = ?
+      ORDER BY id ASC`,
+      [id]
+    );
+
+    const [applications] = await pool.execute(
+      `SELECT
+        id,
+        source_type AS sourceType,
+        source_id AS sourceId,
+        applied_type AS appliedType,
+        applied_id AS appliedId,
+        amount,
+        DATE_FORMAT(application_date, '%Y-%m-%d') AS applicationDate
+      FROM transaction_applications
+      WHERE applied_type = 'CV'
+        AND applied_id = ?
+      ORDER BY id DESC`,
+      [id]
+    );
+
+    res.json({
+      ...headers[0],
+      lines,
+      applications,
+    });
+  } catch (err) {
+    console.error("GET CV DETAILS ERROR:", err);
+    res.status(500).json({ message: "Failed to load CV details" });
   }
 });
 
@@ -792,7 +1293,624 @@ app.delete("/api/group-codes/:id", async (req, res) => {
   }
 });
 
+app.get("/api/arap-beginning-balances/:type", async (req, res) => {
+  try {
+    const { type } = req.params;
+
+    const [rows] = await pool.execute(
+      `
+      SELECT
+        l.id,
+        h.balance_type AS balanceType,
+        DATE_FORMAT(h.balance_date, '%Y-%m-%d') AS balanceDate,
+        h.currency_code AS currencyCode,
+        h.currency_name AS currencyName,
+        l.party_id AS partyId,
+        l.party_code AS partyCode,
+        l.party_name AS partyName,
+        l.account_id AS accountId,
+        l.account_code AS accountCode,
+        l.account_title AS accountTitle,
+        l.reference_no AS referenceNo,
+        DATE_FORMAT(l.due_date, '%Y-%m-%d') AS dueDate,
+        l.debit,
+        l.credit,
+        l.balance_amount AS balanceAmount,
+        l.paid_amount AS paidAmount,
+        l.status,
+        DATE_FORMAT(s.schedule_date, '%Y-%m-%d') AS scheduleDate
+      FROM arap_beginning_balance_lines l
+      JOIN arap_beginning_balance_headers h ON h.id = l.header_id
+      LEFT JOIN arap_payment_schedules s ON s.beginning_balance_line_id = l.id
+      WHERE h.balance_type = ?
+      ORDER BY l.id DESC
+      `,
+      [type]
+    );
+
+    res.json(rows);
+  } catch (err) {
+    console.error("GET ARAP BB ERROR:", err);
+    res.status(500).json({ message: "Failed to load AR/AP beginning balances" });
+  }
+});
+
+app.post("/api/arap-beginning-balances", async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const {
+      balanceType,
+      balanceDate,
+      currencyCode,
+      currencyName,
+      remarks,
+      line,
+    } = req.body;
+
+    await conn.beginTransaction();
+
+    const [headerResult] = await conn.execute(
+      `
+      INSERT INTO arap_beginning_balance_headers
+      (balance_type, balance_date, currency_code, currency_name, remarks, status)
+      VALUES (?, ?, ?, ?, ?, ?)
+      `,
+      [
+        balanceType,
+        balanceDate,
+        currencyCode || "PHP",
+        currencyName || "PHILIPPINE PESO",
+        remarks || "",
+        "Posted",
+      ]
+    );
+
+    const headerId = headerResult.insertId;
+
+    const [lineResult] = await conn.execute(
+      `
+      INSERT INTO arap_beginning_balance_lines
+      (
+        header_id,
+        party_id,
+        party_code,
+        party_name,
+        account_id,
+        account_code,
+        account_title,
+        reference_no,
+        due_date,
+        debit,
+        credit,
+        balance_amount,
+        paid_amount,
+        status
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        headerId,
+        line.partyId || null,
+        line.partyCode || "",
+        line.partyName || "",
+        line.accountId || null,
+        line.accountCode || "",
+        line.accountTitle || "",
+        line.referenceNo || "",
+        line.dueDate || null,
+        Number(line.debit) || 0,
+        Number(line.credit) || 0,
+        Number(line.balanceAmount) || 0,
+        0,
+        "Unpaid",
+      ]
+    );
+
+    const lineId = lineResult.insertId;
+
+    await conn.execute(
+      `
+      INSERT INTO arap_payment_schedules
+      (
+        beginning_balance_line_id,
+        schedule_date,
+        amount,
+        paid_amount,
+        balance_amount,
+        status
+      )
+      VALUES (?, ?, ?, ?, ?, ?)
+      `,
+      [
+        lineId,
+        line.scheduleDate || line.dueDate || balanceDate,
+        Number(line.scheduleAmount || line.balanceAmount) || 0,
+        0,
+        Number(line.scheduleAmount || line.balanceAmount) || 0,
+        "Unpaid",
+      ]
+    );
+
+    await conn.commit();
+
+    res.json({ success: true, message: "Beginning balance saved successfully" });
+  } catch (err) {
+    await conn.rollback();
+    console.error("SAVE ARAP BB ERROR:", err);
+    res.status(500).json({ message: "Failed to save AR/AP beginning balance" });
+  } finally {
+    conn.release();
+  }
+});
+
+app.put("/api/arap-beginning-balances", async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const { line } = req.body;
+
+    await conn.beginTransaction();
+
+    await conn.execute(
+      `
+      UPDATE arap_beginning_balance_lines SET
+        party_id = ?,
+        party_code = ?,
+        party_name = ?,
+        account_id = ?,
+        account_code = ?,
+        account_title = ?,
+        reference_no = ?,
+        due_date = ?,
+        debit = ?,
+        credit = ?,
+        balance_amount = ?
+      WHERE id = ?
+      `,
+      [
+        line.partyId || null,
+        line.partyCode || "",
+        line.partyName || "",
+        line.accountId || null,
+        line.accountCode || "",
+        line.accountTitle || "",
+        line.referenceNo || "",
+        line.dueDate || null,
+        Number(line.debit) || 0,
+        Number(line.credit) || 0,
+        Number(line.balanceAmount) || 0,
+        line.id,
+      ]
+    );
+
+    await conn.execute(
+      `
+      UPDATE arap_payment_schedules SET
+        schedule_date = ?,
+        amount = ?,
+        balance_amount = ?
+      WHERE beginning_balance_line_id = ?
+      `,
+      [
+        line.scheduleDate || line.dueDate || null,
+        Number(line.scheduleAmount || line.balanceAmount) || 0,
+        Number(line.scheduleAmount || line.balanceAmount) || 0,
+        line.id,
+      ]
+    );
+
+    await conn.commit();
+
+    res.json({ success: true, message: "Beginning balance updated successfully" });
+  } catch (err) {
+    await conn.rollback();
+    console.error("UPDATE ARAP BB ERROR:", err);
+    res.status(500).json({ message: "Failed to update AR/AP beginning balance" });
+  } finally {
+    conn.release();
+  }
+});
+
+app.delete("/api/arap-beginning-balances/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    await pool.execute(
+      `DELETE FROM arap_beginning_balance_lines WHERE id = ?`,
+      [id]
+    );
+
+    res.json({ success: true, message: "Beginning balance removed successfully" });
+  } catch (err) {
+    console.error("DELETE ARAP BB ERROR:", err);
+    res.status(500).json({ message: "Failed to remove beginning balance" });
+  }
+});
+
+
+// ====================== TRIAL BALANCE REPORT =================
+
+app.get("/api/reports/trial-balance", async (req, res) => {
+  try {
+    const { from, to } = req.query;
+
+    const params = [];
+    let dateFilterAPV = "";
+    let dateFilterCV = "";
+    let dateFilterARAP = "";
+
+    if (from && to) {
+      dateFilterAPV = "WHERE h.transaction_date BETWEEN ? AND ?";
+      dateFilterCV = "WHERE h.transaction_date BETWEEN ? AND ?";
+      dateFilterARAP = "WHERE h.balance_date BETWEEN ? AND ?";
+      params.push(from, to, from, to, from, to);
+    }
+
+    const [rows] = await pool.execute(
+      `
+      SELECT
+        tb.account_code,
+        tb.account_name,
+    CASE
+  WHEN UPPER(TRIM(c.account_class)) = 'ASSET' THEN 'A'
+  WHEN UPPER(TRIM(c.account_class)) IN ('LIABILITY', 'LIABILITIES') THEN 'L'
+  WHEN UPPER(TRIM(c.account_class)) = 'INCOME' THEN 'I'
+  WHEN UPPER(TRIM(c.account_class)) IN ('CAPITAL', 'EQUITY') THEN 'C'
+  WHEN UPPER(TRIM(c.account_class)) = 'EXPENSE' THEN 'E'
+  ELSE ''
+END AS account_class,
+        CASE
+          WHEN SUM(tb.debit) - SUM(tb.credit) > 0
+          THEN SUM(tb.debit) - SUM(tb.credit)
+          ELSE 0
+        END AS debit,
+        CASE
+          WHEN SUM(tb.credit) - SUM(tb.debit) > 0
+          THEN SUM(tb.credit) - SUM(tb.debit)
+          ELSE 0
+        END AS credit
+      FROM (
+        SELECT
+          l.account_code,
+          l.account_title AS account_name,
+          COALESCE(l.debit, 0) AS debit,
+          COALESCE(l.credit, 0) AS credit
+        FROM apv_lines l
+        JOIN apv_headers h ON h.id = l.apv_id
+        ${dateFilterAPV}
+
+        UNION ALL
+
+        SELECT
+          l.account_code,
+          l.account_title AS account_name,
+          COALESCE(l.debit, 0) AS debit,
+          COALESCE(l.credit, 0) AS credit
+        FROM cv_lines l
+        JOIN cv_headers h ON h.id = l.cv_id
+        ${dateFilterCV}
+
+        UNION ALL
+
+        SELECT
+          l.account_code,
+          l.account_title AS account_name,
+          COALESCE(l.debit, 0) AS debit,
+          COALESCE(l.credit, 0) AS credit
+        FROM arap_beginning_balance_lines l
+        JOIN arap_beginning_balance_headers h ON h.id = l.header_id
+        ${dateFilterARAP}
+      ) tb
+      LEFT JOIN chart_of_accounts c 
+  ON TRIM(CAST(c.code AS CHAR)) = TRIM(CAST(tb.account_code AS CHAR))
+      WHERE tb.account_code IS NOT NULL
+        AND tb.account_code != ''
+      GROUP BY tb.account_code, tb.account_name, c.account_class
+      HAVING debit != 0 OR credit != 0
+      ORDER BY tb.account_code ASC
+      `,
+      params
+    );
+
+    res.json(rows);
+  } catch (err) {
+    console.error("TRIAL BALANCE REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate trial balance",
+      error: err.message,
+    });
+  }
+});
+
+// ====================== ACCOUNT ANALYSIS REPORT =================
+
+app.get("/api/reports/account-analysis", async (req, res) => {
+  try {
+    const { from, to, accountCode } = req.query;
+
+    if (!accountCode) {
+      return res.status(400).json({ message: "Account code is required" });
+    }
+
+    const params = [
+      accountCode,
+      from,
+      to,
+
+      accountCode,
+      from,
+      to,
+
+      accountCode,
+      from,
+      to,
+    ];
+
+    const [rows] = await pool.execute(
+      `
+      SELECT
+        transaction_date,
+        source_type,
+        reference_no,
+        account_code,
+        account_title,
+        particulars,
+        debit,
+        credit,
+        SUM(debit - credit) OVER (
+          ORDER BY transaction_date, sort_order, id
+        ) AS running_balance
+      FROM (
+        SELECT
+          l.id,
+          DATE_FORMAT(h.transaction_date, '%Y-%m-%d') AS transaction_date,
+          'APV' AS source_type,
+          h.voucher_no AS reference_no,
+          l.account_code,
+          l.account_title,
+          COALESCE(l.particulars, h.description, '') AS particulars,
+          COALESCE(l.debit, 0) AS debit,
+          COALESCE(l.credit, 0) AS credit,
+          1 AS sort_order
+        FROM apv_lines l
+        JOIN apv_headers h ON h.id = l.apv_id
+        WHERE l.account_code = ?
+          AND h.transaction_date BETWEEN ? AND ?
+
+        UNION ALL
+
+        SELECT
+          l.id,
+          DATE_FORMAT(h.transaction_date, '%Y-%m-%d') AS transaction_date,
+          'CV' AS source_type,
+          h.voucher_no AS reference_no,
+          l.account_code,
+          l.account_title,
+          COALESCE(l.particulars, h.description, '') AS particulars,
+          COALESCE(l.debit, 0) AS debit,
+          COALESCE(l.credit, 0) AS credit,
+          2 AS sort_order
+        FROM cv_lines l
+        JOIN cv_headers h ON h.id = l.cv_id
+        WHERE l.account_code = ?
+          AND h.transaction_date BETWEEN ? AND ?
+
+        UNION ALL
+
+        SELECT
+          l.id,
+          DATE_FORMAT(h.balance_date, '%Y-%m-%d') AS transaction_date,
+          h.balance_type AS source_type,
+          l.reference_no AS reference_no,
+          l.account_code,
+          l.account_title,
+          COALESCE(l.party_name, '') AS particulars,
+          COALESCE(l.debit, 0) AS debit,
+          COALESCE(l.credit, 0) AS credit,
+          3 AS sort_order
+        FROM arap_beginning_balance_lines l
+        JOIN arap_beginning_balance_headers h ON h.id = l.header_id
+        WHERE l.account_code = ?
+          AND h.balance_date BETWEEN ? AND ?
+      ) aa
+      ORDER BY transaction_date, sort_order, id
+      `,
+      params
+    );
+
+    res.json(rows);
+  } catch (err) {
+    console.error("ACCOUNT ANALYSIS REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate account analysis",
+      error: err.message,
+    });
+  }
+});
+
+// ====================== INCOME STATEMENT REPORT ======================
+
+app.get("/api/reports/income-statement", async (req, res) => {
+  try {
+    const { from, to } = req.query;
+
+    const params = [from, to, from, to, from, to, from, to];
+
+    const [rows] = await pool.execute(
+      `
+      SELECT
+        ag.group_description AS group_name,
+        ca.code AS account_code,
+        ca.title AS account_title,
+        ca.account_class,
+        COALESCE(SUM(tx.credit - tx.debit), 0) AS amount
+      FROM chart_of_accounts ca
+      JOIN coa_groups cg ON cg.coa_id = ca.id
+      JOIN account_group_codes ag ON ag.group_code = cg.group_code
+      LEFT JOIN (
+        SELECT
+          l.account_code,
+          COALESCE(l.debit, 0) AS debit,
+          COALESCE(l.credit, 0) AS credit
+        FROM apv_lines l
+        JOIN apv_headers h ON h.id = l.apv_id
+        WHERE h.transaction_date BETWEEN ? AND ?
+
+        UNION ALL
+
+        SELECT
+          l.account_code,
+          COALESCE(l.debit, 0) AS debit,
+          COALESCE(l.credit, 0) AS credit
+        FROM cv_lines l
+        JOIN cv_headers h ON h.id = l.cv_id
+        WHERE h.transaction_date BETWEEN ? AND ?
+
+        UNION ALL
+
+          SELECT
+  l.account_code,
+  COALESCE(l.othrdebit, 0) AS debit,
+  COALESCE(l.othrcredit, 0) AS credit
+FROM gl_beginning_balance_lines l
+JOIN gl_beginning_balance_headers h ON h.id = l.header_id
+WHERE h.balance_date BETWEEN ? AND ?
+
+        UNION ALL
+
+        SELECT
+          l.account_code,
+          COALESCE(l.debit, 0) AS debit,
+          COALESCE(l.credit, 0) AS credit
+        FROM arap_beginning_balance_lines l
+        JOIN arap_beginning_balance_headers h ON h.id = l.header_id
+        WHERE h.balance_date BETWEEN ? AND ?
+      ) tx ON TRIM(tx.account_code) = TRIM(ca.code)
+      WHERE UPPER(ag.group_description) IN ('REVENUE', 'EXPENSES', 'EXPENSE')
+         OR UPPER(ca.account_class) IN ('INCOME', 'EXPENSE')
+      GROUP BY
+        ag.group_description,
+        ca.code,
+        ca.title,
+        ca.account_class
+      ORDER BY
+        CASE
+          WHEN UPPER(ag.group_description) = 'REVENUE' THEN 1
+          WHEN UPPER(ca.account_class) = 'INCOME' THEN 1
+          WHEN UPPER(ag.group_description) IN ('EXPENSES', 'EXPENSE') THEN 2
+          WHEN UPPER(ca.account_class) = 'EXPENSE' THEN 2
+          ELSE 9
+        END,
+        ca.code ASC
+      `,
+      params
+    );
+
+    res.json(rows);
+  } catch (err) {
+    console.error("INCOME STATEMENT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate income statement",
+      error: err.message,
+    });
+  }
+});
+
+
+// ====================== BALANCE SHEET REPORT ======================
+
+app.get("/api/reports/balance-sheet", async (req, res) => {
+  try {
+    const { to } = req.query;
+
+    const params = [to, to, to, to];
+
+    const [rows] = await pool.execute(
+      `
+      SELECT
+        ag.group_description AS group_name,
+        ca.code AS account_code,
+        ca.title AS account_title,
+        ca.account_class,
+        CASE
+          WHEN UPPER(ca.account_class) = 'ASSET'
+            THEN COALESCE(SUM(tx.debit - tx.credit), 0)
+          ELSE COALESCE(SUM(tx.credit - tx.debit), 0)
+        END AS amount
+      FROM chart_of_accounts ca
+      JOIN coa_groups cg ON cg.coa_id = ca.id
+      JOIN account_group_codes ag ON ag.group_code = cg.group_code
+      LEFT JOIN (
+        SELECT
+          l.account_code,
+          COALESCE(l.debit, 0) AS debit,
+          COALESCE(l.credit, 0) AS credit
+        FROM apv_lines l
+        JOIN apv_headers h ON h.id = l.apv_id
+        WHERE h.transaction_date <= ?
+
+        UNION ALL
+
+        SELECT
+          l.account_code,
+          COALESCE(l.debit, 0) AS debit,
+          COALESCE(l.credit, 0) AS credit
+        FROM cv_lines l
+        JOIN cv_headers h ON h.id = l.cv_id
+        WHERE h.transaction_date <= ?
+
+        UNION ALL
+
+        SELECT
+  l.account_code,
+  COALESCE(l.othrdebit, 0) AS debit,
+  COALESCE(l.othrcredit, 0) AS credit
+FROM gl_beginning_balance_lines l
+JOIN gl_beginning_balance_headers h ON h.id = l.header_id
+WHERE h.balance_date <= ?
+
+        UNION ALL
+
+        SELECT
+          l.account_code,
+          COALESCE(l.debit, 0) AS debit,
+          COALESCE(l.credit, 0) AS credit
+        FROM arap_beginning_balance_lines l
+        JOIN arap_beginning_balance_headers h ON h.id = l.header_id
+        WHERE h.balance_date <= ?
+      ) tx ON TRIM(tx.account_code) = TRIM(ca.code)
+      WHERE UPPER(ag.group_description) IN ('ASSETS', 'ASSET', 'LIABILITIES', 'LIABILITY', 'EQUITY', 'CAPITAL')
+         OR UPPER(ca.account_class) IN ('ASSET', 'LIABILITY', 'LIABILITIES', 'EQUITY', 'CAPITAL')
+      GROUP BY
+        ag.group_description,
+        ca.code,
+        ca.title,
+        ca.account_class
+      ORDER BY
+        CASE
+          WHEN UPPER(ag.group_description) IN ('ASSETS', 'ASSET') THEN 1
+          WHEN UPPER(ag.group_description) IN ('LIABILITIES', 'LIABILITY') THEN 2
+          WHEN UPPER(ag.group_description) IN ('EQUITY', 'CAPITAL') THEN 3
+          ELSE 9
+        END,
+        ca.code ASC
+      `,
+      params
+    );
+
+    res.json(rows);
+  } catch (err) {
+    console.error("BALANCE SHEET ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate balance sheet",
+      error: err.message,
+    });
+  }
+});
+
 // ===================== SERVER START =====================
+
 
 app.listen(8080, () => {
   console.log("Server running on port 8080");

@@ -13,13 +13,41 @@ export default function Login() {
 
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [loginSuccessAnim, setLoginSuccessAnim] = useState(false);
+
+  const [bubbleStates, setBubbleStates]= useState({
+    APV: false,
+    COA: false,
+    Reports: false,
+  });
+
+  const canLogin = form.username.trim() && form.password.trim();
 
   function handleChange(e) {
     const { name, value, type, checked } = e.target;
+
     setForm((prev) => ({
       ...prev,
       [name]: type === "checkbox" ? checked : value,
     }));
+  }
+
+  function handleBubbleClick(name) {
+    setBubbleStates((prev) => ({
+      ...prev,
+      [name]: true,
+    }));
+
+    setTimeout(() => {
+      setBubbleStates((prev) => ({
+        ...prev,
+        [name]: false,
+      }));
+    }, 5000);
+  }
+
+  function getBubbleClass(name) {
+    return bubbleStates[name] ? "bubble-pop-three" : "";
   }
 
   async function handleSubmit(e) {
@@ -52,8 +80,11 @@ export default function Login() {
         return;
       }
 
-      alert(data.message || "Login successful");
-      navigate("/dashboard");
+      setLoginSuccessAnim(true);
+
+      setTimeout(() => {
+        navigate("/dashboard");
+      }, 900);
     } catch (error) {
       console.error("LOGIN ERROR:", error);
       alert("Unable to connect to the server.");
@@ -63,70 +94,60 @@ export default function Login() {
   }
 
   return (
-    <div className="login-page">
-      <div className="login-overlay" />
+    <div className={`login-page ${loginSuccessAnim ? "login-success" : ""}`}>
+      <div className="login-bg-glow glow-one"></div>
+      <div className="login-bg-glow glow-two"></div>
 
-      <div className="login-container">
+      <div className="login-shell">
         <div className="login-left">
-          <div className="login-brand">AstreaBlue</div>
-          <h1 className="login-heading">Welcome back</h1>
-          <p className="login-subtext">
-            Sign in to continue managing your accounting transactions,
-            vouchers, and reports.
-          </p>
-
-          <div className="login-feature-box">
-            <div className="login-feature-title">Accounting System</div>
-            <div className="login-feature-text">
-              Secure access to vouchers, journal entries, ledgers, and reports.
-            </div>
-          </div>
-        </div>
-
-        <div className="login-right">
           <form className="login-card" onSubmit={handleSubmit}>
-            <h2 className="login-card-title">Sign In</h2>
-            <p className="login-card-subtitle">
-              Enter your account credentials below
-            </p>
+            <div className="login-logo-wrap">
+              <img
+                src="/all_image/astrea-logo.png"
+                alt="AstreaBlue"
+                className="login-logo"
+              />
+            </div>
+
+            <h1>Sign in</h1>
+            <p className="login-subtitle">Access your accounting system</p>
 
             <div className="login-field">
-              <label className="login-label">Username</label>
+              <span className="field-icon">👤</span>
               <input
                 type="text"
                 name="username"
                 value={form.username}
                 onChange={handleChange}
-                placeholder="Enter your username"
-                className="login-input"
+                placeholder="Username"
+                autoComplete="username"
                 required
               />
             </div>
 
             <div className="login-field">
-              <label className="login-label">Password</label>
-              <div className="login-password-wrap">
-                <input
-                  type={showPassword ? "text" : "password"}
-                  name="password"
-                  value={form.password}
-                  onChange={handleChange}
-                  placeholder="Enter your password"
-                  className="login-input"
-                  required
-                />
-                <button
-                  type="button"
-                  className="login-show-btn"
-                  onClick={() => setShowPassword((prev) => !prev)}
-                >
-                  {showPassword ? "Hide" : "Show"}
-                </button>
-              </div>
+              <span className="field-icon">🔒</span>
+              <input
+                type={showPassword ? "text" : "password"}
+                name="password"
+                value={form.password}
+                onChange={handleChange}
+                placeholder="Password"
+                autoComplete="current-password"
+                required
+              />
+
+              <button
+                type="button"
+                className="password-eye"
+                onClick={() => setShowPassword((prev) => !prev)}
+              >
+                {showPassword ? "🙈" : "👁"}
+              </button>
             </div>
 
             <div className="login-options">
-              <label className="login-checkbox-wrap">
+              <label>
                 <input
                   type="checkbox"
                   name="remember"
@@ -136,19 +157,102 @@ export default function Login() {
                 <span>Remember me</span>
               </label>
 
-              <button type="button" className="login-link-btn">
-                Forgot password?
-              </button>
+              <button type="button">Forgot password?</button>
             </div>
 
-            <button type="submit" className="login-submit-btn" disabled={loading}>
-              {loading ? "Logging in..." : "Login"}
-            </button>
+            {canLogin ? (
+              <button
+                type="submit"
+                className={`login-submit ${loading ? "is-loading" : ""}`}
+                disabled={loading}
+              >
+                <span>{loading ? "Signing in..." : "Sign In"}</span>
+                <i></i>
+              </button>
+            ) : (
+              <div className="login-placeholder">
+                Enter username and password to continue
+              </div>
+            )}
 
-            <div className="login-footer-text">
-              Protected system access for authorized users only
+            <div className="login-divider">
+              <span></span>
+              <p>Authorized users only</p>
+              <span></span>
             </div>
           </form>
+        </div>
+
+        <div className="login-right">
+          <button
+            type="button"
+            data-label="APV"
+            className={`floating-card card-one ${getBubbleClass("APV")}`}
+            onClick={() => handleBubbleClick("APV")}
+          >
+            APV
+          </button>
+
+          <button
+            type="button"
+            data-label="COA"
+            className={`floating-card card-two ${getBubbleClass("COA")}`}
+            onClick={() => handleBubbleClick("COA")}
+          >
+            COA
+          </button>
+
+          <button
+            type="button"
+            data-label="Reports"
+            className={`floating-card card-three ${getBubbleClass("Reports")}`}
+            onClick={() => handleBubbleClick("Reports")}
+          >
+            Reports
+          </button>
+
+          <div className="dashboard-graphic">
+            <div className="chart-card mini-card"></div>
+
+            <div className="main-graphic-card">
+              <div className="pie-chart">
+                <span></span>
+              </div>
+
+              <div className="line-list">
+                <span></span>
+                <span></span>
+                <span></span>
+              </div>
+
+              <div className="bar-chart">
+                <span></span>
+                <span></span>
+                <span></span>
+                <span></span>
+              </div>
+            </div>
+          </div>
+
+          <div className="right-content">
+            <h2>Accounting System</h2>
+            <p>Where Finance Meets Efficiency.</p>
+          </div>
+
+          <div className="feature-row">
+            <div>
+              <span>▣</span>
+              <p>Transactions</p>
+            </div>
+            <div>
+              <span>□</span>
+              <p>Vouchers</p>
+            </div>
+            <div>
+              <span>▤</span>
+              <p>Reports</p>
+            </div>
+          </div>
         </div>
       </div>
     </div>

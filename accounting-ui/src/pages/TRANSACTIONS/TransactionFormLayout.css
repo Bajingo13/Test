@@ -121,12 +121,12 @@
 }
 
 .transaction-add-button {
-  border: none;
-  background: #2563eb;
-  color: #fff;
+  border: 1px solid #d1d5db;
+  background: #fff;
+  color: #111827;
   height: 42px;
   padding: 0 16px;
-  border-radius: 12px;
+  border-radius: 10px;
   font-weight: 700;
   cursor: pointer;
 }
@@ -134,33 +134,45 @@
 .transaction-table-container {
   overflow-x: auto;
   width: 100%;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
 }
 
 .transaction-table {
   width: 100%;
   border-collapse: collapse;
+  border-spacing: 0;
   min-width: 1000px;
 }
 
 .transaction-table th {
-  text-align: left;
+  text-align: center;
   background: #f9fafb;
-  color: #6b7280;
+  color: #374151;
   font-size: 13px;
-  padding: 12px;
-  border-bottom: 1px solid #e5e7eb;
+  padding: 14px 10px;
+  border: 1px solid #e5e7eb;
 }
 
 .transaction-table td {
-  padding: 10px 12px;
-  border-bottom: 1px solid #f1f5f9;
+  padding: 0;
+  border: 1px solid #e5e7eb;
+  vertical-align: middle;
 }
 
 .transaction-table-input {
   width: 100%;
   height: 42px;
-  border-radius: 10px;
+  border: none;
+  border-radius: 0;
   padding: 0 12px;
+  background: transparent;
+  display: block;
+}
+
+.transaction-table-input:focus {
+  background: #f8fafc;
+  outline: none;
 }
 
 .transaction-table-input-right {
@@ -168,12 +180,11 @@
 }
 
 .transaction-remove-button {
-  border: 1px solid #fecaca;
-  background: #fff1f2;
-  color: #b91c1c;
-  height: 38px;
-  padding: 0 12px;
-  border-radius: 10px;
+  width: 100%;
+  height: 42px;
+  border: none;
+  background: transparent;
+  color: #ef4444;
   font-weight: 700;
   cursor: pointer;
 }
@@ -183,27 +194,18 @@
   cursor: not-allowed;
 }
 
-.transaction-total-label {
+.transaction-total-label,
+.transaction-total-amount,
+.transaction-total-status {
   text-align: right;
-  padding: 14px 12px;
+  padding: 12px;
   font-weight: 700;
   background: #f9fafb;
-  border-top: 1px solid #e5e7eb;
-}
-
-.transaction-total-amount {
-  text-align: right;
-  padding: 14px 12px;
-  font-weight: 700;
-  background: #f9fafb;
-  border-top: 1px solid #e5e7eb;
+  border: 1px solid #e5e7eb;
 }
 
 .transaction-total-status {
   text-align: center;
-  padding: 14px 12px;
-  background: #f9fafb;
-  border-top: 1px solid #e5e7eb;
 }
 
 .transaction-balance-badge {
@@ -257,11 +259,113 @@
   height: 46px;
   border-radius: 12px;
   border: none;
-  background: #111827;
+  background: #0f2a5f;
   color: #fff;
   padding: 0 18px;
   font-weight: 700;
   cursor: pointer;
+}
+
+.transaction-list-toolbar {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 18px;
+  flex-wrap: wrap;
+}
+
+.transaction-list-toolbar .transaction-input {
+  max-width: 280px;
+}
+
+.transaction-empty {
+  text-align: center;
+  padding: 40px 12px;
+  color: #6b7280;
+  font-weight: 600;
+}
+
+.transaction-view-button {
+  border: none;
+  background: #eff6ff;
+  color: #2563eb;
+  height: 36px;
+  padding: 0 12px;
+  border-radius: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.transaction-status-badge {
+  display: inline-block;
+  padding: 7px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.transaction-status-badge.draft {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.transaction-status-badge.posted {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.transaction-status-badge.cancelled {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.transaction-form-top-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.print-dropdown {
+  position: relative;
+  display: inline-block;
+}
+
+.print-dropdown-menu {
+  display: none;
+  position: absolute;
+  right: 0;
+  bottom: 52px;
+  min-width: 200px;
+  background: #fff;
+  border: 1px solid #d1d5db;
+  border-radius: 12px;
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.16);
+  overflow: hidden;
+  z-index: 50;
+}
+
+.transaction-form-top-actions .print-dropdown-menu {
+  top: 52px;
+  bottom: auto;
+}
+
+.print-dropdown:hover .print-dropdown-menu {
+  display: block;
+}
+
+.print-dropdown-menu button {
+  width: 100%;
+  border: none;
+  background: #fff;
+  padding: 12px 14px;
+  text-align: left;
+  font-weight: 700;
+  cursor: pointer;
+  color: #374151;
+}
+
+.print-dropdown-menu button:hover {
+  background: #f3f4f6;
 }
 
 .text-right {
@@ -270,4 +374,403 @@
 
 .text-center {
   text-align: center !important;
+}
+
+@media print {
+  @page {
+    size: A4 landscape;
+    margin: 8mm;
+  }
+
+  body {
+    background: #fff !important;
+    margin: 0 !important;
+    overflow: visible !important;
+  }
+
+  aside,
+  nav,
+  header,
+  .sidebar,
+  .main-sidebar,
+  .app-sidebar,
+  .layout-sidebar,
+  .side-menu,
+  .navbar,
+  .topbar,
+  .no-print,
+  .transaction-form-top-actions,
+  .transaction-bottom-bar,
+  .transaction-add-button,
+  .transaction-remove-button,
+  .transaction-status-pill,
+  .print-dropdown,
+  .apv-modal-overlay,
+  .transaction-apply-button,
+  .transaction-section-actions {
+    display: none !important;
+  }
+
+  .transaction-page {
+    padding: 0 !important;
+    margin: 0 !important;
+    background: #fff !important;
+    font-family: "Courier New", monospace !important;
+  }
+
+  .transaction-page .transaction-wrapper {
+  width: 88% !important;
+  max-width: 88% !important;
+  margin: 0 auto !important;
+}
+
+  .transaction-topbar {
+    display: block !important;
+    text-align: center !important;
+    margin-bottom: 14px !important;
+  }
+
+  .transaction-title {
+    color: #000 !important;
+    font-size: 22px !important;
+    font-weight: 900 !important;
+    text-align: center !important;
+    text-decoration: underline !important;
+    text-transform: uppercase !important;
+    margin: 0 !important;
+    font-family: "Times New Roman", serif !important;
+  }
+
+  .transaction-title::before {
+    content: "ASTREABLUE ACCOUNTING SYSTEM";
+    display: block;
+    font-size: 21px;
+    font-weight: 900;
+    margin-bottom: 4px;
+    letter-spacing: 1px;
+  }
+
+  .transaction-subtitle {
+    display: none !important;
+  }
+
+  .transaction-card {
+    box-shadow: none !important;
+    border: none !important;
+    border-radius: 0 !important;
+    padding: 0 !important;
+    margin-bottom: 10px !important;
+    background: #fff !important;
+  }
+
+  .transaction-grid {
+    display: grid !important;
+    grid-template-columns: 28% 23% 23% 26% !important;
+    gap: 0 !important;
+    border-top: 2px solid #000 !important;
+    border-bottom: 2px solid #000 !important;
+  }
+
+  .transaction-field {
+    border-right: 1px solid #000 !important;
+    padding: 8px 12px !important;
+    min-height: 55px !important;
+  }
+
+  .transaction-field:last-child {
+    border-right: none !important;
+  }
+
+  .transaction-label {
+    color: #000 !important;
+    font-size: 11px !important;
+    font-weight: 900 !important;
+    text-transform: uppercase !important;
+    margin-bottom: 6px !important;
+  }
+
+  .transaction-input,
+  .transaction-textarea,
+  .transaction-table-input {
+    border: none !important;
+    background: transparent !important;
+    padding: 0 !important;
+    color: #000 !important;
+    font-size: 12px !important;
+    font-family: "Courier New", monospace !important;
+    appearance: none !important;
+    -webkit-appearance: none !important;
+  }
+
+  select.transaction-table-input {
+    appearance: none !important;
+    -webkit-appearance: none !important;
+    background-image: none !important;
+  }
+
+  .transaction-memo-wrap {
+    border-bottom: 2px solid #000 !important;
+    padding: 8px 12px 30px !important;
+    margin: 0 !important;
+  }
+
+  .transaction-memo-wrap .transaction-label::after {
+    content: " :";
+  }
+
+  .transaction-textarea {
+    min-height: 40px !important;
+    resize: none !important;
+    overflow: hidden !important;
+  }
+
+  .transaction-section-header {
+    display: none !important;
+  }
+
+  .transaction-table-container {
+    width: 100% !important;
+    border: none !important;
+    overflow: visible !important;
+    margin-top: 20px !important;
+  }
+
+  .transaction-table {
+    width: 100% !important;
+    min-width: 0 !important;
+    table-layout: fixed !important;
+    border-collapse: collapse !important;
+    font-family: "Courier New", monospace !important;
+    font-size: 10.5px !important;
+  }
+
+  .transaction-table th,
+  .transaction-table td {
+    color: #000 !important;
+    overflow: hidden !important;
+    white-space: normal !important;
+    word-break: break-word !important;
+  }
+
+  .transaction-table th {
+    background: #fff !important;
+    border-top: 2px solid #000 !important;
+    border-bottom: 2px solid #000 !important;
+    border-left: none !important;
+    border-right: none !important;
+    padding: 6px 4px !important;
+    text-transform: uppercase !important;
+    text-align: center !important;
+    font-weight: 900 !important;
+  }
+
+  .transaction-table td {
+    border: none !important;
+    padding: 8px 4px !important;
+    vertical-align: top !important;
+  }
+
+  .transaction-table th:nth-child(1),
+  .transaction-table td:nth-child(1) {
+    width: 28% !important;
+  }
+
+  .transaction-table th:nth-child(2),
+  .transaction-table td:nth-child(2) {
+    width: 22% !important;
+  }
+
+  .transaction-table th:nth-child(3),
+  .transaction-table td:nth-child(3) {
+    width: 13% !important;
+  }
+
+  .transaction-table th:nth-child(4),
+  .transaction-table td:nth-child(4) {
+    width: 15% !important;
+  }
+
+  .transaction-table th:nth-child(5),
+  .transaction-table td:nth-child(5),
+  .transaction-table th:nth-child(6),
+  .transaction-table td:nth-child(6) {
+    width: 11% !important;
+    text-align: right !important;
+    white-space: nowrap !important;
+  }
+
+  .transaction-table th:nth-child(7),
+  .transaction-table td:nth-child(7) {
+    display: none !important;
+  }
+
+  .transaction-table-input-right {
+    text-align: right !important;
+  }
+
+  .transaction-total-label {
+    background: #fff !important;
+    border: none !important;
+    text-align: right !important;
+    padding-right: 10px !important;
+    font-weight: 900 !important;
+  }
+
+  .transaction-total-amount {
+    background: #fff !important;
+    border: none !important;
+    color: #000 !important;
+    text-align: right !important;
+    white-space: nowrap !important;
+    font-weight: 900 !important;
+  }
+
+  .transaction-total-status {
+    display: none !important;
+  }
+}
+
+
+/* ===================== APV APPLICATION MODAL FOR CV ===================== */
+.transaction-section-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.transaction-apply-button {
+  border: none;
+  background: #0f766e;
+  color: #fff;
+  height: 42px;
+  padding: 0 16px;
+  border-radius: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.transaction-apply-button:hover {
+  background: #0d665f;
+}
+
+.apv-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 999;
+}
+
+.apv-modal {
+  width: min(1100px, 96vw);
+  max-height: 86vh;
+  background: #ffffff;
+  border-radius: 18px;
+  box-shadow: 0 28px 70px rgba(15, 23, 42, 0.32);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.apv-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 22px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.apv-modal-header h2 {
+  margin: 0;
+  font-size: 24px;
+  color: #111827;
+}
+
+.apv-modal-header p {
+  margin: 6px 0 0;
+  color: #6b7280;
+  font-size: 14px;
+}
+
+.apv-modal-close {
+  border: none;
+  background: #f3f4f6;
+  color: #111827;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.apv-modal-table-wrap {
+  overflow: auto;
+  padding: 16px 22px;
+}
+
+.apv-modal-table {
+  width: 100%;
+  min-width: 900px;
+  border-collapse: collapse;
+  border: 1px solid #e5e7eb;
+}
+
+.apv-modal-table th {
+  background: #f9fafb;
+  color: #374151;
+  font-size: 13px;
+  padding: 12px 10px;
+  border: 1px solid #e5e7eb;
+  text-align: left;
+}
+
+.apv-modal-table td {
+  border: 1px solid #e5e7eb;
+  padding: 10px;
+  font-size: 14px;
+}
+
+.apv-payment-input {
+  width: 100%;
+  height: 36px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 0 10px;
+  text-align: right;
+  box-sizing: border-box;
+}
+
+.apv-payment-input:disabled {
+  background: #f3f4f6;
+  color: #9ca3af;
+}
+
+.apv-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 16px 22px;
+  border-top: 1px solid #e5e7eb;
+  background: #f9fafb;
+}
+
+.apv-modal-total {
+  margin-right: auto;
+  font-weight: 800;
+  color: #111827;
+}
+
+@media screen {
+  .transaction-page .transaction-wrapper {
+    width: 100%;
+    max-width: 1400px;
+    margin: 0 auto;
+  }
 }
