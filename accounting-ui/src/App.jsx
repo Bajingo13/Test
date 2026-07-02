@@ -32,7 +32,7 @@ import JournalEntry from "./pages/TRANSACTIONS/JournalEntry";
 import PettyCashVoucher from "./pages/TRANSACTIONS/PettyCashVoucher";
 import DebitCreditMemo from "./pages/TRANSACTIONS/DebitCreditMemo";
 import PurchaseOrder from "./pages/TRANSACTIONS/PurchaseOrder";
-import PettyCashVoucher from "./pages/TRANSACTIONS/PettyCashVoucher";
+
 
 // REPORTS
 import ReportPage from "./pages/REPORTS/ReportPage";
