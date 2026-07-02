@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
-import Sidebar from "./components/Sidebar/sidebar";
+import Sidebar from "./components/sidebar/sidebar";
 import Dashboard from "./pages/DASHBOARD/dashboard";
 import COA from "./pages/FILESETUP/COA";
 import GenLib from "./pages/FILESETUP/GenLib";
@@ -32,6 +32,7 @@ import JournalEntry from "./pages/TRANSACTIONS/JournalEntry";
 import PettyCashVoucher from "./pages/TRANSACTIONS/PettyCashVoucher";
 import DebitCreditMemo from "./pages/TRANSACTIONS/DebitCreditMemo";
 import PurchaseOrder from "./pages/TRANSACTIONS/PurchaseOrder";
+import PettyCashVoucher from "./pages/TRANSACTIONS/PettyCashVoucher";
 
 // REPORTS
 import ReportPage from "./pages/REPORTS/ReportPage";
@@ -39,6 +40,8 @@ import TrialBalance from "./pages/REPORTS/TrialBalance";
 import AccountAnalysis from "./pages/REPORTS/AccountAnalysis";
 import { IncomeStatement } from "./pages/REPORTS/IncomeStatement.jsx";
 import BalanceSheet from "./pages/REPORTS/BalanceSheet.jsx";
+import BankReconciliation from "./pages/REPORTS/BankReconciliation.jsx";
+import ComparativeIncomeStatement from "./pages/REPORTS/ComparativeIncomeStatement.jsx";
 
 function PlaceholderPage({ title }) {
   return (
