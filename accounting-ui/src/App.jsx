@@ -2,25 +2,25 @@ import { useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import Sidebar from "./components/Sidebar/Sidebar";
 import Dashboard from "./pages/Dashboard/Dashboard";
-import COA from "./pages/Filesetup/COA";
-import GenLib from "./pages/Filesetup/GenLib";
-import GroupCodes from "./pages/Filesetup/GroupCodes";
+import COA from "./pages/FILESETUP/COA";
+import GenLib from "./pages/FILESETUP/GenLib";
+import GroupCodes from "./pages/FILESETUP/GroupCodes";
 import Login from "./pages/login/login";
 
 // FILE SETUP
-import Industry from "./pages/Filesetup/Industry";
-import CategoryCode from "./pages/Filesetup/CategoryCode";
-import BeginningBalance from "./pages/Filesetup/BeginningBalance";
-import BeginningBalanceGL from "./pages/Filesetup/BeginningBalanceGL";
-import BeginningBalanceAR from "./pages/Filesetup/BeginningBalanceAR";
-import BeginningBalanceAP from "./pages/Filesetup/BeginningBalanceAP";
-import BookTemplate from "./pages/Filesetup/BookTemplate";
-import ParticularsTemplate from "./pages/Filesetup/ParticularsTemplate";
-import BankCodes from "./pages/Filesetup/BankCodes";
-import TransactionSetup from "./pages/Filesetup/TransactionSetup";
-import AdditionalFileSetup from "./pages/Filesetup/AdditionalFileSetup";
-import TaxFileSetup from "./pages/Filesetup/TaxFileSetup";
-import EWTLibrary from "./pages/Filesetup/EWTLibrary";
+import Industry from "./pages/FILESETUP/Industry";
+import CategoryCode from "./pages/FILESETUP/CategoryCode";
+import BeginningBalance from "./pages/FILESETUP/BeginningBalance";
+import BeginningBalanceGL from "./pages/FILESETUP/BeginningBalanceGL";
+import BeginningBalanceAR from "./pages/FILESETUP/BeginningBalanceAR";
+import BeginningBalanceAP from "./pages/FILESETUP/BeginningBalanceAP";
+import BookTemplate from "./pages/FILESETUP/BookTemplate";
+import ParticularsTemplate from "./pages/FILESETUP/ParticularsTemplate";
+import BankCodes from "./pages/FILESETUP/BankCodes";
+import TransactionSetup from "./pages/FILESETUP/TransactionSetup";
+import AdditionalFileSetup from "./pages/FILESETUP/AdditionalFileSetup";
+import TaxFileSetup from "./pages/FILESETUP/TaxFileSetup";
+import EWTLibrary from "./pages/FILESETUP/EWTLibrary";
 
 
 // TRANSACTIONS
