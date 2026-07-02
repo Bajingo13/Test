@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
-import Sidebar from "./components/Sidebar/Sidebar";
-import Dashboard from "./pages/Dashboard/Dashboard";
+import Sidebar from "./components/Sidebar/sidebar";
+import Dashboard from "./pages/DASHBOARD/dashboard";
 import COA from "./pages/FILESETUP/COA";
 import GenLib from "./pages/FILESETUP/GenLib";
 import GroupCodes from "./pages/FILESETUP/GroupCodes";

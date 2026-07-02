@@ -50,7 +50,6 @@ export default function Sidebar({ sidebarOpen, setSidebarOpen }) {
     { name: "Bank Reconciliation", path: "/reports/bank-reconciliation" },
     { name: "Balance Sheet", path: "/reports/balance-sheet" },
     { name: "Income Statement", path: "/reports/income-statement" },
-    { name: "Aging Report", path: "/reports/aging-report" },
     { name: "Cash Flow Statement", path: "/reports/cash-flow-statement" },
     { name: "General Ledger", path: "/reports/general-ledger" },
     { name: "Subsidiary Ledger", path: "/reports/subsidiary-ledger" },
@@ -60,6 +59,11 @@ export default function Sidebar({ sidebarOpen, setSidebarOpen }) {
     { name: "output vat report", path: "/reports/output-vat-report" },
 
   ];
+
+  const agingReportItems = [
+  { name: "AR-Aging", path: "/reports/ar-aging" },
+  { name: "AP-Aging", path: "/reports/ap-aging" },
+];
 
   const isBeginningBalanceActive = beginningBalanceItems.some(
     (item) => location.pathname === item.path
