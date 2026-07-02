@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import "./dashboard.css";
+import "./Dashboard.css";
 
 const STORAGE_KEY = "astrea_ai_dashboard_widgets";
 
