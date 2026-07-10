@@ -42,6 +42,8 @@ import { IncomeStatement } from "./pages/REPORTS/IncomeStatement.jsx";
 import BalanceSheet from "./pages/REPORTS/BalanceSheet.jsx";
 import BankReconciliation from "./pages/REPORTS/BankReconciliation.jsx";
 import ComparativeIncomeStatement from "./pages/REPORTS/ComparativeIncomeStatement.jsx";
+import ARAgingReport from "./pages/REPORTS/ARAging.jsx";
+import APAgingReport from "./pages/REPORTS/APAging.jsx";
 
 function PlaceholderPage({ title }) {
   return (
@@ -122,6 +124,8 @@ function AppLayout() {
           <Route path="/reports/bank-reconciliation" element={<ReportPage title="Bank Reconciliation" />} />
           <Route path="/reports/balance-sheet" element={<BalanceSheet />} />
           <Route path="/reports/income-statement" element={<IncomeStatement />} />
+          <Route path="/reports/ar-aging" element={<ARAgingReport />} />
+          <Route path="/reports/ap-aging" element={<APAgingReport />} />
 
           <Route
   path="/beginning-balances/gl"

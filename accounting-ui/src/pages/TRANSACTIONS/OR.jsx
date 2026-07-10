@@ -19,7 +19,7 @@ export default function OR() {
         {
           id: crypto.randomUUID(),
           accountId: "",
-          particulars: "Revenue / Receivable",
+          particulars: "Accounts Receivable",
           debit: "",
           credit: "",
         },

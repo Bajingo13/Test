@@ -40,6 +40,10 @@ export default function TransactionFormLayout({
   const [showApvModal, setShowApvModal] = useState(false);
   const [apvApplications, setApvApplications] = useState([]);
 
+  const [invoiceApplications, setInvoiceApplications] = useState([]);
+  const [unpaidInvoices, setUnpaidInvoices] = useState([]);
+  const [showInvoiceModal, setShowInvoiceModal] = useState(false);
+
   const [form, setForm] = useState({
     date: new Date().toISOString().split("T")[0],
     referenceNo: "",
@@ -201,6 +205,35 @@ export default function TransactionFormLayout({
         credentials: "include",
       }
     );
+
+    async function loadUnpaidInvoices() {
+  try {
+    const customerId = form.partyId;
+    const customerName = form.party;
+
+    const query = new URLSearchParams();
+
+    if (customerId) {
+      query.append("customerId", customerId);
+    } else if (customerName) {
+      query.append("customerName", customerName);
+    }
+
+    const res = await fetch(
+      `${API_BASE}/api/invoices/unpaid?${query.toString()}`,
+      {
+        credentials: "include",
+      }
+    );
+
+    const data = await res.json();
+
+    setUnpaidInvoices(Array.isArray(data) ? data : []);
+  } catch (err) {
+    console.error("LOAD UNPAID INVOICES ERROR:", err);
+    setUnpaidInvoices([]);
+  }
+}
 
     const data = await res.json();
 
@@ -401,17 +434,30 @@ export default function TransactionFormLayout({
       partyId: selectedParty ? selectedParty.id : null,
     }));
 
-    setLines((prev) =>
-      prev.map((line) => {
-        if (!isAPorARAccount(line.accountId)) return line;
+   setLines((prev) =>
+  prev.map((line) => {
+    if (!isAPorARAccount(line.accountId)) return line;
 
-        return {
-          ...line,
-          genRef: selectedParty?.code || "",
-          genName: selectedParty?.name || value || "",
-        };
-      })
-    );
+    return {
+      ...line,
+      genRef: selectedParty?.code || "",
+      genName: selectedParty?.name || value || "",
+    };
+  })
+);
+
+// Load outstanding transactions depending on transaction type
+if (code === "CV") {
+  setTimeout(() => {
+    loadUnpaidApvs();
+  }, 50);
+}
+
+if (code === "OR") {
+  setTimeout(() => {
+    loadUnpaidInvoices();
+  }, 50);
+}
   }
 
   function updateLine(id, field, value) {
@@ -532,6 +578,95 @@ export default function TransactionFormLayout({
       return;
     }
 
+function toggleInvoiceApplication(invoice) {
+  setInvoiceApplications((prev) => {
+    const exists = prev.find(
+      (item) =>
+        Number(item.sourceId || item.invoiceId || item.id) === Number(invoice.id)
+    );
+
+    if (exists) {
+      return prev.filter(
+        (item) =>
+          Number(item.sourceId || item.invoiceId || item.id) !== Number(invoice.id)
+      );
+    }
+
+    return [
+      ...prev,
+      {
+        sourceType: invoice.sourceType || "INV",
+        sourceId: invoice.id,
+        invoiceId: invoice.id,
+        voucherNo: invoice.voucherNo,
+        customerName: invoice.customerName,
+        totalAmount: Number(invoice.totalAmount || 0),
+        paidAmount: Number(invoice.paidAmount || 0),
+        balanceAmount: Number(
+          invoice.balanceAmount || invoice.totalAmount || 0
+        ),
+        amount: Number(invoice.balanceAmount || invoice.totalAmount || 0),
+        applicationDate: form.date,
+      },
+    ];
+  });
+}
+
+function updateInvoiceApplicationAmount(invoiceId, value) {
+  setInvoiceApplications((prev) =>
+    prev.map((item) =>
+      Number(item.sourceId || item.invoiceId) === Number(invoiceId)
+        ? { ...item, amount: value }
+        : item
+    )
+  );
+}
+
+function applySelectedInvoicesToLines() {
+  if (invoiceApplications.length === 0) {
+    setShowInvoiceModal(false);
+    return;
+  }
+
+  const totalPayment = invoiceApplications.reduce(
+    (sum, item) => sum + Number(item.amount || 0),
+    0
+  );
+
+  const receivableLine = lines.find((line) =>
+    isAPorARAccount(line.accountId)
+  );
+
+  if (receivableLine) {
+    setLines((prev) =>
+      prev.map((line) => {
+        if (line.id !== receivableLine.id) return line;
+
+        const firstInvoice = invoiceApplications[0];
+
+        return {
+          ...line,
+          credit: String(totalPayment),
+          debit: "",
+          genRef:
+            firstInvoice?.voucherNo ||
+            firstInvoice?.genRef ||
+            line.genRef ||
+            "",
+          genName:
+            firstInvoice?.customerName ||
+            line.genName ||
+            "",
+        };
+      })
+    );
+  }
+
+  setShowInvoiceModal(false);
+}
+
+
+
     const totalPayment = apvApplications.reduce(
       (sum, item) => sum + Number(item.amount || 0),
       0
@@ -623,7 +758,7 @@ export default function TransactionFormLayout({
             ? apvApplications.map((item) => ({
                 sourceType: item.sourceType || "APV",
                 sourceId: Number(item.sourceId || item.apvId),
-                appliedType: "CV",
+                appliedType: "CV", 
                 amount: Number(item.amount || 0),
                 applicationDate: form.date,
               }))
@@ -647,7 +782,7 @@ export default function TransactionFormLayout({
         }
       );
 
-      const data = await res.json();
+      const data = await res.json();  
 
       if (!res.ok) {
         alert(data.message || "Failed to save transaction.");
@@ -1039,6 +1174,9 @@ export default function TransactionFormLayout({
               {error ? <div className="transaction-error-box">{error}</div> : null}
             </div>
 
+            
+// ===================== APV Modal =====================
+
             {showApvModal && (
               <div className="apv-modal-overlay">
                 <div className="apv-modal">
@@ -1156,6 +1294,126 @@ export default function TransactionFormLayout({
               </div>
             )}
 
+// ===================== INVOICE Modal =====================
+
+            {showApvModal && (
+              <div className="apv-modal-overlay">
+                <div className="apv-modal">
+                  <div className="apv-modal-header">
+                    <div>
+                      <h2>Outstanding APV</h2>
+                      <p>Select APV records to apply this Check Voucher payment.</p>
+                    </div>
+                    <button
+                      type="button"
+                      className="apv-modal-close"
+                      onClick={() => setShowApvModal(false)}
+                    >
+                      ×
+                    </button>
+                  </div>
+
+                  <div className="apv-modal-table-wrap">
+                    <table className="apv-modal-table">
+                      <thead>
+                        <tr>
+                          <th>Apply</th>
+                          <th>APV No.</th>
+                          <th>Supplier</th>
+                          <th className="text-right">Amount</th>
+                          <th className="text-right">Paid</th>
+                          <th className="text-right">Balance</th>
+                          <th className="text-right">Amount to Pay</th>
+                        </tr>
+                      </thead>
+
+                      <tbody>
+                        {unpaidApvs.length === 0 ? (
+  <tr>
+    <td colSpan="7" className="no-apv-message">
+      No Payables Have Been Setup
+    </td>
+  </tr>
+) : (
+                          unpaidApvs.map((apv) => {
+                            const selected = apvApplications.find(
+                              (item) => Number(item.sourceId || item.apvId) === Number(apv.id)
+                            );
+
+                            return (
+                              <tr key={apv.id}>
+                                <td className="text-center">
+                                  <input
+                                    type="checkbox"
+                                    checked={Boolean(selected)}
+                                    onChange={() => toggleApvApplication(apv)}
+                                  />
+                                </td>
+                                <td>{apv.voucherNo}</td>
+                                <td>{apv.supplierName}</td>
+                                <td className="text-right">₱ {formatMoney(apv.totalAmount)}</td>
+                                <td className="text-right">₱ {formatMoney(apv.paidAmount)}</td>
+                                <td className="text-right">₱ {formatMoney(apv.balanceAmount)}</td>
+                                <td>
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    max={apv.balanceAmount}
+                                    step="0.01"
+                                    disabled={!selected}
+                                    value={selected?.amount || ""}
+                                    onChange={(e) =>
+                                      updateApvApplicationAmount(apv.id, e.target.value)
+                                    }
+                                    className="apv-payment-input"
+                                  />
+                                </td>
+                              </tr>
+                            );
+                          })
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div className="apv-modal-footer">
+                    <div className="apv-modal-total">
+                      Total Applied: ₱ {formatMoney(
+                        apvApplications.reduce(
+                          (sum, item) => sum + Number(item.amount || 0),
+                          0
+                        )
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      className="transaction-secondary-button"
+                      onClick={() => setShowApvModal(false)}
+                    >
+                      Cancel
+                    </button>
+                    <button
+  type="button"
+  className="transaction-primary-button"
+  onClick={() => {
+    if (unpaidApvs.length === 0) {
+      setShowApvModal(false);
+      handleSave("Posted");
+      return;
+    }
+
+    applySelectedApvsToLines();
+    setTimeout(() => handleSave("Posted"), 100);
+  }}
+>
+  Done
+</button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+
             <div className="transaction-bottom-bar no-print">
               <div className="print-dropdown">
                 <button type="button" className="transaction-secondary-button">
@@ -1194,3 +1452,4 @@ export default function TransactionFormLayout({
     </div>
   );
 }
+
