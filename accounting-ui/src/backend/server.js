@@ -1,7 +1,13 @@
+require("dotenv").config();
+
 const express = require("express");
 const cors = require("cors");
-const session = require("express-session");
 const pool = require("./db");
+const jwt = require("jsonwebtoken");
+const bcrypt = require("bcryptjs");
+
+console.log("ENV FILE:", require("path").resolve(".env"));
+console.log("JWT_SECRET loaded:", Boolean(process.env.JWT_SECRET));
 
 const app = express();
 
@@ -12,11 +18,53 @@ app.use(cors({
 
 app.use(express.json());
 
-app.use(session({
-  secret: "secret_key",
-  resave: false,
-  saveUninitialized: false
-}));
+
+
+async function updateInvoicePaymentStatus(conn, invoiceId) {
+  const [invoiceRows] = await conn.execute(
+    `SELECT 
+       total_debit AS totalDebit,
+       total_credit AS totalCredit
+     FROM invoice_headers
+     WHERE id = ?`,
+    [invoiceId]
+  );
+
+  if (invoiceRows.length === 0) return;
+
+  const totalAmount = Math.max(
+    Number(invoiceRows[0].totalDebit || 0),
+    Number(invoiceRows[0].totalCredit || 0)
+  );
+
+  const [paymentRows] = await conn.execute(
+    `SELECT COALESCE(SUM(amount), 0) AS paidAmount
+     FROM transaction_applications
+     WHERE source_type = 'INV'
+       AND source_id = ?`,
+    [invoiceId]
+  );
+
+  const paidAmount = Number(paymentRows[0].paidAmount || 0);
+  const balanceAmount = Math.max(totalAmount - paidAmount, 0);
+
+  let paymentStatus = "Unpaid";
+
+  if (paidAmount > 0 && paidAmount < totalAmount) {
+    paymentStatus = "Partially Paid";
+  } else if (paidAmount >= totalAmount && totalAmount > 0) {
+    paymentStatus = "Paid";
+  }
+
+  await conn.execute(
+    `UPDATE invoice_headers
+     SET paid_amount = ?,
+         balance_amount = ?,
+         payment_status = ?
+     WHERE id = ?`,
+    [paidAmount, balanceAmount, paymentStatus, invoiceId]
+  );
+}
 
 async function updateApvPaymentStatus(conn, apvId) {
   const [apvRows] = await conn.execute(
@@ -71,29 +119,74 @@ app.post("/api/login", async (req, res) => {
     const { username, password } = req.body;
 
     const [rows] = await pool.execute(
-      "SELECT * FROM users WHERE username = ? AND password = ?",
-      [username, password]
+      "SELECT id, username, password, role FROM users WHERE username = ?",
+      [username]
     );
 
     if (rows.length === 0) {
       return res.status(401).json({
         success: false,
-        message: "Invalid username or password"
+        message: "Invalid username or password",
       });
     }
 
-    req.session.user = rows[0];
+    const user = rows[0];
+
+    // If your passwords are still plain text, temporarily use:
+    // const isMatch = password === user.password;
+
+    const isMatch = await bcrypt.compare(password, user.password);
+
+    if (!isMatch) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid username or password",
+      });
+    }
+
+    const token = jwt.sign(
+      {
+        id: user.id,
+        username: user.username,
+        role: user.role,
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: "1d" }
+    );
 
     res.json({
       success: true,
-      message: "Login successful"
+      message: "Login successful",
+      token,
+      user: {
+        id: user.id,
+        username: user.username,
+        role: user.role,
+      },
     });
-
   } catch (err) {
     console.error("LOGIN ERROR:", err);
     res.status(500).json({ message: "Server error" });
   }
 });
+
+function authenticateToken(req, res, next) {
+  const authHeader = req.headers.authorization;
+  const token = authHeader && authHeader.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ message: "Access token required" });
+  }
+
+  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+    if (err) {
+      return res.status(403).json({ message: "Invalid or expired token" });
+    }
+
+    req.user = user;
+    next();
+  });
+}
 
 // ===================== GENERAL LIBRARIES API =====================
 
@@ -284,10 +377,10 @@ app.delete("/api/genlib/:id", async (req, res) => {
 
 // ===================== COA API =====================
 
-app.get("/api/coa", async (req, res) => {
+app.get("/api/coa", authenticateToken, async (req, res) => {
   try {
     const [accounts] = await pool.execute(`
-      SELECT 
+      SELECT
         id,
         code,
         DATE_FORMAT(account_date, '%Y-%m-%d') AS date,
@@ -305,27 +398,33 @@ app.get("/api/coa", async (req, res) => {
       );
 
       const [groups] = await pool.execute(
-        `SELECT 
+        `SELECT
           id,
           group_code AS code,
           group_description AS description
-        FROM coa_groups 
+        FROM coa_groups
         WHERE coa_id = ?`,
         [account.id]
       );
 
-      account.validations = validations.map((item) => item.validation_name);
+      account.validations = validations.map(
+        (item) => item.validation_name
+      );
+
       account.groups = groups;
     }
 
     res.json(accounts);
   } catch (err) {
     console.error("GET COA ERROR:", err);
-    res.status(500).json({ message: "Failed to load Chart of Accounts" });
+
+    res.status(500).json({
+      message: "Failed to load Chart of Accounts",
+    });
   }
 });
 
-app.post("/api/coa", async (req, res) => {
+app.post("/api/coa", authenticateToken, async (req, res) => {
   const conn = await pool.getConnection();
 
   try {
@@ -377,7 +476,7 @@ app.post("/api/coa", async (req, res) => {
   }
 });
 
-app.put("/api/coa/:id", async (req, res) => {
+app.put("/api/coa/:id", authenticateToken, async (req, res) => {
   const conn = await pool.getConnection();
 
   try {
@@ -425,7 +524,7 @@ app.put("/api/coa/:id", async (req, res) => {
   }
 });
 
-app.delete("/api/coa/:id", async (req, res) => {
+app.delete("/api/coa/:id", authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -438,6 +537,667 @@ app.delete("/api/coa/:id", async (req, res) => {
   } catch (err) {
     console.error("DELETE COA ERROR:", err);
     res.status(500).json({ message: "Failed to delete account" });
+  }
+});
+
+// ===================== INVOICE API =====================
+
+app.get("/api/invoices", async (req, res) => {
+  try {
+    const [rows] = await pool.execute(`
+      SELECT
+        id,
+        voucher_no AS voucherNo,
+        customer_id AS customerId,
+        customer_name AS customerName,
+        DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate,
+        DATE_FORMAT(due_date, '%Y-%m-%d') AS dueDate,
+        reference_no AS referenceNo,
+        description,
+        remarks,
+        total_debit AS totalDebit,
+        total_credit AS totalCredit,
+        paid_amount AS paidAmount,
+        balance_amount AS balanceAmount,
+        payment_status AS paymentStatus,
+        status,
+        created_at AS createdAt,
+        updated_at AS updatedAt
+      FROM invoice_headers
+      ORDER BY id DESC
+    `);
+
+    res.json(rows);
+  } catch (err) {
+    console.error("GET INVOICE ERROR:", err);
+    res.status(500).json({ message: "Failed to load invoice records" });
+  }
+});
+
+app.get("/api/invoices/unpaid", async (req, res) => {
+  try {
+    const { customerId, customerName } = req.query;
+
+    const params = [];
+    let customerFilterInv = "";
+    let customerFilterBb = "";
+
+    if (customerId) {
+      customerFilterInv = " AND customer_id = ? ";
+      customerFilterBb = " AND l.party_id = ? ";
+      params.push(customerId, customerId);
+    } else if (customerName) {
+      customerFilterInv = " AND TRIM(LOWER(customer_name)) = TRIM(LOWER(?)) ";
+      customerFilterBb = " AND TRIM(LOWER(l.party_name)) = TRIM(LOWER(?)) ";
+      params.push(customerName, customerName);
+    }
+
+    const [rows] = await pool.execute(
+      `
+      SELECT
+        id,
+        'INV' AS sourceType,
+        voucher_no AS voucherNo,
+        customer_id AS customerId,
+        customer_name AS customerName,
+        total_debit AS totalAmount,
+        COALESCE(paid_amount, 0) AS paidAmount,
+        COALESCE(balance_amount, total_debit, 0) AS balanceAmount
+      FROM invoice_headers
+      WHERE COALESCE(balance_amount, total_debit, 0) > 0
+        AND COALESCE(payment_status, 'Unpaid') != 'Paid'
+        ${customerFilterInv}
+
+      UNION ALL
+
+      SELECT
+        l.id,
+        'AR_BEGINNING' AS sourceType,
+        l.reference_no AS voucherNo,
+        l.party_id AS customerId,
+        l.party_name AS customerName,
+        l.debit AS totalAmount,
+        COALESCE(l.paid_amount, 0) AS paidAmount,
+        COALESCE(l.balance_amount, l.debit, 0) AS balanceAmount
+      FROM arap_beginning_balance_lines l
+      JOIN arap_beginning_balance_headers h ON h.id = l.header_id
+      WHERE h.balance_type = 'AR'
+        AND COALESCE(l.balance_amount, l.debit, 0) > 0
+        AND COALESCE(l.status, 'Unpaid') != 'Paid'
+        ${customerFilterBb}
+
+      ORDER BY voucherNo DESC
+      `,
+      params
+    );
+
+    res.json(rows);
+  } catch (err) {
+    console.error("GET UNPAID INVOICE/AR BEGINNING ERROR:", err);
+    res.status(500).json({ message: "Failed to load outstanding receivables" });
+  }
+});
+
+app.get("/api/invoices/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [headers] = await pool.execute(
+      `SELECT
+        id,
+        voucher_no AS voucherNo,
+        customer_id AS customerId,
+        customer_name AS customerName,
+        DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate,
+        DATE_FORMAT(due_date, '%Y-%m-%d') AS dueDate,
+        reference_no AS referenceNo,
+        description,
+        remarks,
+        total_debit AS totalDebit,
+        total_credit AS totalCredit,
+        paid_amount AS paidAmount,
+        balance_amount AS balanceAmount,
+        payment_status AS paymentStatus,
+        status,
+        created_at AS createdAt,
+        updated_at AS updatedAt
+      FROM invoice_headers
+      WHERE id = ?`,
+      [id]
+    );
+
+    if (headers.length === 0) {
+      return res.status(404).json({ message: "Invoice not found" });
+    }
+
+    const [lines] = await pool.execute(
+      `SELECT
+        id,
+        invoice_id AS invoiceId,
+        account_id AS accountId,
+        account_code AS accountCode,
+        account_title AS accountTitle,
+        particulars,
+        debit,
+        credit,
+        gen_ref AS genRef,
+        gen_name AS genName
+      FROM invoice_lines
+      WHERE invoice_id = ?
+      ORDER BY id ASC`,
+      [id]
+    );
+
+    const [applications] = await pool.execute(
+      `SELECT
+        id,
+        source_type AS sourceType,
+        source_id AS sourceId,
+        applied_type AS appliedType,
+        applied_id AS appliedId,
+        amount,
+        DATE_FORMAT(application_date, '%Y-%m-%d') AS applicationDate,
+        created_at AS createdAt
+      FROM transaction_applications
+      WHERE source_type = 'INV'
+        AND source_id = ?
+      ORDER BY id DESC`,
+      [id]
+    );
+
+    res.json({
+      ...headers[0],
+      lines,
+      applications,
+    });
+  } catch (err) {
+    console.error("GET INVOICE DETAILS ERROR:", err);
+    res.status(500).json({ message: "Failed to load invoice details" });
+  }
+});
+
+app.post("/api/invoices", async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const {
+      voucherNo,
+      customerId,
+      customerName,
+      transactionDate,
+      dueDate,
+      referenceNo,
+      description,
+      remarks,
+      totalDebit,
+      totalCredit,
+      status,
+      lines,
+    } = req.body;
+
+    await conn.beginTransaction();
+
+    const total = Number(totalDebit || 0);
+
+    const [result] = await conn.execute(
+      `INSERT INTO invoice_headers (
+        voucher_no,
+        customer_id,
+        customer_name,
+        transaction_date,
+        due_date,
+        reference_no,
+        description,
+        remarks,
+        total_debit,
+        total_credit,
+        paid_amount,
+        balance_amount,
+        payment_status,
+        status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        voucherNo,
+        customerId || null,
+        customerName || "",
+        transactionDate || null,
+        dueDate || transactionDate || null,
+        referenceNo || "",
+        description || "",
+        remarks || "",
+        total,
+        totalCredit || 0,
+        0,
+        total,
+        "Unpaid",
+        status || "DRAFT",
+      ]
+    );
+
+    const invoiceId = result.insertId;
+
+    for (const line of lines || []) {
+      await conn.execute(
+        `INSERT INTO invoice_lines (
+          invoice_id,
+          account_id,
+          account_code,
+          account_title,
+          particulars,
+          debit,
+          credit,
+          gen_ref,
+          gen_name
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          invoiceId,
+          line.accountId || null,
+          line.accountCode || "",
+          line.accountTitle || "",
+          line.particulars || "",
+          Number(line.debit) || 0,
+          Number(line.credit) || 0,
+          line.genRef || "",
+          line.genName || "",
+        ]
+      );
+    }
+
+    await conn.commit();
+
+    res.json({
+      success: true,
+      message: "Invoice saved successfully",
+      id: invoiceId,
+    });
+  } catch (err) {
+    await conn.rollback();
+    console.error("CREATE INVOICE ERROR:", err);
+
+    if (err.code === "ER_DUP_ENTRY") {
+      return res.status(400).json({ message: "Invoice number already exists" });
+    }
+
+    res.status(500).json({ message: "Failed to save invoice" });
+  } finally {
+    conn.release();
+  }
+});
+
+app.put("/api/invoices/:id", async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const { id } = req.params;
+
+    const {
+      voucherNo,
+      customerId,
+      customerName,
+      transactionDate,
+      dueDate,
+      referenceNo,
+      description,
+      remarks,
+      totalDebit,
+      totalCredit,
+      status,
+      lines,
+    } = req.body;
+
+    await conn.beginTransaction();
+
+    await conn.execute(
+      `UPDATE invoice_headers SET
+        voucher_no = ?,
+        customer_id = ?,
+        customer_name = ?,
+        transaction_date = ?,
+        due_date = ?,
+        reference_no = ?,
+        description = ?,
+        remarks = ?,
+        total_debit = ?,
+        total_credit = ?,
+        status = ?
+      WHERE id = ?`,
+      [
+        voucherNo,
+        customerId || null,
+        customerName || "",
+        transactionDate || null,
+        dueDate || transactionDate || null,
+        referenceNo || "",
+        description || "",
+        remarks || "",
+        totalDebit || 0,
+        totalCredit || 0,
+        status || "DRAFT",
+        id,
+      ]
+    );
+
+    await conn.execute("DELETE FROM invoice_lines WHERE invoice_id = ?", [id]);
+
+    for (const line of lines || []) {
+      await conn.execute(
+        `INSERT INTO invoice_lines (
+          invoice_id,
+          account_id,
+          account_code,
+          account_title,
+          particulars,
+          debit,
+          credit,
+          gen_ref,
+          gen_name
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id,
+          line.accountId || null,
+          line.accountCode || "",
+          line.accountTitle || "",
+          line.particulars || "",
+          Number(line.debit) || 0,
+          Number(line.credit) || 0,
+          line.genRef || "",
+          line.genName || "",
+        ]
+      );
+    }
+
+    await updateInvoicePaymentStatus(conn, id);
+
+    await conn.commit();
+
+    res.json({
+      success: true,
+      message: "Invoice updated successfully",
+    });
+  } catch (err) {
+    await conn.rollback();
+    console.error("UPDATE INVOICE ERROR:", err);
+
+    if (err.code === "ER_DUP_ENTRY") {
+      return res.status(400).json({ message: "Invoice number already exists" });
+    }
+
+    res.status(500).json({ message: "Failed to update invoice" });
+  } finally {
+    conn.release();
+  }
+});
+
+app.delete("/api/invoices/:id", async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const { id } = req.params;
+
+    await conn.beginTransaction();
+
+    await conn.execute(
+      `DELETE FROM transaction_applications
+       WHERE source_type = 'INV'
+         AND source_id = ?`,
+      [id]
+    );
+
+    await conn.execute("DELETE FROM invoice_headers WHERE id = ?", [id]);
+
+    await conn.commit();
+
+    res.json({
+      success: true,
+      message: "Invoice deleted successfully",
+    });
+  } catch (err) {
+    await conn.rollback();
+    console.error("DELETE INVOICE ERROR:", err);
+    res.status(500).json({ message: "Failed to delete invoice" });
+  } finally {
+    conn.release();
+  }
+});
+
+
+// ===================== OFFICIAL RECEIPT API =====================
+
+app.get("/api/or", async (req, res) => {
+  try {
+    const [rows] = await pool.execute(`
+      SELECT
+        id,
+        voucher_no AS voucherNo,
+        customer_id AS customerId,
+        customer_name AS customerName,
+        DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate,
+        reference_no AS referenceNo,
+        receipt_no AS receiptNo,
+        description,
+        total_debit AS totalDebit,
+        total_credit AS totalCredit,
+        status
+      FROM or_headers
+      ORDER BY id DESC
+    `);
+
+    res.json(rows);
+  } catch (err) {
+    console.error("GET OR ERROR:", err);
+    res.status(500).json({ message: "Failed to load OR records" });
+  }
+});
+
+app.post("/api/or", async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    await conn.beginTransaction();
+
+    const {
+      voucherNo,
+      customerId,
+      customerName,
+      transactionDate,
+      referenceNo,
+      receiptNo,
+      description,
+      totalDebit,
+      totalCredit,
+      status,
+      lines = [],
+      invoiceApplications = [],
+    } = req.body;
+
+    const finalCustomerId = customerId ?? req.body.partyId ?? null;
+    const finalCustomerName = customerName || req.body.partyName || "";
+
+    const [result] = await conn.execute(
+      `INSERT INTO or_headers(
+        voucher_no,
+        customer_id,
+        customer_name,
+        transaction_date,
+        reference_no,
+        receipt_no,
+        description,
+        total_debit,
+        total_credit,
+        status
+      )
+      VALUES(?,?,?,?,?,?,?,?,?,?)`,
+      [
+        voucherNo || "",
+        finalCustomerId,
+        finalCustomerName,
+        transactionDate || null,
+        referenceNo || "",
+        receiptNo || "",
+        description || "",
+        Number(totalDebit) || 0,
+        Number(totalCredit) || 0,
+        status || "Draft",
+      ]
+    );
+
+    const orId = result.insertId;
+
+    for (const line of lines) {
+      await conn.execute(
+        `INSERT INTO or_lines(
+          or_id,
+          account_id,
+          account_code,
+          account_title,
+          particulars,
+          gen_ref,
+          gen_name,
+          debit,
+          credit
+        )
+        VALUES(?,?,?,?,?,?,?,?,?)`,
+        [
+          orId,
+          line.accountId ?? null,
+          line.accountCode || "",
+          line.accountTitle || "",
+          line.particulars || "",
+          line.genRef || "",
+          line.genName || "",
+          Number(line.debit) || 0,
+          Number(line.credit) || 0,
+        ]
+      );
+    }
+
+    for (const appItem of invoiceApplications) {
+      const sourceId = appItem.sourceId ?? appItem.invoiceId ?? null;
+      const paymentAmount = Number(appItem.amount || 0);
+
+      if (!sourceId || paymentAmount <= 0) continue;
+
+      await conn.execute(
+        `INSERT INTO transaction_applications
+         (source_type, source_id, applied_type, applied_id, amount, application_date)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+          appItem.sourceType === "AR_BEGINNING" ? "AR_BEGINNING" : "INV",
+          sourceId,
+          "OR",
+          orId,
+          paymentAmount,
+          appItem.applicationDate || transactionDate || null,
+        ]
+      );
+
+      if (appItem.sourceType === "AR_BEGINNING") {
+        await conn.execute(
+          `
+          UPDATE arap_beginning_balance_lines
+          SET paid_amount = COALESCE(paid_amount, 0) + ?,
+              balance_amount = GREATEST(COALESCE(balance_amount, debit, 0) - ?, 0),
+              status = CASE
+                WHEN GREATEST(COALESCE(balance_amount, debit, 0) - ?, 0) <= 0 THEN 'Paid'
+                ELSE 'Partially Paid'
+              END
+          WHERE id = ?
+          `,
+          [paymentAmount, paymentAmount, paymentAmount, sourceId]
+        );
+      } else {
+        await updateInvoicePaymentStatus(conn, sourceId);
+      }
+    }
+
+    await conn.commit();
+
+    res.json({
+      success: true,
+      id: orId,
+      message: "OR saved successfully",
+    });
+  } catch (err) {
+    await conn.rollback();
+    console.error("CREATE OR ERROR:", err);
+
+    res.status(500).json({
+      message: "Failed to save OR",
+    });
+  } finally {
+    conn.release();
+  }
+});
+
+app.get("/api/or/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [headers] = await pool.execute(
+      `SELECT
+        id,
+        voucher_no AS voucherNo,
+        customer_id AS customerId,
+        customer_name AS customerName,
+        DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate,
+        reference_no AS referenceNo,
+        receipt_no AS receiptNo,
+        description,
+        remarks,
+        total_debit AS totalDebit,
+        total_credit AS totalCredit,
+        status
+      FROM or_headers
+      WHERE id = ?`,
+      [id]
+    );
+
+    if (headers.length === 0) {
+      return res.status(404).json({ message: "OR not found" });
+    }
+
+    const [lines] = await pool.execute(
+      `SELECT
+        id,
+        or_id AS orId,
+        account_id AS accountId,
+        account_code AS accountCode,
+        account_title AS accountTitle,
+        particulars,
+        debit,
+        credit,
+        gen_ref AS genRef,
+        gen_name AS genName
+      FROM or_lines
+      WHERE or_id = ?
+      ORDER BY id ASC`,
+      [id]
+    );
+
+    const [applications] = await pool.execute(
+      `SELECT
+        id,
+        source_type AS sourceType,
+        source_id AS sourceId,
+        applied_type AS appliedType,
+        applied_id AS appliedId,
+        amount,
+        DATE_FORMAT(application_date, '%Y-%m-%d') AS applicationDate
+      FROM transaction_applications
+      WHERE applied_type = 'OR'
+        AND applied_id = ?
+      ORDER BY id DESC`,
+      [id]
+    );
+
+    res.json({
+      ...headers[0],
+      lines,
+      applications,
+    });
+  } catch (err) {
+    console.error("GET OR DETAILS ERROR:", err);
+    res.status(500).json({ message: "Failed to load OR details" });
   }
 });
 
@@ -1904,6 +2664,210 @@ WHERE h.balance_date <= ?
     console.error("BALANCE SHEET ERROR:", err.message);
     res.status(500).json({
       message: "Failed to generate balance sheet",
+      error: err.message,
+    });
+  }
+});
+
+// ====================== AGING REPORT ======================
+app.get("/api/reports/aging", async (req, res) => {
+  try {
+    const { type = "AP", asOf } = req.query;
+    const reportType = String(type).toUpperCase();
+    const reportDate = asOf || new Date().toISOString().split("T")[0];
+
+    if (!["AP", "AR"].includes(reportType)) {
+      return res.status(400).json({ message: "Invalid aging type. Use AP or AR." });
+    }
+
+    let rows = [];
+
+    if (reportType === "AP") {
+      const [apvRows] = await pool.execute(
+        `
+        SELECT
+          'APV' AS sourceType,
+          id,
+          voucher_no AS referenceNo,
+          supplier_id AS partyId,
+          supplier_name AS partyName,
+          DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate,
+          DATE_FORMAT(due_date, '%Y-%m-%d') AS dueDate,
+          total_credit AS totalAmount,
+          COALESCE(paid_amount, 0) AS paidAmount,
+          COALESCE(balance_amount, total_credit, 0) AS balanceAmount,
+          GREATEST(DATEDIFF(?, COALESCE(due_date, transaction_date)), 0) AS daysPastDue
+        FROM apv_headers
+        WHERE COALESCE(balance_amount, total_credit, 0) > 0
+          AND COALESCE(payment_status, 'Unpaid') != 'Paid'
+        `,
+        [reportDate]
+      );
+
+      rows = rows.concat(apvRows);
+    }
+
+    const [bbRows] = await pool.execute(
+      `
+      SELECT
+        h.balance_type AS sourceType,
+        l.id,
+        l.reference_no AS referenceNo,
+        l.party_id AS partyId,
+        l.party_name AS partyName,
+        DATE_FORMAT(h.balance_date, '%Y-%m-%d') AS transactionDate,
+        DATE_FORMAT(l.due_date, '%Y-%m-%d') AS dueDate,
+        CASE WHEN h.balance_type = 'AR' THEN l.debit ELSE l.credit END AS totalAmount,
+        COALESCE(l.paid_amount, 0) AS paidAmount,
+        COALESCE(
+          l.balance_amount,
+          CASE WHEN h.balance_type = 'AR' THEN l.debit ELSE l.credit END,
+          0
+        ) AS balanceAmount,
+        GREATEST(DATEDIFF(?, COALESCE(l.due_date, h.balance_date)), 0) AS daysPastDue
+      FROM arap_beginning_balance_lines l
+      JOIN arap_beginning_balance_headers h ON h.id = l.header_id
+      WHERE h.balance_type = ?
+        AND COALESCE(
+          l.balance_amount,
+          CASE WHEN h.balance_type = 'AR' THEN l.debit ELSE l.credit END,
+          0
+        ) > 0
+        AND COALESCE(l.status, 'Unpaid') != 'Paid'
+      `,
+      [reportDate, reportType]
+    );
+
+    rows = rows.concat(bbRows);
+
+    const mappedRows = rows.map((row) => {
+      const balance = Number(row.balanceAmount || 0);
+      const days = Number(row.daysPastDue || 0);
+
+      return {
+        ...row,
+        current: days === 0 ? balance : 0,
+        days1To30: days >= 1 && days <= 30 ? balance : 0,
+        days31To60: days >= 31 && days <= 60 ? balance : 0,
+        days61To90: days >= 61 && days <= 90 ? balance : 0,
+        over90: days > 90 ? balance : 0,
+      };
+    });
+
+    res.json(mappedRows);
+  } catch (err) {
+    console.error("AGING REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate aging report",
+      error: err.message,
+    });
+  }
+});
+
+// ====================== AP AGING REPORT ======================
+app.get("/api/reports/ap-aging", async (req, res) => {
+  try {
+    const { asOf } = req.query;
+    const reportDate = asOf || new Date().toISOString().slice(0, 10);
+
+    const [rows] = await pool.execute(
+      `
+      SELECT
+        source_type,
+        id,
+        reference_no,
+        party_name,
+        transaction_date,
+        due_date,
+        total_amount,
+        paid_amount,
+        balance_amount,
+        days_past_due
+      FROM (
+        SELECT
+          'APV' AS source_type,
+          id,
+          voucher_no AS reference_no,
+          supplier_name AS party_name,
+          DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transaction_date,
+          DATE_FORMAT(due_date, '%Y-%m-%d') AS due_date,
+          total_credit AS total_amount,
+          COALESCE(paid_amount, 0) AS paid_amount,
+          COALESCE(balance_amount, total_credit, 0) AS balance_amount,
+          GREATEST(DATEDIFF(?, COALESCE(due_date, transaction_date)), 0) AS days_past_due
+        FROM apv_headers
+        WHERE COALESCE(balance_amount, total_credit, 0) > 0
+          AND COALESCE(payment_status, 'Unpaid') != 'Paid'
+
+        UNION ALL
+
+        SELECT
+          'AP BEGINNING' AS source_type,
+          l.id,
+          l.reference_no,
+          l.party_name,
+          DATE_FORMAT(h.balance_date, '%Y-%m-%d') AS transaction_date,
+          DATE_FORMAT(l.due_date, '%Y-%m-%d') AS due_date,
+          l.credit AS total_amount,
+          COALESCE(l.paid_amount, 0) AS paid_amount,
+          COALESCE(l.balance_amount, l.credit, 0) AS balance_amount,
+          GREATEST(DATEDIFF(?, COALESCE(l.due_date, h.balance_date)), 0) AS days_past_due
+        FROM arap_beginning_balance_lines l
+        JOIN arap_beginning_balance_headers h ON h.id = l.header_id
+        WHERE h.balance_type = 'AP'
+          AND COALESCE(l.balance_amount, l.credit, 0) > 0
+          AND COALESCE(l.status, 'Unpaid') != 'Paid'
+      ) aging
+      ORDER BY party_name ASC, due_date ASC
+      `,
+      [reportDate, reportDate]
+    );
+
+    res.json(rows);
+  } catch (err) {
+    console.error("AP AGING REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate AP aging report",
+      error: err.message,
+    });
+  }
+});
+
+
+// ====================== AR AGING REPORT ======================
+app.get("/api/reports/ar-aging", async (req, res) => {
+  try {
+    const { asOf } = req.query;
+    const reportDate = asOf || new Date().toISOString().slice(0, 10);
+
+    const [rows] = await pool.execute(
+      `
+      SELECT
+        'AR BEGINNING' AS source_type,
+        l.id,
+        l.reference_no,
+        l.party_name,
+        DATE_FORMAT(h.balance_date, '%Y-%m-%d') AS transaction_date,
+        DATE_FORMAT(l.due_date, '%Y-%m-%d') AS due_date,
+        l.debit AS total_amount,
+        COALESCE(l.paid_amount, 0) AS paid_amount,
+        COALESCE(l.balance_amount, l.debit, 0) AS balance_amount,
+        GREATEST(DATEDIFF(?, COALESCE(l.due_date, h.balance_date)), 0) AS days_past_due
+      FROM arap_beginning_balance_lines l
+      JOIN arap_beginning_balance_headers h ON h.id = l.header_id
+      WHERE h.balance_type = 'AR'
+        AND COALESCE(l.balance_amount, l.debit, 0) > 0
+        AND COALESCE(l.status, 'Unpaid') != 'Paid'
+      ORDER BY l.party_name ASC, l.due_date ASC
+      `,
+      [reportDate]
+    );
+
+    res.json(rows);
+  } catch (err) {
+    console.error("AR AGING REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate AR aging report",
       error: err.message,
     });
   }
