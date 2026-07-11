@@ -1,5 +1,7 @@
 require("dotenv").config({ path: require("path").join(__dirname, ".env") });
 
+const path = require("path");
+const fs = require("fs");
 const express = require("express");
 const cors = require("cors");
 const pool = require("./db");
@@ -22,7 +24,7 @@ app.use(cors({
 
 app.use(express.json());
 
-app.get("/", (req, res) => {
+app.get("/health", (req, res) => {
   res.json({ status: "ok" });
 });
 
@@ -2878,6 +2880,22 @@ app.get("/api/reports/ar-aging", async (req, res) => {
       message: "Failed to generate AR aging report",
       error: err.message,
     });
+  }
+});
+
+// ===================== FRONTEND STATIC FILES =====================
+
+const distPath = path.join(__dirname, "..", "..", "dist");
+
+app.use(express.static(distPath));
+
+app.get(/^\/(?!api).*/, (req, res, next) => {
+  const indexPath = path.join(distPath, "index.html");
+
+  if (fs.existsSync(indexPath)) {
+    res.sendFile(indexPath);
+  } else {
+    next();
   }
 });
 
