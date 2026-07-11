@@ -1,4 +1,4 @@
-require("dotenv").config();
+require("dotenv").config({ path: require("path").join(__dirname, ".env") });
 
 const express = require("express");
 const cors = require("cors");
@@ -11,8 +11,12 @@ console.log("JWT_SECRET loaded:", Boolean(process.env.JWT_SECRET));
 
 const app = express();
 
+const allowedOrigins = (process.env.FRONTEND_URL || "http://localhost:5173")
+  .split(",")
+  .map((origin) => origin.trim());
+
 app.use(cors({
-  origin: "http://localhost:5173",
+  origin: allowedOrigins,
   credentials: true
 }));
 
@@ -2876,6 +2880,8 @@ app.get("/api/reports/ar-aging", async (req, res) => {
 // ===================== SERVER START =====================
 
 
-app.listen(8080, () => {
-  console.log("Server running on port 8080");
+const PORT = process.env.PORT || 8080;
+
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });
