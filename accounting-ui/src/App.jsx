@@ -44,6 +44,8 @@ import BankReconciliation from "./pages/REPORTS/BankReconciliation.jsx";
 import ComparativeIncomeStatement from "./pages/REPORTS/ComparativeIncomeStatement.jsx";
 import ARAgingReport from "./pages/REPORTS/ARAging.jsx";
 import APAgingReport from "./pages/REPORTS/APAging.jsx";
+import InputVAT from "./pages/REPORTS/InputVAT.jsx";
+import OutputVAT from "./pages/REPORTS/OutputVAT.jsx";
 
 function PlaceholderPage({ title }) {
   return (
@@ -126,6 +128,8 @@ function AppLayout() {
           <Route path="/reports/income-statement" element={<IncomeStatement />} />
           <Route path="/reports/ar-aging" element={<ARAgingReport />} />
           <Route path="/reports/ap-aging" element={<APAgingReport />} />
+          <Route path="/reports/input-vat-report" element={<InputVAT />} />
+          <Route path="/reports/output-vat-report" element={<OutputVAT />} />
 
           <Route
   path="/beginning-balances/gl"

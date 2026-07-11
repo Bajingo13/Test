@@ -2499,6 +2499,82 @@ app.get("/api/reports/account-analysis", async (req, res) => {
   }
 });
 
+// ====================== OUTPUT VAT REPORT =================
+
+app.get("/api/reports/output-vat", async (req, res) => {
+  try {
+    const { from, to, accountCode } = req.query;
+
+    if (!accountCode) {
+      return res.status(400).json({ message: "Account code is required" });
+    }
+
+    const params = [accountCode, from, to, accountCode, from, to];
+
+    const [rows] = await pool.execute(
+      `
+      SELECT
+        transaction_date,
+        source_type,
+        reference_no,
+        account_code,
+        account_title,
+        particulars,
+        debit,
+        credit,
+        SUM(debit - credit) OVER (
+          ORDER BY transaction_date, sort_order, id
+        ) AS running_balance
+      FROM (
+        SELECT
+          l.id,
+          DATE_FORMAT(h.transaction_date, '%Y-%m-%d') AS transaction_date,
+          'INV' AS source_type,
+          h.voucher_no AS reference_no,
+          l.account_code,
+          l.account_title,
+          COALESCE(l.particulars, h.description, '') AS particulars,
+          COALESCE(l.debit, 0) AS debit,
+          COALESCE(l.credit, 0) AS credit,
+          1 AS sort_order
+        FROM invoice_lines l
+        JOIN invoice_headers h ON h.id = l.invoice_id
+        WHERE l.account_code = ?
+          AND h.transaction_date BETWEEN ? AND ?
+
+        UNION ALL
+
+        SELECT
+          l.id,
+          DATE_FORMAT(h.transaction_date, '%Y-%m-%d') AS transaction_date,
+          'OR' AS source_type,
+          h.voucher_no AS reference_no,
+          l.account_code,
+          l.account_title,
+          COALESCE(l.particulars, h.description, '') AS particulars,
+          COALESCE(l.debit, 0) AS debit,
+          COALESCE(l.credit, 0) AS credit,
+          2 AS sort_order
+        FROM or_lines l
+        JOIN or_headers h ON h.id = l.or_id
+        WHERE l.account_code = ?
+          AND h.transaction_date BETWEEN ? AND ?
+      ) ov
+      ORDER BY transaction_date, sort_order, id
+      `,
+      params
+    );
+
+    res.json(rows);
+  } catch (err) {
+    console.error("OUTPUT VAT REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate output VAT report",
+      error: err.message,
+    });
+  }
+});
+
 // ====================== INCOME STATEMENT REPORT ======================
 
 app.get("/api/reports/income-statement", async (req, res) => {
