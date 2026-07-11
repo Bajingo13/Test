@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import "./TrialBalance.css";
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8080";
+const API_URL = import.meta.env.VITE_API_URL || "";
 
 export default function APAging() {
   const [asOfDate, setAsOfDate] = useState(new Date().toISOString().slice(0, 10));

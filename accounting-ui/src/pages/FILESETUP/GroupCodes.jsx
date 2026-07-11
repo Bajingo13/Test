@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import "./GroupCodes.css";
 
-const API_BASE = "http://localhost:8080";
+const API_BASE = import.meta.env.VITE_API_URL || "";
 
 const ACCOUNT_CLASS_OPTIONS = ["ASSET", "LIABILITY", "EQUITY", "INCOME", "EXPENSE"];
 const STATUS_OPTIONS = ["ACTIVE", "INACTIVE"];

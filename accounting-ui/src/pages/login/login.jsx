@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { apiPost } from "../../api";
 import "./login.css";
 
 export default function Login() {
@@ -61,24 +62,13 @@ export default function Login() {
     try {
       setLoading(true);
 
-      const response = await fetch("http://localhost:8080/api/login", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        credentials: "include",
-        body: JSON.stringify({
-          username: form.username,
-          password: form.password,
-        }),
+      const data = await apiPost("/api/login", {
+        username: form.username,
+        password: form.password,
       });
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        alert(data.message || "Login failed");
-        return;
-      }
+      localStorage.setItem("token", data.token);
+      localStorage.setItem("user", JSON.stringify(data.user));
 
       setLoginSuccessAnim(true);
 
@@ -87,7 +77,11 @@ export default function Login() {
       }, 900);
     } catch (error) {
       console.error("LOGIN ERROR:", error);
-      alert("Unable to connect to the server.");
+      alert(
+        error instanceof TypeError
+          ? "Unable to connect to the server."
+          : error.message || "Login failed"
+      );
     } finally {
       setLoading(false);
     }
