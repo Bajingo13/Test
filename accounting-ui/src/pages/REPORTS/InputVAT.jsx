@@ -3,6 +3,11 @@ import "./AccountAnalysis.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
 
+function authHeaders() {
+  const token = localStorage.getItem("token");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 export default function InputVAT() {
   const [fromDate, setFromDate] = useState("2026-01-01");
   const [toDate, setToDate] = useState(new Date().toISOString().slice(0, 10));
@@ -18,7 +23,7 @@ export default function InputVAT() {
 
   async function loadAccounts() {
     try {
-      const res = await fetch(`${API_URL}/api/coa`);
+      const res = await fetch(`${API_URL}/api/coa`, { headers: authHeaders() });
       const data = await res.json();
       const list = Array.isArray(data) ? data : [];
       setAccounts(list);

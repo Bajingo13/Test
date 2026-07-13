@@ -4,6 +4,11 @@ import "./AccountAnalysis.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
 
+function authHeaders() {
+  const token = localStorage.getItem("token");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 export default function AccountAnalysis() {
   const [searchParams] = useSearchParams();
 
@@ -41,7 +46,7 @@ export default function AccountAnalysis() {
 
   async function loadAccounts() {
     try {
-      const res = await fetch(`${API_URL}/api/coa`);
+      const res = await fetch(`${API_URL}/api/coa`, { headers: authHeaders() });
       const data = await res.json();
       setAccounts(Array.isArray(data) ? data : []);
     } catch (err) {
