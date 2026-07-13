@@ -1,26 +1,25 @@
 import React from "react";
 import TransactionFormLayout from "./TransactionFormLayout";
 
-export default function OR() {
+export default function Invoice() {
   return (
     <TransactionFormLayout
-      title="Official Receipt"
-      code="OR"
+      title="Invoice"
+      code="INV"
       partyLabel="Customer"
-      showCheckNo={true}
-      defaultDescription="Collection from customer"
+      defaultDescription="Sales invoice on account"
       defaultLines={[
         {
           id: crypto.randomUUID(),
           accountId: "",
-          particulars: "Cash / Bank",
+          particulars: "Accounts Receivable",
           debit: "",
           credit: "",
         },
         {
           id: crypto.randomUUID(),
           accountId: "",
-          particulars: "Accounts Receivable",
+          particulars: "Sales / Revenue",
           debit: "",
           credit: "",
         },

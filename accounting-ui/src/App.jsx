@@ -24,6 +24,7 @@ import EWTLibrary from "./pages/FILESETUP/EWTLibrary";
 
 
 // TRANSACTIONS
+import Invoice from "./pages/TRANSACTIONS/Invoice";
 import APV from "./pages/TRANSACTIONS/APV";
 import CV from "./pages/TRANSACTIONS/CV";
 import JV from "./pages/TRANSACTIONS/JV";
@@ -105,7 +106,7 @@ function AppLayout() {
           <Route path="/tax-file-setup" element={<TaxFileSetup />} />
           <Route path="/ewt-library" element={<EWTLibrary />} />
 
-          <Route path="/transactions/invoice" element={<PlaceholderPage title="Invoice" />} />
+          <Route path="/transactions/invoice" element={<Invoice />} />
           <Route path="/transactions/cv" element={<CV />} />
           <Route path="/transactions/jv" element={<JV />} />
           <Route path="/transactions/or" element={<OR />} />
