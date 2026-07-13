@@ -90,6 +90,14 @@ export default function Dashboard() {
     saveLayout(activeWidgetIds.filter((widgetId) => widgetId !== id));
   }
 
+  function toggleWidget(id) {
+    if (activeWidgetIds.includes(id)) {
+      removeWidget(id);
+    } else {
+      addWidget(id);
+    }
+  }
+
   function moveWidget(id, direction) {
     const index = activeWidgetIds.indexOf(id);
     const nextIndex = direction === "up" ? index - 1 : index + 1;
@@ -212,16 +220,24 @@ export default function Dashboard() {
               const added = activeWidgetIds.includes(widget.id);
 
               return (
-                <button
+                <div
                   key={widget.id}
                   className={added ? "library-item added" : "library-item"}
-                  onClick={() => addWidget(widget.id)}
-                  disabled={added}
                 >
-                  <strong>{widget.title}</strong>
-                  <span>{widget.category}</span>
-                  <small>{added ? "Already added" : "Add widget"}</small>
-                </button>
+                  <div className="library-item-info">
+                    <strong>{widget.title}</strong>
+                    <span>{widget.category}</span>
+                  </div>
+
+                  <label className="widget-switch">
+                    <input
+                      type="checkbox"
+                      checked={added}
+                      onChange={() => toggleWidget(widget.id)}
+                    />
+                    <span className="widget-switch-slider"></span>
+                  </label>
+                </div>
               );
             })}
           </div>
