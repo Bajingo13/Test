@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import "./TransactionFormLayout.css";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
@@ -35,6 +36,8 @@ export default function TransactionFormLayout({
   defaultDescription = "",
   defaultLines = [createLine(), createLine()],
 }) {
+  const [searchParams] = useSearchParams();
+
   const [mode, setMode] = useState("list");
   const [transactions, setTransactions] = useState([]);
   const [selectedTransaction, setSelectedTransaction] = useState(null);
@@ -83,6 +86,11 @@ export default function TransactionFormLayout({
     if (code === "CV" && form.party) {
   loadUnpaidApvs();
 }
+
+    const deepLinkId = searchParams.get("id");
+    if (deepLinkId) {
+      handleView({ id: deepLinkId });
+    }
   }, []);
 
   async function loadAccounts() {

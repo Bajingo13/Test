@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import "./AccountAnalysis.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
@@ -9,7 +9,15 @@ function authHeaders() {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+const SOURCE_ROUTES = {
+  APV: "/transactions/apv",
+  CV: "/transactions/cv",
+  INV: "/transactions/invoice",
+  OR: "/transactions/or",
+};
+
 export default function AccountAnalysis() {
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
   const [fromDate, setFromDate] = useState("2026-01-01");
@@ -288,6 +296,7 @@ export default function AccountAnalysis() {
             <thead>
               <tr>
                 <th>DATE</th>
+                <th>SOURCE</th>
                 <th>DOC REF</th>
                 <th>PARTICULARS</th>
                 <th>DEBIT</th>
@@ -298,24 +307,39 @@ export default function AccountAnalysis() {
             <tbody>
               {rows.length === 0 ? (
                 <tr>
-                  <td colSpan="5" className="empty">
+                  <td colSpan="6" className="empty">
                     No data found.
                   </td>
                 </tr>
               ) : (
-                rows.map((row, index) => (
-                  <tr key={index}>
-                    <td>{row.transaction_date}</td>
-                    <td>{row.reference_no}</td>
-                    <td>{row.particulars}</td>
-                    <td className="amount">
-                      {Number(row.debit) > 0 ? formatMoney(row.debit) : ""}
-                    </td>
-                    <td className="amount">
-                      {Number(row.credit) > 0 ? formatMoney(row.credit) : ""}
-                    </td>
-                  </tr>
-                ))
+                rows.map((row, index) => {
+                  const route = SOURCE_ROUTES[row.source_type];
+                  const clickable = Boolean(route && row.transaction_id);
+
+                  return (
+                    <tr
+                      key={index}
+                      className={clickable ? "aa-clickable-row" : ""}
+                      title={clickable ? "Open source transaction" : ""}
+                      onClick={
+                        clickable
+                          ? () => navigate(`${route}?id=${row.transaction_id}`)
+                          : undefined
+                      }
+                    >
+                      <td>{row.transaction_date}</td>
+                      <td>{row.source_type}</td>
+                      <td>{row.reference_no}</td>
+                      <td>{row.particulars}</td>
+                      <td className="amount">
+                        {Number(row.debit) > 0 ? formatMoney(row.debit) : ""}
+                      </td>
+                      <td className="amount">
+                        {Number(row.credit) > 0 ? formatMoney(row.credit) : ""}
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
 
@@ -324,6 +348,7 @@ export default function AccountAnalysis() {
                 <td></td>
                 <td></td>
                 <td style={{ textAlign: "center" }}>TOTAL</td>
+                <td></td>
                 <td className="amount">{formatMoney(totals.debit)}</td>
                 <td className="amount">{formatMoney(totals.credit)}</td>
               </tr>
