@@ -49,6 +49,11 @@ export default function TransactionFormLayout({
   const [unpaidInvoices, setUnpaidInvoices] = useState([]);
   const [showInvoiceModal, setShowInvoiceModal] = useState(false);
 
+  const [openPos, setOpenPos] = useState([]);
+  const [showPoModal, setShowPoModal] = useState(false);
+  const [sourcePoId, setSourcePoId] = useState(null);
+  const [sourcePoNo, setSourcePoNo] = useState("");
+
   const [form, setForm] = useState({
     date: new Date().toISOString().split("T")[0],
     referenceNo: "",
@@ -139,6 +144,8 @@ export default function TransactionFormLayout({
     ? "or"
     : code === "INV"
     ? "invoices"
+    : code === "PO"
+    ? "purchase-orders"
     : "apv";
       const res = await fetch(`${API_BASE}/api/${endpoint}`, {
         credentials: "include",
@@ -245,6 +252,29 @@ if (code === "OR") {
           }))
         );
       }
+
+      if (code === "PO") {
+        setTransactions(
+          data.map((item) => ({
+            id: item.id,
+            referenceNo: item.referenceNo || item.voucherNo,
+            date: item.transactionDate,
+            party: item.supplierName,
+            amount: item.totalCredit || item.totalDebit,
+            status: item.status,
+            form: {
+              date: item.transactionDate,
+              referenceNo: item.referenceNo || item.voucherNo,
+              party: item.supplierName,
+              partyId: item.supplierId,
+              description: item.description,
+              checkNo: "",
+              status: item.status,
+            },
+            lines: [],
+          }))
+        );
+      }
     } catch (err) {
       console.error("LOAD TRANSACTIONS ERROR:", err);
     }
@@ -314,6 +344,64 @@ if (code === "OR") {
   }
 }
 
+  async function loadOpenPos() {
+    try {
+      const res = await fetch(`${API_BASE}/api/purchase-orders/open`, {
+        credentials: "include",
+        headers: authHeaders(),
+      });
+
+      const data = await res.json();
+
+      setOpenPos(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.error("LOAD OPEN PURCHASE ORDERS ERROR:", err);
+      setOpenPos([]);
+    }
+  }
+
+  async function selectPo(po) {
+    try {
+      const res = await fetch(`${API_BASE}/api/purchase-orders/${po.id}`, {
+        credentials: "include",
+        headers: authHeaders(),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        alert(data.message || "Failed to load Purchase Order details");
+        return;
+      }
+
+      setForm((prev) => ({
+        ...prev,
+        party: data.supplierName || "",
+        partyId: data.supplierId || null,
+        description: data.description || prev.description,
+      }));
+
+      setLines(
+        (data.lines || []).map((line) => ({
+          id: crypto.randomUUID(),
+          accountId: line.accountId || "",
+          particulars: line.particulars || "",
+          genRef: line.genRef || "",
+          genName: line.genName || "",
+          debit: line.debit || "",
+          credit: line.credit || "",
+        }))
+      );
+
+      setSourcePoId(po.id);
+      setSourcePoNo(po.voucherNo || "");
+      setShowPoModal(false);
+    } catch (err) {
+      console.error("SELECT PURCHASE ORDER ERROR:", err);
+      alert("Unable to load Purchase Order details.");
+    }
+  }
+
   const totals = useMemo(() => {
     const totalDebit = lines.reduce((sum, line) => sum + Number(line.debit || 0), 0);
     const totalCredit = lines.reduce((sum, line) => sum + Number(line.credit || 0), 0);
@@ -382,6 +470,11 @@ setShowApvModal(false);
 setInvoiceApplications([]);
 setUnpaidInvoices([]);
 setShowInvoiceModal(false);
+
+setOpenPos([]);
+setShowPoModal(false);
+setSourcePoId(null);
+setSourcePoNo("");
 
 setError("");
   }
@@ -456,6 +549,8 @@ setError("");
     ? "or"
     : code === "INV"
     ? "invoices"
+    : code === "PO"
+    ? "purchase-orders"
     : "apv";
       const res = await fetch(`${API_BASE}/api/${endpoint}/${transaction.id}`, {
         credentials: "include",
@@ -517,6 +612,21 @@ if (code === "OR") {
   setInvoiceApplications(data.applications || []);
 } else {
   setInvoiceApplications([]);
+}
+
+if (code === "APV" && data.sourcePoId) {
+  setSourcePoId(data.sourcePoId);
+
+  fetch(`${API_BASE}/api/purchase-orders/${data.sourcePoId}`, {
+    credentials: "include",
+    headers: authHeaders(),
+  })
+    .then((r) => r.json())
+    .then((po) => setSourcePoNo(po.voucherNo || ""))
+    .catch(() => setSourcePoNo(""));
+} else {
+  setSourcePoId(null);
+  setSourcePoNo("");
 }
         setMode("form");
         return;
@@ -898,6 +1008,8 @@ if (code === "OR") {
         applicationDate: form.date,
       }))
     : [],
+
+        sourcePoId: code === "APV" ? sourcePoId : null,
       };
 
       const endpoint =
@@ -907,6 +1019,8 @@ if (code === "OR") {
     ? "or"
     : code === "INV"
     ? "invoices"
+    : code === "PO"
+    ? "purchase-orders"
     : "apv";
       const isExisting = selectedTransaction?.id;
 
@@ -1052,6 +1166,25 @@ if (code === "OR") {
 
               <div className="transaction-form-top-actions no-print">
                 <div className="transaction-status-pill">{form.status}</div>
+
+                {code === "APV" && (
+                  sourcePoId ? (
+                    <div className="transaction-status-pill">
+                      Linked to PO {sourcePoNo || `#${sourcePoId}`}
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      className="transaction-secondary-button"
+                      onClick={async () => {
+                        await loadOpenPos();
+                        setShowPoModal(true);
+                      }}
+                    >
+                      📋 Load from PO
+                    </button>
+                  )
+                )}
 
                 <div className="print-dropdown">
                   <button type="button" className="transaction-secondary-button">
@@ -1555,6 +1688,82 @@ if (code === "OR") {
 >
   Done
 </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+{/* ===================== Purchase Order Modal ===================== */}
+
+            {showPoModal && (
+              <div className="apv-modal-overlay">
+                <div className="apv-modal">
+                  <div className="apv-modal-header">
+                    <div>
+                      <h2>Open Purchase Orders</h2>
+                      <p>Select a Purchase Order to load its supplier and lines into this APV.</p>
+                    </div>
+                    <button
+                      type="button"
+                      className="apv-modal-close"
+                      onClick={() => setShowPoModal(false)}
+                    >
+                      ×
+                    </button>
+                  </div>
+
+                  <div className="apv-modal-table-wrap">
+                    <table className="apv-modal-table">
+                      <thead>
+                        <tr>
+                          <th>PO No.</th>
+                          <th>Date</th>
+                          <th>Supplier</th>
+                          <th className="text-right">Amount</th>
+                          <th className="text-center">Action</th>
+                        </tr>
+                      </thead>
+
+                      <tbody>
+                        {openPos.length === 0 ? (
+                          <tr>
+                            <td colSpan="5" className="no-apv-message">
+                              No Open Purchase Orders
+                            </td>
+                          </tr>
+                        ) : (
+                          openPos.map((po) => (
+                            <tr key={po.id}>
+                              <td>{po.voucherNo}</td>
+                              <td>{po.transactionDate}</td>
+                              <td>{po.supplierName}</td>
+                              <td className="text-right">
+                                ₱ {formatMoney(po.totalCredit || po.totalDebit)}
+                              </td>
+                              <td className="text-center">
+                                <button
+                                  type="button"
+                                  className="transaction-view-button"
+                                  onClick={() => selectPo(po)}
+                                >
+                                  Select
+                                </button>
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div className="apv-modal-footer">
+                    <button
+                      type="button"
+                      className="transaction-secondary-button"
+                      onClick={() => setShowPoModal(false)}
+                    >
+                      Cancel
+                    </button>
                   </div>
                 </div>
               </div>

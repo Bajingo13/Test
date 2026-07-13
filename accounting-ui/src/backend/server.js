@@ -1209,6 +1209,336 @@ app.get("/api/or/:id", async (req, res) => {
     console.error("GET OR DETAILS ERROR:", err);
     res.status(500).json({ message: "Failed to load OR details" });
   }
+
+  app.put("/api/or/:id", async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const { id } = req.params;
+
+    const {
+      voucherNo,
+      customerId,
+      customerName,
+      transactionDate,
+      referenceNo,
+      receiptNo,
+      description,
+      totalDebit,
+      totalCredit,
+      status,
+      lines = [],
+      invoiceApplications = [],
+    } = req.body;
+
+    await conn.beginTransaction();
+
+    /*
+     * STEP 1:
+     * Load the OR's previous applications so their payment effects
+     * can be reversed before the edited applications are saved.
+     */
+    const [oldApplications] = await conn.execute(
+      `SELECT
+         source_type AS sourceType,
+         source_id AS sourceId,
+         amount
+       FROM transaction_applications
+       WHERE applied_type = 'OR'
+         AND applied_id = ?`,
+      [id]
+    );
+
+    /*
+     * STEP 2:
+     * Remove the previous applications first.
+     * Invoice status will later be recalculated using the remaining
+     * transaction applications.
+     */
+    await conn.execute(
+      `DELETE FROM transaction_applications
+       WHERE applied_type = 'OR'
+         AND applied_id = ?`,
+      [id]
+    );
+
+    /*
+     * STEP 3:
+     * Reverse old payments applied to AR beginning balances.
+     */
+    for (const oldItem of oldApplications) {
+      const oldAmount = Number(oldItem.amount || 0);
+
+      if (oldItem.sourceType === "AR_BEGINNING") {
+        await conn.execute(
+          `
+          UPDATE arap_beginning_balance_lines
+          SET paid_amount = GREATEST(
+                COALESCE(paid_amount, 0) - ?,
+                0
+              ),
+              balance_amount = LEAST(
+                COALESCE(balance_amount, debit, 0) + ?,
+                COALESCE(debit, 0)
+              ),
+              status = CASE
+                WHEN GREATEST(COALESCE(paid_amount, 0) - ?, 0) <= 0
+                  THEN 'Unpaid'
+                WHEN LEAST(
+                  COALESCE(balance_amount, debit, 0) + ?,
+                  COALESCE(debit, 0)
+                ) > 0
+                  THEN 'Partially Paid'
+                ELSE 'Paid'
+              END
+          WHERE id = ?
+          `,
+          [
+            oldAmount,
+            oldAmount,
+            oldAmount,
+            oldAmount,
+            oldItem.sourceId,
+          ]
+        );
+      }
+    }
+
+    /*
+     * STEP 4:
+     * Recalculate invoice balances after old OR applications
+     * have been removed.
+     */
+    for (const oldItem of oldApplications) {
+      if (oldItem.sourceType === "INV") {
+        await updateInvoicePaymentStatus(conn, oldItem.sourceId);
+      }
+    }
+
+    /*
+     * STEP 5:
+     * Update the OR header.
+     */
+    await conn.execute(
+      `UPDATE or_headers SET
+         voucher_no = ?,
+         customer_id = ?,
+         customer_name = ?,
+         transaction_date = ?,
+         reference_no = ?,
+         receipt_no = ?,
+         description = ?,
+         total_debit = ?,
+         total_credit = ?,
+         status = ?
+       WHERE id = ?`,
+      [
+        voucherNo || "",
+        customerId || null,
+        customerName || "",
+        transactionDate || null,
+        referenceNo || "",
+        receiptNo || "",
+        description || "",
+        Number(totalDebit) || 0,
+        Number(totalCredit) || 0,
+        status || "Draft",
+        id,
+      ]
+    );
+
+    /*
+     * STEP 6:
+     * Replace the OR journal lines.
+     */
+    await conn.execute(
+      `DELETE FROM or_lines
+       WHERE or_id = ?`,
+      [id]
+    );
+
+    for (const line of lines) {
+      await conn.execute(
+        `INSERT INTO or_lines (
+           or_id,
+           account_id,
+           account_code,
+           account_title,
+           particulars,
+           gen_ref,
+           gen_name,
+           debit,
+           credit
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id,
+          line.accountId || null,
+          line.accountCode || "",
+          line.accountTitle || "",
+          line.particulars || "",
+          line.genRef || "",
+          line.genName || "",
+          Number(line.debit) || 0,
+          Number(line.credit) || 0,
+        ]
+      );
+    }
+
+    /*
+     * STEP 7:
+     * Save the edited invoice applications.
+     */
+    for (const appItem of invoiceApplications) {
+      const sourceId =
+        appItem.sourceId ??
+        appItem.invoiceId ??
+        null;
+
+      const paymentAmount = Number(appItem.amount || 0);
+
+      if (!sourceId || paymentAmount <= 0) {
+        continue;
+      }
+
+      const sourceType =
+        appItem.sourceType === "AR_BEGINNING"
+          ? "AR_BEGINNING"
+          : "INV";
+
+      /*
+       * Validate that the new payment does not exceed
+       * the current outstanding balance.
+       */
+      if (sourceType === "INV") {
+        const [invoiceRows] = await conn.execute(
+          `SELECT
+             COALESCE(balance_amount, total_debit, 0) AS balanceAmount
+           FROM invoice_headers
+           WHERE id = ?`,
+          [sourceId]
+        );
+
+        if (invoiceRows.length === 0) {
+          throw new Error(`Invoice ${sourceId} was not found.`);
+        }
+
+        const currentBalance = Number(
+          invoiceRows[0].balanceAmount || 0
+        );
+
+        if (paymentAmount > currentBalance) {
+          throw new Error(
+            `Payment amount cannot exceed invoice balance of ${currentBalance.toFixed(
+              2
+            )}.`
+          );
+        }
+      }
+
+      if (sourceType === "AR_BEGINNING") {
+        const [beginningRows] = await conn.execute(
+          `SELECT
+             COALESCE(balance_amount, debit, 0) AS balanceAmount
+           FROM arap_beginning_balance_lines
+           WHERE id = ?`,
+          [sourceId]
+        );
+
+        if (beginningRows.length === 0) {
+          throw new Error(
+            `AR beginning balance ${sourceId} was not found.`
+          );
+        }
+
+        const currentBalance = Number(
+          beginningRows[0].balanceAmount || 0
+        );
+
+        if (paymentAmount > currentBalance) {
+          throw new Error(
+            `Payment amount cannot exceed AR beginning balance of ${currentBalance.toFixed(
+              2
+            )}.`
+          );
+        }
+      }
+
+      await conn.execute(
+        `INSERT INTO transaction_applications (
+           source_type,
+           source_id,
+           applied_type,
+           applied_id,
+           amount,
+           application_date
+         ) VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+          sourceType,
+          sourceId,
+          "OR",
+          id,
+          paymentAmount,
+          appItem.applicationDate ||
+            transactionDate ||
+            new Date().toISOString().slice(0, 10),
+        ]
+      );
+
+      if (sourceType === "AR_BEGINNING") {
+        await conn.execute(
+          `
+          UPDATE arap_beginning_balance_lines
+          SET paid_amount = COALESCE(paid_amount, 0) + ?,
+              balance_amount = GREATEST(
+                COALESCE(balance_amount, debit, 0) - ?,
+                0
+              ),
+              status = CASE
+                WHEN GREATEST(
+                  COALESCE(balance_amount, debit, 0) - ?,
+                  0
+                ) <= 0
+                  THEN 'Paid'
+                ELSE 'Partially Paid'
+              END
+          WHERE id = ?
+          `,
+          [
+            paymentAmount,
+            paymentAmount,
+            paymentAmount,
+            sourceId,
+          ]
+        );
+      } else {
+        await updateInvoicePaymentStatus(conn, sourceId);
+      }
+    }
+
+    await conn.commit();
+
+    res.json({
+      success: true,
+      message: "Official Receipt updated successfully",
+    });
+  } catch (err) {
+    await conn.rollback();
+
+    console.error("UPDATE OR ERROR:", err);
+
+    if (err.code === "ER_DUP_ENTRY") {
+      return res.status(400).json({
+        message: "Official Receipt number already exists",
+      });
+    }
+
+    res.status(500).json({
+      message: err.message || "Failed to update Official Receipt",
+    });
+  } finally {
+    conn.release();
+  }
+});
 });
 
 // ===================== APV API =====================
@@ -1330,6 +1660,7 @@ app.get("/api/apv/:id", async (req, res) => {
         balance_amount AS balanceAmount,
         payment_status AS paymentStatus,
         status,
+        source_po_id AS sourcePoId,
         created_at AS createdAt,
         updated_at AS updatedAt
       FROM apv_headers
@@ -1404,6 +1735,7 @@ app.post("/api/apv", async (req, res) => {
       totalCredit,
       status,
       lines,
+      sourcePoId,
     } = req.body;
 
     await conn.beginTransaction();
@@ -1425,8 +1757,9 @@ app.post("/api/apv", async (req, res) => {
         paid_amount,
         balance_amount,
         payment_status,
-        status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        status,
+        source_po_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         voucherNo,
         supplierId || null,
@@ -1442,10 +1775,18 @@ app.post("/api/apv", async (req, res) => {
         total,
         "Unpaid",
         status || "DRAFT",
+        sourcePoId || null,
       ]
     );
 
     const apvId = result.insertId;
+
+    if (sourcePoId) {
+      await conn.execute(
+        "UPDATE purchase_order_headers SET status = 'Converted' WHERE id = ?",
+        [sourcePoId]
+      );
+    }
 
     for (const line of lines || []) {
       await conn.execute(
@@ -1628,6 +1969,342 @@ app.delete("/api/apv/:id", async (req, res) => {
     res.status(500).json({ message: "Failed to delete APV" });
   } finally {
     conn.release();
+  }
+});
+
+// ===================== PURCHASE ORDER API =====================
+
+app.get("/api/purchase-orders", async (req, res) => {
+  try {
+    const [rows] = await pool.execute(`
+      SELECT
+        id,
+        voucher_no AS voucherNo,
+        supplier_id AS supplierId,
+        supplier_name AS supplierName,
+        DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate,
+        reference_no AS referenceNo,
+        description,
+        remarks,
+        total_debit AS totalDebit,
+        total_credit AS totalCredit,
+        status,
+        created_at AS createdAt,
+        updated_at AS updatedAt
+      FROM purchase_order_headers
+      ORDER BY id DESC
+    `);
+
+    res.json(rows);
+  } catch (err) {
+    console.error("GET PURCHASE ORDER ERROR:", err);
+    res.status(500).json({ message: "Failed to load Purchase Order records" });
+  }
+});
+
+app.get("/api/purchase-orders/open", async (req, res) => {
+  try {
+    const { supplierId, supplierName } = req.query;
+
+    const params = [];
+    let filter = "";
+
+    if (supplierId) {
+      filter = " AND supplier_id = ? ";
+      params.push(supplierId);
+    } else if (supplierName) {
+      filter = " AND TRIM(LOWER(supplier_name)) = TRIM(LOWER(?)) ";
+      params.push(supplierName);
+    }
+
+    const [rows] = await pool.execute(
+      `
+      SELECT
+        id,
+        voucher_no AS voucherNo,
+        supplier_id AS supplierId,
+        supplier_name AS supplierName,
+        DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate,
+        reference_no AS referenceNo,
+        description,
+        total_debit AS totalDebit,
+        total_credit AS totalCredit,
+        status
+      FROM purchase_order_headers
+      WHERE status = 'Open'
+        ${filter}
+      ORDER BY id DESC
+      `,
+      params
+    );
+
+    res.json(rows);
+  } catch (err) {
+    console.error("GET OPEN PURCHASE ORDERS ERROR:", err);
+    res.status(500).json({ message: "Failed to load open Purchase Orders" });
+  }
+});
+
+app.get("/api/purchase-orders/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [headers] = await pool.execute(
+      `SELECT
+        id,
+        voucher_no AS voucherNo,
+        supplier_id AS supplierId,
+        supplier_name AS supplierName,
+        DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate,
+        reference_no AS referenceNo,
+        description,
+        remarks,
+        total_debit AS totalDebit,
+        total_credit AS totalCredit,
+        status,
+        created_at AS createdAt,
+        updated_at AS updatedAt
+      FROM purchase_order_headers
+      WHERE id = ?`,
+      [id]
+    );
+
+    if (headers.length === 0) {
+      return res.status(404).json({ message: "Purchase Order not found" });
+    }
+
+    const [lines] = await pool.execute(
+      `SELECT
+        id,
+        po_id AS poId,
+        account_id AS accountId,
+        account_code AS accountCode,
+        account_title AS accountTitle,
+        particulars,
+        debit,
+        credit,
+        gen_ref AS genRef,
+        gen_name AS genName
+      FROM purchase_order_lines
+      WHERE po_id = ?
+      ORDER BY id ASC`,
+      [id]
+    );
+
+    res.json({
+      ...headers[0],
+      lines,
+    });
+  } catch (err) {
+    console.error("GET PURCHASE ORDER DETAILS ERROR:", err);
+    res.status(500).json({ message: "Failed to load Purchase Order details" });
+  }
+});
+
+app.post("/api/purchase-orders", async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const {
+      voucherNo,
+      supplierId,
+      supplierName,
+      transactionDate,
+      referenceNo,
+      description,
+      remarks,
+      totalDebit,
+      totalCredit,
+      status,
+      lines,
+    } = req.body;
+
+    await conn.beginTransaction();
+
+    const [result] = await conn.execute(
+      `INSERT INTO purchase_order_headers (
+        voucher_no,
+        supplier_id,
+        supplier_name,
+        transaction_date,
+        reference_no,
+        description,
+        remarks,
+        total_debit,
+        total_credit,
+        status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        voucherNo,
+        supplierId || null,
+        supplierName || "",
+        transactionDate || null,
+        referenceNo || "",
+        description || "",
+        remarks || "",
+        totalDebit || 0,
+        totalCredit || 0,
+        status === "Draft" ? "Draft" : "Open",
+      ]
+    );
+
+    const poId = result.insertId;
+
+    for (const line of lines || []) {
+      await conn.execute(
+        `INSERT INTO purchase_order_lines (
+          po_id,
+          account_id,
+          account_code,
+          account_title,
+          particulars,
+          debit,
+          credit,
+          gen_ref,
+          gen_name
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          poId,
+          line.accountId || null,
+          line.accountCode || "",
+          line.accountTitle || "",
+          line.particulars || "",
+          Number(line.debit) || 0,
+          Number(line.credit) || 0,
+          line.genRef || "",
+          line.genName || "",
+        ]
+      );
+    }
+
+    await conn.commit();
+
+    res.json({
+      success: true,
+      message: "Purchase Order saved successfully",
+      id: poId,
+    });
+  } catch (err) {
+    await conn.rollback();
+    console.error("CREATE PURCHASE ORDER ERROR:", err);
+
+    if (err.code === "ER_DUP_ENTRY") {
+      return res.status(400).json({ message: "Purchase Order number already exists" });
+    }
+
+    res.status(500).json({ message: "Failed to save Purchase Order" });
+  } finally {
+    conn.release();
+  }
+});
+
+app.put("/api/purchase-orders/:id", async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const { id } = req.params;
+
+    const {
+      voucherNo,
+      supplierId,
+      supplierName,
+      transactionDate,
+      referenceNo,
+      description,
+      remarks,
+      totalDebit,
+      totalCredit,
+      status,
+      lines,
+    } = req.body;
+
+    await conn.beginTransaction();
+
+    await conn.execute(
+      `UPDATE purchase_order_headers SET
+        voucher_no = ?,
+        supplier_id = ?,
+        supplier_name = ?,
+        transaction_date = ?,
+        reference_no = ?,
+        description = ?,
+        remarks = ?,
+        total_debit = ?,
+        total_credit = ?,
+        status = ?
+      WHERE id = ?`,
+      [
+        voucherNo,
+        supplierId || null,
+        supplierName || "",
+        transactionDate || null,
+        referenceNo || "",
+        description || "",
+        remarks || "",
+        totalDebit || 0,
+        totalCredit || 0,
+        status || "Open",
+        id,
+      ]
+    );
+
+    await conn.execute("DELETE FROM purchase_order_lines WHERE po_id = ?", [id]);
+
+    for (const line of lines || []) {
+      await conn.execute(
+        `INSERT INTO purchase_order_lines (
+          po_id,
+          account_id,
+          account_code,
+          account_title,
+          particulars,
+          debit,
+          credit,
+          gen_ref,
+          gen_name
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id,
+          line.accountId || null,
+          line.accountCode || "",
+          line.accountTitle || "",
+          line.particulars || "",
+          Number(line.debit) || 0,
+          Number(line.credit) || 0,
+          line.genRef || "",
+          line.genName || "",
+        ]
+      );
+    }
+
+    await conn.commit();
+
+    res.json({
+      success: true,
+      message: "Purchase Order updated successfully",
+    });
+  } catch (err) {
+    await conn.rollback();
+    console.error("UPDATE PURCHASE ORDER ERROR:", err);
+    res.status(500).json({ message: "Failed to update Purchase Order" });
+  } finally {
+    conn.release();
+  }
+});
+
+app.delete("/api/purchase-orders/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    await pool.execute("DELETE FROM purchase_order_headers WHERE id = ?", [id]);
+
+    res.json({
+      success: true,
+      message: "Purchase Order deleted successfully",
+    });
+  } catch (err) {
+    console.error("DELETE PURCHASE ORDER ERROR:", err);
+    res.status(500).json({ message: "Failed to delete Purchase Order" });
   }
 });
 
