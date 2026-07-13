@@ -11,7 +11,7 @@ const WIDGET_LIBRARY = [
   { id: "cashForecast", title: "Cash Forecast", category: "Prediction", size: "small" },
   { id: "receivables", title: "Smart Collections", category: "Receivables", size: "medium" },
   { id: "payables", title: "Payables Monitor", category: "Payables", size: "medium" },
-  { id: "bankAccounts", title: "Bank Accounts", category: "Banking", size: "large" },
+  { id: "bankAccounts", title: "Bank Accounts", category: "Banking", size: "medium" },
   { id: "financialHealth", title: "Financial Health Score", category: "Risk", size: "medium" },
   { id: "aiAlerts", title: "Accounting Alerts", category: "Warnings", size: "medium" },
   { id: "quickActions", title: "Suggested Actions", category: "Automation", size: "medium" },

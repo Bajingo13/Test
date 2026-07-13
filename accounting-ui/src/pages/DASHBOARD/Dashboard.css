@@ -176,6 +176,7 @@
 .dashboard-widget-grid {
   display: grid;
   grid-template-columns: repeat(6, 1fr);
+  grid-auto-flow: dense;
   gap: 18px;
   align-items: start;
 }
