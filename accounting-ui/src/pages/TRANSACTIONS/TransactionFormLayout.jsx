@@ -3,6 +3,11 @@ import "./TransactionFormLayout.css";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
 
+function authHeaders() {
+  const token = localStorage.getItem("token");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 function createLine() {
   return {
     id: crypto.randomUUID(),
@@ -79,6 +84,7 @@ export default function TransactionFormLayout({
     try {
       const res = await fetch(`${API_BASE}/api/coa`, {
         credentials: "include",
+        headers: authHeaders(),
       });
 
       const data = await res.json();
@@ -98,6 +104,7 @@ export default function TransactionFormLayout({
     try {
       const res = await fetch(`${API_BASE}/api/genlib`, {
         credentials: "include",
+        headers: authHeaders(),
       });
 
       const data = await res.json();
@@ -125,9 +132,17 @@ export default function TransactionFormLayout({
 
   async function loadTransactions() {
     try {
-      const endpoint = code === "CV" ? "cv" : "apv";
+      const endpoint =
+  code === "CV"
+    ? "cv"
+    : code === "OR"
+    ? "or"
+    : code === "INV"
+    ? "invoices"
+    : "apv";
       const res = await fetch(`${API_BASE}/api/${endpoint}`, {
         credentials: "include",
+        headers: authHeaders(),
       });
 
       const data = await res.json();
@@ -158,6 +173,55 @@ export default function TransactionFormLayout({
           }))
         );
       }
+
+      if (code === "INV") {
+  setTransactions(
+    data.map((item) => ({
+      id: item.id,
+      referenceNo: item.referenceNo || item.voucherNo,
+      date: item.transactionDate,
+      party: item.customerName,
+      amount: item.totalDebit || item.totalCredit,
+      paidAmount: item.paidAmount || 0,
+      balanceAmount:
+        item.balanceAmount ?? item.totalDebit ?? item.totalCredit,
+      status: item.paymentStatus || item.status,
+      form: {
+        date: item.transactionDate,
+        referenceNo: item.referenceNo || item.voucherNo,
+        party: item.customerName,
+        partyId: item.customerId,
+        description: item.description,
+        checkNo: item.remarks || "",
+        status: item.status,
+      },
+      lines: [],
+    }))
+  );
+}
+
+if (code === "OR") {
+  setTransactions(
+    data.map((item) => ({
+      id: item.id,
+      referenceNo: item.referenceNo || item.voucherNo,
+      date: item.transactionDate,
+      party: item.customerName,
+      amount: item.totalDebit || item.totalCredit,
+      status: item.status,
+      form: {
+        date: item.transactionDate,
+        referenceNo: item.referenceNo || item.voucherNo,
+        party: item.customerName,
+        partyId: item.customerId,
+        description: item.description,
+        checkNo: item.receiptNo || "",
+        status: item.status,
+      },
+      lines: [],
+    }))
+  );
+}
 
       if (code === "CV") {
         setTransactions(
@@ -203,10 +267,24 @@ export default function TransactionFormLayout({
       `${API_BASE}/api/apv/unpaid?${query.toString()}`,
       {
         credentials: "include",
+        headers: authHeaders(),
       }
     );
 
-    async function loadUnpaidInvoices() {
+    const data = await res.json();
+
+    if (!res.ok) {
+      alert(data.message || "Failed to load unpaid APV records");
+      return;
+    }
+
+    setUnpaidApvs(data);
+  } catch (err) {
+    console.error("LOAD UNPAID APV ERROR:", err);
+  }
+}
+
+  async function loadUnpaidInvoices() {
   try {
     const customerId = form.partyId;
     const customerName = form.party;
@@ -223,6 +301,7 @@ export default function TransactionFormLayout({
       `${API_BASE}/api/invoices/unpaid?${query.toString()}`,
       {
         credentials: "include",
+        headers: authHeaders(),
       }
     );
 
@@ -232,19 +311,6 @@ export default function TransactionFormLayout({
   } catch (err) {
     console.error("LOAD UNPAID INVOICES ERROR:", err);
     setUnpaidInvoices([]);
-  }
-}
-
-    const data = await res.json();
-
-    if (!res.ok) {
-      alert(data.message || "Failed to load unpaid APV records");
-      return;
-    }
-
-    setUnpaidApvs(data);
-  } catch (err) {
-    console.error("LOAD UNPAID APV ERROR:", err);
   }
 }
 
@@ -308,8 +374,16 @@ export default function TransactionFormLayout({
     );
 
     setSelectedTransaction(null);
-    setApvApplications([]);
-    setError("");
+
+setApvApplications([]);
+setUnpaidApvs([]);
+setShowApvModal(false);
+
+setInvoiceApplications([]);
+setUnpaidInvoices([]);
+setShowInvoiceModal(false);
+
+setError("");
   }
 
   function handleAddNew() {
@@ -375,23 +449,51 @@ export default function TransactionFormLayout({
     setSelectedTransaction(transaction);
 
     try {
-      const endpoint = code === "CV" ? "cv" : "apv";
+      const endpoint =
+  code === "CV"
+    ? "cv"
+    : code === "OR"
+    ? "or"
+    : code === "INV"
+    ? "invoices"
+    : "apv";
       const res = await fetch(`${API_BASE}/api/${endpoint}/${transaction.id}`, {
         credentials: "include",
+        headers: authHeaders(),
       });
 
       const data = await res.json();
 
       if (res.ok) {
         setForm({
-          date: data.transactionDate,
-          referenceNo: data.referenceNo || data.voucherNo,
-          party: code === "CV" ? data.payeeName : data.supplierName,
-          partyId: code === "CV" ? data.payeeId : data.supplierId,
-          description: data.description,
-          checkNo: code === "CV" ? data.checkNo || "" : data.remarks || "",
-          status: data.status,
-        });
+  date: data.transactionDate,
+  referenceNo: data.referenceNo || data.voucherNo,
+
+  party:
+    code === "CV"
+      ? data.payeeName
+      : code === "OR" || code === "INV"
+      ? data.customerName
+      : data.supplierName,
+
+  partyId:
+    code === "CV"
+      ? data.payeeId
+      : code === "OR" || code === "INV"
+      ? data.customerId
+      : data.supplierId,
+
+  description: data.description,
+
+  checkNo:
+    code === "CV"
+      ? data.checkNo || ""
+      : code === "OR"
+      ? data.receiptNo || ""
+      : data.remarks || "",
+
+  status: data.status,
+});
 
         setLines(
           data.lines.map((line) => ({
@@ -405,7 +507,17 @@ export default function TransactionFormLayout({
           }))
         );
 
-        setApvApplications(data.applications || []);
+       if (code === "CV") {
+  setApvApplications(data.applications || []);
+} else {
+  setApvApplications([]);
+}
+
+if (code === "OR") {
+  setInvoiceApplications(data.applications || []);
+} else {
+  setInvoiceApplications([]);
+}
         setMode("form");
         return;
       }
@@ -578,95 +690,6 @@ if (code === "OR") {
       return;
     }
 
-function toggleInvoiceApplication(invoice) {
-  setInvoiceApplications((prev) => {
-    const exists = prev.find(
-      (item) =>
-        Number(item.sourceId || item.invoiceId || item.id) === Number(invoice.id)
-    );
-
-    if (exists) {
-      return prev.filter(
-        (item) =>
-          Number(item.sourceId || item.invoiceId || item.id) !== Number(invoice.id)
-      );
-    }
-
-    return [
-      ...prev,
-      {
-        sourceType: invoice.sourceType || "INV",
-        sourceId: invoice.id,
-        invoiceId: invoice.id,
-        voucherNo: invoice.voucherNo,
-        customerName: invoice.customerName,
-        totalAmount: Number(invoice.totalAmount || 0),
-        paidAmount: Number(invoice.paidAmount || 0),
-        balanceAmount: Number(
-          invoice.balanceAmount || invoice.totalAmount || 0
-        ),
-        amount: Number(invoice.balanceAmount || invoice.totalAmount || 0),
-        applicationDate: form.date,
-      },
-    ];
-  });
-}
-
-function updateInvoiceApplicationAmount(invoiceId, value) {
-  setInvoiceApplications((prev) =>
-    prev.map((item) =>
-      Number(item.sourceId || item.invoiceId) === Number(invoiceId)
-        ? { ...item, amount: value }
-        : item
-    )
-  );
-}
-
-function applySelectedInvoicesToLines() {
-  if (invoiceApplications.length === 0) {
-    setShowInvoiceModal(false);
-    return;
-  }
-
-  const totalPayment = invoiceApplications.reduce(
-    (sum, item) => sum + Number(item.amount || 0),
-    0
-  );
-
-  const receivableLine = lines.find((line) =>
-    isAPorARAccount(line.accountId)
-  );
-
-  if (receivableLine) {
-    setLines((prev) =>
-      prev.map((line) => {
-        if (line.id !== receivableLine.id) return line;
-
-        const firstInvoice = invoiceApplications[0];
-
-        return {
-          ...line,
-          credit: String(totalPayment),
-          debit: "",
-          genRef:
-            firstInvoice?.voucherNo ||
-            firstInvoice?.genRef ||
-            line.genRef ||
-            "",
-          genName:
-            firstInvoice?.customerName ||
-            line.genName ||
-            "",
-        };
-      })
-    );
-  }
-
-  setShowInvoiceModal(false);
-}
-
-
-
     const totalPayment = apvApplications.reduce(
       (sum, item) => sum + Number(item.amount || 0),
       0
@@ -695,19 +718,113 @@ function applySelectedInvoicesToLines() {
     setShowApvModal(false);
   }
 
-  async function handlePostTransactionClick() {
-  if (code === "CV") {
-    const hasAPorARLine = lines.some((line) =>
+  function toggleInvoiceApplication(invoice) {
+    setInvoiceApplications((prev) => {
+      const exists = prev.find(
+        (item) =>
+          Number(item.sourceId || item.invoiceId || item.id) === Number(invoice.id)
+      );
+
+      if (exists) {
+        return prev.filter(
+          (item) =>
+            Number(item.sourceId || item.invoiceId || item.id) !== Number(invoice.id)
+        );
+      }
+
+      return [
+        ...prev,
+        {
+          sourceType: invoice.sourceType || "INV",
+          sourceId: invoice.id,
+          invoiceId: invoice.id,
+          voucherNo: invoice.voucherNo,
+          customerName: invoice.customerName,
+          totalAmount: Number(invoice.totalAmount || 0),
+          paidAmount: Number(invoice.paidAmount || 0),
+          balanceAmount: Number(
+            invoice.balanceAmount || invoice.totalAmount || 0
+          ),
+          amount: Number(invoice.balanceAmount || invoice.totalAmount || 0),
+          applicationDate: form.date,
+        },
+      ];
+    });
+  }
+
+  function updateInvoiceApplicationAmount(invoiceId, value) {
+    setInvoiceApplications((prev) =>
+      prev.map((item) =>
+        Number(item.sourceId || item.invoiceId) === Number(invoiceId)
+          ? { ...item, amount: value }
+          : item
+      )
+    );
+  }
+
+  function applySelectedInvoicesToLines() {
+    if (invoiceApplications.length === 0) {
+      setShowInvoiceModal(false);
+      return;
+    }
+
+    const totalPayment = invoiceApplications.reduce(
+      (sum, item) => sum + Number(item.amount || 0),
+      0
+    );
+
+    const receivableLine = lines.find((line) =>
       isAPorARAccount(line.accountId)
     );
 
-    if (hasAPorARLine) {
-      await loadUnpaidApvs();
-      setShowApvModal(true);
-      return;
+    if (receivableLine) {
+      setLines((prev) =>
+        prev.map((line) => {
+          if (line.id !== receivableLine.id) return line;
+
+          const firstInvoice = invoiceApplications[0];
+
+          return {
+            ...line,
+            credit: String(totalPayment),
+            debit: "",
+            genRef:
+              firstInvoice?.voucherNo ||
+              firstInvoice?.genRef ||
+              line.genRef ||
+              "",
+            genName:
+              firstInvoice?.customerName ||
+              line.genName ||
+              "",
+          };
+        })
+      );
     }
+
+    setShowInvoiceModal(false);
   }
 
+  async function handlePostTransactionClick() {
+  const hasAPorARLine = lines.some((line) =>
+    isAPorARAccount(line.accountId)
+  );
+
+  // Check Voucher: apply payment to APV
+  if (code === "CV" && hasAPorARLine) {
+    await loadUnpaidApvs();
+    setShowApvModal(true);
+    return;
+  }
+
+  // Official Receipt: apply payment to Invoice
+  if (code === "OR" && hasAPorARLine) {
+    await loadUnpaidInvoices();
+    setShowInvoiceModal(true);
+    return;
+  }
+
+  // APV and Invoice post normally
   handleSave("Posted");
 }
 
@@ -727,13 +844,20 @@ function applySelectedInvoicesToLines() {
 
       const payload = {
         voucherNo: updatedForm.referenceNo,
+
         supplierId: updatedForm.partyId || null,
         supplierName: updatedForm.party,
+
+        customerId: updatedForm.partyId || null,
+        customerName: updatedForm.party,
+
         transactionDate: updatedForm.date,
         dueDate: updatedForm.date,
         referenceNo: updatedForm.referenceNo,
         description: updatedForm.description,
         remarks: updatedForm.checkNo,
+        receiptNo: updatedForm.checkNo,
+        
         status,
         totalDebit: totals.totalDebit,
         totalCredit: totals.totalCredit,
@@ -763,9 +887,27 @@ function applySelectedInvoicesToLines() {
                 applicationDate: form.date,
               }))
             : [],
+
+            invoiceApplications:
+  code === "OR"
+    ? invoiceApplications.map((item) => ({
+        sourceType: item.sourceType || "INV",
+        sourceId: Number(item.sourceId || item.invoiceId),
+        appliedType: "OR",
+        amount: Number(item.amount || 0),
+        applicationDate: form.date,
+      }))
+    : [],
       };
 
-      const endpoint = code === "CV" ? "cv" : "apv";
+      const endpoint =
+  code === "CV"
+    ? "cv"
+    : code === "OR"
+    ? "or"
+    : code === "INV"
+    ? "invoices"
+    : "apv";
       const isExisting = selectedTransaction?.id;
 
       const res = await fetch(
@@ -776,6 +918,7 @@ function applySelectedInvoicesToLines() {
           method: isExisting ? "PUT" : "POST",
           headers: {
             "Content-Type": "application/json",
+            ...authHeaders(),
           },
           credentials: "include",
           body: JSON.stringify(payload),
@@ -792,8 +935,12 @@ function applySelectedInvoicesToLines() {
       alert(`${title} ${status} saved successfully.`);
       await loadTransactions();
       if (code === "CV") {
-        await loadUnpaidApvs();
-      }
+  await loadUnpaidApvs();
+}
+
+if (code === "OR") {
+  await loadUnpaidInvoices();
+}
       setMode("list");
     } catch (err) {
       console.error("SAVE TRANSACTION ERROR:", err);
@@ -1175,7 +1322,7 @@ function applySelectedInvoicesToLines() {
             </div>
 
             
-// ===================== APV Modal =====================
+{/* ===================== APV Modal ===================== */}
 
             {showApvModal && (
               <div className="apv-modal-overlay">
@@ -1294,20 +1441,20 @@ function applySelectedInvoicesToLines() {
               </div>
             )}  
 
-// ===================== INVOICE Modal =====================
+{/* ===================== INVOICE Modal ===================== */}
 
-            {showApvModal && (
+            {showInvoiceModal && (
               <div className="apv-modal-overlay">
                 <div className="apv-modal">
                   <div className="apv-modal-header">
                     <div>
-                      <h2>Outstanding APV</h2>
-                      <p>Select APV records to apply this Check Voucher payment.</p>
+                      <h2>Outstanding Invoice</h2>
+                      <p>Select Invoice records to apply this Official Receipt payment.</p>
                     </div>
                     <button
                       type="button"
                       className="apv-modal-close"
-                      onClick={() => setShowApvModal(false)}
+                      onClick={() => setShowInvoiceModal(false)}
                     >
                       ×
                     </button>
@@ -1318,52 +1465,52 @@ function applySelectedInvoicesToLines() {
                       <thead>
                         <tr>
                           <th>Apply</th>
-                          <th>APV No.</th>
-                          <th>Supplier</th>
+                          <th>Invoice No.</th>
+                          <th>Customer</th>
                           <th className="text-right">Amount</th>
                           <th className="text-right">Paid</th>
                           <th className="text-right">Balance</th>
-                          <th className="text-right">Amount to Pay</th>
+                          <th className="text-right">Amount to Receive</th>
                         </tr>
                       </thead>
 
                       <tbody>
-                        {unpaidApvs.length === 0 ? (
+                        {unpaidInvoices.length === 0 ? (
   <tr>
     <td colSpan="7" className="no-apv-message">
-      No Payables Have Been Setup
+      No Outstanding Invoices
     </td>
   </tr>
 ) : (
-                          unpaidApvs.map((apv) => {
-                            const selected = apvApplications.find(
-                              (item) => Number(item.sourceId || item.apvId) === Number(apv.id)
+                          unpaidInvoices.map((invoice) => {
+                            const selected = invoiceApplications.find(
+                              (item) => Number(item.sourceId || item.invoiceId) === Number(invoice.id)
                             );
 
                             return (
-                              <tr key={apv.id}>
+                              <tr key={invoice.id}>
                                 <td className="text-center">
                                   <input
                                     type="checkbox"
                                     checked={Boolean(selected)}
-                                    onChange={() => toggleApvApplication(apv)}
+                                    onChange={() => toggleInvoiceApplication(invoice)}
                                   />
                                 </td>
-                                <td>{apv.voucherNo}</td>
-                                <td>{apv.supplierName}</td>
-                                <td className="text-right">₱ {formatMoney(apv.totalAmount)}</td>
-                                <td className="text-right">₱ {formatMoney(apv.paidAmount)}</td>
-                                <td className="text-right">₱ {formatMoney(apv.balanceAmount)}</td>
+                                <td>{invoice.voucherNo}</td>
+                                <td>{invoice.customerName}</td>
+                                <td className="text-right">₱ {formatMoney(invoice.totalAmount)}</td>
+                                <td className="text-right">₱ {formatMoney(invoice.paidAmount)}</td>
+                                <td className="text-right">₱ {formatMoney(invoice.balanceAmount)}</td>
                                 <td>
                                   <input
                                     type="number"
                                     min="0"
-                                    max={apv.balanceAmount}
+                                    max={invoice.balanceAmount}
                                     step="0.01"
                                     disabled={!selected}
                                     value={selected?.amount || ""}
                                     onChange={(e) =>
-                                      updateApvApplicationAmount(apv.id, e.target.value)
+                                      updateInvoiceApplicationAmount(invoice.id, e.target.value)
                                     }
                                     className="apv-payment-input"
                                   />
@@ -1379,7 +1526,7 @@ function applySelectedInvoicesToLines() {
                   <div className="apv-modal-footer">
                     <div className="apv-modal-total">
                       Total Applied: ₱ {formatMoney(
-                        apvApplications.reduce(
+                        invoiceApplications.reduce(
                           (sum, item) => sum + Number(item.amount || 0),
                           0
                         )
@@ -1388,7 +1535,7 @@ function applySelectedInvoicesToLines() {
                     <button
                       type="button"
                       className="transaction-secondary-button"
-                      onClick={() => setShowApvModal(false)}
+                      onClick={() => setShowInvoiceModal(false)}
                     >
                       Cancel
                     </button>
@@ -1396,13 +1543,13 @@ function applySelectedInvoicesToLines() {
   type="button"
   className="transaction-primary-button"
   onClick={() => {
-    if (unpaidApvs.length === 0) {
-      setShowApvModal(false);
+    if (unpaidInvoices.length === 0) {
+      setShowInvoiceModal(false);
       handleSave("Posted");
       return;
     }
 
-    applySelectedApvsToLines();
+    applySelectedInvoicesToLines();
     setTimeout(() => handleSave("Posted"), 100);
   }}
 >
