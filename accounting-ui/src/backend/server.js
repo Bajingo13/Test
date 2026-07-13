@@ -2308,6 +2308,102 @@ app.delete("/api/purchase-orders/:id", async (req, res) => {
   }
 });
 
+// ===================== POSTING API =====================
+
+app.get("/api/posting/pending", async (req, res) => {
+  try {
+    const [rows] = await pool.execute(`
+      SELECT 'INV' AS sourceType, id, voucher_no AS voucherNo, customer_name AS party,
+        DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate, total_debit AS amount, status
+      FROM invoice_headers WHERE UPPER(status) = 'DRAFT'
+
+      UNION ALL
+
+      SELECT 'OR' AS sourceType, id, voucher_no AS voucherNo, customer_name AS party,
+        DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate, total_debit AS amount, status
+      FROM or_headers WHERE UPPER(status) = 'DRAFT'
+
+      UNION ALL
+
+      SELECT 'APV' AS sourceType, id, voucher_no AS voucherNo, supplier_name AS party,
+        DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate, total_credit AS amount, status
+      FROM apv_headers WHERE UPPER(status) = 'DRAFT'
+
+      UNION ALL
+
+      SELECT 'CV' AS sourceType, id, voucher_no AS voucherNo, payee_name AS party,
+        DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate, total_credit AS amount, status
+      FROM cv_headers WHERE UPPER(status) = 'DRAFT'
+
+      UNION ALL
+
+      SELECT 'PO' AS sourceType, id, voucher_no AS voucherNo, supplier_name AS party,
+        DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate, total_credit AS amount, status
+      FROM purchase_order_headers WHERE UPPER(status) = 'DRAFT'
+
+      ORDER BY transactionDate DESC
+    `);
+
+    res.json(rows);
+  } catch (err) {
+    console.error("GET PENDING POSTING ERROR:", err);
+    res.status(500).json({ message: "Failed to load pending transactions" });
+  }
+});
+
+const AR_POST_TARGETS = [
+  { table: "invoice_headers", status: "Posted" },
+  { table: "or_headers", status: "Posted" },
+];
+
+const AP_POST_TARGETS = [
+  { table: "apv_headers", status: "Posted" },
+  { table: "cv_headers", status: "Posted" },
+  { table: "purchase_order_headers", status: "Open" },
+];
+
+app.post("/api/posting/post", async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const { scope } = req.body;
+
+    const targets =
+      scope === "ar"
+        ? AR_POST_TARGETS
+        : scope === "ap"
+        ? AP_POST_TARGETS
+        : [...AR_POST_TARGETS, ...AP_POST_TARGETS];
+
+    await conn.beginTransaction();
+
+    let postedCount = 0;
+
+    for (const target of targets) {
+      const [result] = await conn.execute(
+        `UPDATE ${target.table} SET status = ? WHERE UPPER(status) = 'DRAFT'`,
+        [target.status]
+      );
+
+      postedCount += result.affectedRows;
+    }
+
+    await conn.commit();
+
+    res.json({
+      success: true,
+      message: `${postedCount} transaction(s) posted successfully`,
+      postedCount,
+    });
+  } catch (err) {
+    await conn.rollback();
+    console.error("BULK POSTING ERROR:", err);
+    res.status(500).json({ message: "Failed to post transactions" });
+  } finally {
+    conn.release();
+  }
+});
+
 // ===================== PAYMENT APPLICATION API =====================
 
 app.post("/api/apply-payment", async (req, res) => {

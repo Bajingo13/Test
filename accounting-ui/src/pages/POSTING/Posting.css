@@ -1,0 +1,103 @@
+.posting-page {
+  padding: 28px;
+  background: #f5f7fb;
+  min-height: 100vh;
+  color: #1f2937;
+}
+
+.posting-header {
+  margin-bottom: 24px;
+}
+
+.posting-header h1 {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 800;
+}
+
+.posting-header p {
+  margin: 4px 0 0;
+  color: #6b7280;
+}
+
+.posting-card {
+  background: white;
+  padding: 22px;
+  border-radius: 14px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
+}
+
+.posting-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+
+.posting-btn {
+  padding: 10px 18px;
+  border-radius: 8px;
+  border: 1px solid #d1d5db;
+  background: white;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.posting-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.posting-btn-primary {
+  background: #1d4ed8;
+  color: white;
+  border-color: #1d4ed8;
+}
+
+.posting-btn-secondary {
+  margin-left: auto;
+}
+
+.posting-table-container {
+  overflow-x: auto;
+}
+
+.posting-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.posting-table th,
+.posting-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #e5e7eb;
+  text-align: left;
+  font-size: 14px;
+}
+
+.posting-table th {
+  color: #6b7280;
+  font-weight: 700;
+  text-transform: uppercase;
+  font-size: 12px;
+}
+
+.posting-table .text-right {
+  text-align: right;
+}
+
+.posting-empty {
+  text-align: center;
+  color: #9ca3af;
+  padding: 24px !important;
+}
+
+.posting-type-badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: #4338ca;
+  font-size: 12px;
+  font-weight: 700;
+}

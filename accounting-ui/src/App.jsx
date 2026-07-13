@@ -34,6 +34,9 @@ import PettyCashVoucher from "./pages/TRANSACTIONS/PettyCashVoucher";
 import DebitCreditMemo from "./pages/TRANSACTIONS/DebitCreditMemo";
 import PurchaseOrder from "./pages/TRANSACTIONS/PurchaseOrder";
 
+// POSTING
+import Posting from "./pages/POSTING/Posting";
+
 
 // REPORTS
 import ReportPage from "./pages/REPORTS/ReportPage";
@@ -118,7 +121,7 @@ function AppLayout() {
           <Route path="/transactions/journal-entry" element={<JournalEntry />} />
           <Route path="/transactions/purchase-order" element={<PurchaseOrder />} />
 
-          <Route path="/posting" element={<PlaceholderPage title="Posting" />} />
+          <Route path="/posting" element={<Posting />} />
           <Route path="/ledger" element={<PlaceholderPage title="Ledger" />} />
 
           <Route path="/reports" element={<Navigate to="/reports/trial-balance" replace />} />
