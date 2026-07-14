@@ -191,6 +191,16 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* BALANCE (Subsidiary Ledger only) */
+.aa-table th:nth-child(7),
+.aa-table td:nth-child(7) {
+  width: 150px;
+  text-align: right;
+  padding-right: 18px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
 .amount {
   text-align: right;
   white-space: nowrap;

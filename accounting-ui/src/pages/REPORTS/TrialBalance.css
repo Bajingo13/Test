@@ -206,6 +206,56 @@ TRIAL BALANCE TABLE
   font-variant-numeric: tabular-nums;
 }
 
+/* ==========================
+AR/AP AGING TABLE (9 columns):
+PARTY | REF NO | DUE DATE | CURRENT | 1-30 | 31-60 | 61-90 | OVER 90 | BALANCE
+========================== */
+
+.tb-report-table.aging-table th,
+.tb-report-table.aging-table td {
+  width: auto;
+}
+
+.tb-report-table.aging-table th:nth-child(1),
+.tb-report-table.aging-table td:nth-child(1) {
+  width: 16%;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tb-report-table.aging-table th:nth-child(2),
+.tb-report-table.aging-table td:nth-child(2) {
+  width: 11%;
+  text-align: center;
+}
+
+.tb-report-table.aging-table th:nth-child(3),
+.tb-report-table.aging-table td:nth-child(3) {
+  width: 10%;
+  text-align: center;
+}
+
+.tb-report-table.aging-table th:nth-child(n+4),
+.tb-report-table.aging-table td:nth-child(n+4) {
+  width: 9%;
+  text-align: right;
+  padding-right: 14px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.tb-report-table.aging-table th:nth-child(9),
+.tb-report-table.aging-table td:nth-child(9) {
+  width: 12%;
+}
+
+.tb-report-table.aging-table tfoot td:nth-child(n+4) {
+  text-align: right;
+  padding-right: 14px;
+}
+
 .tb-report-table tfoot tr {
   border-top: 3px solid #000;
 }

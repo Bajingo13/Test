@@ -129,7 +129,7 @@ export default function ARAging() {
             </div>
           </div>
 
-          <table className="tb-report-table">
+          <table className="tb-report-table aging-table">
             <thead>
               <tr>
                 <th>CUSTOMER</th>

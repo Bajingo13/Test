@@ -3709,24 +3709,54 @@ app.get("/api/reports/ar-aging", async (req, res) => {
     const [rows] = await pool.execute(
       `
       SELECT
-        'AR BEGINNING' AS source_type,
-        l.id,
-        l.reference_no,
-        l.party_name,
-        DATE_FORMAT(h.balance_date, '%Y-%m-%d') AS transaction_date,
-        DATE_FORMAT(l.due_date, '%Y-%m-%d') AS due_date,
-        l.debit AS total_amount,
-        COALESCE(l.paid_amount, 0) AS paid_amount,
-        COALESCE(l.balance_amount, l.debit, 0) AS balance_amount,
-        GREATEST(DATEDIFF(?, COALESCE(l.due_date, h.balance_date)), 0) AS days_past_due
-      FROM arap_beginning_balance_lines l
-      JOIN arap_beginning_balance_headers h ON h.id = l.header_id
-      WHERE h.balance_type = 'AR'
-        AND COALESCE(l.balance_amount, l.debit, 0) > 0
-        AND COALESCE(l.status, 'Unpaid') != 'Paid'
-      ORDER BY l.party_name ASC, l.due_date ASC
+        source_type,
+        id,
+        reference_no,
+        party_name,
+        transaction_date,
+        due_date,
+        total_amount,
+        paid_amount,
+        balance_amount,
+        days_past_due
+      FROM (
+        SELECT
+          'INV' AS source_type,
+          id,
+          voucher_no AS reference_no,
+          customer_name AS party_name,
+          DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transaction_date,
+          DATE_FORMAT(due_date, '%Y-%m-%d') AS due_date,
+          total_debit AS total_amount,
+          COALESCE(paid_amount, 0) AS paid_amount,
+          COALESCE(balance_amount, total_debit, 0) AS balance_amount,
+          GREATEST(DATEDIFF(?, COALESCE(due_date, transaction_date)), 0) AS days_past_due
+        FROM invoice_headers
+        WHERE COALESCE(balance_amount, total_debit, 0) > 0
+          AND COALESCE(payment_status, 'Unpaid') != 'Paid'
+
+        UNION ALL
+
+        SELECT
+          'AR BEGINNING' AS source_type,
+          l.id,
+          l.reference_no,
+          l.party_name,
+          DATE_FORMAT(h.balance_date, '%Y-%m-%d') AS transaction_date,
+          DATE_FORMAT(l.due_date, '%Y-%m-%d') AS due_date,
+          l.debit AS total_amount,
+          COALESCE(l.paid_amount, 0) AS paid_amount,
+          COALESCE(l.balance_amount, l.debit, 0) AS balance_amount,
+          GREATEST(DATEDIFF(?, COALESCE(l.due_date, h.balance_date)), 0) AS days_past_due
+        FROM arap_beginning_balance_lines l
+        JOIN arap_beginning_balance_headers h ON h.id = l.header_id
+        WHERE h.balance_type = 'AR'
+          AND COALESCE(l.balance_amount, l.debit, 0) > 0
+          AND COALESCE(l.status, 'Unpaid') != 'Paid'
+      ) aging
+      ORDER BY party_name ASC, due_date ASC
       `,
-      [reportDate]
+      [reportDate, reportDate]
     );
 
     res.json(rows);
@@ -3734,6 +3764,112 @@ app.get("/api/reports/ar-aging", async (req, res) => {
     console.error("AR AGING REPORT ERROR:", err.message);
     res.status(500).json({
       message: "Failed to generate AR aging report",
+      error: err.message,
+    });
+  }
+});
+
+// ====================== SUBSIDIARY LEDGER REPORT ======================
+
+app.get("/api/reports/subsidiary-ledger", async (req, res) => {
+  try {
+    const { type, partyId, from, to } = req.query;
+
+    if (!type || !["AR", "AP"].includes(type)) {
+      return res.status(400).json({ message: "type must be AR or AP" });
+    }
+
+    if (!partyId) {
+      return res.status(400).json({ message: "partyId is required" });
+    }
+
+    const query =
+      type === "AR"
+        ? `
+      SELECT
+        transaction_date, source_type, reference_no, transaction_id, particulars, debit, credit,
+        SUM(debit - credit) OVER (ORDER BY transaction_date, sort_order, id) AS running_balance
+      FROM (
+        SELECT
+          id, DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transaction_date,
+          'INV' AS source_type, voucher_no AS reference_no, id AS transaction_id,
+          COALESCE(description, '') AS particulars,
+          COALESCE(total_debit, 0) AS debit, 0 AS credit, 1 AS sort_order
+        FROM invoice_headers
+        WHERE customer_id = ? AND transaction_date BETWEEN ? AND ?
+
+        UNION ALL
+
+        SELECT
+          id, DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transaction_date,
+          'OR' AS source_type, voucher_no AS reference_no, id AS transaction_id,
+          COALESCE(description, '') AS particulars,
+          0 AS debit, COALESCE(total_debit, 0) AS credit, 2 AS sort_order
+        FROM or_headers
+        WHERE customer_id = ? AND transaction_date BETWEEN ? AND ?
+
+        UNION ALL
+
+        SELECT
+          l.id, DATE_FORMAT(h.balance_date, '%Y-%m-%d') AS transaction_date,
+          'AR BEGINNING' AS source_type, l.reference_no, NULL AS transaction_id,
+          COALESCE(l.party_name, '') AS particulars,
+          COALESCE(l.debit, 0) AS debit, 0 AS credit, 0 AS sort_order
+        FROM arap_beginning_balance_lines l
+        JOIN arap_beginning_balance_headers h ON h.id = l.header_id
+        WHERE h.balance_type = ? AND l.party_id = ? AND h.balance_date BETWEEN ? AND ?
+      ) sl
+      ORDER BY transaction_date, sort_order, id
+      `
+        : `
+      SELECT
+        transaction_date, source_type, reference_no, transaction_id, particulars, debit, credit,
+        SUM(credit - debit) OVER (ORDER BY transaction_date, sort_order, id) AS running_balance
+      FROM (
+        SELECT
+          id, DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transaction_date,
+          'CV' AS source_type, voucher_no AS reference_no, id AS transaction_id,
+          COALESCE(description, '') AS particulars,
+          COALESCE(total_credit, 0) AS debit, 0 AS credit, 2 AS sort_order
+        FROM cv_headers
+        WHERE payee_id = ? AND transaction_date BETWEEN ? AND ?
+
+        UNION ALL
+
+        SELECT
+          id, DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transaction_date,
+          'APV' AS source_type, voucher_no AS reference_no, id AS transaction_id,
+          COALESCE(description, '') AS particulars,
+          0 AS debit, COALESCE(total_credit, 0) AS credit, 1 AS sort_order
+        FROM apv_headers
+        WHERE supplier_id = ? AND transaction_date BETWEEN ? AND ?
+
+        UNION ALL
+
+        SELECT
+          l.id, DATE_FORMAT(h.balance_date, '%Y-%m-%d') AS transaction_date,
+          'AP BEGINNING' AS source_type, l.reference_no, NULL AS transaction_id,
+          COALESCE(l.party_name, '') AS particulars,
+          0 AS debit, COALESCE(l.credit, 0) AS credit, 0 AS sort_order
+        FROM arap_beginning_balance_lines l
+        JOIN arap_beginning_balance_headers h ON h.id = l.header_id
+        WHERE h.balance_type = ? AND l.party_id = ? AND h.balance_date BETWEEN ? AND ?
+      ) sl
+      ORDER BY transaction_date, sort_order, id
+      `;
+
+    const queryParams =
+      type === "AR"
+        ? [partyId, from, to, partyId, from, to, "AR", partyId, from, to]
+        : [partyId, from, to, partyId, from, to, "AP", partyId, from, to];
+
+    const [rows] = await pool.execute(query, queryParams);
+
+    res.json(rows);
+  } catch (err) {
+    console.error("SUBSIDIARY LEDGER REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate subsidiary ledger",
       error: err.message,
     });
   }

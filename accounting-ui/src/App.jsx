@@ -50,6 +50,7 @@ import ARAgingReport from "./pages/REPORTS/ARAging.jsx";
 import APAgingReport from "./pages/REPORTS/APAging.jsx";
 import InputVAT from "./pages/REPORTS/InputVAT.jsx";
 import OutputVAT from "./pages/REPORTS/OutputVAT.jsx";
+import SubsidiaryLedger from "./pages/REPORTS/SubsidiaryLedger.jsx";
 
 function PlaceholderPage({ title }) {
   return (
@@ -134,6 +135,7 @@ function AppLayout() {
           <Route path="/reports/ap-aging" element={<APAgingReport />} />
           <Route path="/reports/input-vat-report" element={<InputVAT />} />
           <Route path="/reports/output-vat-report" element={<OutputVAT />} />
+          <Route path="/reports/subsidiary-ledger" element={<SubsidiaryLedger />} />
 
           <Route
   path="/beginning-balances/gl"
