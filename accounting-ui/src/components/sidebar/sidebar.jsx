@@ -27,6 +27,7 @@ export default function Sidebar({ sidebarOpen, setSidebarOpen }) {
     { name: "EWT Library", path: "/ewt-library" },
     { name: "Fixed Asset Setup", path: "/fixed-asset-setup" },
     { name: "Prepaid Account Setup", path: "/prepaid-account-setup" },
+    { name: "Company Profile", path: "/company-profile" },
   ];
 
   const beginningBalanceItems = [
@@ -62,6 +63,7 @@ export default function Sidebar({ sidebarOpen, setSidebarOpen }) {
     { name: "final withholding tax report", path: "/reports/final-withholding-tax-report" },
     { name: "input vat report", path: "/reports/input-vat-report" },
     { name: "output vat report", path: "/reports/output-vat-report" },
+    { name: "BIR Form 2307", path: "/reports/2307" },
   ];
 
   const prepaidReportItems = [

@@ -4497,6 +4497,130 @@ app.get("/api/reports/alphalist", async (req, res) => {
   }
 });
 
+// ===================== COMPANY PROFILE API =====================
+
+app.get("/api/company-profile", async (req, res) => {
+  try {
+    const [rows] = await pool.execute(
+      "SELECT payor_name AS payorName, payor_tin AS payorTin, payor_address AS payorAddress, payor_zip AS payorZip FROM company_profile WHERE id = 1"
+    );
+
+    res.json(rows[0] || { payorName: "", payorTin: "", payorAddress: "", payorZip: "" });
+  } catch (err) {
+    console.error("GET COMPANY PROFILE ERROR:", err);
+    res.status(500).json({ message: "Failed to load company profile" });
+  }
+});
+
+app.put("/api/company-profile", async (req, res) => {
+  try {
+    const { payorName, payorTin, payorAddress, payorZip } = req.body;
+
+    await pool.execute(
+      `UPDATE company_profile SET payor_name = ?, payor_tin = ?, payor_address = ?, payor_zip = ? WHERE id = 1`,
+      [payorName || "", payorTin || "", payorAddress || "", payorZip || ""]
+    );
+
+    res.json({ success: true, message: "Company profile saved successfully" });
+  } catch (err) {
+    console.error("UPDATE COMPANY PROFILE ERROR:", err);
+    res.status(500).json({ message: "Failed to save company profile" });
+  }
+});
+
+// ====================== BIR FORM 2307 REPORT ======================
+// Certificate of Creditable Tax Withheld at Source, per payee per quarter.
+
+app.get("/api/reports/2307", async (req, res) => {
+  try {
+    const { supplierId, year, quarter } = req.query;
+
+    if (!supplierId || !year || !quarter) {
+      return res.status(400).json({ message: "supplierId, year, and quarter are required" });
+    }
+
+    const q = Number(quarter);
+    if (![1, 2, 3, 4].includes(q)) {
+      return res.status(400).json({ message: "quarter must be 1, 2, 3, or 4" });
+    }
+
+    const firstMonth = (q - 1) * 3 + 1;
+    const secondMonth = firstMonth + 1;
+    const thirdMonth = firstMonth + 2;
+
+    const [payeeRows] = await pool.execute(
+      `SELECT name, tin, address1, address2, address3, atc_code AS atcCode
+       FROM general_libraries WHERE id = ?`,
+      [supplierId]
+    );
+
+    if (payeeRows.length === 0) {
+      return res.status(404).json({ message: "Payee not found" });
+    }
+
+    const payee = payeeRows[0];
+    const payeeAddress = [payee.address1, payee.address2, payee.address3]
+      .filter(Boolean)
+      .join(", ");
+
+    const [payorRows] = await pool.execute(
+      "SELECT payor_name AS payorName, payor_tin AS payorTin, payor_address AS payorAddress, payor_zip AS payorZip FROM company_profile WHERE id = 1"
+    );
+    const payor = payorRows[0] || { payorName: "", payorTin: "", payorAddress: "", payorZip: "" };
+
+    const [lines] = await pool.execute(
+      `
+      SELECT
+        atc_code AS atcCode,
+        SUM(CASE WHEN MONTH(transaction_date) = ? THEN total_credit ELSE 0 END) AS month1Amount,
+        SUM(CASE WHEN MONTH(transaction_date) = ? THEN total_credit ELSE 0 END) AS month2Amount,
+        SUM(CASE WHEN MONTH(transaction_date) = ? THEN total_credit ELSE 0 END) AS month3Amount,
+        SUM(total_credit) AS totalAmount,
+        SUM(tax_withheld_amount) AS totalTaxWithheld
+      FROM apv_headers
+      WHERE supplier_id = ?
+        AND tax_type = 'EWT'
+        AND tax_withheld_amount > 0
+        AND YEAR(transaction_date) = ?
+        AND QUARTER(transaction_date) = ?
+      GROUP BY atc_code
+      ORDER BY atc_code ASC
+      `,
+      [firstMonth, secondMonth, thirdMonth, supplierId, year, q]
+    );
+
+    res.json({
+      payee: {
+        name: payee.name,
+        tin: payee.tin,
+        address: payeeAddress,
+      },
+      payor,
+      period: {
+        year: Number(year),
+        quarter: q,
+        firstMonth,
+        secondMonth,
+        thirdMonth,
+      },
+      lines,
+      totals: lines.reduce(
+        (sum, line) => ({
+          month1Amount: sum.month1Amount + Number(line.month1Amount || 0),
+          month2Amount: sum.month2Amount + Number(line.month2Amount || 0),
+          month3Amount: sum.month3Amount + Number(line.month3Amount || 0),
+          totalAmount: sum.totalAmount + Number(line.totalAmount || 0),
+          totalTaxWithheld: sum.totalTaxWithheld + Number(line.totalTaxWithheld || 0),
+        }),
+        { month1Amount: 0, month2Amount: 0, month3Amount: 0, totalAmount: 0, totalTaxWithheld: 0 }
+      ),
+    });
+  } catch (err) {
+    console.error("2307 REPORT ERROR:", err.message);
+    res.status(500).json({ message: "Failed to generate 2307 report", error: err.message });
+  }
+});
+
 // ===================== FRONTEND STATIC FILES =====================
 
 const distPath = path.join(__dirname, "..", "..", "dist");

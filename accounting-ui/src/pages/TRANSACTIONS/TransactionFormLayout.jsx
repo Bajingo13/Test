@@ -772,6 +772,10 @@ if (code === "APV") {
 
     if (code === "APV") {
       setPayeeTin(selectedParty?.tin || "");
+
+      if (selectedParty?.atcCode && ewtCodes.some((e) => e.atcCode === selectedParty.atcCode)) {
+        handleAtcCodeChange(selectedParty.atcCode);
+      }
     }
 
    setLines((prev) =>

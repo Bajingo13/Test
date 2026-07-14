@@ -23,6 +23,7 @@ import TaxFileSetup from "./pages/FILESETUP/TaxFileSetup";
 import EWTLibrary from "./pages/FILESETUP/EWTLibrary";
 import FixedAssetSetup from "./pages/FILESETUP/FixedAssetSetup";
 import PrepaidAccountSetup from "./pages/FILESETUP/PrepaidAccountSetup";
+import CompanyProfile from "./pages/FILESETUP/CompanyProfile";
 
 
 // TRANSACTIONS
@@ -60,6 +61,7 @@ import PrepaidSubsidiary from "./pages/REPORTS/PrepaidSubsidiary.jsx";
 import ListOfLapsedPrepayments from "./pages/REPORTS/ListOfLapsedPrepayments.jsx";
 import MonthlyFinalTaxAlphalist from "./pages/REPORTS/MonthlyFinalTaxAlphalist.jsx";
 import MonthlyExpandedTaxAlphalist from "./pages/REPORTS/MonthlyExpandedTaxAlphalist.jsx";
+import Form2307 from "./pages/REPORTS/Form2307.jsx";
 
 function PlaceholderPage({ title }) {
   return (
@@ -120,6 +122,7 @@ function AppLayout() {
           <Route path="/ewt-library" element={<EWTLibrary />} />
           <Route path="/fixed-asset-setup" element={<FixedAssetSetup />} />
           <Route path="/prepaid-account-setup" element={<PrepaidAccountSetup />} />
+          <Route path="/company-profile" element={<CompanyProfile />} />
 
           <Route path="/transactions/invoice" element={<Invoice />} />
           <Route path="/transactions/cv" element={<CV />} />
@@ -153,6 +156,7 @@ function AppLayout() {
           <Route path="/reports/prepaid-subsidiary" element={<PrepaidSubsidiary />} />
           <Route path="/reports/lapsed-prepayments" element={<ListOfLapsedPrepayments />} />
           <Route path="/reports/final-withholding-tax-report" element={<MonthlyFinalTaxAlphalist />} />
+          <Route path="/reports/2307" element={<Form2307 />} />
           <Route path="/reports/expanded-withholding-tax-report" element={<MonthlyExpandedTaxAlphalist />} />
 
           <Route
