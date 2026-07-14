@@ -207,6 +207,40 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* FIXED ASSET REGISTER TABLE (6 columns, different shape than .aa-table's
+   default DATE|SOURCE|DOC REF|... layout, so override explicitly):
+   ASSET CODE | ASSET NAME | ACQ. DATE | COST | ACCUM. DEPRECIATION | BOOK VALUE
+*/
+
+.fa-table.aa-table th:nth-child(1),
+.fa-table.aa-table td:nth-child(1) {
+  width: 130px;
+  text-align: left;
+}
+
+.fa-table.aa-table th:nth-child(2),
+.fa-table.aa-table td:nth-child(2) {
+  width: auto;
+  text-align: left;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.fa-table.aa-table th:nth-child(3),
+.fa-table.aa-table td:nth-child(3) {
+  width: 120px;
+  text-align: center;
+}
+
+.fa-table.aa-table th:nth-child(n+4),
+.fa-table.aa-table td:nth-child(n+4) {
+  width: 160px;
+  text-align: right;
+  padding-right: 18px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
 .empty {
   text-align: center;
   padding: 24px;

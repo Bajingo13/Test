@@ -1,0 +1,19 @@
+/* Prepaid Accounts reports reuse .aa-table's base look, but column count
+   varies (8 or 9 cols depending on report), so use auto layout instead of
+   the fixed nth-child positional widths .aa-table normally relies on. */
+
+.prepaid-table.aa-table {
+  table-layout: auto;
+}
+
+.prepaid-table.aa-table th,
+.prepaid-table.aa-table td {
+  width: auto;
+  white-space: nowrap;
+}
+
+.prepaid-table.aa-table th:nth-child(2),
+.prepaid-table.aa-table td:nth-child(2) {
+  white-space: normal;
+  text-align: left;
+}

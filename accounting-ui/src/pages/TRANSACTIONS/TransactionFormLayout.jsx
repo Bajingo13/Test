@@ -57,6 +57,11 @@ export default function TransactionFormLayout({
   const [sourcePoId, setSourcePoId] = useState(null);
   const [sourcePoNo, setSourcePoNo] = useState("");
 
+  const [ewtCodes, setEwtCodes] = useState([]);
+  const [atcCode, setAtcCode] = useState("");
+  const [taxWithheldAmount, setTaxWithheldAmount] = useState("");
+  const [payeeTin, setPayeeTin] = useState("");
+
   const [form, setForm] = useState({
     date: new Date().toISOString().split("T")[0],
     referenceNo: "",
@@ -83,6 +88,10 @@ export default function TransactionFormLayout({
     loadParties();
     loadTransactions();
 
+    if (code === "APV") {
+      loadEwtCodes();
+    }
+
     if (code === "CV" && form.party) {
   loadUnpaidApvs();
 }
@@ -92,6 +101,21 @@ export default function TransactionFormLayout({
       handleView({ id: deepLinkId });
     }
   }, []);
+
+  async function loadEwtCodes() {
+    try {
+      const res = await fetch(`${API_BASE}/api/ewt-library`, {
+        credentials: "include",
+        headers: authHeaders(),
+      });
+
+      const data = await res.json();
+      setEwtCodes(Array.isArray(data) ? data.filter((e) => e.status === "ACTIVE") : []);
+    } catch (err) {
+      console.error("LOAD EWT LIBRARY ERROR:", err);
+      setEwtCodes([]);
+    }
+  }
 
   async function loadAccounts() {
     try {
@@ -421,6 +445,20 @@ if (code === "OR") {
     };
   }, [lines]);
 
+  const selectedEwt = ewtCodes.find((e) => e.atcCode === atcCode);
+
+  function handleAtcCodeChange(value) {
+    setAtcCode(value);
+
+    const ewt = ewtCodes.find((e) => e.atcCode === value);
+    if (ewt) {
+      const suggested = (totals.totalCredit * Number(ewt.rate || 0)) / 100;
+      setTaxWithheldAmount(suggested ? suggested.toFixed(2) : "");
+    } else {
+      setTaxWithheldAmount("");
+    }
+  }
+
   function isAPorARAccount(accountId) {
   const account = accountOptions.find(
     (acc) => String(acc.id) === String(accountId)
@@ -483,6 +521,10 @@ setOpenPos([]);
 setShowPoModal(false);
 setSourcePoId(null);
 setSourcePoNo("");
+
+setAtcCode("");
+setTaxWithheldAmount("");
+setPayeeTin("");
 
 setError("");
   }
@@ -636,6 +678,12 @@ if (code === "APV" && data.sourcePoId) {
   setSourcePoId(null);
   setSourcePoNo("");
 }
+
+if (code === "APV") {
+  setAtcCode(data.atcCode || "");
+  setTaxWithheldAmount(data.taxWithheldAmount || "");
+  setPayeeTin(data.payeeTin || "");
+}
         setMode("form");
         return;
       }
@@ -663,6 +711,10 @@ if (code === "APV" && data.sourcePoId) {
       party: value,
       partyId: selectedParty ? selectedParty.id : null,
     }));
+
+    if (code === "APV") {
+      setPayeeTin(selectedParty?.tin || "");
+    }
 
    setLines((prev) =>
   prev.map((line) => {
@@ -1018,6 +1070,12 @@ if (code === "OR") {
     : [],
 
         sourcePoId: code === "APV" ? sourcePoId : null,
+
+        atcCode: code === "APV" ? atcCode || null : null,
+        taxType: code === "APV" ? selectedEwt?.taxType || null : null,
+        taxRate: code === "APV" ? selectedEwt?.rate || null : null,
+        taxWithheldAmount: code === "APV" ? Number(taxWithheldAmount) || null : null,
+        payeeTin: code === "APV" ? payeeTin || null : null,
       };
 
       const endpoint =
@@ -1291,6 +1349,73 @@ if (code === "OR") {
                 />
               </div>
             </div>
+
+            {code === "APV" && (
+              <div className="transaction-card">
+                <div className="transaction-section-header">
+                  <div>
+                    <h2 className="transaction-section-title">Withholding Tax</h2>
+                    <p className="transaction-section-subtext">
+                      Optional &mdash; only fill in if tax was withheld from this supplier payment.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="transaction-grid">
+                  <div className="transaction-field">
+                    <label className="transaction-label">ATC Code</label>
+                    <select
+                      value={atcCode}
+                      onChange={(e) => handleAtcCodeChange(e.target.value)}
+                      className="transaction-input"
+                    >
+                      <option value="">None</option>
+                      {ewtCodes.map((ewt) => (
+                        <option key={ewt.id} value={ewt.atcCode}>
+                          {ewt.atcCode} - {ewt.description} ({ewt.rate}%)
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="transaction-field">
+                    <label className="transaction-label">Tax Type</label>
+                    <input
+                      type="text"
+                      value={selectedEwt ? (selectedEwt.taxType === "FINAL" ? "Final Tax" : "Expanded Withholding Tax") : ""}
+                      readOnly
+                      placeholder="Select an ATC code"
+                      className="transaction-input transaction-input-readonly"
+                    />
+                  </div>
+
+                  <div className="transaction-field">
+                    <label className="transaction-label">Tax Withheld Amount</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={taxWithheldAmount}
+                      onChange={(e) => setTaxWithheldAmount(e.target.value)}
+                      disabled={!atcCode}
+                      placeholder="0.00"
+                      className="transaction-input"
+                    />
+                  </div>
+
+                  <div className="transaction-field">
+                    <label className="transaction-label">Payee TIN</label>
+                    <input
+                      type="text"
+                      value={payeeTin}
+                      onChange={(e) => setPayeeTin(e.target.value)}
+                      placeholder="000-000-000-000"
+                      className="transaction-input"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
 
             <div className="transaction-card">
               <div className="transaction-section-header">

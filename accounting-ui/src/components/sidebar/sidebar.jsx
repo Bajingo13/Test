@@ -5,11 +5,11 @@ import "./Sidebar.css";
 export default function Sidebar({ sidebarOpen, setSidebarOpen }) {
   const location = useLocation();
 
-  const [openAgingReports, setOpenAgingReports] = useState(false);
   const [openFileSetup, setOpenFileSetup] = useState(false);
   const [openBeginningBalances, setOpenBeginningBalances] = useState(false);
   const [openTransactions, setOpenTransactions] = useState(false);
   const [openReports, setOpenReports] = useState(false);
+  const [openPrepaidReports, setOpenPrepaidReports] = useState(false);
 
   const fileSetupItems = [
     { name: "Chart of Accounts", path: "/coa" },
@@ -25,6 +25,8 @@ export default function Sidebar({ sidebarOpen, setSidebarOpen }) {
     { name: "Additional File Setup", path: "/additional-file-setup" },
     { name: "Tax File Setup", path: "/tax-file-setup" },
     { name: "EWT Library", path: "/ewt-library" },
+    { name: "Fixed Asset Setup", path: "/fixed-asset-setup" },
+    { name: "Prepaid Account Setup", path: "/prepaid-account-setup" },
   ];
 
   const beginningBalanceItems = [
@@ -47,25 +49,33 @@ export default function Sidebar({ sidebarOpen, setSidebarOpen }) {
   const reportItems = [
     { name: "Trial Balance", path: "/reports/trial-balance" },
     { name: "Account Analysis", path: "/reports/account-analysis" },
+    { name: "AR-Aging", path: "/reports/ar-aging" },
+    { name: "AP-Aging", path: "/reports/ap-aging" },
     { name: "Bank Reconciliation", path: "/reports/bank-reconciliation" },
     { name: "Balance Sheet", path: "/reports/balance-sheet" },
     { name: "Income Statement", path: "/reports/income-statement" },
     { name: "Cash Flow Statement", path: "/reports/cash-flow-statement" },
     { name: "General Ledger", path: "/reports/general-ledger" },
     { name: "Subsidiary Ledger", path: "/reports/subsidiary-ledger" },
+    { name: "Fixed Asset Account Reports", path: "/reports/fixed-asset-register" },
     { name: "expanded withholding tax report", path: "/reports/expanded-withholding-tax-report" },
     { name: "final withholding tax report", path: "/reports/final-withholding-tax-report" },
     { name: "input vat report", path: "/reports/input-vat-report" },
     { name: "output vat report", path: "/reports/output-vat-report" },
-
   ];
 
-  const agingReportItems = [
-  { name: "AR-Aging", path: "/reports/ar-aging" },
-  { name: "AP-Aging", path: "/reports/ap-aging" },
-];
+  const prepaidReportItems = [
+    { name: "Prepayment Lapsing Report", path: "/reports/prepayment-lapsing" },
+    { name: "List of Prepaid Accounts", path: "/reports/prepaid-accounts-list" },
+    { name: "Prepaid Subsidiary", path: "/reports/prepaid-subsidiary" },
+    { name: "List of Lapsed Prepayments", path: "/reports/lapsed-prepayments" },
+  ];
 
   const isBeginningBalanceActive = beginningBalanceItems.some(
+    (item) => location.pathname === item.path
+  );
+
+  const isPrepaidReportActive = prepaidReportItems.some(
     (item) => location.pathname === item.path
   );
 
@@ -74,6 +84,7 @@ export default function Sidebar({ sidebarOpen, setSidebarOpen }) {
     setOpenBeginningBalances(false);
     setOpenTransactions(false);
     setOpenReports(false);
+    setOpenPrepaidReports(false);
   };
 
   const toggleSidebar = () => {
@@ -106,6 +117,10 @@ export default function Sidebar({ sidebarOpen, setSidebarOpen }) {
     setOpenFileSetup(false);
     setOpenBeginningBalances(false);
     setOpenTransactions(false);
+  };
+
+  const togglePrepaidReports = () => {
+    setOpenPrepaidReports((prev) => !prev);
   };
 
   return (
@@ -229,6 +244,35 @@ export default function Sidebar({ sidebarOpen, setSidebarOpen }) {
                   {item.name}
                 </Link>
               ))}
+
+              <button
+                type="button"
+                className={`submenu-link submenu-parent ${
+                  isPrepaidReportActive ? "active-submenu" : ""
+                }`}
+                onClick={togglePrepaidReports}
+              >
+                <span>Prepaid Accounts Reports</span>
+                <span>{openPrepaidReports ? "▾" : "▸"}</span>
+              </button>
+
+              {openPrepaidReports && (
+                <div className="nested-submenu">
+                  {prepaidReportItems.map((item) => (
+                    <Link
+                      key={item.path}
+                      to={item.path}
+                      className={
+                        location.pathname === item.path
+                          ? "nested-submenu-link active-nested-submenu"
+                          : "nested-submenu-link"
+                      }
+                    >
+                      {item.name}
+                    </Link>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </nav>

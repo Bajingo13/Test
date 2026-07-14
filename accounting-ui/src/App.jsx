@@ -21,6 +21,8 @@ import TransactionSetup from "./pages/FILESETUP/TransactionSetup";
 import AdditionalFileSetup from "./pages/FILESETUP/AdditionalFileSetup";
 import TaxFileSetup from "./pages/FILESETUP/TaxFileSetup";
 import EWTLibrary from "./pages/FILESETUP/EWTLibrary";
+import FixedAssetSetup from "./pages/FILESETUP/FixedAssetSetup";
+import PrepaidAccountSetup from "./pages/FILESETUP/PrepaidAccountSetup";
 
 
 // TRANSACTIONS
@@ -51,6 +53,13 @@ import APAgingReport from "./pages/REPORTS/APAging.jsx";
 import InputVAT from "./pages/REPORTS/InputVAT.jsx";
 import OutputVAT from "./pages/REPORTS/OutputVAT.jsx";
 import SubsidiaryLedger from "./pages/REPORTS/SubsidiaryLedger.jsx";
+import FixedAssetReport from "./pages/REPORTS/FixedAssetReport.jsx";
+import ListOfPrepaidAccounts from "./pages/REPORTS/ListOfPrepaidAccounts.jsx";
+import PrepaymentLapsingReport from "./pages/REPORTS/PrepaymentLapsingReport.jsx";
+import PrepaidSubsidiary from "./pages/REPORTS/PrepaidSubsidiary.jsx";
+import ListOfLapsedPrepayments from "./pages/REPORTS/ListOfLapsedPrepayments.jsx";
+import MonthlyFinalTaxAlphalist from "./pages/REPORTS/MonthlyFinalTaxAlphalist.jsx";
+import MonthlyExpandedTaxAlphalist from "./pages/REPORTS/MonthlyExpandedTaxAlphalist.jsx";
 
 function PlaceholderPage({ title }) {
   return (
@@ -109,6 +118,8 @@ function AppLayout() {
           <Route path="/additional-file-setup" element={<AdditionalFileSetup />} />
           <Route path="/tax-file-setup" element={<TaxFileSetup />} />
           <Route path="/ewt-library" element={<EWTLibrary />} />
+          <Route path="/fixed-asset-setup" element={<FixedAssetSetup />} />
+          <Route path="/prepaid-account-setup" element={<PrepaidAccountSetup />} />
 
           <Route path="/transactions/invoice" element={<Invoice />} />
           <Route path="/transactions/cv" element={<CV />} />
@@ -136,6 +147,13 @@ function AppLayout() {
           <Route path="/reports/input-vat-report" element={<InputVAT />} />
           <Route path="/reports/output-vat-report" element={<OutputVAT />} />
           <Route path="/reports/subsidiary-ledger" element={<SubsidiaryLedger />} />
+          <Route path="/reports/fixed-asset-register" element={<FixedAssetReport />} />
+          <Route path="/reports/prepaid-accounts-list" element={<ListOfPrepaidAccounts />} />
+          <Route path="/reports/prepayment-lapsing" element={<PrepaymentLapsingReport />} />
+          <Route path="/reports/prepaid-subsidiary" element={<PrepaidSubsidiary />} />
+          <Route path="/reports/lapsed-prepayments" element={<ListOfLapsedPrepayments />} />
+          <Route path="/reports/final-withholding-tax-report" element={<MonthlyFinalTaxAlphalist />} />
+          <Route path="/reports/expanded-withholding-tax-report" element={<MonthlyExpandedTaxAlphalist />} />
 
           <Route
   path="/beginning-balances/gl"

@@ -1661,6 +1661,11 @@ app.get("/api/apv/:id", async (req, res) => {
         payment_status AS paymentStatus,
         status,
         source_po_id AS sourcePoId,
+        atc_code AS atcCode,
+        tax_type AS taxType,
+        tax_rate AS taxRate,
+        tax_withheld_amount AS taxWithheldAmount,
+        payee_tin AS payeeTin,
         created_at AS createdAt,
         updated_at AS updatedAt
       FROM apv_headers
@@ -1736,6 +1741,11 @@ app.post("/api/apv", async (req, res) => {
       status,
       lines,
       sourcePoId,
+      atcCode,
+      taxType,
+      taxRate,
+      taxWithheldAmount,
+      payeeTin,
     } = req.body;
 
     await conn.beginTransaction();
@@ -1758,8 +1768,13 @@ app.post("/api/apv", async (req, res) => {
         balance_amount,
         payment_status,
         status,
-        source_po_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        source_po_id,
+        atc_code,
+        tax_type,
+        tax_rate,
+        tax_withheld_amount,
+        payee_tin
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         voucherNo,
         supplierId || null,
@@ -1776,6 +1791,11 @@ app.post("/api/apv", async (req, res) => {
         "Unpaid",
         status || "DRAFT",
         sourcePoId || null,
+        atcCode || null,
+        taxType || null,
+        taxRate || null,
+        taxWithheldAmount || null,
+        payeeTin || null,
       ]
     );
 
@@ -1855,6 +1875,11 @@ app.put("/api/apv/:id", async (req, res) => {
       totalCredit,
       status,
       lines,
+      atcCode,
+      taxType,
+      taxRate,
+      taxWithheldAmount,
+      payeeTin,
     } = req.body;
 
     await conn.beginTransaction();
@@ -1871,7 +1896,12 @@ app.put("/api/apv/:id", async (req, res) => {
         remarks = ?,
         total_debit = ?,
         total_credit = ?,
-        status = ?
+        status = ?,
+        atc_code = ?,
+        tax_type = ?,
+        tax_rate = ?,
+        tax_withheld_amount = ?,
+        payee_tin = ?
       WHERE id = ?`,
       [
         voucherNo,
@@ -1885,6 +1915,11 @@ app.put("/api/apv/:id", async (req, res) => {
         totalDebit || 0,
         totalCredit || 0,
         status || "DRAFT",
+        atcCode || null,
+        taxType || null,
+        taxRate || null,
+        taxWithheldAmount || null,
+        payeeTin || null,
         id,
       ]
     );
@@ -3872,6 +3907,593 @@ app.get("/api/reports/subsidiary-ledger", async (req, res) => {
       message: "Failed to generate subsidiary ledger",
       error: err.message,
     });
+  }
+});
+
+// ===================== FIXED ASSET API =====================
+
+app.get("/api/fixed-assets", async (req, res) => {
+  try {
+    const [rows] = await pool.execute(`
+      SELECT
+        id,
+        asset_code AS assetCode,
+        asset_name AS assetName,
+        category,
+        DATE_FORMAT(acquisition_date, '%Y-%m-%d') AS acquisitionDate,
+        acquisition_cost AS acquisitionCost,
+        salvage_value AS salvageValue,
+        useful_life_years AS usefulLifeYears,
+        depreciation_method AS depreciationMethod,
+        asset_account_code AS assetAccountCode,
+        status,
+        DATE_FORMAT(disposal_date, '%Y-%m-%d') AS disposalDate
+      FROM fixed_assets
+      ORDER BY id DESC
+    `);
+
+    res.json(rows);
+  } catch (err) {
+    console.error("GET FIXED ASSETS ERROR:", err);
+    res.status(500).json({ message: "Failed to load fixed assets" });
+  }
+});
+
+app.post("/api/fixed-assets", async (req, res) => {
+  try {
+    const {
+      assetCode,
+      assetName,
+      category,
+      acquisitionDate,
+      acquisitionCost,
+      salvageValue,
+      usefulLifeYears,
+      depreciationMethod,
+      assetAccountCode,
+      status,
+    } = req.body;
+
+    const [result] = await pool.execute(
+      `INSERT INTO fixed_assets (
+        asset_code, asset_name, category, acquisition_date, acquisition_cost,
+        salvage_value, useful_life_years, depreciation_method, asset_account_code, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        assetCode || "",
+        assetName || "",
+        category || "",
+        acquisitionDate || null,
+        Number(acquisitionCost) || 0,
+        Number(salvageValue) || 0,
+        Number(usefulLifeYears) || 5,
+        depreciationMethod || "STRAIGHT_LINE",
+        assetAccountCode || "",
+        status || "Active",
+      ]
+    );
+
+    res.json({ success: true, message: "Fixed asset saved successfully", id: result.insertId });
+  } catch (err) {
+    console.error("CREATE FIXED ASSET ERROR:", err);
+    res.status(500).json({ message: "Failed to save fixed asset" });
+  }
+});
+
+app.put("/api/fixed-assets/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      assetCode,
+      assetName,
+      category,
+      acquisitionDate,
+      acquisitionCost,
+      salvageValue,
+      usefulLifeYears,
+      depreciationMethod,
+      assetAccountCode,
+      status,
+      disposalDate,
+    } = req.body;
+
+    await pool.execute(
+      `UPDATE fixed_assets SET
+        asset_code = ?, asset_name = ?, category = ?, acquisition_date = ?,
+        acquisition_cost = ?, salvage_value = ?, useful_life_years = ?,
+        depreciation_method = ?, asset_account_code = ?, status = ?, disposal_date = ?
+      WHERE id = ?`,
+      [
+        assetCode || "",
+        assetName || "",
+        category || "",
+        acquisitionDate || null,
+        Number(acquisitionCost) || 0,
+        Number(salvageValue) || 0,
+        Number(usefulLifeYears) || 5,
+        depreciationMethod || "STRAIGHT_LINE",
+        assetAccountCode || "",
+        status || "Active",
+        disposalDate || null,
+        id,
+      ]
+    );
+
+    res.json({ success: true, message: "Fixed asset updated successfully" });
+  } catch (err) {
+    console.error("UPDATE FIXED ASSET ERROR:", err);
+    res.status(500).json({ message: "Failed to update fixed asset" });
+  }
+});
+
+app.delete("/api/fixed-assets/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.execute("DELETE FROM fixed_assets WHERE id = ?", [id]);
+    res.json({ success: true, message: "Fixed asset deleted successfully" });
+  } catch (err) {
+    console.error("DELETE FIXED ASSET ERROR:", err);
+    res.status(500).json({ message: "Failed to delete fixed asset" });
+  }
+});
+
+// ====================== FIXED ASSET REGISTER REPORT ======================
+
+app.get("/api/reports/fixed-asset-register", async (req, res) => {
+  try {
+    const { asOf } = req.query;
+    const reportDate = asOf || new Date().toISOString().slice(0, 10);
+
+    const [rows] = await pool.execute(
+      `
+      SELECT
+        id,
+        asset_code AS assetCode,
+        asset_name AS assetName,
+        category,
+        DATE_FORMAT(acquisition_date, '%Y-%m-%d') AS acquisitionDate,
+        acquisition_cost AS acquisitionCost,
+        salvage_value AS salvageValue,
+        useful_life_years AS usefulLifeYears,
+        status,
+        ROUND((acquisition_cost - salvage_value) / (useful_life_years * 12), 2) AS monthlyDepreciation,
+        LEAST(
+          ROUND((acquisition_cost - salvage_value) / (useful_life_years * 12), 2) *
+            LEAST(GREATEST(TIMESTAMPDIFF(MONTH, acquisition_date, ?), 0), useful_life_years * 12),
+          acquisition_cost - salvage_value
+        ) AS accumulatedDepreciation,
+        acquisition_cost - LEAST(
+          ROUND((acquisition_cost - salvage_value) / (useful_life_years * 12), 2) *
+            LEAST(GREATEST(TIMESTAMPDIFF(MONTH, acquisition_date, ?), 0), useful_life_years * 12),
+          acquisition_cost - salvage_value
+        ) AS bookValue
+      FROM fixed_assets
+      WHERE status = 'Active'
+      ORDER BY asset_code ASC
+      `,
+      [reportDate, reportDate]
+    );
+
+    res.json(rows);
+  } catch (err) {
+    console.error("FIXED ASSET REGISTER REPORT ERROR:", err.message);
+    res.status(500).json({ message: "Failed to generate fixed asset register", error: err.message });
+  }
+});
+
+// ===================== PREPAID ACCOUNTS API =====================
+
+app.get("/api/prepaid-accounts", async (req, res) => {
+  try {
+    const [rows] = await pool.execute(`
+      SELECT
+        id,
+        prepaid_code AS prepaidCode,
+        description,
+        party_name AS partyName,
+        account_code AS accountCode,
+        expense_account_code AS expenseAccountCode,
+        DATE_FORMAT(start_date, '%Y-%m-%d') AS startDate,
+        amount,
+        term_months AS termMonths,
+        status
+      FROM prepaid_accounts
+      ORDER BY id DESC
+    `);
+
+    res.json(rows);
+  } catch (err) {
+    console.error("GET PREPAID ACCOUNTS ERROR:", err);
+    res.status(500).json({ message: "Failed to load prepaid accounts" });
+  }
+});
+
+app.post("/api/prepaid-accounts", async (req, res) => {
+  try {
+    const {
+      prepaidCode,
+      description,
+      partyName,
+      accountCode,
+      expenseAccountCode,
+      startDate,
+      amount,
+      termMonths,
+      status,
+    } = req.body;
+
+    const [result] = await pool.execute(
+      `INSERT INTO prepaid_accounts (
+        prepaid_code, description, party_name, account_code, expense_account_code,
+        start_date, amount, term_months, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        prepaidCode || "",
+        description || "",
+        partyName || "",
+        accountCode || "",
+        expenseAccountCode || "",
+        startDate || null,
+        Number(amount) || 0,
+        Number(termMonths) || 1,
+        status || "Active",
+      ]
+    );
+
+    res.json({ success: true, message: "Prepaid account saved successfully", id: result.insertId });
+  } catch (err) {
+    console.error("CREATE PREPAID ACCOUNT ERROR:", err);
+    res.status(500).json({ message: "Failed to save prepaid account" });
+  }
+});
+
+app.put("/api/prepaid-accounts/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      prepaidCode,
+      description,
+      partyName,
+      accountCode,
+      expenseAccountCode,
+      startDate,
+      amount,
+      termMonths,
+      status,
+    } = req.body;
+
+    await pool.execute(
+      `UPDATE prepaid_accounts SET
+        prepaid_code = ?, description = ?, party_name = ?, account_code = ?,
+        expense_account_code = ?, start_date = ?, amount = ?, term_months = ?, status = ?
+      WHERE id = ?`,
+      [
+        prepaidCode || "",
+        description || "",
+        partyName || "",
+        accountCode || "",
+        expenseAccountCode || "",
+        startDate || null,
+        Number(amount) || 0,
+        Number(termMonths) || 1,
+        status || "Active",
+        id,
+      ]
+    );
+
+    res.json({ success: true, message: "Prepaid account updated successfully" });
+  } catch (err) {
+    console.error("UPDATE PREPAID ACCOUNT ERROR:", err);
+    res.status(500).json({ message: "Failed to update prepaid account" });
+  }
+});
+
+app.delete("/api/prepaid-accounts/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.execute("DELETE FROM prepaid_accounts WHERE id = ?", [id]);
+    res.json({ success: true, message: "Prepaid account deleted successfully" });
+  } catch (err) {
+    console.error("DELETE PREPAID ACCOUNT ERROR:", err);
+    res.status(500).json({ message: "Failed to delete prepaid account" });
+  }
+});
+
+// ====================== PREPAID ACCOUNTS REPORTS ======================
+// Shared computed-status subquery reused across all 4 report endpoints.
+
+const PREPAID_COMPUTED_SQL = `
+  SELECT
+    id, prepaid_code, description, party_name, account_code, expense_account_code,
+    start_date, amount, term_months, status,
+    ROUND(amount / term_months, 2) AS monthly_amortization,
+    LEAST(GREATEST(TIMESTAMPDIFF(MONTH, start_date, ?), 0), term_months) AS months_elapsed,
+    LEAST(
+      ROUND(amount / term_months, 2) * LEAST(GREATEST(TIMESTAMPDIFF(MONTH, start_date, ?), 0), term_months),
+      amount
+    ) AS amortized_to_date,
+    amount - LEAST(
+      ROUND(amount / term_months, 2) * LEAST(GREATEST(TIMESTAMPDIFF(MONTH, start_date, ?), 0), term_months),
+      amount
+    ) AS remaining_balance,
+    (LEAST(GREATEST(TIMESTAMPDIFF(MONTH, start_date, ?), 0), term_months) >= term_months) AS is_lapsed
+  FROM prepaid_accounts
+  WHERE status != 'Cancelled'
+`;
+
+app.get("/api/reports/prepaid-list", async (req, res) => {
+  try {
+    const { asOf } = req.query;
+    const reportDate = asOf || new Date().toISOString().slice(0, 10);
+
+    const [rows] = await pool.execute(
+      `
+      SELECT
+        id, prepaid_code AS prepaidCode, description, party_name AS partyName,
+        DATE_FORMAT(start_date, '%Y-%m-%d') AS startDate, amount, term_months AS termMonths,
+        monthly_amortization AS monthlyAmortization,
+        amortized_to_date AS amortizedToDate,
+        remaining_balance AS remainingBalance,
+        is_lapsed AS isLapsed
+      FROM (${PREPAID_COMPUTED_SQL}) p
+      WHERE is_lapsed = 0
+      ORDER BY prepaid_code ASC
+      `,
+      [reportDate, reportDate, reportDate, reportDate]
+    );
+
+    res.json(rows);
+  } catch (err) {
+    console.error("PREPAID LIST REPORT ERROR:", err.message);
+    res.status(500).json({ message: "Failed to generate list of prepaid accounts", error: err.message });
+  }
+});
+
+app.get("/api/reports/lapsed-prepayments", async (req, res) => {
+  try {
+    const { asOf } = req.query;
+    const reportDate = asOf || new Date().toISOString().slice(0, 10);
+
+    const [rows] = await pool.execute(
+      `
+      SELECT
+        id, prepaid_code AS prepaidCode, description, party_name AS partyName,
+        DATE_FORMAT(start_date, '%Y-%m-%d') AS startDate, amount, term_months AS termMonths,
+        amortized_to_date AS amortizedToDate,
+        remaining_balance AS remainingBalance
+      FROM (${PREPAID_COMPUTED_SQL}) p
+      WHERE is_lapsed = 1
+      ORDER BY prepaid_code ASC
+      `,
+      [reportDate, reportDate, reportDate, reportDate]
+    );
+
+    res.json(rows);
+  } catch (err) {
+    console.error("LAPSED PREPAYMENTS REPORT ERROR:", err.message);
+    res.status(500).json({ message: "Failed to generate list of lapsed prepayments", error: err.message });
+  }
+});
+
+app.get("/api/reports/prepayment-lapsing", async (req, res) => {
+  try {
+    const { asOf } = req.query;
+    const reportDate = asOf || new Date().toISOString().slice(0, 10);
+
+    const [rows] = await pool.execute(
+      `
+      SELECT
+        id, prepaid_code AS prepaidCode, description, party_name AS partyName,
+        DATE_FORMAT(start_date, '%Y-%m-%d') AS startDate, amount, term_months AS termMonths,
+        monthly_amortization AS monthlyAmortization,
+        months_elapsed AS monthsElapsed,
+        amortized_to_date AS amortizedToDate,
+        remaining_balance AS remainingBalance,
+        is_lapsed AS isLapsed
+      FROM (${PREPAID_COMPUTED_SQL}) p
+      ORDER BY prepaid_code ASC
+      `,
+      [reportDate, reportDate, reportDate, reportDate]
+    );
+
+    res.json(rows);
+  } catch (err) {
+    console.error("PREPAYMENT LAPSING REPORT ERROR:", err.message);
+    res.status(500).json({ message: "Failed to generate prepayment lapsing report", error: err.message });
+  }
+});
+
+app.get("/api/reports/prepaid-subsidiary", async (req, res) => {
+  try {
+    const { prepaidId, asOf } = req.query;
+    const reportDate = asOf || new Date().toISOString().slice(0, 10);
+
+    if (!prepaidId) {
+      return res.status(400).json({ message: "prepaidId is required" });
+    }
+
+    const [rows] = await pool.execute(
+      `
+      SELECT
+        id, prepaid_code, description, start_date, amount, term_months,
+        ROUND(amount / term_months, 2) AS monthly_amortization,
+        LEAST(GREATEST(TIMESTAMPDIFF(MONTH, start_date, ?), 0), term_months) AS months_elapsed
+      FROM prepaid_accounts
+      WHERE id = ?
+      `,
+      [reportDate, prepaidId]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ message: "Prepaid account not found" });
+    }
+
+    const p = rows[0];
+    const schedule = [];
+    let runningAmortized = 0;
+
+    for (let m = 1; m <= p.term_months; m++) {
+      const amortizationThisMonth =
+        m === p.term_months
+          ? Number(p.amount) - runningAmortized
+          : Number(p.monthly_amortization);
+
+      runningAmortized += amortizationThisMonth;
+
+      const periodDate = new Date(p.start_date);
+      periodDate.setMonth(periodDate.getMonth() + m);
+
+      schedule.push({
+        period: periodDate.toISOString().slice(0, 7),
+        amortization: Math.round(amortizationThisMonth * 100) / 100,
+        cumulativeAmortized: Math.round(runningAmortized * 100) / 100,
+        remainingBalance: Math.round((Number(p.amount) - runningAmortized) * 100) / 100,
+        lapsed: m <= p.months_elapsed,
+      });
+    }
+
+    res.json({
+      id: p.id,
+      prepaidCode: p.prepaid_code,
+      description: p.description,
+      startDate: p.start_date,
+      amount: p.amount,
+      termMonths: p.term_months,
+      schedule,
+    });
+  } catch (err) {
+    console.error("PREPAID SUBSIDIARY REPORT ERROR:", err.message);
+    res.status(500).json({ message: "Failed to generate prepaid subsidiary report", error: err.message });
+  }
+});
+
+// ===================== EWT LIBRARY API =====================
+
+app.get("/api/ewt-library", async (req, res) => {
+  try {
+    const [rows] = await pool.execute(`
+      SELECT
+        id,
+        atc_code AS atcCode,
+        description,
+        tax_type AS taxType,
+        rate,
+        bir_form AS birForm,
+        status
+      FROM ewt_library
+      ORDER BY atc_code ASC
+    `);
+
+    res.json(rows);
+  } catch (err) {
+    console.error("GET EWT LIBRARY ERROR:", err);
+    res.status(500).json({ message: "Failed to load EWT library" });
+  }
+});
+
+app.post("/api/ewt-library", async (req, res) => {
+  try {
+    const { atcCode, description, taxType, rate, birForm, status } = req.body;
+
+    const [result] = await pool.execute(
+      `INSERT INTO ewt_library (atc_code, description, tax_type, rate, bir_form, status)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [
+        atcCode || "",
+        description || "",
+        taxType || "EWT",
+        Number(rate) || 0,
+        birForm || "",
+        status || "ACTIVE",
+      ]
+    );
+
+    res.json({ success: true, message: "EWT code saved successfully", id: result.insertId });
+  } catch (err) {
+    console.error("CREATE EWT LIBRARY ERROR:", err);
+    res.status(500).json({ message: "Failed to save EWT code" });
+  }
+});
+
+app.put("/api/ewt-library/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { atcCode, description, taxType, rate, birForm, status } = req.body;
+
+    await pool.execute(
+      `UPDATE ewt_library SET
+        atc_code = ?, description = ?, tax_type = ?, rate = ?, bir_form = ?, status = ?
+      WHERE id = ?`,
+      [
+        atcCode || "",
+        description || "",
+        taxType || "EWT",
+        Number(rate) || 0,
+        birForm || "",
+        status || "ACTIVE",
+        id,
+      ]
+    );
+
+    res.json({ success: true, message: "EWT code updated successfully" });
+  } catch (err) {
+    console.error("UPDATE EWT LIBRARY ERROR:", err);
+    res.status(500).json({ message: "Failed to update EWT code" });
+  }
+});
+
+app.delete("/api/ewt-library/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.execute("DELETE FROM ewt_library WHERE id = ?", [id]);
+    res.json({ success: true, message: "EWT code deleted successfully" });
+  } catch (err) {
+    console.error("DELETE EWT LIBRARY ERROR:", err);
+    res.status(500).json({ message: "Failed to delete EWT code" });
+  }
+});
+
+// ====================== TAX ALPHALIST REPORTS ======================
+// Aggregates APV records that captured withholding tax (atc_code + tax_type)
+// within a given month, grouped by payee -- the standard monthly
+// Final/Expanded Withholding Tax alphalist shape (payee, TIN, ATC, gross, tax withheld).
+
+app.get("/api/reports/alphalist", async (req, res) => {
+  try {
+    const { taxType, month } = req.query;
+
+    if (!taxType || !["EWT", "FINAL"].includes(taxType)) {
+      return res.status(400).json({ message: "taxType must be EWT or FINAL" });
+    }
+
+    if (!month) {
+      return res.status(400).json({ message: "month (YYYY-MM) is required" });
+    }
+
+    const [rows] = await pool.execute(
+      `
+      SELECT
+        supplier_name AS payeeName,
+        COALESCE(payee_tin, '') AS tin,
+        atc_code AS atcCode,
+        tax_rate AS taxRate,
+        COUNT(*) AS transactionCount,
+        SUM(total_credit) AS grossAmount,
+        SUM(tax_withheld_amount) AS taxWithheld
+      FROM apv_headers
+      WHERE tax_type = ?
+        AND DATE_FORMAT(transaction_date, '%Y-%m') = ?
+        AND tax_withheld_amount > 0
+      GROUP BY supplier_name, payee_tin, atc_code, tax_rate
+      ORDER BY payeeName ASC
+      `,
+      [taxType, month]
+    );
+
+    res.json(rows);
+  } catch (err) {
+    console.error("ALPHALIST REPORT ERROR:", err.message);
+    res.status(500).json({ message: "Failed to generate alphalist report", error: err.message });
   }
 });
 
