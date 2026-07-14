@@ -62,6 +62,10 @@ export default function TransactionFormLayout({
   const [taxWithheldAmount, setTaxWithheldAmount] = useState("");
   const [payeeTin, setPayeeTin] = useState("");
 
+  const [vatAccountId, setVatAccountId] = useState("");
+  const [vatTaxableAmount, setVatTaxableAmount] = useState("");
+  const [vatRate, setVatRate] = useState("12");
+
   const [form, setForm] = useState({
     date: new Date().toISOString().split("T")[0],
     referenceNo: "",
@@ -101,6 +105,19 @@ export default function TransactionFormLayout({
       handleView({ id: deepLinkId });
     }
   }, []);
+
+  useEffect(() => {
+    if (vatAccountId || accountOptions.length === 0) return;
+
+    const keyword =
+      code === "INV" || code === "OR" ? "output vat" : "input vat";
+
+    const match = accountOptions.find((acc) =>
+      String(acc.title || "").toLowerCase().includes(keyword)
+    );
+
+    if (match) setVatAccountId(String(match.id));
+  }, [accountOptions]);
 
   async function loadEwtCodes() {
     try {
@@ -459,6 +476,44 @@ if (code === "OR") {
     }
   }
 
+  const vatType =
+    code === "INV" || code === "OR"
+      ? "Output VAT"
+      : code === "APV" || code === "CV"
+      ? "Input VAT"
+      : null;
+
+  const vatAmount =
+    (Number(vatTaxableAmount || 0) * Number(vatRate || 0)) / 100;
+
+  function handleAddVatLine() {
+    if (!vatAccountId) {
+      alert("Please select the VAT account first.");
+      return;
+    }
+
+    if (!vatTaxableAmount || Number(vatTaxableAmount) <= 0) {
+      alert("Please enter a taxable amount greater than zero.");
+      return;
+    }
+
+    const isOutput = vatType === "Output VAT";
+    const amount = Math.round(vatAmount * 100) / 100;
+
+    setLines((prev) => [
+      ...prev,
+      {
+        ...createLine(),
+        accountId: vatAccountId,
+        particulars: `${vatType} (${vatRate}%)`,
+        debit: isOutput ? "" : String(amount),
+        credit: isOutput ? String(amount) : "",
+      },
+    ]);
+
+    setVatTaxableAmount("");
+  }
+
   function isAPorARAccount(accountId) {
   const account = accountOptions.find(
     (acc) => String(acc.id) === String(accountId)
@@ -525,6 +580,9 @@ setSourcePoNo("");
 setAtcCode("");
 setTaxWithheldAmount("");
 setPayeeTin("");
+
+setVatTaxableAmount("");
+setVatRate("12");
 
 setError("");
   }
@@ -1413,6 +1471,82 @@ if (code === "OR") {
                       className="transaction-input"
                     />
                   </div>
+                </div>
+              </div>
+            )}
+
+            {vatType && (
+              <div className="transaction-card">
+                <div className="transaction-section-header">
+                  <div>
+                    <h2 className="transaction-section-title">{vatType}</h2>
+                    <p className="transaction-section-subtext">
+                      Optional &mdash; enter the taxable amount to add a {vatType} line automatically.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="transaction-grid">
+                  <div className="transaction-field">
+                    <label className="transaction-label">{vatType} Account</label>
+                    <select
+                      value={vatAccountId}
+                      onChange={(e) => setVatAccountId(e.target.value)}
+                      className="transaction-input"
+                    >
+                      <option value="">Select account</option>
+                      {accountOptions.map((account) => (
+                        <option key={account.id} value={account.id}>
+                          {account.code} - {account.title}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="transaction-field">
+                    <label className="transaction-label">Taxable Amount</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={vatTaxableAmount}
+                      onChange={(e) => setVatTaxableAmount(e.target.value)}
+                      placeholder="0.00"
+                      className="transaction-input"
+                    />
+                  </div>
+
+                  <div className="transaction-field">
+                    <label className="transaction-label">VAT Rate (%)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={vatRate}
+                      onChange={(e) => setVatRate(e.target.value)}
+                      className="transaction-input"
+                    />
+                  </div>
+
+                  <div className="transaction-field">
+                    <label className="transaction-label">VAT Amount</label>
+                    <input
+                      type="text"
+                      value={formatMoney(vatAmount)}
+                      readOnly
+                      className="transaction-input transaction-input-readonly"
+                    />
+                  </div>
+                </div>
+
+                <div className="transaction-section-actions">
+                  <button
+                    type="button"
+                    className="transaction-add-button"
+                    onClick={handleAddVatLine}
+                  >
+                    + Add {vatType} Line
+                  </button>
                 </div>
               </div>
             )}
