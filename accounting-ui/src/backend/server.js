@@ -385,6 +385,35 @@ app.delete("/api/genlib/:id", async (req, res) => {
   }
 });
 
+async function syncBankCodeForAccount(conn, coaId, code, title, validations) {
+  const isBankAccount = (validations || []).includes("BANK / CASH");
+
+  const [existing] = await conn.execute(
+    "SELECT id FROM bank_codes WHERE coa_account_id = ?",
+    [coaId]
+  );
+
+  if (isBankAccount) {
+    if (existing.length > 0) {
+      await conn.execute(
+        "UPDATE bank_codes SET coa_code = ?, status = 'ACTIVE' WHERE coa_account_id = ?",
+        [code, coaId]
+      );
+    } else {
+      await conn.execute(
+        `INSERT INTO bank_codes (bank_code, bank_name, account_name, coa_account_id, coa_code, status)
+         VALUES (?, ?, ?, ?, ?, 'ACTIVE')`,
+        [code, title, title, coaId, code]
+      );
+    }
+  } else if (existing.length > 0) {
+    await conn.execute(
+      "UPDATE bank_codes SET status = 'INACTIVE' WHERE coa_account_id = ?",
+      [coaId]
+    );
+  }
+}
+
 // ===================== COA API =====================
 
 app.get("/api/coa", authenticateToken, async (req, res) => {
@@ -465,6 +494,8 @@ app.post("/api/coa", authenticateToken, async (req, res) => {
       );
     }
 
+    await syncBankCodeForAccount(conn, coaId, code, title, validations);
+
     await conn.commit();
 
     res.json({
@@ -518,6 +549,8 @@ app.put("/api/coa/:id", authenticateToken, async (req, res) => {
         [id, group.code, group.description]
       );
     }
+
+    await syncBankCodeForAccount(conn, id, code, title, validations);
 
     await conn.commit();
 
@@ -4618,6 +4651,129 @@ app.get("/api/reports/2307", async (req, res) => {
   } catch (err) {
     console.error("2307 REPORT ERROR:", err.message);
     res.status(500).json({ message: "Failed to generate 2307 report", error: err.message });
+  }
+});
+
+// ===================== BANK CODES API =====================
+
+app.get("/api/bank-codes", async (req, res) => {
+  try {
+    const [rows] = await pool.execute(`
+      SELECT
+        id,
+        bank_code AS bankCode,
+        bank_name AS bankName,
+        account_no AS accountNo,
+        account_name AS accountName,
+        coa_account_id AS coaAccountId,
+        coa_code AS coaCode,
+        status
+      FROM bank_codes
+      ORDER BY bank_code ASC
+    `);
+
+    res.json(rows);
+  } catch (err) {
+    console.error("GET BANK CODES ERROR:", err);
+    res.status(500).json({ message: "Failed to load bank codes" });
+  }
+});
+
+app.post("/api/bank-codes/sync", async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const [bankAccounts] = await conn.execute(`
+      SELECT ca.id, ca.code, ca.title
+      FROM chart_of_accounts ca
+      JOIN coa_validations cv ON cv.coa_id = ca.id
+      WHERE cv.validation_name = 'BANK / CASH'
+    `);
+
+    await conn.beginTransaction();
+
+    let addedCount = 0;
+
+    for (const account of bankAccounts) {
+      const [existing] = await conn.execute(
+        "SELECT id FROM bank_codes WHERE coa_account_id = ?",
+        [account.id]
+      );
+
+      if (existing.length === 0) {
+        await conn.execute(
+          `INSERT INTO bank_codes (bank_code, bank_name, account_name, coa_account_id, coa_code, status)
+           VALUES (?, ?, ?, ?, ?, 'ACTIVE')`,
+          [account.code, account.title, account.title, account.id, account.code]
+        );
+        addedCount++;
+      } else {
+        await conn.execute(
+          "UPDATE bank_codes SET status = 'ACTIVE' WHERE coa_account_id = ?",
+          [account.id]
+        );
+      }
+    }
+
+    await conn.commit();
+
+    res.json({
+      success: true,
+      message: `${addedCount} bank code(s) added from Chart of Accounts`,
+      addedCount,
+    });
+  } catch (err) {
+    await conn.rollback();
+    console.error("SYNC BANK CODES ERROR:", err);
+    res.status(500).json({ message: "Failed to sync bank codes from Chart of Accounts" });
+  } finally {
+    conn.release();
+  }
+});
+
+app.post("/api/bank-codes", async (req, res) => {
+  try {
+    const { bankCode, bankName, accountNo, accountName, status } = req.body;
+
+    const [result] = await pool.execute(
+      `INSERT INTO bank_codes (bank_code, bank_name, account_no, account_name, status)
+       VALUES (?, ?, ?, ?, ?)`,
+      [bankCode || "", bankName || "", accountNo || "", accountName || "", status || "ACTIVE"]
+    );
+
+    res.json({ success: true, message: "Bank code saved successfully", id: result.insertId });
+  } catch (err) {
+    console.error("CREATE BANK CODE ERROR:", err);
+    res.status(500).json({ message: "Failed to save bank code" });
+  }
+});
+
+app.put("/api/bank-codes/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { bankCode, bankName, accountNo, accountName, status } = req.body;
+
+    await pool.execute(
+      `UPDATE bank_codes SET bank_code = ?, bank_name = ?, account_no = ?, account_name = ?, status = ?
+       WHERE id = ?`,
+      [bankCode || "", bankName || "", accountNo || "", accountName || "", status || "ACTIVE", id]
+    );
+
+    res.json({ success: true, message: "Bank code updated successfully" });
+  } catch (err) {
+    console.error("UPDATE BANK CODE ERROR:", err);
+    res.status(500).json({ message: "Failed to update bank code" });
+  }
+});
+
+app.delete("/api/bank-codes/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.execute("DELETE FROM bank_codes WHERE id = ?", [id]);
+    res.json({ success: true, message: "Bank code deleted successfully" });
+  } catch (err) {
+    console.error("DELETE BANK CODE ERROR:", err);
+    res.status(500).json({ message: "Failed to delete bank code" });
   }
 });
 
