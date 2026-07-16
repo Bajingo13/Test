@@ -160,6 +160,68 @@ export default function Form2307() {
     URL.revokeObjectURL(url);
   }
 
+  function downloadCSV() {
+    if (!report) {
+      alert("Please generate the certificate first.");
+      return;
+    }
+
+    const m1 = MONTH_NAMES[report.period.firstMonth];
+    const m2 = MONTH_NAMES[report.period.secondMonth];
+    const m3 = MONTH_NAMES[report.period.thirdMonth];
+
+    const csvRows = [
+      ["BIR FORM 2307 - CERTIFICATE OF CREDITABLE TAX WITHHELD AT SOURCE"],
+      [`For the Period: ${periodLabel}`],
+      [],
+      ["PAYEE INFORMATION"],
+      ["TIN", report.payee.tin || "-"],
+      ["Name", report.payee.name || "-"],
+      ["Registered Address", report.payee.address || "-"],
+      [],
+      ["PAYOR INFORMATION"],
+      ["TIN", report.payor.payorTin || "-"],
+      ["Name", report.payor.payorName || "-"],
+      ["Registered Address", report.payor.payorAddress || "-"],
+      ["Zip Code", report.payor.payorZip || "-"],
+      [],
+      ["ATC", m1, m2, m3, "Total", "Tax Withheld For the Quarter"],
+      ...report.lines.map((line) => [
+        line.atcCode,
+        Number(line.month1Amount || 0).toFixed(2),
+        Number(line.month2Amount || 0).toFixed(2),
+        Number(line.month3Amount || 0).toFixed(2),
+        Number(line.totalAmount || 0).toFixed(2),
+        Number(line.totalTaxWithheld || 0).toFixed(2),
+      ]),
+      [
+        "Total",
+        Number(report.totals.month1Amount || 0).toFixed(2),
+        Number(report.totals.month2Amount || 0).toFixed(2),
+        Number(report.totals.month3Amount || 0).toFixed(2),
+        Number(report.totals.totalAmount || 0).toFixed(2),
+        Number(report.totals.totalTaxWithheld || 0).toFixed(2),
+      ],
+    ];
+
+    const csvContent = csvRows
+      .map((row) =>
+        row.map((cell) => `"${String(cell ?? "").replace(/"/g, '""')}"`).join(",")
+      )
+      .join("\n");
+
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+
+    const fileNameSafe = (report.payee.name || "payee").replace(/[^a-z0-9]+/gi, "_");
+    link.href = url;
+    link.download = `BIR_2307_${fileNameSafe}_Q${report.period.quarter}_${report.period.year}.csv`;
+    link.click();
+
+    URL.revokeObjectURL(url);
+  }
+
   async function generateReport() {
     if (!supplierId) {
       alert("Please select a payee (supplier) first.");
@@ -250,6 +312,10 @@ export default function Form2307() {
 
           <button className="dark" onClick={downloadPdf}>
             Export PDF (Official Template)
+          </button>
+
+          <button className="dark" onClick={downloadCSV}>
+            Export CSV
           </button>
         </div>
       </div>

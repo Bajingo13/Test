@@ -32,25 +32,24 @@ export default function AccountAnalysis() {
     loadAccounts();
   }, []);
 
+  // Drill-down links (from Trial Balance / Income Statement / Balance Sheet) land here
+  // with accountCode/from/to in the URL. Generate immediately from the URL params instead
+  // of waiting for the accounts dropdown to finish loading first - loadAccounts() is only
+  // needed to display the account title, not to run the report, so gating on it just adds
+  // a second sequential API round-trip before anything appears.
   useEffect(() => {
     const code = searchParams.get("accountCode");
     const from = searchParams.get("from");
     const to = searchParams.get("to");
 
-    if (code) setAccountCode(code);
     if (from) setFromDate(from);
     if (to) setToDate(to);
-  }, [searchParams]);
 
-  useEffect(() => {
-    const code = searchParams.get("accountCode");
-    const from = searchParams.get("from") || fromDate;
-    const to = searchParams.get("to") || toDate;
-
-    if (code && accounts.length > 0) {
-      generateReport(code, from, to);
+    if (code) {
+      setAccountCode(code);
+      generateReport(code, from || fromDate, to || toDate);
     }
-  }, [accounts]);
+  }, [searchParams]);
 
   async function loadAccounts() {
     try {
