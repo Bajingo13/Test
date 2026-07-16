@@ -89,11 +89,13 @@ export default function Form2307() {
       return set(topLeft, value, opts);
     };
 
-    // TIN written as grouped digit boxes (matches the official form's boxed TIN fields)
+    // TIN written as grouped digit boxes (matches the official form's boxed TIN fields).
+    // Boxes start at column N, leaving B:M free so the label text can overflow without
+    // being cut off by the merged box (Excel blocks overflow at the first non-empty/merged cell).
     const writeTinBoxes = (row, tin) => {
       const digits = String(tin || "").replace(/\D/g, "");
       const groups = [digits.slice(0, 3), digits.slice(3, 6), digits.slice(6, 9), digits.slice(9, 12)];
-      const ranges = [`D${row}:F${row}`, `H${row}:J${row}`, `L${row}:N${row}`, `P${row}:R${row}`];
+      const ranges = [`N${row}:P${row}`, `R${row}:T${row}`, `V${row}:X${row}`, `Z${row}:AB${row}`];
       ranges.forEach((range, i) => {
         merge(range, groups[i] || "", { align: "center", border: true, grey: i === 3 });
       });
@@ -167,9 +169,7 @@ export default function Form2307() {
 
     // PART I - Payee Information
     merge("D13:AR13", "Payee   Information", { bold: true, grey: true });
-    set("A13", "Part I", { bold: true, grey: true });
-    set("B13", "", { grey: true });
-    set("C13", "", { grey: true });
+    merge("A13:C13", "Part I", { bold: true, grey: true });
 
     set("A14", "2");
     set("B14", "Taxpayer");
@@ -178,30 +178,28 @@ export default function Form2307() {
 
     set("A17", "3");
     set("B17", "Payee's Name");
-    merge("D17:AR17", report.payee.name || "-", { border: true });
+    merge("N17:AR17", report.payee.name || "-", { border: true });
     merge(
-      "I18:AR18",
+      "N18:AR18",
       "(Last Name, First Name, Middle Name for Individuals) (Registered Name for Non-Individuals)",
       { size: 6 }
     );
 
     set("A19", "4");
     set("B19", "Registered Address");
-    merge("D19:AI19", report.payee.address || "-", { border: true });
+    merge("N19:AI19", report.payee.address || "-", { border: true });
     set("AJ19", "4A");
     set("AK19", "Zip Code");
 
     set("A21", "5");
     set("B21", "Foreign Address");
-    merge("D21:AI21", "", { border: true });
+    merge("N21:AI21", "", { border: true });
     set("AJ21", "5A");
     set("AK21", "Zip Code");
 
     // Payor Information
     merge("D23:AR23", "Payor   Information", { bold: true, grey: true });
-    set("A23", "", { grey: true });
-    set("B23", "", { grey: true });
-    set("C23", "", { grey: true });
+    merge("A23:C23", "", { grey: true });
 
     set("A24", "6");
     set("B24", "Taxpayer");
@@ -210,16 +208,16 @@ export default function Form2307() {
 
     set("A27", "7");
     set("B27", "Payor's Name");
-    merge("D27:AR27", report.payor.payorName || "-", { border: true });
+    merge("N27:AR27", report.payor.payorName || "-", { border: true });
     merge(
-      "I28:AR28",
+      "N28:AR28",
       "(Last Name, First Name, Middle Name for Individuals) (Registered Name for Non-Individuals)",
       { size: 6 }
     );
 
     set("A29", "8");
     set("B29", "Registered Address");
-    merge("D29:AI29", report.payor.payorAddress || "-", { border: true });
+    merge("N29:AI29", report.payor.payorAddress || "-", { border: true });
     set("AJ29", "8A");
     set("AK29", "Zip Code");
     merge("AL29:AR29", report.payor.payorZip || "-", { border: true });
@@ -230,9 +228,7 @@ export default function Form2307() {
       "Details of Monthly Income Payments and Tax Withheld for the Quarter",
       { bold: true, grey: true }
     );
-    set("A32", "PART II", { bold: true, grey: true });
-    set("B32", "", { grey: true });
-    set("C32", "", { grey: true });
+    merge("A32:C32", "PART II", { bold: true, grey: true, size: 7 });
 
     const tableHeader = (row1) => {
       merge(`A${row1}:L${row1}`, "Income Payments Subject to", { bold: true, size: 7 });
