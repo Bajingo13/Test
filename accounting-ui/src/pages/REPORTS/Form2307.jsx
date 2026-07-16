@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import ExcelJS from "exceljs";
+import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import "./AccountAnalysis.css";
 import "./Form2307.css";
 
@@ -53,353 +53,108 @@ export default function Form2307() {
     return `${MONTH_NAMES[firstMonth]} 1, ${year} to ${MONTH_NAMES[thirdMonth]} ${lastDay}, ${year}`;
   }, [report]);
 
-  async function downloadExcel() {
+  async function downloadPdf() {
     if (!report) {
       alert("Please generate the certificate first.");
       return;
     }
 
-    const wb = new ExcelJS.Workbook();
-    const ws = wb.addWorksheet("2307", { pageSetup: { paperSize: 9, orientation: "portrait" } });
+    const res = await fetch("/all_image/2307-template.pdf");
+    const templateBytes = await res.arrayBuffer();
+    const pdf = await PDFDocument.load(templateBytes);
+    const page = pdf.getPages()[0];
+    const font = await pdf.embedFont(StandardFonts.Helvetica);
+    const boldFont = await pdf.embedFont(StandardFonts.HelveticaBold);
+    const H = page.getHeight();
 
-    // Reproduce the official template's fine 44-column grid (A..AR)
-    ws.columns = Array.from({ length: 44 }, () => ({ width: 2.2 }));
-
-    const thin = { style: "thin" };
-    const box = { top: thin, left: thin, bottom: thin, right: thin };
-    const grey = { type: "pattern", pattern: "solid", fgColor: { argb: "FFD9D9D9" } };
-
-    const set = (addr, value, opts = {}) => {
-      const cell = ws.getCell(addr);
-      cell.value = value;
-      cell.font = { name: "Arial", size: opts.size || 8, bold: !!opts.bold, italic: !!opts.italic };
-      cell.alignment = {
-        horizontal: opts.align || "left",
-        vertical: "middle",
-        wrapText: !!opts.wrap,
-      };
-      if (opts.border) cell.border = box;
-      if (opts.grey) cell.fill = grey;
-      return cell;
-    };
-
-    const merge = (range, value, opts = {}) => {
-      ws.mergeCells(range);
-      const topLeft = range.split(":")[0];
-      return set(topLeft, value, opts);
-    };
-
-    // Draws a rectangular outline around a range by bordering only its perimeter cells,
-    // so a block made of several separately-merged sub-cells still reads as one box.
-    const colToIndex = (col) => {
-      let idx = 0;
-      for (let i = 0; i < col.length; i++) idx = idx * 26 + (col.charCodeAt(i) - 64);
-      return idx;
-    };
-    const indexToCol = (idx) => {
-      let s = "";
-      while (idx > 0) {
-        const rem = (idx - 1) % 26;
-        s = String.fromCharCode(65 + rem) + s;
-        idx = Math.floor((idx - 1) / 26);
-      }
-      return s;
-    };
-    const drawBox = (fromCol, fromRow, toCol, toRow) => {
-      const c1 = colToIndex(fromCol);
-      const c2 = colToIndex(toCol);
-      for (let c = c1; c <= c2; c++) {
-        const colLetter = indexToCol(c);
-        const topCell = ws.getCell(`${colLetter}${fromRow}`);
-        topCell.border = { ...(topCell.border || {}), top: thin };
-        const botCell = ws.getCell(`${colLetter}${toRow}`);
-        botCell.border = { ...(botCell.border || {}), bottom: thin };
-      }
-      for (let r = fromRow; r <= toRow; r++) {
-        const leftCell = ws.getCell(`${fromCol}${r}`);
-        leftCell.border = { ...(leftCell.border || {}), left: thin };
-        const rightCell = ws.getCell(`${toCol}${r}`);
-        rightCell.border = { ...(rightCell.border || {}), right: thin };
-      }
-    };
-
-    // TIN written as grouped digit boxes (matches the official form's boxed TIN fields).
-    // Boxes start at column H, leaving B:G free so label text can overflow without being
-    // cut off by the merged box (Excel blocks overflow at the first non-empty/merged cell).
-    const writeTinBoxes = (row, tin) => {
-      const digits = String(tin || "").replace(/\D/g, "");
-      const groups = [digits.slice(0, 3), digits.slice(3, 6), digits.slice(6, 9), digits.slice(9, 12)];
-      const ranges = [`H${row}:J${row}`, `L${row}:N${row}`, `P${row}:R${row}`, `T${row}:V${row}`];
-      ranges.forEach((range, i) => {
-        merge(range, groups[i] || "", { align: "center", border: true, grey: i === 3 });
+    // The template's fields were located by overlaying a coordinate grid on a real
+    // Excel-rendered copy of 2307.XLT and reading off exact positions - these are not
+    // guesses, they were calibrated against the actual official form.
+    const y = (topDist) => H - topDist;
+    const draw = (text, x, topDist, opts = {}) => {
+      if (!text) return;
+      page.drawText(String(text), {
+        x,
+        y: y(topDist),
+        size: opts.size || 8,
+        font: opts.bold ? boldFont : font,
+        color: rgb(0, 0, 0),
       });
     };
-
-    // Band 1: corner boxes, seal, Republic of the Philippines block
-    merge("A1:B2", "For BIR\nUse Only", { size: 6, align: "center", wrap: true, border: true });
-    merge("C1:D2", "BCS/\nItem:", { size: 6, align: "center", wrap: true, border: true });
-
-    set("N2", "Republic of the Philippines");
-    merge("N3:AB3", "Department of Finance");
-    merge("N4:AB4", "Bureau of Internal Revenue", { bold: true });
-
-    // Separator between band 1 and band 2
-    merge("A5:AR5", "", { border: true });
-
-    // Band 2: BIR Form No./2307/date box (bordered), big title, barcode
-    merge("A6:J6", "BIR Form No.", { bold: true, align: "center" });
-    merge("A7:J8", "2307", { bold: true, align: "center", size: 26 });
-    merge("A9:J9", "January 2018 (ENCS)", { size: 6, align: "center" });
-    drawBox("A", 6, "J", 9);
-
-    merge(
-      "K6:AF9",
-      "Certificate of Creditable Tax Withheld At Source",
-      { bold: true, align: "center", size: 20, wrap: true }
-    );
-
-    // BIR seal + barcode graphics
-    const loadImageBase64 = async (url) => {
-      const res = await fetch(url);
-      const buf = await res.arrayBuffer();
-      let binary = "";
-      const bytes = new Uint8Array(buf);
-      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-      return btoa(binary);
+    const drawRight = (text, xRight, topDist, opts = {}) => {
+      const size = opts.size || 7;
+      const useFont = opts.bold ? boldFont : font;
+      const str = String(text);
+      const w = useFont.widthOfTextAtSize(str, size);
+      page.drawText(str, { x: xRight - w, y: y(topDist), size, font: useFont, color: rgb(0, 0, 0) });
     };
-
-    try {
-      const [sealBase64, barcodeBase64] = await Promise.all([
-        loadImageBase64("/all_image/bir-seal.png"),
-        loadImageBase64("/all_image/bir-barcode-2307.png"),
-      ]);
-
-      const sealId = wb.addImage({ base64: `data:image/png;base64,${sealBase64}`, extension: "png" });
-      ws.addImage(sealId, { tl: { col: 4, row: 0.2 }, ext: { width: 66, height: 57 } });
-
-      const barcodeId = wb.addImage({ base64: `data:image/png;base64,${barcodeBase64}`, extension: "png" });
-      ws.addImage(barcodeId, { tl: { col: 34, row: 6.1 }, ext: { width: 150, height: 36 } });
-      set("AH9", "2307 01/18ENCS", { size: 6, align: "center" });
-    } catch (err) {
-      console.warn("Could not embed BIR seal/barcode images:", err);
-    }
-
-    merge(
-      "A10:AR10",
-      'Fill in all applicable spaces. Mark all appropriate boxes with an "X".',
-      { bold: true, size: 8 }
-    );
-
-    // For the Period
-    set("A11", "1", { bold: true });
-    set("B11", "For the Period", { bold: true });
-    set("B12", "From");
+    // Covers a pre-existing "-" placeholder baked into the template's Total row before
+    // drawing a new value on top of it, so the placeholder doesn't show through.
+    const eraseRect = (xLeft, xRight, topDist, height = 9) => {
+      page.drawRectangle({
+        x: xLeft,
+        y: y(topDist) - 2,
+        width: xRight - xLeft,
+        height,
+        color: rgb(1, 1, 1),
+      });
+    };
 
     const y2 = String(report.period.year).slice(-2);
     const firstDayStr = `${String(report.period.firstMonth).padStart(2, "0")}/01/${y2}`;
     const lastDayNum = new Date(report.period.year, report.period.thirdMonth, 0).getDate();
     const lastDayStr = `${String(report.period.thirdMonth).padStart(2, "0")}/${lastDayNum}/${y2}`;
+    draw(firstDayStr, 150, 129);
+    draw(lastDayStr, 335, 129);
 
-    set("H12", firstDayStr, { border: true });
-    set("N12", "(MM/DD/YY)", { size: 6 });
-    set("U12", "To");
-    set("W12", lastDayStr, { border: true });
-    set("AE12", "(MM/DD/YY)", { size: 6 });
+    draw(report.payee.tin || "-", 178, 152);
+    draw(report.payee.name || "-", 178, 169);
+    draw(report.payee.address || "-", 178, 189);
 
-    // PART I - Payee Information
-    merge("D13:AR13", "Payee   Information", { bold: true, grey: true });
-    merge("A13:C13", "Part I", { bold: true, grey: true });
+    draw(report.payor.payorTin || "-", 178, 228);
+    draw(report.payor.payorName || "-", 178, 248);
+    draw(report.payor.payorAddress || "-", 178, 276);
+    draw(report.payor.payorZip || "", 522, 276);
 
-    set("A14", "2");
-    set("B14", "Taxpayer");
-    set("B15", "Identification Number");
-    writeTinBoxes(14, report.payee.tin);
+    const cols = { atc: 341, m1: 392, m2: 443, m3: 494, total: 545, tw: 595 };
+    const rowHeight = 10.2;
+    const maxRows = 13;
+    const lines = report.lines.slice(0, maxRows);
 
-    set("A17", "3");
-    set("B17", "Payee's Name");
-    merge("H17:AR17", report.payee.name || "-", { border: true });
-    merge(
-      "H18:AR18",
-      "(Last Name, First Name, Middle Name for Individuals) (Registered Name for Non-Individuals)",
-      { size: 6 }
-    );
-
-    set("A19", "4");
-    set("B19", "Registered Address");
-    merge("H19:AI19", report.payee.address || "-", { border: true });
-    set("AJ19", "4A");
-    set("AK19", "Zip Code");
-    merge("AL19:AR19", "", { border: true });
-
-    set("A21", "5");
-    set("B21", "Foreign Address");
-    merge("H21:AI21", "", { border: true });
-    set("AJ21", "5A");
-    set("AK21", "Zip Code");
-    merge("AL21:AR21", "", { border: true });
-
-    // Payor Information
-    merge("D23:AR23", "Payor   Information", { bold: true, grey: true });
-    merge("A23:C23", "", { grey: true });
-
-    set("A24", "6");
-    set("B24", "Taxpayer");
-    set("B25", "Identification Number");
-    writeTinBoxes(24, report.payor.payorTin);
-
-    set("A27", "7");
-    set("B27", "Payor's Name");
-    merge("H27:AR27", report.payor.payorName || "-", { border: true });
-    merge(
-      "H28:AR28",
-      "(Last Name, First Name, Middle Name for Individuals) (Registered Name for Non-Individuals)",
-      { size: 6 }
-    );
-
-    set("A29", "8");
-    set("B29", "Registered Address");
-    merge("H29:AI29", report.payor.payorAddress || "-", { border: true });
-    set("AJ29", "8A");
-    set("AK29", "Zip Code");
-    merge("AL29:AR29", report.payor.payorZip || "-", { border: true });
-
-    // PART II - EWT table
-    merge(
-      "D32:AR32",
-      "Details of Monthly Income Payments and Tax Withheld for the Quarter",
-      { bold: true, grey: true }
-    );
-    merge("A32:C32", "PART II", { bold: true, grey: true, size: 7 });
-
-    const tableHeader = (row1) => {
-      merge(`A${row1}:L${row1}`, "Income Payments Subject to", { bold: true, size: 7 });
-      merge(`A${row1 + 1}:L${row1 + 1}`, "Expanded Withholding Tax", { bold: true, size: 7 });
-      merge(`M${row1}:P${row1 + 1}`, "ATC", { bold: true, align: "center" });
-      merge(`Q${row1}:AJ${row1}`, "AMOUNT OF INCOME PAYMENTS", { bold: true, align: "center" });
-      merge(`Q${row1 + 1}:U${row1 + 1}`, "1st Month of", { bold: true, align: "center", size: 7 });
-      merge(`V${row1 + 1}:Z${row1 + 1}`, "2nd Month of", { bold: true, align: "center", size: 7 });
-      merge(`AA${row1 + 1}:AE${row1 + 1}`, "3rd Month of", { bold: true, align: "center", size: 7 });
-      merge(`AF${row1 + 1}:AJ${row1 + 1}`, "Total", { bold: true, align: "center", size: 7 });
-      merge(`AK${row1 + 1}:AR${row1 + 1}`, "Tax Withheld", { bold: true, align: "center", size: 7 });
-      merge(`Q${row1 + 2}:U${row1 + 2}`, "the Quarter", { bold: true, align: "center", size: 7 });
-      merge(`V${row1 + 2}:Z${row1 + 2}`, "the Quarter", { bold: true, align: "center", size: 7 });
-      merge(`AA${row1 + 2}:AE${row1 + 2}`, "the Quarter", { bold: true, align: "center", size: 7 });
-      merge(`AK${row1 + 2}:AR${row1 + 2}`, "For the Quarter", { bold: true, align: "center", size: 7 });
-    };
-
-    tableHeader(33);
-
-    const dataStartRow = 36;
-    const lines = report.lines.length > 0 ? report.lines : [];
-    const rowsAvailable = 13;
-    const rowCount = Math.max(lines.length, rowsAvailable);
-    const totalRow = dataStartRow + rowCount;
-
-    for (let i = 0; i < rowCount; i++) {
-      const r = dataStartRow + i;
-      const line = lines[i];
-      merge(`A${r}:L${r}`, "");
-      merge(`M${r}:P${r}`, line ? line.atcCode : "", { align: "center", border: true });
-      merge(`Q${r}:U${r}`, line ? formatMoney(line.month1Amount) : "", { align: "right", border: true });
-      merge(`V${r}:Z${r}`, line ? formatMoney(line.month2Amount) : "", { align: "right", border: true });
-      merge(`AA${r}:AE${r}`, line ? formatMoney(line.month3Amount) : "", { align: "right", border: true });
-      merge(`AF${r}:AJ${r}`, line ? formatMoney(line.totalAmount) : "", { align: "right", border: true });
-      merge(`AK${r}:AR${r}`, line ? formatMoney(line.totalTaxWithheld) : "", { align: "right", border: true });
-    }
-
-    const writeTotalRow = (r, values) => {
-      set(`A${r}`, "Total", { bold: true, align: "center" });
-      merge(`M${r}:P${r}`, "", { border: true });
-      merge(`Q${r}:U${r}`, values ? formatMoney(values.month1Amount) : "-", { bold: true, align: "right", border: true });
-      merge(`V${r}:Z${r}`, values ? formatMoney(values.month2Amount) : "-", { bold: true, align: "right", border: true });
-      merge(`AA${r}:AE${r}`, values ? formatMoney(values.month3Amount) : "-", { bold: true, align: "right", border: true });
-      merge(`AF${r}:AJ${r}`, values ? formatMoney(values.totalAmount) : "-", { bold: true, align: "right", border: true });
-      merge(`AK${r}:AR${r}`, values ? formatMoney(values.totalTaxWithheld) : "-", { bold: true, align: "right", border: true });
-    };
-
-    writeTotalRow(totalRow, report.totals);
-
-    // Second table (Money Payments Subject to Withholding of Business Tax) - part of the
-    // official layout but not populated; this system only tracks Expanded Withholding Tax.
-    const table2Row1 = totalRow + 1;
-    merge(`A${table2Row1}:L${table2Row1}`, "Money Payments Subject to Withholding Tax", { bold: true, size: 7, grey: true });
-    merge(`A${table2Row1 + 1}:L${table2Row1 + 1}`, "of Business Tax (Government & Private)", { bold: true, size: 7, grey: true });
-
-    const table2DataStart = table2Row1 + 2;
-    for (let i = 0; i < rowsAvailable; i++) {
-      const r = table2DataStart + i;
-      merge(`A${r}:L${r}`, "");
-      merge(`M${r}:P${r}`, "", { border: true });
-      merge(`Q${r}:U${r}`, "", { border: true });
-      merge(`V${r}:Z${r}`, "", { border: true });
-      merge(`AA${r}:AE${r}`, "", { border: true });
-      merge(`AF${r}:AJ${r}`, "", { border: true });
-      merge(`AK${r}:AR${r}`, "", { border: true });
-    }
-    const table2TotalRow = table2DataStart + rowsAvailable;
-    writeTotalRow(table2TotalRow, null);
-
-    // Declaration
-    const declRow = table2TotalRow + 2;
-    merge(
-      `A${declRow}:AR${declRow + 3}`,
-      "We declare under the penalties of perjury that this certificate has been made in good faith, " +
-        "verified by us, and to the best of our knowledge and belief, is true and correct, pursuant to " +
-        "the provisions of the National Internal Revenue Code, as amended, and the regulations issued " +
-        'under authority thereof. Further, we give our consent to the processing of our information as ' +
-        'contemplated under the "Data Privacy Act of 2012 (R.A. No. 10173)" for legitimate and lawful purposes.',
-      { size: 8, wrap: true, grey: true }
-    );
-
-    // Payor signature block
-    const sigBlock = (startRow, role) => {
-      merge(`A${startRow}:AR${startRow}`, "", { border: true });
-      merge(`A${startRow + 1}:AR${startRow + 1}`, `Signature over Printed Name of ${role}`, {
-        size: 7, align: "center", grey: true,
-      });
-      merge(`A${startRow + 2}:AR${startRow + 2}`, "(Indicate Title/Designation and TIN)", {
-        size: 7, align: "center",
-      });
-      merge(`A${startRow + 3}:S${startRow + 3}`, "Tax Agent Accreditation No./", { size: 6 });
-      merge(`T${startRow + 3}:AE${startRow + 3}`, "Date of Issue", { size: 6, align: "center" });
-      merge(`AF${startRow + 3}:AI${startRow + 3}`, "Date of Expiry", { size: 6, align: "center" });
-      merge(`A${startRow + 4}:S${startRow + 4}`, "Attorney's Roll No. (if applicable)", { size: 6 });
-      merge(`T${startRow + 4}:AE${startRow + 4}`, "(MM/DD/YYYY)", { size: 6, align: "center" });
-      merge(`AF${startRow + 4}:AI${startRow + 4}`, "(MM/DD/YYYY)", { size: 6, align: "center" });
-      return startRow + 5;
-    };
-
-    const payorSigStart = declRow + 5;
-    const afterPayorSig = sigBlock(
-      payorSigStart,
-      "Payor/Payor's Authorized Representative/Tax Agent"
-    );
-
-    const conformeRow = afterPayorSig + 1;
-    merge(`A${conformeRow}:AR${conformeRow}`, "CONFORME:", { bold: true, grey: true });
-
-    const payeeSigStart = conformeRow + 3;
-    const afterPayeeSig = sigBlock(
-      payeeSigStart,
-      "Payee/Payee's Authorized Representative/Tax Agent"
-    );
-
-    merge(
-      `A${afterPayeeSig + 1}:AR${afterPayeeSig + 1}`,
-      "*NOTE: The BIR Data Privacy is in the BIR website (www.bir.gov.ph)",
-      { size: 6, italic: true }
-    );
-
-    const buffer = await wb.xlsx.writeBuffer();
-    const blob = new Blob([buffer], {
-      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    let rowY = 342;
+    lines.forEach((line) => {
+      drawRight(line.atcCode, cols.atc - 3, rowY, { size: 7 });
+      drawRight(formatMoney(line.month1Amount), cols.m1 - 5, rowY, { size: 7 });
+      drawRight(formatMoney(line.month2Amount), cols.m2 - 5, rowY, { size: 7 });
+      drawRight(formatMoney(line.month3Amount), cols.m3 - 5, rowY, { size: 7 });
+      drawRight(formatMoney(line.totalAmount), cols.total - 5, rowY, { size: 7 });
+      drawRight(formatMoney(line.totalTaxWithheld), cols.tw - 8, rowY, { size: 7 });
+      rowY += rowHeight;
     });
+
+    const totalRowY = 475;
+    [
+      [cols.m1, report.totals.month1Amount],
+      [cols.m2, report.totals.month2Amount],
+      [cols.m3, report.totals.month3Amount],
+      [cols.total, report.totals.totalAmount],
+    ].forEach(([xRight]) => eraseRect(xRight - 55, xRight, totalRowY));
+    eraseRect(cols.tw - 60, cols.tw, totalRowY);
+
+    drawRight(formatMoney(report.totals.month1Amount), cols.m1 - 5, totalRowY, { size: 7, bold: true });
+    drawRight(formatMoney(report.totals.month2Amount), cols.m2 - 5, totalRowY, { size: 7, bold: true });
+    drawRight(formatMoney(report.totals.month3Amount), cols.m3 - 5, totalRowY, { size: 7, bold: true });
+    drawRight(formatMoney(report.totals.totalAmount), cols.total - 5, totalRowY, { size: 7, bold: true });
+    drawRight(formatMoney(report.totals.totalTaxWithheld), cols.tw - 8, totalRowY, { size: 7, bold: true });
+
+    const bytes = await pdf.save();
+    const blob = new Blob([bytes], { type: "application/pdf" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
 
     const fileNameSafe = (report.payee.name || "payee").replace(/[^a-z0-9]+/gi, "_");
     link.href = url;
-    link.download = `BIR_2307_${fileNameSafe}_Q${report.period.quarter}_${report.period.year}.xlsx`;
+    link.download = `BIR_2307_${fileNameSafe}_Q${report.period.quarter}_${report.period.year}.pdf`;
     link.click();
 
     URL.revokeObjectURL(url);
@@ -490,11 +245,11 @@ export default function Form2307() {
           </button>
 
           <button className="dark" onClick={() => window.print()}>
-            Print / Export PDF
+            Print (Browser View)
           </button>
 
-          <button className="dark" onClick={downloadExcel}>
-            Export Excel
+          <button className="dark" onClick={downloadPdf}>
+            Export PDF (Official Template)
           </button>
         </div>
       </div>
