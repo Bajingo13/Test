@@ -117,6 +117,32 @@ export default function Form2307() {
       { bold: true, align: "center", size: 12, wrap: true }
     );
 
+    // BIR seal + barcode graphics
+    const loadImageBase64 = async (url) => {
+      const res = await fetch(url);
+      const buf = await res.arrayBuffer();
+      let binary = "";
+      const bytes = new Uint8Array(buf);
+      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+      return btoa(binary);
+    };
+
+    try {
+      const [sealBase64, barcodeBase64] = await Promise.all([
+        loadImageBase64("/all_image/bir-seal.png"),
+        loadImageBase64("/all_image/bir-barcode-2307.png"),
+      ]);
+
+      const sealId = wb.addImage({ base64: `data:image/png;base64,${sealBase64}`, extension: "png" });
+      ws.addImage(sealId, { tl: { col: 6, row: 0.2 }, ext: { width: 66, height: 57 } });
+
+      const barcodeId = wb.addImage({ base64: `data:image/png;base64,${barcodeBase64}`, extension: "png" });
+      ws.addImage(barcodeId, { tl: { col: 44, row: 0.3 }, ext: { width: 150, height: 36 } });
+      set("AT7", "2307 01/18ENCS", { size: 6, align: "center" });
+    } catch (err) {
+      console.warn("Could not embed BIR seal/barcode images:", err);
+    }
+
     merge(
       "A9:AR9",
       'Fill in all applicable spaces. Mark all appropriate boxes with an "X".',
