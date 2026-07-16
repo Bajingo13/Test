@@ -52,6 +52,147 @@ export default function Form2307() {
     return `${MONTH_NAMES[firstMonth]} 1, ${year} to ${MONTH_NAMES[thirdMonth]} ${lastDay}, ${year}`;
   }, [report]);
 
+  function downloadExcel() {
+    if (!report) {
+      alert("Please generate the certificate first.");
+      return;
+    }
+
+    const m1 = MONTH_NAMES[report.period.firstMonth];
+    const m2 = MONTH_NAMES[report.period.secondMonth];
+    const m3 = MONTH_NAMES[report.period.thirdMonth];
+
+    const lineRows =
+      report.lines.length === 0
+        ? `<tr><td colspan="6" style="text-align:center;">No withholding tax transactions found for this payee this quarter.</td></tr>`
+        : report.lines
+            .map(
+              (line) => `
+        <tr>
+          <td>${line.atcCode}</td>
+          <td align="right">${formatMoney(line.month1Amount)}</td>
+          <td align="right">${formatMoney(line.month2Amount)}</td>
+          <td align="right">${formatMoney(line.month3Amount)}</td>
+          <td align="right">${formatMoney(line.totalAmount)}</td>
+          <td align="right">${formatMoney(line.totalTaxWithheld)}</td>
+        </tr>`
+            )
+            .join("");
+
+    const htmlTable = `
+      <table border="1" style="border-collapse:collapse; font-family:Arial, sans-serif; font-size:12px;">
+        <tr>
+          <td colspan="2" style="border:none;">Republic of the Philippines</td>
+          <td colspan="2" style="border:none;"></td>
+          <td colspan="2" style="border:none; text-align:right; font-weight:bold;">BIR Form No. 2307</td>
+        </tr>
+        <tr>
+          <td colspan="2" style="border:none;">Department of Finance</td>
+          <td colspan="2" style="border:none;"></td>
+          <td colspan="2" style="border:none; text-align:right;">Certificate of Creditable Tax Withheld at Source</td>
+        </tr>
+        <tr>
+          <td colspan="6" style="border:none; font-weight:bold;">Bureau of Internal Revenue</td>
+        </tr>
+        <tr><td colspan="6" style="border:none;">&nbsp;</td></tr>
+        <tr>
+          <td colspan="6" style="border:none;"><b>For the Period:</b> ${periodLabel}</td>
+        </tr>
+        <tr><td colspan="6" style="border:none;">&nbsp;</td></tr>
+
+        <tr>
+          <td colspan="6" style="background:#f1f5f9; font-weight:bold;">PART I - Payee Information</td>
+        </tr>
+        <tr>
+          <td colspan="2" style="font-weight:bold; background:#f8fafc;">Taxpayer Identification Number (TIN)</td>
+          <td colspan="4">${report.payee.tin || "-"}</td>
+        </tr>
+        <tr>
+          <td colspan="2" style="font-weight:bold; background:#f8fafc;">Payee's Name</td>
+          <td colspan="4">${report.payee.name}</td>
+        </tr>
+        <tr>
+          <td colspan="2" style="font-weight:bold; background:#f8fafc;">Registered Address</td>
+          <td colspan="4">${report.payee.address || "-"}</td>
+        </tr>
+
+        <tr>
+          <td colspan="6" style="background:#f1f5f9; font-weight:bold;">Payor Information</td>
+        </tr>
+        <tr>
+          <td colspan="2" style="font-weight:bold; background:#f8fafc;">Taxpayer Identification Number (TIN)</td>
+          <td colspan="4">${report.payor.payorTin || "-"}</td>
+        </tr>
+        <tr>
+          <td colspan="2" style="font-weight:bold; background:#f8fafc;">Payor's Name</td>
+          <td colspan="4">${report.payor.payorName || "-"}</td>
+        </tr>
+        <tr>
+          <td colspan="2" style="font-weight:bold; background:#f8fafc;">Registered Address</td>
+          <td colspan="4">${report.payor.payorAddress || "-"}${report.payor.payorZip ? `, ${report.payor.payorZip}` : ""}</td>
+        </tr>
+
+        <tr>
+          <td colspan="6" style="background:#f1f5f9; font-weight:bold;">PART II - Details of Monthly Income Payments and Tax Withheld for the Quarter</td>
+        </tr>
+
+        <tr>
+          <td rowspan="2" style="font-weight:bold; text-align:center;">ATC</td>
+          <td colspan="4" style="font-weight:bold; text-align:center;">Amount of Income Payments</td>
+          <td rowspan="2" style="font-weight:bold; text-align:center;">Tax Withheld For the Quarter</td>
+        </tr>
+        <tr>
+          <td style="font-weight:bold; text-align:center;">${m1}</td>
+          <td style="font-weight:bold; text-align:center;">${m2}</td>
+          <td style="font-weight:bold; text-align:center;">${m3}</td>
+          <td style="font-weight:bold; text-align:center;">Total</td>
+        </tr>
+
+        ${lineRows}
+
+        <tr>
+          <td style="font-weight:bold; text-align:center;">Total</td>
+          <td align="right" style="font-weight:bold;">${formatMoney(report.totals.month1Amount)}</td>
+          <td align="right" style="font-weight:bold;">${formatMoney(report.totals.month2Amount)}</td>
+          <td align="right" style="font-weight:bold;">${formatMoney(report.totals.month3Amount)}</td>
+          <td align="right" style="font-weight:bold;">${formatMoney(report.totals.totalAmount)}</td>
+          <td align="right" style="font-weight:bold;">${formatMoney(report.totals.totalTaxWithheld)}</td>
+        </tr>
+
+        <tr><td colspan="6" style="border:none;">&nbsp;</td></tr>
+        <tr>
+          <td colspan="6" style="border:none; font-size:10px;">
+            We declare under the penalties of perjury that this certificate has been made in good faith,
+            verified by us, and to the best of our knowledge and belief, is true and correct, pursuant to
+            the provisions of the National Internal Revenue Code, as amended, and the regulations issued
+            under authority thereof.
+          </td>
+        </tr>
+        <tr><td colspan="6" style="border:none;">&nbsp;</td></tr>
+        <tr><td colspan="6" style="border:none;">&nbsp;</td></tr>
+        <tr>
+          <td colspan="3" style="border:none; border-top:1px solid #000; text-align:center; font-size:10px;">
+            Signature over Printed Name of Payor / Payor's Authorized Representative / Tax Agent
+          </td>
+          <td colspan="3" style="border:none; border-top:1px solid #000; text-align:center; font-size:10px;">
+            Signature over Printed Name of Payee / Payee's Authorized Representative / Tax Agent
+          </td>
+        </tr>
+      </table>
+    `;
+
+    const blob = new Blob([htmlTable], { type: "application/vnd.ms-excel" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+
+    const fileNameSafe = (report.payee.name || "payee").replace(/[^a-z0-9]+/gi, "_");
+    link.href = url;
+    link.download = `BIR_2307_${fileNameSafe}_Q${report.period.quarter}_${report.period.year}.xls`;
+    link.click();
+
+    URL.revokeObjectURL(url);
+  }
+
   async function generateReport() {
     if (!supplierId) {
       alert("Please select a payee (supplier) first.");
@@ -138,6 +279,10 @@ export default function Form2307() {
 
           <button className="dark" onClick={() => window.print()}>
             Print / Export PDF
+          </button>
+
+          <button className="dark" onClick={downloadExcel}>
+            Export Excel
           </button>
         </div>
       </div>
