@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import ExcelJS from "exceljs";
 import "./AccountAnalysis.css";
 import "./Form2307.css";
 
@@ -52,142 +53,216 @@ export default function Form2307() {
     return `${MONTH_NAMES[firstMonth]} 1, ${year} to ${MONTH_NAMES[thirdMonth]} ${lastDay}, ${year}`;
   }, [report]);
 
-  function downloadExcel() {
+  async function downloadExcel() {
     if (!report) {
       alert("Please generate the certificate first.");
       return;
     }
 
-    const m1 = MONTH_NAMES[report.period.firstMonth];
-    const m2 = MONTH_NAMES[report.period.secondMonth];
-    const m3 = MONTH_NAMES[report.period.thirdMonth];
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet("2307", { pageSetup: { paperSize: 9, orientation: "portrait" } });
 
-    const lineRows =
-      report.lines.length === 0
-        ? `<tr><td colspan="6" style="text-align:center;">No withholding tax transactions found for this payee this quarter.</td></tr>`
-        : report.lines
-            .map(
-              (line) => `
-        <tr>
-          <td>${line.atcCode}</td>
-          <td align="right">${formatMoney(line.month1Amount)}</td>
-          <td align="right">${formatMoney(line.month2Amount)}</td>
-          <td align="right">${formatMoney(line.month3Amount)}</td>
-          <td align="right">${formatMoney(line.totalAmount)}</td>
-          <td align="right">${formatMoney(line.totalTaxWithheld)}</td>
-        </tr>`
-            )
-            .join("");
+    // Reproduce the official template's fine 44-column grid (A..AR)
+    ws.columns = Array.from({ length: 44 }, () => ({ width: 2.2 }));
 
-    const htmlTable = `
-      <table border="1" style="border-collapse:collapse; font-family:Arial, sans-serif; font-size:12px;">
-        <tr>
-          <td colspan="2" style="border:none;">Republic of the Philippines</td>
-          <td colspan="2" style="border:none;"></td>
-          <td colspan="2" style="border:none; text-align:right; font-weight:bold;">BIR Form No. 2307</td>
-        </tr>
-        <tr>
-          <td colspan="2" style="border:none;">Department of Finance</td>
-          <td colspan="2" style="border:none;"></td>
-          <td colspan="2" style="border:none; text-align:right;">Certificate of Creditable Tax Withheld at Source</td>
-        </tr>
-        <tr>
-          <td colspan="6" style="border:none; font-weight:bold;">Bureau of Internal Revenue</td>
-        </tr>
-        <tr><td colspan="6" style="border:none;">&nbsp;</td></tr>
-        <tr>
-          <td colspan="6" style="border:none;"><b>For the Period:</b> ${periodLabel}</td>
-        </tr>
-        <tr><td colspan="6" style="border:none;">&nbsp;</td></tr>
+    const thin = { style: "thin" };
+    const box = { top: thin, left: thin, bottom: thin, right: thin };
 
-        <tr>
-          <td colspan="6" style="background:#f1f5f9; font-weight:bold;">PART I - Payee Information</td>
-        </tr>
-        <tr>
-          <td colspan="2" style="font-weight:bold; background:#f8fafc;">Taxpayer Identification Number (TIN)</td>
-          <td colspan="4">${report.payee.tin || "-"}</td>
-        </tr>
-        <tr>
-          <td colspan="2" style="font-weight:bold; background:#f8fafc;">Payee's Name</td>
-          <td colspan="4">${report.payee.name}</td>
-        </tr>
-        <tr>
-          <td colspan="2" style="font-weight:bold; background:#f8fafc;">Registered Address</td>
-          <td colspan="4">${report.payee.address || "-"}</td>
-        </tr>
+    const set = (addr, value, opts = {}) => {
+      const cell = ws.getCell(addr);
+      cell.value = value;
+      cell.font = { name: "Arial", size: opts.size || 8, bold: !!opts.bold };
+      cell.alignment = {
+        horizontal: opts.align || "left",
+        vertical: "middle",
+        wrapText: !!opts.wrap,
+      };
+      if (opts.border) cell.border = box;
+      return cell;
+    };
 
-        <tr>
-          <td colspan="6" style="background:#f1f5f9; font-weight:bold;">Payor Information</td>
-        </tr>
-        <tr>
-          <td colspan="2" style="font-weight:bold; background:#f8fafc;">Taxpayer Identification Number (TIN)</td>
-          <td colspan="4">${report.payor.payorTin || "-"}</td>
-        </tr>
-        <tr>
-          <td colspan="2" style="font-weight:bold; background:#f8fafc;">Payor's Name</td>
-          <td colspan="4">${report.payor.payorName || "-"}</td>
-        </tr>
-        <tr>
-          <td colspan="2" style="font-weight:bold; background:#f8fafc;">Registered Address</td>
-          <td colspan="4">${report.payor.payorAddress || "-"}${report.payor.payorZip ? `, ${report.payor.payorZip}` : ""}</td>
-        </tr>
+    const merge = (range, value, opts = {}) => {
+      ws.mergeCells(range);
+      const topLeft = range.split(":")[0];
+      return set(topLeft, value, opts);
+    };
 
-        <tr>
-          <td colspan="6" style="background:#f1f5f9; font-weight:bold;">PART II - Details of Monthly Income Payments and Tax Withheld for the Quarter</td>
-        </tr>
+    // Header
+    set("P2", "Republic of the Philippines");
+    merge("P3:AD3", "Department of Finance");
+    merge("P4:AD4", "Bureau of Internal Revenue", { bold: true });
+    set("AF2", "BIR Form No. 2307", { bold: true, align: "right" });
+    set("AF3", "Certificate of Creditable", { align: "right" });
+    set("AF4", "Tax Withheld at Source", { align: "right" });
 
-        <tr>
-          <td rowspan="2" style="font-weight:bold; text-align:center;">ATC</td>
-          <td colspan="4" style="font-weight:bold; text-align:center;">Amount of Income Payments</td>
-          <td rowspan="2" style="font-weight:bold; text-align:center;">Tax Withheld For the Quarter</td>
-        </tr>
-        <tr>
-          <td style="font-weight:bold; text-align:center;">${m1}</td>
-          <td style="font-weight:bold; text-align:center;">${m2}</td>
-          <td style="font-weight:bold; text-align:center;">${m3}</td>
-          <td style="font-weight:bold; text-align:center;">Total</td>
-        </tr>
+    // For the Period
+    set("A11", "1", { bold: true });
+    set("B11", "For the Period", { bold: true });
+    set("B12", "From");
 
-        ${lineRows}
+    const y2 = String(report.period.year).slice(-2);
+    const firstDayStr = `${String(report.period.firstMonth).padStart(2, "0")}/01/${y2}`;
+    const lastDayNum = new Date(report.period.year, report.period.thirdMonth, 0).getDate();
+    const lastDayStr = `${String(report.period.thirdMonth).padStart(2, "0")}/${lastDayNum}/${y2}`;
 
-        <tr>
-          <td style="font-weight:bold; text-align:center;">Total</td>
-          <td align="right" style="font-weight:bold;">${formatMoney(report.totals.month1Amount)}</td>
-          <td align="right" style="font-weight:bold;">${formatMoney(report.totals.month2Amount)}</td>
-          <td align="right" style="font-weight:bold;">${formatMoney(report.totals.month3Amount)}</td>
-          <td align="right" style="font-weight:bold;">${formatMoney(report.totals.totalAmount)}</td>
-          <td align="right" style="font-weight:bold;">${formatMoney(report.totals.totalTaxWithheld)}</td>
-        </tr>
+    set("H12", firstDayStr, { border: true });
+    set("N12", "(MM/DD/YY)", { size: 6 });
+    set("U12", "To");
+    set("W12", lastDayStr, { border: true });
+    set("AE12", "(MM/DD/YY)", { size: 6 });
 
-        <tr><td colspan="6" style="border:none;">&nbsp;</td></tr>
-        <tr>
-          <td colspan="6" style="border:none; font-size:10px;">
-            We declare under the penalties of perjury that this certificate has been made in good faith,
-            verified by us, and to the best of our knowledge and belief, is true and correct, pursuant to
-            the provisions of the National Internal Revenue Code, as amended, and the regulations issued
-            under authority thereof.
-          </td>
-        </tr>
-        <tr><td colspan="6" style="border:none;">&nbsp;</td></tr>
-        <tr><td colspan="6" style="border:none;">&nbsp;</td></tr>
-        <tr>
-          <td colspan="3" style="border:none; border-top:1px solid #000; text-align:center; font-size:10px;">
-            Signature over Printed Name of Payor / Payor's Authorized Representative / Tax Agent
-          </td>
-          <td colspan="3" style="border:none; border-top:1px solid #000; text-align:center; font-size:10px;">
-            Signature over Printed Name of Payee / Payee's Authorized Representative / Tax Agent
-          </td>
-        </tr>
-      </table>
-    `;
+    // PART I - Payee Information
+    set("A13", "Part I", { bold: true });
+    merge("D13:AR13", "Payee   Information", { bold: true });
 
-    const blob = new Blob([htmlTable], { type: "application/vnd.ms-excel" });
+    set("A14", "2");
+    set("B14", "Taxpayer");
+    set("B15", "Identification Number");
+    set("D14", report.payee.tin || "-", { border: true });
+
+    set("A17", "3");
+    set("B17", "Payee's Name");
+    set("D17", report.payee.name || "-", { border: true });
+    merge(
+      "I18:AR18",
+      "(Last Name, First Name, Middle Name for Individuals) (Registered Name for Non-Individuals)",
+      { size: 6 }
+    );
+
+    set("A19", "4");
+    set("B19", "Registered Address");
+    set("D19", report.payee.address || "-", { border: true });
+    set("AJ19", "4A");
+    set("AK19", "Zip Code");
+
+    set("A21", "5");
+    set("B21", "Foreign Address");
+    set("AJ21", "5A");
+    set("AK21", "Zip Code");
+
+    // Payor Information
+    merge("D23:AR23", "Payor   Information", { bold: true });
+
+    set("A24", "6");
+    set("B24", "Taxpayer");
+    set("B25", "Identification Number");
+    set("D24", report.payor.payorTin || "-", { border: true });
+
+    set("A27", "7");
+    set("B27", "Payor's Name");
+    set("D27", report.payor.payorName || "-", { border: true });
+    merge(
+      "I28:AR28",
+      "(Last Name, First Name, Middle Name for Individuals) (Registered Name for Non-Individuals)",
+      { size: 6 }
+    );
+
+    set("A29", "8");
+    set("B29", "Registered Address");
+    set("D29", report.payor.payorAddress || "-", { border: true });
+    set("AJ29", "8A");
+    set("AK29", "Zip Code");
+    set("AL29", report.payor.payorZip || "-", { border: true });
+
+    // PART II - EWT table
+    set("A32", "PART II", { bold: true });
+    merge(
+      "D32:AR32",
+      "Details of Monthly Income Payments and Tax Withheld for the Quarter",
+      { bold: true }
+    );
+
+    merge("A33:L33", "Income Payments Subject to", { bold: true });
+    merge("A34:L34", "Expanded Withholding Tax", { bold: true });
+    merge("M33:P34", "ATC", { bold: true, align: "center" });
+    merge("Q33:AJ33", "AMOUNT OF INCOME PAYMENTS", { bold: true, align: "center" });
+    merge("Q34:U34", `1st Month of`, { bold: true, align: "center", size: 7 });
+    merge("V34:Z34", `2nd Month of`, { bold: true, align: "center", size: 7 });
+    merge("AA34:AE34", `3rd Month of`, { bold: true, align: "center", size: 7 });
+    merge("AF34:AJ34", "Total", { bold: true, align: "center", size: 7 });
+    merge("AK34:AR34", "Tax Withheld", { bold: true, align: "center", size: 7 });
+    merge("Q35:U35", "the Quarter", { bold: true, align: "center", size: 7 });
+    merge("V35:Z35", "the Quarter", { bold: true, align: "center", size: 7 });
+    merge("AA35:AE35", "the Quarter", { bold: true, align: "center", size: 7 });
+    merge("AK35:AR35", "For the Quarter", { bold: true, align: "center", size: 7 });
+
+    const dataStartRow = 36;
+    const lines = report.lines.length > 0 ? report.lines : [];
+    const rowsAvailable = 13;
+    const totalRow = dataStartRow + Math.max(lines.length, rowsAvailable);
+
+    for (let i = 0; i < Math.max(lines.length, rowsAvailable); i++) {
+      const r = dataStartRow + i;
+      const line = lines[i];
+      merge(`A${r}:L${r}`, "");
+      merge(`M${r}:P${r}`, line ? line.atcCode : "", { align: "center", border: true });
+      merge(`Q${r}:U${r}`, line ? formatMoney(line.month1Amount) : "", { align: "right", border: true });
+      merge(`V${r}:Z${r}`, line ? formatMoney(line.month2Amount) : "", { align: "right", border: true });
+      merge(`AA${r}:AE${r}`, line ? formatMoney(line.month3Amount) : "", { align: "right", border: true });
+      merge(`AF${r}:AJ${r}`, line ? formatMoney(line.totalAmount) : "", { align: "right", border: true });
+      merge(`AK${r}:AR${r}`, line ? formatMoney(line.totalTaxWithheld) : "", { align: "right", border: true });
+    }
+
+    set(`A${totalRow}`, "Total", { bold: true, align: "center" });
+    merge(`M${totalRow}:P${totalRow}`, "", { border: true });
+    merge(`Q${totalRow}:U${totalRow}`, formatMoney(report.totals.month1Amount), {
+      bold: true, align: "right", border: true,
+    });
+    merge(`V${totalRow}:Z${totalRow}`, formatMoney(report.totals.month2Amount), {
+      bold: true, align: "right", border: true,
+    });
+    merge(`AA${totalRow}:AE${totalRow}`, formatMoney(report.totals.month3Amount), {
+      bold: true, align: "right", border: true,
+    });
+    merge(`AF${totalRow}:AJ${totalRow}`, formatMoney(report.totals.totalAmount), {
+      bold: true, align: "right", border: true,
+    });
+    merge(`AK${totalRow}:AR${totalRow}`, formatMoney(report.totals.totalTaxWithheld), {
+      bold: true, align: "right", border: true,
+    });
+
+    // Declaration
+    const declRow = totalRow + 3;
+    merge(
+      `A${declRow}:AR${declRow + 3}`,
+      "We declare under the penalties of perjury that this certificate has been made in good faith, " +
+        "verified by us, and to the best of our knowledge and belief, is true and correct, pursuant to " +
+        "the provisions of the National Internal Revenue Code, as amended, and the regulations issued " +
+        "under authority thereof.",
+      { size: 8, wrap: true }
+    );
+
+    // Signature blocks
+    const sigRow = declRow + 6;
+    merge(`A${sigRow}:S${sigRow}`, "", { border: true });
+    merge(`AF${sigRow}:AR${sigRow}`, "", { border: true });
+    merge(
+      `A${sigRow + 1}:S${sigRow + 1}`,
+      "Signature over Printed Name of Payor/Payor's Authorized Representative/Tax Agent",
+      { size: 7, align: "center" }
+    );
+    merge(`A${sigRow + 2}:S${sigRow + 2}`, "(Indicate Title/Designation and TIN)", {
+      size: 7, align: "center",
+    });
+    merge(
+      `AF${sigRow + 1}:AR${sigRow + 1}`,
+      "Signature over Printed Name of Payee/Payee's Authorized Representative/Tax Agent",
+      { size: 7, align: "center" }
+    );
+    merge(`AF${sigRow + 2}:AR${sigRow + 2}`, "(Indicate Title/Designation and TIN)", {
+      size: 7, align: "center",
+    });
+
+    const buffer = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buffer], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
 
     const fileNameSafe = (report.payee.name || "payee").replace(/[^a-z0-9]+/gi, "_");
     link.href = url;
-    link.download = `BIR_2307_${fileNameSafe}_Q${report.period.quarter}_${report.period.year}.xls`;
+    link.download = `BIR_2307_${fileNameSafe}_Q${report.period.quarter}_${report.period.year}.xlsx`;
     link.click();
 
     URL.revokeObjectURL(url);
