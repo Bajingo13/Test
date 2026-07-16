@@ -89,34 +89,73 @@ export default function Form2307() {
       return set(topLeft, value, opts);
     };
 
+    // Draws a rectangular outline around a range by bordering only its perimeter cells,
+    // so a block made of several separately-merged sub-cells still reads as one box.
+    const colToIndex = (col) => {
+      let idx = 0;
+      for (let i = 0; i < col.length; i++) idx = idx * 26 + (col.charCodeAt(i) - 64);
+      return idx;
+    };
+    const indexToCol = (idx) => {
+      let s = "";
+      while (idx > 0) {
+        const rem = (idx - 1) % 26;
+        s = String.fromCharCode(65 + rem) + s;
+        idx = Math.floor((idx - 1) / 26);
+      }
+      return s;
+    };
+    const drawBox = (fromCol, fromRow, toCol, toRow) => {
+      const c1 = colToIndex(fromCol);
+      const c2 = colToIndex(toCol);
+      for (let c = c1; c <= c2; c++) {
+        const colLetter = indexToCol(c);
+        const topCell = ws.getCell(`${colLetter}${fromRow}`);
+        topCell.border = { ...(topCell.border || {}), top: thin };
+        const botCell = ws.getCell(`${colLetter}${toRow}`);
+        botCell.border = { ...(botCell.border || {}), bottom: thin };
+      }
+      for (let r = fromRow; r <= toRow; r++) {
+        const leftCell = ws.getCell(`${fromCol}${r}`);
+        leftCell.border = { ...(leftCell.border || {}), left: thin };
+        const rightCell = ws.getCell(`${toCol}${r}`);
+        rightCell.border = { ...(rightCell.border || {}), right: thin };
+      }
+    };
+
     // TIN written as grouped digit boxes (matches the official form's boxed TIN fields).
-    // Boxes start at column N, leaving B:M free so the label text can overflow without
-    // being cut off by the merged box (Excel blocks overflow at the first non-empty/merged cell).
+    // Boxes start at column H, leaving B:G free so label text can overflow without being
+    // cut off by the merged box (Excel blocks overflow at the first non-empty/merged cell).
     const writeTinBoxes = (row, tin) => {
       const digits = String(tin || "").replace(/\D/g, "");
       const groups = [digits.slice(0, 3), digits.slice(3, 6), digits.slice(6, 9), digits.slice(9, 12)];
-      const ranges = [`N${row}:P${row}`, `R${row}:T${row}`, `V${row}:X${row}`, `Z${row}:AB${row}`];
+      const ranges = [`H${row}:J${row}`, `L${row}:N${row}`, `P${row}:R${row}`, `T${row}:V${row}`];
       ranges.forEach((range, i) => {
         merge(range, groups[i] || "", { align: "center", border: true, grey: i === 3 });
       });
     };
 
-    // Top corner boxes
-    merge("A1:E2", "For BIR\nUse Only", { size: 6, align: "center", wrap: true, border: true });
-    merge("A3:E4", "BCS/\nItem:", { size: 6, align: "center", wrap: true, border: true });
+    // Band 1: corner boxes, seal, Republic of the Philippines block
+    merge("A1:B2", "For BIR\nUse Only", { size: 6, align: "center", wrap: true, border: true });
+    merge("C1:D2", "BCS/\nItem:", { size: 6, align: "center", wrap: true, border: true });
 
-    // Header
-    set("P2", "Republic of the Philippines");
-    merge("P3:AD3", "Department of Finance");
-    merge("P4:AD4", "Bureau of Internal Revenue", { bold: true });
+    set("N2", "Republic of the Philippines");
+    merge("N3:AB3", "Department of Finance");
+    merge("N4:AB4", "Bureau of Internal Revenue", { bold: true });
 
-    set("AF2", "BIR Form No.", { bold: true, align: "center" });
-    merge("AF3:AJ5", "2307", { bold: true, align: "center", size: 26 });
-    set("AF6", "January 2018 (ENCS)", { size: 6, align: "center" });
+    // Separator between band 1 and band 2
+    merge("A5:AR5", "", { border: true });
+
+    // Band 2: BIR Form No./2307/date box (bordered), big title, barcode
+    merge("A6:J6", "BIR Form No.", { bold: true, align: "center" });
+    merge("A7:J8", "2307", { bold: true, align: "center", size: 26 });
+    merge("A9:J9", "January 2018 (ENCS)", { size: 6, align: "center" });
+    drawBox("A", 6, "J", 9);
+
     merge(
-      "AL2:AR6",
+      "K6:AF9",
       "Certificate of Creditable Tax Withheld At Source",
-      { bold: true, align: "center", size: 12, wrap: true }
+      { bold: true, align: "center", size: 20, wrap: true }
     );
 
     // BIR seal + barcode graphics
@@ -136,17 +175,17 @@ export default function Form2307() {
       ]);
 
       const sealId = wb.addImage({ base64: `data:image/png;base64,${sealBase64}`, extension: "png" });
-      ws.addImage(sealId, { tl: { col: 6, row: 0.2 }, ext: { width: 66, height: 57 } });
+      ws.addImage(sealId, { tl: { col: 4, row: 0.2 }, ext: { width: 66, height: 57 } });
 
       const barcodeId = wb.addImage({ base64: `data:image/png;base64,${barcodeBase64}`, extension: "png" });
-      ws.addImage(barcodeId, { tl: { col: 44, row: 0.3 }, ext: { width: 150, height: 36 } });
-      set("AT7", "2307 01/18ENCS", { size: 6, align: "center" });
+      ws.addImage(barcodeId, { tl: { col: 34, row: 6.1 }, ext: { width: 150, height: 36 } });
+      set("AH9", "2307 01/18ENCS", { size: 6, align: "center" });
     } catch (err) {
       console.warn("Could not embed BIR seal/barcode images:", err);
     }
 
     merge(
-      "A9:AR9",
+      "A10:AR10",
       'Fill in all applicable spaces. Mark all appropriate boxes with an "X".',
       { bold: true, size: 8 }
     );
@@ -178,24 +217,26 @@ export default function Form2307() {
 
     set("A17", "3");
     set("B17", "Payee's Name");
-    merge("N17:AR17", report.payee.name || "-", { border: true });
+    merge("H17:AR17", report.payee.name || "-", { border: true });
     merge(
-      "N18:AR18",
+      "H18:AR18",
       "(Last Name, First Name, Middle Name for Individuals) (Registered Name for Non-Individuals)",
       { size: 6 }
     );
 
     set("A19", "4");
     set("B19", "Registered Address");
-    merge("N19:AI19", report.payee.address || "-", { border: true });
+    merge("H19:AI19", report.payee.address || "-", { border: true });
     set("AJ19", "4A");
     set("AK19", "Zip Code");
+    merge("AL19:AR19", "", { border: true });
 
     set("A21", "5");
     set("B21", "Foreign Address");
-    merge("N21:AI21", "", { border: true });
+    merge("H21:AI21", "", { border: true });
     set("AJ21", "5A");
     set("AK21", "Zip Code");
+    merge("AL21:AR21", "", { border: true });
 
     // Payor Information
     merge("D23:AR23", "Payor   Information", { bold: true, grey: true });
@@ -208,16 +249,16 @@ export default function Form2307() {
 
     set("A27", "7");
     set("B27", "Payor's Name");
-    merge("N27:AR27", report.payor.payorName || "-", { border: true });
+    merge("H27:AR27", report.payor.payorName || "-", { border: true });
     merge(
-      "N28:AR28",
+      "H28:AR28",
       "(Last Name, First Name, Middle Name for Individuals) (Registered Name for Non-Individuals)",
       { size: 6 }
     );
 
     set("A29", "8");
     set("B29", "Registered Address");
-    merge("N29:AI29", report.payor.payorAddress || "-", { border: true });
+    merge("H29:AI29", report.payor.payorAddress || "-", { border: true });
     set("AJ29", "8A");
     set("AK29", "Zip Code");
     merge("AL29:AR29", report.payor.payorZip || "-", { border: true });
