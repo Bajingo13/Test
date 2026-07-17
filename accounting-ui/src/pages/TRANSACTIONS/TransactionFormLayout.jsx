@@ -9,6 +9,21 @@ function authHeaders() {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+// A stale/expired JWT (server returns 401/403) previously just surfaced as a raw
+// "Invalid or expired token" alert with no recovery - the page stayed stuck showing
+// no data. Clear the dead token and send the user back to login instead.
+function handleAuthError(status) {
+  if (status === 401 || status === 403) {
+    localStorage.removeItem("token");
+    localStorage.removeItem("user");
+    if (window.location.pathname !== "/login") {
+      window.location.href = "/login";
+    }
+    return true;
+  }
+  return false;
+}
+
 function createLine() {
   return {
     id: crypto.randomUUID(),
@@ -127,6 +142,13 @@ export default function TransactionFormLayout({
       });
 
       const data = await res.json();
+
+      if (!res.ok) {
+        handleAuthError(res.status);
+        setEwtCodes([]);
+        return;
+      }
+
       setEwtCodes(Array.isArray(data) ? data.filter((e) => e.status === "ACTIVE") : []);
     } catch (err) {
       console.error("LOAD EWT LIBRARY ERROR:", err);
@@ -144,6 +166,7 @@ export default function TransactionFormLayout({
       const data = await res.json();
 
       if (!res.ok) {
+        if (handleAuthError(res.status)) return;
         alert(data.message || "Failed to load Chart of Accounts");
         return;
       }
@@ -164,6 +187,7 @@ export default function TransactionFormLayout({
       const data = await res.json();
 
       if (!res.ok) {
+        if (handleAuthError(res.status)) return;
         alert(data.message || "Failed to load General Libraries");
         return;
       }
@@ -203,7 +227,10 @@ export default function TransactionFormLayout({
 
       const data = await res.json();
 
-      if (!res.ok) return;
+      if (!res.ok) {
+        handleAuthError(res.status);
+        return;
+      }
 
       if (code === "APV") {
         setTransactions(
@@ -353,6 +380,7 @@ if (code === "OR") {
     const data = await res.json();
 
     if (!res.ok) {
+      if (handleAuthError(res.status)) return;
       alert(data.message || "Failed to load unpaid APV records");
       return;
     }
@@ -386,6 +414,12 @@ if (code === "OR") {
 
     const data = await res.json();
 
+    if (!res.ok) {
+      handleAuthError(res.status);
+      setUnpaidInvoices([]);
+      return;
+    }
+
     setUnpaidInvoices(Array.isArray(data) ? data : []);
   } catch (err) {
     console.error("LOAD UNPAID INVOICES ERROR:", err);
@@ -401,6 +435,12 @@ if (code === "OR") {
       });
 
       const data = await res.json();
+
+      if (!res.ok) {
+        handleAuthError(res.status);
+        setOpenPos([]);
+        return;
+      }
 
       setOpenPos(Array.isArray(data) ? data : []);
     } catch (err) {
@@ -419,6 +459,7 @@ if (code === "OR") {
       const data = await res.json();
 
       if (!res.ok) {
+        if (handleAuthError(res.status)) return;
         alert(data.message || "Failed to load Purchase Order details");
         return;
       }
@@ -745,6 +786,8 @@ if (code === "APV") {
         setMode("form");
         return;
       }
+
+      if (handleAuthError(res.status)) return;
     } catch (err) {
       console.error("LOAD TRANSACTION DETAILS ERROR:", err);
     }
@@ -1167,9 +1210,10 @@ if (code === "OR") {
         }
       );
 
-      const data = await res.json();  
+      const data = await res.json();
 
       if (!res.ok) {
+        if (handleAuthError(res.status)) return;
         alert(data.message || "Failed to save transaction.");
         return;
       }
