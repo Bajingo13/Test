@@ -37,6 +37,7 @@ export default function Sidebar({ sidebarOpen, setSidebarOpen }) {
   ];
 
   const transactionItems = [
+    { name: "Quotation", path: "/transactions/quotation" },
     { name: "Invoice", path: "/transactions/invoice" },
     { name: "Official Receipts", path: "/transactions/or" },
     { name: "Check Voucher", path: "/transactions/cv" },

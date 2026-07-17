@@ -2376,6 +2376,463 @@ app.delete("/api/purchase-orders/:id", async (req, res) => {
   }
 });
 
+// ===================== QUOTATION API =====================
+
+async function generateQuotationNo(conn) {
+  const yy = String(new Date().getFullYear()).slice(-2);
+  const prefix = `SQ${yy}-`;
+
+  const [rows] = await conn.execute(
+    `SELECT quotation_no FROM quotation_headers WHERE quotation_no LIKE ? ORDER BY id DESC LIMIT 1`,
+    [`${prefix}%`]
+  );
+
+  let seq = 1;
+  if (rows.length > 0) {
+    const match = rows[0].quotation_no.match(/-(\d+)$/);
+    if (match) seq = parseInt(match[1], 10) + 1;
+  }
+
+  return `${prefix}${String(seq).padStart(5, "0")}`;
+}
+
+app.get("/api/quotations", async (req, res) => {
+  try {
+    const [rows] = await pool.execute(`
+      SELECT
+        id,
+        quotation_no AS quotationNo,
+        customer_id AS customerId,
+        customer_name AS customerName,
+        customer_address AS customerAddress,
+        contact_name AS contactName,
+        DATE_FORMAT(quotation_date, '%Y-%m-%d') AS quotationDate,
+        DATE_FORMAT(expiration_date, '%Y-%m-%d') AS expirationDate,
+        status,
+        notes,
+        total_amount AS totalAmount,
+        converted_invoice_id AS convertedInvoiceId,
+        created_at AS createdAt,
+        updated_at AS updatedAt
+      FROM quotation_headers
+      ORDER BY id DESC
+    `);
+
+    res.json(rows);
+  } catch (err) {
+    console.error("GET QUOTATIONS ERROR:", err);
+    res.status(500).json({ message: "Failed to load Quotations" });
+  }
+});
+
+app.get("/api/quotations/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [headers] = await pool.execute(
+      `SELECT
+        id,
+        quotation_no AS quotationNo,
+        customer_id AS customerId,
+        customer_name AS customerName,
+        customer_address AS customerAddress,
+        contact_name AS contactName,
+        DATE_FORMAT(quotation_date, '%Y-%m-%d') AS quotationDate,
+        DATE_FORMAT(expiration_date, '%Y-%m-%d') AS expirationDate,
+        status,
+        notes,
+        total_amount AS totalAmount,
+        converted_invoice_id AS convertedInvoiceId,
+        created_at AS createdAt,
+        updated_at AS updatedAt
+      FROM quotation_headers
+      WHERE id = ?`,
+      [id]
+    );
+
+    if (headers.length === 0) {
+      return res.status(404).json({ message: "Quotation not found" });
+    }
+
+    const [lines] = await pool.execute(
+      `SELECT
+        id,
+        quotation_id AS quotationId,
+        sort_order AS sortOrder,
+        line_type AS lineType,
+        description,
+        notes,
+        quantity,
+        unit_label AS unitLabel,
+        unit_price AS unitPrice,
+        tax_rate AS taxRate,
+        amount
+      FROM quotation_lines
+      WHERE quotation_id = ?
+      ORDER BY sort_order ASC, id ASC`,
+      [id]
+    );
+
+    res.json({
+      ...headers[0],
+      lines,
+    });
+  } catch (err) {
+    console.error("GET QUOTATION DETAILS ERROR:", err);
+    res.status(500).json({ message: "Failed to load Quotation details" });
+  }
+});
+
+app.post("/api/quotations", async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const {
+      customerId,
+      customerName,
+      customerAddress,
+      contactName,
+      quotationDate,
+      expirationDate,
+      status,
+      notes,
+      totalAmount,
+      lines,
+    } = req.body;
+
+    await conn.beginTransaction();
+
+    const quotationNo = await generateQuotationNo(conn);
+
+    const [result] = await conn.execute(
+      `INSERT INTO quotation_headers (
+        quotation_no,
+        customer_id,
+        customer_name,
+        customer_address,
+        contact_name,
+        quotation_date,
+        expiration_date,
+        status,
+        notes,
+        total_amount
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        quotationNo,
+        customerId || null,
+        customerName || "",
+        customerAddress || "",
+        contactName || "",
+        quotationDate || null,
+        expirationDate || null,
+        status === "Sent" ? "Sent" : "Draft",
+        notes || "",
+        totalAmount || 0,
+      ]
+    );
+
+    const quotationId = result.insertId;
+
+    let sortOrder = 0;
+    for (const line of lines || []) {
+      await conn.execute(
+        `INSERT INTO quotation_lines (
+          quotation_id,
+          sort_order,
+          line_type,
+          description,
+          notes,
+          quantity,
+          unit_label,
+          unit_price,
+          tax_rate,
+          amount
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          quotationId,
+          sortOrder++,
+          line.lineType === "section" ? "section" : "item",
+          line.description || "",
+          line.notes || "",
+          Number(line.quantity) || 0,
+          line.unitLabel || "Units",
+          Number(line.unitPrice) || 0,
+          Number(line.taxRate) || 0,
+          Number(line.amount) || 0,
+        ]
+      );
+    }
+
+    await conn.commit();
+
+    res.json({
+      success: true,
+      message: "Quotation saved successfully",
+      id: quotationId,
+      quotationNo,
+    });
+  } catch (err) {
+    await conn.rollback();
+    console.error("CREATE QUOTATION ERROR:", err);
+    res.status(500).json({ message: "Failed to save Quotation" });
+  } finally {
+    conn.release();
+  }
+});
+
+app.put("/api/quotations/:id", async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const { id } = req.params;
+
+    const [existing] = await conn.execute(
+      "SELECT status FROM quotation_headers WHERE id = ?",
+      [id]
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json({ message: "Quotation not found" });
+    }
+
+    if (existing[0].status === "Converted") {
+      return res.status(400).json({
+        message: "This Quotation has already been converted to an Invoice and can no longer be edited.",
+      });
+    }
+
+    const {
+      customerId,
+      customerName,
+      customerAddress,
+      contactName,
+      quotationDate,
+      expirationDate,
+      status,
+      notes,
+      totalAmount,
+      lines,
+    } = req.body;
+
+    await conn.beginTransaction();
+
+    await conn.execute(
+      `UPDATE quotation_headers SET
+        customer_id = ?,
+        customer_name = ?,
+        customer_address = ?,
+        contact_name = ?,
+        quotation_date = ?,
+        expiration_date = ?,
+        status = ?,
+        notes = ?,
+        total_amount = ?
+      WHERE id = ?`,
+      [
+        customerId || null,
+        customerName || "",
+        customerAddress || "",
+        contactName || "",
+        quotationDate || null,
+        expirationDate || null,
+        status || "Draft",
+        notes || "",
+        totalAmount || 0,
+        id,
+      ]
+    );
+
+    await conn.execute("DELETE FROM quotation_lines WHERE quotation_id = ?", [id]);
+
+    let sortOrder = 0;
+    for (const line of lines || []) {
+      await conn.execute(
+        `INSERT INTO quotation_lines (
+          quotation_id,
+          sort_order,
+          line_type,
+          description,
+          notes,
+          quantity,
+          unit_label,
+          unit_price,
+          tax_rate,
+          amount
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id,
+          sortOrder++,
+          line.lineType === "section" ? "section" : "item",
+          line.description || "",
+          line.notes || "",
+          Number(line.quantity) || 0,
+          line.unitLabel || "Units",
+          Number(line.unitPrice) || 0,
+          Number(line.taxRate) || 0,
+          Number(line.amount) || 0,
+        ]
+      );
+    }
+
+    await conn.commit();
+
+    res.json({
+      success: true,
+      message: "Quotation updated successfully",
+    });
+  } catch (err) {
+    await conn.rollback();
+    console.error("UPDATE QUOTATION ERROR:", err);
+    res.status(500).json({ message: "Failed to update Quotation" });
+  } finally {
+    conn.release();
+  }
+});
+
+app.delete("/api/quotations/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    await pool.execute("DELETE FROM quotation_headers WHERE id = ?", [id]);
+
+    res.json({
+      success: true,
+      message: "Quotation deleted successfully",
+    });
+  } catch (err) {
+    console.error("DELETE QUOTATION ERROR:", err);
+    res.status(500).json({ message: "Failed to delete Quotation" });
+  }
+});
+
+app.post("/api/quotations/:id/convert-to-invoice", async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const { id } = req.params;
+
+    await conn.beginTransaction();
+
+    const [headers] = await conn.execute(
+      "SELECT * FROM quotation_headers WHERE id = ?",
+      [id]
+    );
+
+    if (headers.length === 0) {
+      await conn.rollback();
+      return res.status(404).json({ message: "Quotation not found" });
+    }
+
+    const quotation = headers[0];
+
+    if (quotation.status === "Converted") {
+      await conn.rollback();
+      return res.status(400).json({
+        message: "This Quotation has already been converted to an Invoice.",
+      });
+    }
+
+    const [arAccounts] = await conn.execute(
+      `SELECT id, code, title FROM chart_of_accounts WHERE LOWER(title) LIKE '%receivable%' LIMIT 1`
+    );
+    const [salesAccounts] = await conn.execute(
+      `SELECT id, code, title FROM chart_of_accounts
+       WHERE LOWER(title) LIKE '%sales%' OR LOWER(title) LIKE '%revenue%' LIMIT 1`
+    );
+
+    if (arAccounts.length === 0 || salesAccounts.length === 0) {
+      await conn.rollback();
+      return res.status(400).json({
+        message:
+          "Could not find an Accounts Receivable or Sales/Revenue account in the Chart of Accounts. Please add one first.",
+      });
+    }
+
+    const ar = arAccounts[0];
+    const sales = salesAccounts[0];
+    const total = Number(quotation.total_amount) || 0;
+    const voucherNo = `INV-${quotation.quotation_no}`;
+
+    const [result] = await conn.execute(
+      `INSERT INTO invoice_headers (
+        voucher_no,
+        customer_id,
+        customer_name,
+        transaction_date,
+        reference_no,
+        description,
+        total_debit,
+        total_credit,
+        balance_amount,
+        payment_status,
+        status,
+        source_quotation_id
+      ) VALUES (?, ?, ?, CURDATE(), ?, ?, ?, ?, ?, 'Unpaid', 'Draft', ?)`,
+      [
+        voucherNo,
+        quotation.customer_id || null,
+        quotation.customer_name,
+        quotation.quotation_no,
+        `Converted from Quotation ${quotation.quotation_no}`,
+        total,
+        total,
+        total,
+        quotation.id,
+      ]
+    );
+
+    const invoiceId = result.insertId;
+
+    await conn.execute(
+      `INSERT INTO invoice_lines (
+        invoice_id, account_id, account_code, account_title, particulars, debit, credit, gen_ref, gen_name
+      ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+      [
+        invoiceId,
+        ar.id,
+        ar.code,
+        ar.title,
+        "Accounts Receivable",
+        total,
+        quotation.customer_id ? String(quotation.customer_id) : "",
+        quotation.customer_name,
+      ]
+    );
+
+    await conn.execute(
+      `INSERT INTO invoice_lines (
+        invoice_id, account_id, account_code, account_title, particulars, debit, credit, gen_ref, gen_name
+      ) VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+      [invoiceId, sales.id, sales.code, sales.title, "Sales / Revenue", total, "", ""]
+    );
+
+    await conn.execute(
+      "UPDATE quotation_headers SET status = 'Converted', converted_invoice_id = ? WHERE id = ?",
+      [invoiceId, id]
+    );
+
+    await conn.commit();
+
+    res.json({
+      success: true,
+      message: "Quotation converted to Invoice successfully",
+      invoiceId,
+      voucherNo,
+    });
+  } catch (err) {
+    await conn.rollback();
+    console.error("CONVERT QUOTATION TO INVOICE ERROR:", err);
+
+    if (err.code === "ER_DUP_ENTRY") {
+      return res.status(400).json({ message: "An invoice with this reference already exists" });
+    }
+
+    res.status(500).json({ message: "Failed to convert Quotation to Invoice" });
+  } finally {
+    conn.release();
+  }
+});
+
 // ===================== POSTING API =====================
 
 app.get("/api/posting/pending", async (req, res) => {
