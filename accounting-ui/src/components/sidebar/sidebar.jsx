@@ -8,6 +8,7 @@ export default function Sidebar({ sidebarOpen, setSidebarOpen }) {
   const [openFileSetup, setOpenFileSetup] = useState(false);
   const [openBeginningBalances, setOpenBeginningBalances] = useState(false);
   const [openTransactions, setOpenTransactions] = useState(false);
+  const [openInvoice, setOpenInvoice] = useState(false);
   const [openReports, setOpenReports] = useState(false);
   const [openPrepaidReports, setOpenPrepaidReports] = useState(false);
 
@@ -36,9 +37,12 @@ export default function Sidebar({ sidebarOpen, setSidebarOpen }) {
     { name: "AP Beginning Balance", path: "/beginning-balances/ap" },
   ];
 
-  const transactionItems = [
-    { name: "Quotation", path: "/transactions/quotation" },
+  const invoiceItems = [
     { name: "Invoice", path: "/transactions/invoice" },
+    { name: "Quotation", path: "/transactions/quotation" },
+  ];
+
+  const transactionItems = [
     { name: "Official Receipts", path: "/transactions/or" },
     { name: "Check Voucher", path: "/transactions/cv" },
     { name: "Journal Voucher", path: "/transactions/jv" },
@@ -78,6 +82,10 @@ export default function Sidebar({ sidebarOpen, setSidebarOpen }) {
     (item) => location.pathname === item.path
   );
 
+  const isInvoiceActive = invoiceItems.some(
+    (item) => location.pathname === item.path
+  );
+
   const isPrepaidReportActive = prepaidReportItems.some(
     (item) => location.pathname === item.path
   );
@@ -86,6 +94,7 @@ export default function Sidebar({ sidebarOpen, setSidebarOpen }) {
     setOpenFileSetup(false);
     setOpenBeginningBalances(false);
     setOpenTransactions(false);
+    setOpenInvoice(false);
     setOpenReports(false);
     setOpenPrepaidReports(false);
   };
@@ -113,6 +122,10 @@ export default function Sidebar({ sidebarOpen, setSidebarOpen }) {
     setOpenFileSetup(false);
     setOpenBeginningBalances(false);
     setOpenReports(false);
+  };
+
+  const toggleInvoice = () => {
+    setOpenInvoice((prev) => !prev);
   };
 
   const toggleReports = () => {
@@ -211,6 +224,35 @@ export default function Sidebar({ sidebarOpen, setSidebarOpen }) {
 
           {openTransactions && (
             <div className="submenu">
+              <button
+                type="button"
+                className={`submenu-link submenu-parent ${
+                  isInvoiceActive ? "active-submenu" : ""
+                }`}
+                onClick={toggleInvoice}
+              >
+                <span>Invoice</span>
+                <span>{openInvoice ? "▾" : "▸"}</span>
+              </button>
+
+              {openInvoice && (
+                <div className="nested-submenu">
+                  {invoiceItems.map((item) => (
+                    <Link
+                      key={item.path}
+                      to={item.path}
+                      className={
+                        location.pathname === item.path
+                          ? "nested-submenu-link active-nested-submenu"
+                          : "nested-submenu-link"
+                      }
+                    >
+                      {item.name}
+                    </Link>
+                  ))}
+                </div>
+              )}
+
               {transactionItems.map((item) => (
                 <Link
                   key={item.path}

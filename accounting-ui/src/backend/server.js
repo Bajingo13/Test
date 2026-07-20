@@ -604,6 +604,8 @@ app.get("/api/invoices", async (req, res) => {
         balance_amount AS balanceAmount,
         payment_status AS paymentStatus,
         status,
+        invoice_type AS invoiceType,
+        recurrence_frequency AS recurrenceFrequency,
         created_at AS createdAt,
         updated_at AS updatedAt
       FROM invoice_headers
@@ -702,6 +704,8 @@ app.get("/api/invoices/:id", async (req, res) => {
         balance_amount AS balanceAmount,
         payment_status AS paymentStatus,
         status,
+        invoice_type AS invoiceType,
+        recurrence_frequency AS recurrenceFrequency,
         created_at AS createdAt,
         updated_at AS updatedAt
       FROM invoice_headers
@@ -775,6 +779,8 @@ app.post("/api/invoices", async (req, res) => {
       totalDebit,
       totalCredit,
       status,
+      invoiceType,
+      recurrenceFrequency,
       lines,
     } = req.body;
 
@@ -797,8 +803,10 @@ app.post("/api/invoices", async (req, res) => {
         paid_amount,
         balance_amount,
         payment_status,
-        status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        status,
+        invoice_type,
+        recurrence_frequency
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         voucherNo,
         customerId || null,
@@ -814,6 +822,8 @@ app.post("/api/invoices", async (req, res) => {
         total,
         "Unpaid",
         status || "DRAFT",
+        invoiceType === "Recurring" ? "Recurring" : "Standard",
+        invoiceType === "Recurring" ? recurrenceFrequency || "Monthly" : null,
       ]
     );
 
@@ -885,6 +895,8 @@ app.put("/api/invoices/:id", async (req, res) => {
       totalDebit,
       totalCredit,
       status,
+      invoiceType,
+      recurrenceFrequency,
       lines,
     } = req.body;
 
@@ -902,7 +914,9 @@ app.put("/api/invoices/:id", async (req, res) => {
         remarks = ?,
         total_debit = ?,
         total_credit = ?,
-        status = ?
+        status = ?,
+        invoice_type = ?,
+        recurrence_frequency = ?
       WHERE id = ?`,
       [
         voucherNo,
@@ -916,6 +930,8 @@ app.put("/api/invoices/:id", async (req, res) => {
         totalDebit || 0,
         totalCredit || 0,
         status || "DRAFT",
+        invoiceType === "Recurring" ? "Recurring" : "Standard",
+        invoiceType === "Recurring" ? recurrenceFrequency || "Monthly" : null,
         id,
       ]
     );

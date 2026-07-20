@@ -81,6 +81,9 @@ export default function TransactionFormLayout({
   const [vatTaxableAmount, setVatTaxableAmount] = useState("");
   const [vatRate, setVatRate] = useState("12");
 
+  const [invoiceType, setInvoiceType] = useState("Standard");
+  const [recurrenceFrequency, setRecurrenceFrequency] = useState("Monthly");
+
   const [form, setForm] = useState({
     date: new Date().toISOString().split("T")[0],
     referenceNo: "",
@@ -269,6 +272,7 @@ export default function TransactionFormLayout({
       balanceAmount:
         item.balanceAmount ?? item.totalDebit ?? item.totalCredit,
       status: item.paymentStatus || item.status,
+      invoiceType: item.invoiceType || "Standard",
       form: {
         date: item.transactionDate,
         referenceNo: item.referenceNo || item.voucherNo,
@@ -625,6 +629,9 @@ setPayeeTin("");
 setVatTaxableAmount("");
 setVatRate("12");
 
+setInvoiceType("Standard");
+setRecurrenceFrequency("Monthly");
+
 setError("");
   }
 
@@ -782,6 +789,11 @@ if (code === "APV") {
   setAtcCode(data.atcCode || "");
   setTaxWithheldAmount(data.taxWithheldAmount || "");
   setPayeeTin(data.payeeTin || "");
+}
+
+if (code === "INV") {
+  setInvoiceType(data.invoiceType === "Recurring" ? "Recurring" : "Standard");
+  setRecurrenceFrequency(data.recurrenceFrequency || "Monthly");
 }
         setMode("form");
         return;
@@ -1181,6 +1193,9 @@ if (code === "OR") {
         taxRate: code === "APV" ? selectedEwt?.rate || null : null,
         taxWithheldAmount: code === "APV" ? Number(taxWithheldAmount) || null : null,
         payeeTin: code === "APV" ? payeeTin || null : null,
+
+        invoiceType: code === "INV" ? invoiceType : null,
+        recurrenceFrequency: code === "INV" && invoiceType === "Recurring" ? recurrenceFrequency : null,
       };
 
       const endpoint =
@@ -1293,7 +1308,12 @@ if (code === "OR") {
                     ) : (
                       transactions.map((transaction) => (
                         <tr key={transaction.id}>
-                          <td>{transaction.referenceNo}</td>
+                          <td>
+                            {transaction.referenceNo}
+                            {code === "INV" && transaction.invoiceType === "Recurring" && (
+                              <span className="transaction-recurring-tag">Recurring</span>
+                            )}
+                          </td>
                           <td>{transaction.date}</td>
                           <td>{transaction.party}</td>
                           <td className="text-right">
@@ -1455,6 +1475,49 @@ if (code === "OR") {
                 />
               </div>
             </div>
+
+            {code === "INV" && (
+              <div className="transaction-card">
+                <div className="transaction-section-header">
+                  <div>
+                    <h2 className="transaction-section-title">Invoice Type</h2>
+                    <p className="transaction-section-subtext">
+                      Recurring invoices are for billing the same customer on a repeating schedule.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="transaction-grid">
+                  <div className="transaction-field">
+                    <label className="transaction-label">Type</label>
+                    <select
+                      className="transaction-input"
+                      value={invoiceType}
+                      onChange={(e) => setInvoiceType(e.target.value)}
+                    >
+                      <option value="Standard">Standard</option>
+                      <option value="Recurring">Recurring</option>
+                    </select>
+                  </div>
+
+                  {invoiceType === "Recurring" && (
+                    <div className="transaction-field">
+                      <label className="transaction-label">Recurrence</label>
+                      <select
+                        className="transaction-input"
+                        value={recurrenceFrequency}
+                        onChange={(e) => setRecurrenceFrequency(e.target.value)}
+                      >
+                        <option value="Weekly">Weekly</option>
+                        <option value="Monthly">Monthly</option>
+                        <option value="Quarterly">Quarterly</option>
+                        <option value="Annually">Annually</option>
+                      </select>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
 
             {code === "APV" && (
               <div className="transaction-card">

@@ -318,6 +318,17 @@
   color: #991b1b;
 }
 
+.transaction-recurring-tag {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  background: #ede9fe;
+  color: #5b21b6;
+}
+
 .transaction-form-top-actions {
   display: flex;
   align-items: center;
