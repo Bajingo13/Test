@@ -84,6 +84,12 @@ export default function TransactionFormLayout({
   const [invoiceType, setInvoiceType] = useState("Standard");
   const [recurrenceFrequency, setRecurrenceFrequency] = useState("Monthly");
 
+  const [bankAccounts, setBankAccounts] = useState([]);
+  const [paymentMethod, setPaymentMethod] = useState(code === "CV" ? "Check" : "Cash");
+  const [bankAccountId, setBankAccountId] = useState("");
+  const [checkNumber, setCheckNumber] = useState("");
+  const [checkDate, setCheckDate] = useState("");
+
   const [form, setForm] = useState({
     date: new Date().toISOString().split("T")[0],
     referenceNo: "",
@@ -112,6 +118,10 @@ export default function TransactionFormLayout({
 
     if (code === "APV") {
       loadEwtCodes();
+    }
+
+    if (code === "OR" || code === "CV") {
+      loadBankAccounts();
     }
 
     if (code === "CV" && form.party) {
@@ -156,6 +166,28 @@ export default function TransactionFormLayout({
     } catch (err) {
       console.error("LOAD EWT LIBRARY ERROR:", err);
       setEwtCodes([]);
+    }
+  }
+
+  async function loadBankAccounts() {
+    try {
+      const res = await fetch(`${API_BASE}/api/bank-codes`, {
+        credentials: "include",
+        headers: authHeaders(),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        handleAuthError(res.status);
+        setBankAccounts([]);
+        return;
+      }
+
+      setBankAccounts(Array.isArray(data) ? data.filter((b) => b.status === "ACTIVE") : []);
+    } catch (err) {
+      console.error("LOAD BANK CODES ERROR:", err);
+      setBankAccounts([]);
     }
   }
 
@@ -632,6 +664,11 @@ setVatRate("12");
 setInvoiceType("Standard");
 setRecurrenceFrequency("Monthly");
 
+setPaymentMethod(code === "CV" ? "Check" : "Cash");
+setBankAccountId("");
+setCheckNumber("");
+setCheckDate("");
+
 setError("");
   }
 
@@ -794,6 +831,13 @@ if (code === "APV") {
 if (code === "INV") {
   setInvoiceType(data.invoiceType === "Recurring" ? "Recurring" : "Standard");
   setRecurrenceFrequency(data.recurrenceFrequency || "Monthly");
+}
+
+if (code === "OR" || code === "CV") {
+  setPaymentMethod(data.paymentMethod === "Check" ? "Check" : "Cash");
+  setBankAccountId(data.bankAccountId || "");
+  setCheckNumber(data.checkNo || "");
+  setCheckDate(data.checkDate || "");
 }
         setMode("form");
         return;
@@ -1196,6 +1240,11 @@ if (code === "OR") {
 
         invoiceType: code === "INV" ? invoiceType : null,
         recurrenceFrequency: code === "INV" && invoiceType === "Recurring" ? recurrenceFrequency : null,
+
+        paymentMethod: code === "OR" || code === "CV" ? paymentMethod : null,
+        bankAccountId: code === "OR" || code === "CV" ? bankAccountId || null : null,
+        checkNo: (code === "OR" || code === "CV") && paymentMethod === "Check" ? checkNumber : null,
+        checkDate: (code === "OR" || code === "CV") && paymentMethod === "Check" ? checkDate : null,
       };
 
       const endpoint =
@@ -1514,6 +1563,75 @@ if (code === "OR") {
                         <option value="Annually">Annually</option>
                       </select>
                     </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {(code === "OR" || code === "CV") && (
+              <div className="transaction-card">
+                <div className="transaction-section-header">
+                  <div>
+                    <h2 className="transaction-section-title">Cash / Check Details</h2>
+                    <p className="transaction-section-subtext">
+                      Captures the bank account and check reference this {code === "OR" ? "receipt" : "payment"}{" "}
+                      moved through, for bank reconciliation.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="transaction-grid">
+                  <div className="transaction-field">
+                    <label className="transaction-label">Payment Method</label>
+                    <select
+                      className="transaction-input"
+                      value={paymentMethod}
+                      onChange={(e) => setPaymentMethod(e.target.value)}
+                    >
+                      <option value="Cash">Cash</option>
+                      <option value="Check">Check</option>
+                    </select>
+                  </div>
+
+                  <div className="transaction-field">
+                    <label className="transaction-label">Bank Account</label>
+                    <select
+                      className="transaction-input"
+                      value={bankAccountId}
+                      onChange={(e) => setBankAccountId(e.target.value)}
+                    >
+                      <option value="">Select bank account</option>
+                      {bankAccounts.map((bank) => (
+                        <option key={bank.id} value={bank.id}>
+                          {bank.bankCode} - {bank.bankName} ({bank.accountNo})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {paymentMethod === "Check" && (
+                    <>
+                      <div className="transaction-field">
+                        <label className="transaction-label">Check No.</label>
+                        <input
+                          type="text"
+                          className="transaction-input"
+                          value={checkNumber}
+                          onChange={(e) => setCheckNumber(e.target.value)}
+                          placeholder="Enter check number"
+                        />
+                      </div>
+
+                      <div className="transaction-field">
+                        <label className="transaction-label">Check Date</label>
+                        <input
+                          type="date"
+                          className="transaction-input"
+                          value={checkDate}
+                          onChange={(e) => setCheckDate(e.target.value)}
+                        />
+                      </div>
+                    </>
                   )}
                 </div>
               </div>

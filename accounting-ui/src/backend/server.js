@@ -1036,7 +1036,11 @@ app.get("/api/or", async (req, res) => {
         description,
         total_debit AS totalDebit,
         total_credit AS totalCredit,
-        status
+        status,
+        payment_method AS paymentMethod,
+        bank_account_id AS bankAccountId,
+        check_no AS checkNo,
+        DATE_FORMAT(check_date, '%Y-%m-%d') AS checkDate
       FROM or_headers
       ORDER BY id DESC
     `);
@@ -1065,6 +1069,10 @@ app.post("/api/or", async (req, res) => {
       totalDebit,
       totalCredit,
       status,
+      paymentMethod,
+      bankAccountId,
+      checkNo,
+      checkDate,
       lines = [],
       invoiceApplications = [],
     } = req.body;
@@ -1083,9 +1091,13 @@ app.post("/api/or", async (req, res) => {
         description,
         total_debit,
         total_credit,
-        status
+        status,
+        payment_method,
+        bank_account_id,
+        check_no,
+        check_date
       )
-      VALUES(?,?,?,?,?,?,?,?,?,?)`,
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         voucherNo || "",
         finalCustomerId,
@@ -1097,6 +1109,10 @@ app.post("/api/or", async (req, res) => {
         Number(totalDebit) || 0,
         Number(totalCredit) || 0,
         status || "Draft",
+        paymentMethod === "Check" ? "Check" : "Cash",
+        bankAccountId || null,
+        paymentMethod === "Check" ? checkNo || "" : "",
+        paymentMethod === "Check" ? checkDate || null : null,
       ]
     );
 
@@ -1205,7 +1221,11 @@ app.get("/api/or/:id", async (req, res) => {
         remarks,
         total_debit AS totalDebit,
         total_credit AS totalCredit,
-        status
+        status,
+        payment_method AS paymentMethod,
+        bank_account_id AS bankAccountId,
+        check_no AS checkNo,
+        DATE_FORMAT(check_date, '%Y-%m-%d') AS checkDate
       FROM or_headers
       WHERE id = ?`,
       [id]
@@ -1258,8 +1278,9 @@ app.get("/api/or/:id", async (req, res) => {
     console.error("GET OR DETAILS ERROR:", err);
     res.status(500).json({ message: "Failed to load OR details" });
   }
+});
 
-  app.put("/api/or/:id", async (req, res) => {
+app.put("/api/or/:id", async (req, res) => {
   const conn = await pool.getConnection();
 
   try {
@@ -1276,6 +1297,10 @@ app.get("/api/or/:id", async (req, res) => {
       totalDebit,
       totalCredit,
       status,
+      paymentMethod,
+      bankAccountId,
+      checkNo,
+      checkDate,
       lines = [],
       invoiceApplications = [],
     } = req.body;
@@ -1379,7 +1404,11 @@ app.get("/api/or/:id", async (req, res) => {
          description = ?,
          total_debit = ?,
          total_credit = ?,
-         status = ?
+         status = ?,
+         payment_method = ?,
+         bank_account_id = ?,
+         check_no = ?,
+         check_date = ?
        WHERE id = ?`,
       [
         voucherNo || "",
@@ -1392,6 +1421,10 @@ app.get("/api/or/:id", async (req, res) => {
         Number(totalDebit) || 0,
         Number(totalCredit) || 0,
         status || "Draft",
+        paymentMethod === "Check" ? "Check" : "Cash",
+        bankAccountId || null,
+        paymentMethod === "Check" ? checkNo || "" : "",
+        paymentMethod === "Check" ? checkDate || null : null,
         id,
       ]
     );
@@ -1587,7 +1620,6 @@ app.get("/api/or/:id", async (req, res) => {
   } finally {
     conn.release();
   }
-});
 });
 
 // ===================== APV API =====================
@@ -3052,7 +3084,10 @@ app.get("/api/cv", async (req, res) => {
         description,
         total_debit AS totalDebit,
         total_credit AS totalCredit,
-        status
+        status,
+        payment_method AS paymentMethod,
+        bank_account_id AS bankAccountId,
+        DATE_FORMAT(check_date, '%Y-%m-%d') AS checkDate
       FROM cv_headers
       ORDER BY id DESC
     `);
@@ -3081,6 +3116,9 @@ app.post("/api/cv", async (req, res) => {
       totalDebit,
       totalCredit,
       status,
+      paymentMethod,
+      bankAccountId,
+      checkDate,
       lines = [],
       apvApplications = [],
     } = req.body;
@@ -3099,9 +3137,12 @@ app.post("/api/cv", async (req, res) => {
         description,
         total_debit,
         total_credit,
-        status
+        status,
+        payment_method,
+        bank_account_id,
+        check_date
       )
-      VALUES(?,?,?,?,?,?,?,?,?,?)`,
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         voucherNo || "",
         finalPayeeId,
@@ -3113,6 +3154,9 @@ app.post("/api/cv", async (req, res) => {
         Number(totalDebit) || 0,
         Number(totalCredit) || 0,
         status || "Draft",
+        paymentMethod === "Cash" ? "Cash" : "Check",
+        bankAccountId || null,
+        paymentMethod !== "Cash" ? checkDate || null : null,
       ]
     );
 
@@ -3221,7 +3265,10 @@ app.get("/api/cv/:id", async (req, res) => {
         remarks,
         total_debit AS totalDebit,
         total_credit AS totalCredit,
-        status
+        status,
+        payment_method AS paymentMethod,
+        bank_account_id AS bankAccountId,
+        DATE_FORMAT(check_date, '%Y-%m-%d') AS checkDate
       FROM cv_headers
       WHERE id = ?`,
       [id]
@@ -3273,6 +3320,207 @@ app.get("/api/cv/:id", async (req, res) => {
   } catch (err) {
     console.error("GET CV DETAILS ERROR:", err);
     res.status(500).json({ message: "Failed to load CV details" });
+  }
+});
+
+app.put("/api/cv/:id", async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const { id } = req.params;
+
+    const {
+      voucherNo,
+      payeeId,
+      payeeName,
+      transactionDate,
+      referenceNo,
+      checkNo,
+      description,
+      totalDebit,
+      totalCredit,
+      status,
+      paymentMethod,
+      bankAccountId,
+      checkDate,
+      lines = [],
+      apvApplications = [],
+    } = req.body;
+
+    const finalPayeeId = payeeId ?? req.body.supplierId ?? null;
+    const finalPayeeName = payeeName || req.body.supplierName || "";
+
+    await conn.beginTransaction();
+
+    // Reverse the payment effects of this CV's previous applications before
+    // the edited ones are saved, mirroring the OR PUT handler's approach.
+    const [oldApplications] = await conn.execute(
+      `SELECT
+         source_type AS sourceType,
+         source_id AS sourceId,
+         amount
+       FROM transaction_applications
+       WHERE applied_type = 'CV'
+         AND applied_id = ?`,
+      [id]
+    );
+
+    await conn.execute(
+      `DELETE FROM transaction_applications
+       WHERE applied_type = 'CV'
+         AND applied_id = ?`,
+      [id]
+    );
+
+    for (const oldItem of oldApplications) {
+      const oldAmount = Number(oldItem.amount || 0);
+
+      if (oldItem.sourceType === "AP_BEGINNING") {
+        await conn.execute(
+          `
+          UPDATE arap_beginning_balance_lines
+          SET paid_amount = GREATEST(COALESCE(paid_amount, 0) - ?, 0),
+              balance_amount = LEAST(COALESCE(balance_amount, credit, 0) + ?, COALESCE(credit, 0)),
+              status = CASE
+                WHEN GREATEST(COALESCE(paid_amount, 0) - ?, 0) <= 0 THEN 'Unpaid'
+                WHEN LEAST(COALESCE(balance_amount, credit, 0) + ?, COALESCE(credit, 0)) > 0 THEN 'Partially Paid'
+                ELSE 'Paid'
+              END
+          WHERE id = ?
+          `,
+          [oldAmount, oldAmount, oldAmount, oldAmount, oldItem.sourceId]
+        );
+      }
+    }
+
+    for (const oldItem of oldApplications) {
+      if (oldItem.sourceType === "APV") {
+        await updateApvPaymentStatus(conn, oldItem.sourceId);
+      }
+    }
+
+    await conn.execute(
+      `UPDATE cv_headers SET
+         voucher_no = ?,
+         payee_id = ?,
+         payee_name = ?,
+         transaction_date = ?,
+         reference_no = ?,
+         check_no = ?,
+         description = ?,
+         total_debit = ?,
+         total_credit = ?,
+         status = ?,
+         payment_method = ?,
+         bank_account_id = ?,
+         check_date = ?
+       WHERE id = ?`,
+      [
+        voucherNo || "",
+        finalPayeeId,
+        finalPayeeName,
+        transactionDate || null,
+        referenceNo || "",
+        checkNo || "",
+        description || "",
+        Number(totalDebit) || 0,
+        Number(totalCredit) || 0,
+        status || "Draft",
+        paymentMethod === "Cash" ? "Cash" : "Check",
+        bankAccountId || null,
+        paymentMethod !== "Cash" ? checkDate || null : null,
+        id,
+      ]
+    );
+
+    await conn.execute("DELETE FROM cv_lines WHERE cv_id = ?", [id]);
+
+    for (const line of lines) {
+      await conn.execute(
+        `INSERT INTO cv_lines(
+          cv_id,
+          account_id,
+          account_code,
+          account_title,
+          particulars,
+          gen_ref,
+          gen_name,
+          debit,
+          credit
+        )
+        VALUES(?,?,?,?,?,?,?,?,?)`,
+        [
+          id,
+          line.accountId ?? null,
+          line.accountCode || "",
+          line.accountTitle || "",
+          line.particulars || "",
+          line.genRef || "",
+          line.genName || "",
+          Number(line.debit) || 0,
+          Number(line.credit) || 0,
+        ]
+      );
+    }
+
+    for (const appItem of apvApplications) {
+      const sourceId = appItem.sourceId ?? appItem.apvId ?? null;
+      const paymentAmount = Number(appItem.amount || 0);
+
+      if (!sourceId || paymentAmount <= 0) continue;
+
+      const sourceType = appItem.sourceType === "AP_BEGINNING" ? "AP_BEGINNING" : "APV";
+
+      await conn.execute(
+        `INSERT INTO transaction_applications
+         (source_type, source_id, applied_type, applied_id, amount, application_date)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+          sourceType,
+          sourceId,
+          "CV",
+          id,
+          paymentAmount,
+          appItem.applicationDate || transactionDate || null,
+        ]
+      );
+
+      if (sourceType === "AP_BEGINNING") {
+        await conn.execute(
+          `
+          UPDATE arap_beginning_balance_lines
+          SET paid_amount = COALESCE(paid_amount, 0) + ?,
+              balance_amount = GREATEST(COALESCE(balance_amount, credit, 0) - ?, 0),
+              status = CASE
+                WHEN GREATEST(COALESCE(balance_amount, credit, 0) - ?, 0) <= 0 THEN 'Paid'
+                ELSE 'Partially Paid'
+              END
+          WHERE id = ?
+          `,
+          [paymentAmount, paymentAmount, paymentAmount, sourceId]
+        );
+      } else {
+        await updateApvPaymentStatus(conn, sourceId);
+      }
+    }
+
+    await conn.commit();
+
+    res.json({
+      success: true,
+      message: "CV updated successfully",
+    });
+  } catch (err) {
+    await conn.rollback();
+    console.error("UPDATE CV ERROR:", err);
+
+    if (err.code === "ER_DUP_ENTRY") {
+      return res.status(400).json({ message: "CV number already exists" });
+    }
+
+    res.status(500).json({ message: err.message || "Failed to update CV" });
+  } finally {
+    conn.release();
   }
 });
 
