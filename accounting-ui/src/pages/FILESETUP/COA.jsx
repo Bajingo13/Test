@@ -3,6 +3,23 @@ import "./COA.css";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
 
+function authHeaders() {
+  const token = localStorage.getItem("token");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+function handleAuthError(status) {
+  if (status === 401 || status === 403) {
+    localStorage.removeItem("token");
+    localStorage.removeItem("user");
+    if (window.location.pathname !== "/login") {
+      window.location.href = "/login";
+    }
+    return true;
+  }
+  return false;
+}
+
 const CLASS_OPTIONS = ["ASSET", "LIABILITY", "EQUITY", "INCOME", "EXPENSE"];
 
 const VALIDATION_OPTIONS = [
@@ -55,11 +72,13 @@ export default function COA() {
     try {
       const res = await fetch(`${API_BASE}/api/group-codes`, {
         credentials: "include",
+        headers: authHeaders(),
       });
 
       const data = await res.json();
 
       if (!res.ok) {
+        if (handleAuthError(res.status)) return;
         alert(data.message || "Failed to load group codes");
         return;
       }
@@ -76,11 +95,13 @@ export default function COA() {
 
       const res = await fetch(`${API_BASE}/api/coa`, {
         credentials: "include",
+        headers: authHeaders(),
       });
 
       const data = await res.json();
 
       if (!res.ok) {
+        if (handleAuthError(res.status)) return;
         alert(data.message || "Failed to load accounts");
         return;
       }
@@ -156,11 +177,13 @@ export default function COA() {
       const res = await fetch(`${API_BASE}/api/coa/${form.id}`, {
         method: "DELETE",
         credentials: "include",
+        headers: authHeaders(),
       });
 
       const data = await res.json();
 
       if (!res.ok) {
+        if (handleAuthError(res.status)) return;
         alert(data.message || "Failed to delete account");
         return;
       }
@@ -206,6 +229,7 @@ export default function COA() {
         method,
         headers: {
           "Content-Type": "application/json",
+          ...authHeaders(),
         },
         credentials: "include",
         body: JSON.stringify(payload),
@@ -214,6 +238,7 @@ export default function COA() {
       const data = await res.json();
 
       if (!res.ok) {
+        if (handleAuthError(res.status)) return;
         alert(data.message || "Failed to save account");
         return;
       }
