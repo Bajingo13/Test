@@ -122,6 +122,19 @@
   color: #fff;
 }
 
+.sidebar-logout-button {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  color: #fca5a5;
+  font-weight: 600;
+}
+
+.sidebar-logout-button:hover {
+  background: #3b1c1c;
+  color: #fecaca;
+}
+
 .nav-section-btn {
   display: flex;
   justify-content: space-between;

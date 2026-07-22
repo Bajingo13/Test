@@ -1,9 +1,17 @@
-import { Link, useLocation } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useState } from "react";
 import "./Sidebar.css";
 
 export default function Sidebar({ sidebarOpen, setSidebarOpen }) {
   const location = useLocation();
+  const navigate = useNavigate();
+
+  function handleLogout() {
+    if (!window.confirm("Log out of the accounting system?")) return;
+    localStorage.removeItem("token");
+    localStorage.removeItem("user");
+    navigate("/login");
+  }
 
   const [openFileSetup, setOpenFileSetup] = useState(false);
   const [openBeginningBalances, setOpenBeginningBalances] = useState(false);
@@ -320,6 +328,10 @@ export default function Sidebar({ sidebarOpen, setSidebarOpen }) {
               )}
             </div>
           )}
+
+          <button type="button" className="nav-link sidebar-logout-button" onClick={handleLogout}>
+            Logout
+          </button>
         </nav>
       )}
     </aside>
