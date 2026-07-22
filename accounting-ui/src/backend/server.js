@@ -2514,7 +2514,10 @@ app.get("/api/quotations/:id", async (req, res) => {
         unit_label AS unitLabel,
         unit_price AS unitPrice,
         tax_rate AS taxRate,
-        amount
+        amount,
+        account_id AS accountId,
+        account_code AS accountCode,
+        account_title AS accountTitle
       FROM quotation_lines
       WHERE quotation_id = ?
       ORDER BY sort_order ASC, id ASC`,
@@ -2594,8 +2597,11 @@ app.post("/api/quotations", async (req, res) => {
           unit_label,
           unit_price,
           tax_rate,
-          amount
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          amount,
+          account_id,
+          account_code,
+          account_title
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           quotationId,
           sortOrder++,
@@ -2607,6 +2613,9 @@ app.post("/api/quotations", async (req, res) => {
           Number(line.unitPrice) || 0,
           Number(line.taxRate) || 0,
           Number(line.amount) || 0,
+          line.accountId || null,
+          line.accountCode || null,
+          line.accountTitle || null,
         ]
       );
     }
@@ -2705,8 +2714,11 @@ app.put("/api/quotations/:id", async (req, res) => {
           unit_label,
           unit_price,
           tax_rate,
-          amount
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          amount,
+          account_id,
+          account_code,
+          account_title
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           id,
           sortOrder++,
@@ -2718,6 +2730,9 @@ app.put("/api/quotations/:id", async (req, res) => {
           Number(line.unitPrice) || 0,
           Number(line.taxRate) || 0,
           Number(line.amount) || 0,
+          line.accountId || null,
+          line.accountCode || null,
+          line.accountTitle || null,
         ]
       );
     }
@@ -2783,22 +2798,76 @@ app.post("/api/quotations/:id/convert-to-invoice", async (req, res) => {
     const [arAccounts] = await conn.execute(
       `SELECT id, code, title FROM chart_of_accounts WHERE LOWER(title) LIKE '%receivable%' LIMIT 1`
     );
-    const [salesAccounts] = await conn.execute(
-      `SELECT id, code, title FROM chart_of_accounts
-       WHERE LOWER(title) LIKE '%sales%' OR LOWER(title) LIKE '%revenue%' LIMIT 1`
-    );
 
-    if (arAccounts.length === 0 || salesAccounts.length === 0) {
+    if (arAccounts.length === 0) {
       await conn.rollback();
       return res.status(400).json({
-        message:
-          "Could not find an Accounts Receivable or Sales/Revenue account in the Chart of Accounts. Please add one first.",
+        message: "Could not find an Accounts Receivable account in the Chart of Accounts. Please add one first.",
       });
     }
 
     const ar = arAccounts[0];
-    const sales = salesAccounts[0];
-    const total = Number(quotation.total_amount) || 0;
+
+    const [itemLines] = await conn.execute(
+      `SELECT account_id AS accountId, account_code AS accountCode, account_title AS accountTitle,
+              amount, tax_rate AS taxRate
+       FROM quotation_lines
+       WHERE quotation_id = ? AND line_type = 'item'`,
+      [id]
+    );
+
+    // Lines without an account picked fall back to an auto-detected Sales/Revenue
+    // account, same as the original behavior before per-line accounts existed.
+    let fallbackAccount = null;
+    if (itemLines.some((line) => !line.accountId)) {
+      const [salesAccounts] = await conn.execute(
+        `SELECT id, code, title FROM chart_of_accounts
+         WHERE LOWER(title) LIKE '%sales%' OR LOWER(title) LIKE '%revenue%' LIMIT 1`
+      );
+
+      if (salesAccounts.length === 0) {
+        await conn.rollback();
+        return res.status(400).json({
+          message:
+            "Some line items have no account selected, and no Sales/Revenue account could be found as a fallback. Please pick an account for each line item.",
+        });
+      }
+
+      fallbackAccount = salesAccounts[0];
+    }
+
+    // Group item lines by account, summing tax-exclusive amounts per account.
+    const groups = new Map();
+    let taxTotal = 0;
+
+    for (const line of itemLines) {
+      const lineAmount = Number(line.amount) || 0;
+      const lineTax = lineAmount * ((Number(line.taxRate) || 0) / 100);
+      taxTotal += lineTax;
+
+      const account = line.accountId
+        ? { id: line.accountId, code: line.accountCode, title: line.accountTitle }
+        : fallbackAccount;
+
+      const key = account.id;
+      const existing = groups.get(key);
+      if (existing) {
+        existing.amount += lineAmount;
+      } else {
+        groups.set(key, { account, amount: lineAmount });
+      }
+    }
+
+    let vatAccount = null;
+    if (taxTotal > 0.004) {
+      const [vatAccounts] = await conn.execute(
+        `SELECT id, code, title FROM chart_of_accounts WHERE LOWER(title) LIKE '%output vat%' LIMIT 1`
+      );
+      if (vatAccounts.length > 0) vatAccount = vatAccounts[0];
+    }
+
+    const subtotal = Array.from(groups.values()).reduce((sum, g) => sum + g.amount, 0);
+    const total = vatAccount ? subtotal + taxTotal : Number(quotation.total_amount) || subtotal + taxTotal;
     const voucherNo = `INV-${quotation.quotation_no}`;
 
     const [result] = await conn.execute(
@@ -2847,12 +2916,28 @@ app.post("/api/quotations/:id/convert-to-invoice", async (req, res) => {
       ]
     );
 
-    await conn.execute(
-      `INSERT INTO invoice_lines (
-        invoice_id, account_id, account_code, account_title, particulars, debit, credit, gen_ref, gen_name
-      ) VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)`,
-      [invoiceId, sales.id, sales.code, sales.title, "Sales / Revenue", total, "", ""]
-    );
+    for (const { account, amount } of groups.values()) {
+      // If there's tax but no Output VAT account exists, fold it into the revenue
+      // lines proportionally so the entry still balances to the quotation total.
+      const creditAmount =
+        !vatAccount && taxTotal > 0.004 ? amount + (amount / subtotal) * taxTotal : amount;
+
+      await conn.execute(
+        `INSERT INTO invoice_lines (
+          invoice_id, account_id, account_code, account_title, particulars, debit, credit, gen_ref, gen_name
+        ) VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+        [invoiceId, account.id, account.code, account.title, account.title, creditAmount, "", ""]
+      );
+    }
+
+    if (vatAccount) {
+      await conn.execute(
+        `INSERT INTO invoice_lines (
+          invoice_id, account_id, account_code, account_title, particulars, debit, credit, gen_ref, gen_name
+        ) VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+        [invoiceId, vatAccount.id, vatAccount.code, vatAccount.title, "Output VAT", taxTotal, "", ""]
+      );
+    }
 
     await conn.execute(
       "UPDATE quotation_headers SET status = 'Converted', converted_invoice_id = ? WHERE id = ?",

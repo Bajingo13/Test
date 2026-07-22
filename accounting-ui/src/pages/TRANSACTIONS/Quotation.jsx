@@ -32,6 +32,9 @@ function createItemLine() {
     unitLabel: "Units",
     unitPrice: "",
     taxRate: 12,
+    accountId: "",
+    accountCode: "",
+    accountTitle: "",
   };
 }
 
@@ -89,6 +92,7 @@ export default function Quotation() {
   const [mode, setMode] = useState("list");
   const [quotations, setQuotations] = useState([]);
   const [customers, setCustomers] = useState([]);
+  const [accounts, setAccounts] = useState([]);
   const [selected, setSelected] = useState(null);
 
   const [form, setForm] = useState(emptyForm);
@@ -98,7 +102,27 @@ export default function Quotation() {
   useEffect(() => {
     loadQuotations();
     loadCustomers();
+    loadAccounts();
   }, []);
+
+  async function loadAccounts() {
+    try {
+      const res = await fetch(`${API_BASE}/api/coa`, {
+        credentials: "include",
+        headers: authHeaders(),
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        handleAuthError(res.status);
+        return;
+      }
+
+      setAccounts(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.error("LOAD COA ERROR:", err);
+    }
+  }
 
   async function loadQuotations() {
     try {
@@ -184,6 +208,9 @@ export default function Quotation() {
               unitLabel: line.unitLabel,
               unitPrice: line.unitPrice,
               taxRate: line.taxRate,
+              accountId: line.accountId || "",
+              accountCode: line.accountCode || "",
+              accountTitle: line.accountTitle || "",
             }))
           : [createItemLine()]
       );
@@ -265,6 +292,9 @@ export default function Quotation() {
           taxRate: line.lineType === "item" ? line.taxRate : 0,
           amount:
             line.lineType === "item" ? lineAmount(line) : sectionTotals[line.id] || 0,
+          accountId: line.lineType === "item" ? line.accountId || null : null,
+          accountCode: line.lineType === "item" ? line.accountCode || null : null,
+          accountTitle: line.lineType === "item" ? line.accountTitle || null : null,
         })),
       };
 
@@ -899,6 +929,38 @@ export default function Quotation() {
                         onChange={(e) => updateLine(line.id, "notes", e.target.value)}
                         disabled={selected?.status === "Converted"}
                       />
+                      <div className="quo-account-row">
+                        <label className="quo-account-label">Account (for Invoice)</label>
+                        <select
+                          className="quo-account-select"
+                          value={line.accountId}
+                          onChange={(e) => {
+                            const account = accounts.find(
+                              (a) => String(a.id) === e.target.value
+                            );
+                            setLines((prev) =>
+                              prev.map((l) =>
+                                l.id === line.id
+                                  ? {
+                                      ...l,
+                                      accountId: e.target.value,
+                                      accountCode: account?.code || "",
+                                      accountTitle: account?.title || "",
+                                    }
+                                  : l
+                              )
+                            );
+                          }}
+                          disabled={selected?.status === "Converted"}
+                        >
+                          <option value="">Auto-detect Sales/Revenue account</option>
+                          {accounts.map((acc) => (
+                            <option key={acc.id} value={acc.id}>
+                              {acc.code} - {acc.title}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
                     </div>
                   )
                 )}
