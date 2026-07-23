@@ -392,10 +392,10 @@ if (code === "OR") {
     }
   }
 
-  async function loadUnpaidApvs() {
+  async function loadUnpaidApvs(overrideId, overrideName) {
   try {
-    const supplierId = form.partyId;
-    const supplierName = form.party;
+    const supplierId = overrideId !== undefined ? overrideId : form.partyId;
+    const supplierName = overrideName !== undefined ? overrideName : form.party;
 
     const query = new URLSearchParams();
 
@@ -427,10 +427,10 @@ if (code === "OR") {
   }
 }
 
-  async function loadUnpaidInvoices() {
+  async function loadUnpaidInvoices(overrideId, overrideName) {
   try {
-    const customerId = form.partyId;
-    const customerName = form.party;
+    const customerId = overrideId !== undefined ? overrideId : form.partyId;
+    const customerName = overrideName !== undefined ? overrideName : form.party;
 
     const query = new URLSearchParams();
 
@@ -889,18 +889,11 @@ if (code === "OR" || code === "CV") {
   })
 );
 
-// Load outstanding transactions depending on transaction type
-if (code === "CV") {
-  setTimeout(() => {
-    loadUnpaidApvs();
-  }, 50);
-}
-
-if (code === "OR") {
-  setTimeout(() => {
-    loadUnpaidInvoices();
-  }, 50);
-}
+// Outstanding invoices/APVs are loaded fresh in handlePostTransactionClick, right
+// when the user tries to post with an AR/AP line present - not here. Loading them
+// here used to run via setTimeout with a stale closure over the *previous* party
+// (this handler fires on every keystroke), so the list almost always came back
+// empty or filtered by the wrong customer/supplier.
   }
 
   function updateLine(id, field, value) {
