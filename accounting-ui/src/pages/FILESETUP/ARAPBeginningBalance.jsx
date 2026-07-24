@@ -50,6 +50,9 @@ export default function ARAPBeginningBalance({ balanceType }) {
   const [rows, setRows] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
 
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("All");
+
   const [header, setHeader] = useState({
     balanceDate: new Date().toISOString().split("T")[0],
     currencyCode: "PHP",
@@ -143,8 +146,26 @@ export default function ARAPBeginningBalance({ balanceType }) {
     }
   }
 
+  const filteredRows = useMemo(() => {
+    const q = search.trim().toLowerCase();
+
+    return rows.filter((row) => {
+      const matchesSearch =
+        !q ||
+        [row.partyName, row.accountCode, row.accountTitle, row.referenceNo]
+          .join(" ")
+          .toLowerCase()
+          .includes(q);
+
+      const matchesStatus =
+        statusFilter === "All" || (row.status || "Unpaid") === statusFilter;
+
+      return matchesSearch && matchesStatus;
+    });
+  }, [rows, search, statusFilter]);
+
   const totals = useMemo(() => {
-    return rows.reduce(
+    return filteredRows.reduce(
       (sum, row) => ({
         debit: sum.debit + Number(row.debit || 0),
         credit: sum.credit + Number(row.credit || 0),
@@ -152,7 +173,7 @@ export default function ARAPBeginningBalance({ balanceType }) {
       }),
       { debit: 0, credit: 0, balance: 0 }
     );
-  }, [rows]);
+  }, [filteredRows]);
 
   function formatMoney(value) {
     return Number(value || 0).toLocaleString("en-PH", {
@@ -478,6 +499,27 @@ export default function ARAPBeginningBalance({ balanceType }) {
       <div className="arap-card">
         <h2>{title} List</h2>
 
+        <div className="arap-list-toolbar">
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder={`Search ${partyLabel.toLowerCase()}, account, or reference...`}
+            className="arap-search-input"
+          />
+
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            className="arap-status-select"
+          >
+            <option value="All">All Statuses</option>
+            <option value="Unpaid">Unpaid</option>
+            <option value="Partially Paid">Partially Paid</option>
+            <option value="Paid">Paid</option>
+          </select>
+        </div>
+
         <div className="arap-table-wrap">
           <table className="arap-table">
             <thead>
@@ -495,14 +537,16 @@ export default function ARAPBeginningBalance({ balanceType }) {
             </thead>
 
             <tbody>
-              {rows.length === 0 ? (
+              {filteredRows.length === 0 ? (
                 <tr>
                   <td colSpan="9" className="arap-empty">
-                    No {title} records yet.
+                    {rows.length === 0
+                      ? `No ${title} records yet.`
+                      : "No records match your search/filter."}
                   </td>
                 </tr>
               ) : (
-                rows.map((row) => (
+                filteredRows.map((row) => (
                   <tr key={row.id}>
                     <td>{row.partyName}</td>
                     <td>

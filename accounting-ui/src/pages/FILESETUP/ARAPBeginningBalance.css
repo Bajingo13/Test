@@ -38,6 +38,34 @@
   color: #0f172a;
 }
 
+.arap-list-toolbar {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.arap-search-input {
+  flex: 1;
+  min-width: 220px;
+  height: 42px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  padding: 0 12px;
+  font-size: 14px;
+  box-sizing: border-box;
+}
+
+.arap-status-select {
+  height: 42px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  padding: 0 12px;
+  font-size: 14px;
+  min-width: 170px;
+  box-sizing: border-box;
+}
+
 .arap-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
