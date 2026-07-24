@@ -3,6 +3,23 @@ import "./ARAPBeginningBalance.css";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
 
+function authHeaders() {
+  const token = localStorage.getItem("token");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+function handleAuthError(status) {
+  if (status === 401 || status === 403) {
+    localStorage.removeItem("token");
+    localStorage.removeItem("user");
+    if (window.location.pathname !== "/login") {
+      window.location.href = "/login";
+    }
+    return true;
+  }
+  return false;
+}
+
 function emptyLine(balanceType) {
   return {
     id: crypto.randomUUID(),
@@ -53,11 +70,13 @@ export default function ARAPBeginningBalance({ balanceType }) {
     try {
       const res = await fetch(`${API_BASE}/api/genlib`, {
         credentials: "include",
+        headers: authHeaders(),
       });
 
       const data = await res.json();
 
       if (!res.ok) {
+        if (handleAuthError(res.status)) return;
         alert(data.message || "Failed to load General Libraries");
         return;
       }
@@ -76,11 +95,13 @@ export default function ARAPBeginningBalance({ balanceType }) {
     try {
       const res = await fetch(`${API_BASE}/api/coa`, {
         credentials: "include",
+        headers: authHeaders(),
       });
 
       const data = await res.json();
 
       if (!res.ok) {
+        if (handleAuthError(res.status)) return;
         alert(data.message || "Failed to load Chart of Accounts");
         return;
       }
@@ -105,14 +126,18 @@ export default function ARAPBeginningBalance({ balanceType }) {
         `${API_BASE}/api/arap-beginning-balances/${balanceType}`,
         {
           credentials: "include",
+          headers: authHeaders(),
         }
       );
 
       const data = await res.json();
 
-      if (res.ok) {
-        setRows(data);
+      if (!res.ok) {
+        handleAuthError(res.status);
+        return;
       }
+
+      setRows(data);
     } catch (err) {
       console.error("LOAD AR/AP BEGINNING BALANCES ERROR:", err);
     }
@@ -215,6 +240,7 @@ export default function ARAPBeginningBalance({ balanceType }) {
         method: selectedId ? "PUT" : "POST",
         headers: {
           "Content-Type": "application/json",
+          ...authHeaders(),
         },
         credentials: "include",
         body: JSON.stringify(payload),
@@ -223,6 +249,7 @@ export default function ARAPBeginningBalance({ balanceType }) {
       const data = await res.json();
 
       if (!res.ok) {
+        if (handleAuthError(res.status)) return;
         alert(data.message || "Failed to save beginning balance.");
         return;
       }
@@ -243,9 +270,11 @@ export default function ARAPBeginningBalance({ balanceType }) {
       const res = await fetch(`${API_BASE}/api/arap-beginning-balances/${id}`, {
         method: "DELETE",
         credentials: "include",
+        headers: authHeaders(),
       });
 
       if (!res.ok) {
+        if (handleAuthError(res.status)) return;
         alert("Failed to remove beginning balance.");
         return;
       }
