@@ -254,6 +254,8 @@ export default function TransactionFormLayout({
     ? "invoices"
     : code === "PO"
     ? "purchase-orders"
+    : code === "JV"
+    ? "jv"
     : "apv";
       const res = await fetch(`${API_BASE}/api/${endpoint}`, {
         credentials: "include",
@@ -379,6 +381,29 @@ if (code === "OR") {
               referenceNo: item.referenceNo || item.voucherNo,
               party: item.supplierName,
               partyId: item.supplierId,
+              description: item.description,
+              checkNo: "",
+              status: item.status,
+            },
+            lines: [],
+          }))
+        );
+      }
+
+      if (code === "JV") {
+        setTransactions(
+          data.map((item) => ({
+            id: item.id,
+            referenceNo: item.referenceNo || item.voucherNo,
+            date: item.transactionDate,
+            party: item.preparedFor,
+            amount: item.totalDebit || item.totalCredit,
+            status: item.status,
+            form: {
+              date: item.transactionDate,
+              referenceNo: item.referenceNo || item.voucherNo,
+              party: item.preparedFor,
+              partyId: null,
               description: item.description,
               checkNo: "",
               status: item.status,
@@ -744,6 +769,8 @@ setError("");
     ? "invoices"
     : code === "PO"
     ? "purchase-orders"
+    : code === "JV"
+    ? "jv"
     : "apv";
       const res = await fetch(`${API_BASE}/api/${endpoint}/${transaction.id}`, {
         credentials: "include",
@@ -762,6 +789,8 @@ setError("");
       ? data.payeeName
       : code === "OR" || code === "INV"
       ? data.customerName
+      : code === "JV"
+      ? data.preparedFor
       : data.supplierName,
 
   partyId:
@@ -769,6 +798,8 @@ setError("");
       ? data.payeeId
       : code === "OR" || code === "INV"
       ? data.customerId
+      : code === "JV"
+      ? null
       : data.supplierId,
 
   description: data.description,
@@ -1249,6 +1280,8 @@ if (code === "OR" || code === "CV") {
     ? "invoices"
     : code === "PO"
     ? "purchase-orders"
+    : code === "JV"
+    ? "jv"
     : "apv";
       const isExisting = selectedTransaction?.id;
 

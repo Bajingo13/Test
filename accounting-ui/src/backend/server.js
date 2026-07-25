@@ -3609,6 +3609,334 @@ app.put("/api/cv/:id", async (req, res) => {
   }
 });
 
+// ===================== JV (JOURNAL VOUCHER) API =====================
+// The frontend has no dedicated "post" action - Draft/Posted is embedded in the
+// same create/update payload (handleSave(status) in TransactionFormLayout.jsx),
+// so these routes follow that same shape rather than adding a separate endpoint.
+
+app.get("/api/jv", authenticateToken, async (req, res) => {
+  try {
+    const [rows] = await pool.execute(`
+      SELECT
+        id,
+        voucher_no AS voucherNo,
+        DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate,
+        reference_no AS referenceNo,
+        prepared_for AS preparedFor,
+        description,
+        total_debit AS totalDebit,
+        total_credit AS totalCredit,
+        status
+      FROM jv_headers
+      ORDER BY id DESC
+    `);
+
+    res.json(rows);
+  } catch (err) {
+    console.error("GET JV ERROR:", err);
+    res.status(500).json({ message: "Failed to load JV records" });
+  }
+});
+
+app.post("/api/jv", authenticateToken, async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    await conn.beginTransaction();
+
+    const {
+      voucherNo,
+      supplierName,
+      customerName,
+      transactionDate,
+      referenceNo,
+      description,
+      remarks,
+      totalDebit,
+      totalCredit,
+      status,
+      lines = [],
+    } = req.body;
+
+    const preparedFor = req.body.preparedFor || supplierName || customerName || "";
+    const finalStatus = status || "Draft";
+    const userId = req.user?.id || null;
+
+    const [result] = await conn.execute(
+      `INSERT INTO jv_headers(
+        voucher_no,
+        transaction_date,
+        reference_no,
+        prepared_for,
+        description,
+        remarks,
+        total_debit,
+        total_credit,
+        status,
+        created_by,
+        posted_by,
+        posted_at
+      )
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [
+        voucherNo || "",
+        transactionDate || null,
+        referenceNo || "",
+        preparedFor,
+        description || "",
+        remarks || "",
+        Number(totalDebit) || 0,
+        Number(totalCredit) || 0,
+        finalStatus,
+        userId,
+        finalStatus === "Posted" ? userId : null,
+        finalStatus === "Posted" ? new Date() : null,
+      ]
+    );
+
+    const jvId = result.insertId;
+
+    for (const line of lines) {
+      await conn.execute(
+        `INSERT INTO jv_lines(
+          jv_id,
+          account_id,
+          account_code,
+          account_title,
+          particulars,
+          gen_ref,
+          gen_name,
+          debit,
+          credit
+        )
+        VALUES(?,?,?,?,?,?,?,?,?)`,
+        [
+          jvId,
+          line.accountId ?? null,
+          line.accountCode || "",
+          line.accountTitle || "",
+          line.particulars || "",
+          line.genRef || "",
+          line.genName || "",
+          Number(line.debit) || 0,
+          Number(line.credit) || 0,
+        ]
+      );
+    }
+
+    await conn.commit();
+
+    res.json({
+      success: true,
+      id: jvId,
+      message: "JV saved successfully",
+    });
+  } catch (err) {
+    await conn.rollback();
+    console.error("CREATE JV ERROR:", err);
+
+    if (err.code === "ER_DUP_ENTRY") {
+      return res.status(400).json({ message: "JV number already exists" });
+    }
+
+    res.status(500).json({ message: "Failed to save JV" });
+  } finally {
+    conn.release();
+  }
+});
+
+app.get("/api/jv/:id", authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [headers] = await pool.execute(
+      `SELECT
+        id,
+        voucher_no AS voucherNo,
+        DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate,
+        reference_no AS referenceNo,
+        prepared_for AS preparedFor,
+        description,
+        remarks,
+        total_debit AS totalDebit,
+        total_credit AS totalCredit,
+        status
+      FROM jv_headers
+      WHERE id = ?`,
+      [id]
+    );
+
+    if (headers.length === 0) {
+      return res.status(404).json({ message: "JV not found" });
+    }
+
+    const [lines] = await pool.execute(
+      `SELECT
+        id,
+        jv_id AS jvId,
+        account_id AS accountId,
+        account_code AS accountCode,
+        account_title AS accountTitle,
+        particulars,
+        debit,
+        credit,
+        gen_ref AS genRef,
+        gen_name AS genName
+      FROM jv_lines
+      WHERE jv_id = ?
+      ORDER BY id ASC`,
+      [id]
+    );
+
+    res.json({
+      ...headers[0],
+      lines,
+    });
+  } catch (err) {
+    console.error("GET JV DETAILS ERROR:", err);
+    res.status(500).json({ message: "Failed to load JV details" });
+  }
+});
+
+app.put("/api/jv/:id", authenticateToken, async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const { id } = req.params;
+
+    const [existing] = await conn.execute(
+      "SELECT status, posted_by, posted_at FROM jv_headers WHERE id = ?",
+      [id]
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json({ message: "JV not found" });
+    }
+
+    const {
+      voucherNo,
+      supplierName,
+      customerName,
+      transactionDate,
+      referenceNo,
+      description,
+      remarks,
+      totalDebit,
+      totalCredit,
+      status,
+      lines = [],
+    } = req.body;
+
+    const preparedFor = req.body.preparedFor || supplierName || customerName || "";
+    const finalStatus = status || "Draft";
+    const userId = req.user?.id || null;
+    const wasAlreadyPosted = existing[0].status === "Posted";
+
+    // Preserve the original posted_by/posted_at if it was already Posted and stays
+    // Posted through this edit - only set them fresh on the Draft->Posted transition.
+    const nextPostedBy =
+      finalStatus === "Posted" ? (wasAlreadyPosted ? existing[0].posted_by : userId) : null;
+    const nextPostedAt =
+      finalStatus === "Posted" ? (wasAlreadyPosted ? existing[0].posted_at : new Date()) : null;
+
+    await conn.beginTransaction();
+
+    await conn.execute(
+      `UPDATE jv_headers SET
+        voucher_no = ?,
+        transaction_date = ?,
+        reference_no = ?,
+        prepared_for = ?,
+        description = ?,
+        remarks = ?,
+        total_debit = ?,
+        total_credit = ?,
+        status = ?,
+        posted_by = ?,
+        posted_at = ?
+      WHERE id = ?`,
+      [
+        voucherNo || "",
+        transactionDate || null,
+        referenceNo || "",
+        preparedFor,
+        description || "",
+        remarks || "",
+        Number(totalDebit) || 0,
+        Number(totalCredit) || 0,
+        finalStatus,
+        nextPostedBy,
+        nextPostedAt,
+        id,
+      ]
+    );
+
+    await conn.execute("DELETE FROM jv_lines WHERE jv_id = ?", [id]);
+
+    for (const line of lines) {
+      await conn.execute(
+        `INSERT INTO jv_lines(
+          jv_id,
+          account_id,
+          account_code,
+          account_title,
+          particulars,
+          gen_ref,
+          gen_name,
+          debit,
+          credit
+        )
+        VALUES(?,?,?,?,?,?,?,?,?)`,
+        [
+          id,
+          line.accountId ?? null,
+          line.accountCode || "",
+          line.accountTitle || "",
+          line.particulars || "",
+          line.genRef || "",
+          line.genName || "",
+          Number(line.debit) || 0,
+          Number(line.credit) || 0,
+        ]
+      );
+    }
+
+    await conn.commit();
+
+    res.json({
+      success: true,
+      message: "JV updated successfully",
+    });
+  } catch (err) {
+    await conn.rollback();
+    console.error("UPDATE JV ERROR:", err);
+
+    if (err.code === "ER_DUP_ENTRY") {
+      return res.status(400).json({ message: "JV number already exists" });
+    }
+
+    res.status(500).json({ message: "Failed to update JV" });
+  } finally {
+    conn.release();
+  }
+});
+
+app.delete("/api/jv/:id", authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    await pool.execute("DELETE FROM jv_headers WHERE id = ?", [id]);
+
+    res.json({
+      success: true,
+      message: "JV deleted successfully",
+    });
+  } catch (err) {
+    console.error("DELETE JV ERROR:", err);
+    res.status(500).json({ message: "Failed to delete JV" });
+  }
+});
+
 // ===================== ACCOUNT GROUP CODES API =====================
 
 app.get("/api/group-codes", async (req, res) => {
@@ -3956,12 +4284,14 @@ app.get("/api/reports/trial-balance", async (req, res) => {
     let dateFilterAPV = "";
     let dateFilterCV = "";
     let dateFilterARAP = "";
+    let dateFilterJV = "";
 
     if (from && to) {
       dateFilterAPV = "WHERE h.transaction_date BETWEEN ? AND ?";
       dateFilterCV = "WHERE h.transaction_date BETWEEN ? AND ?";
       dateFilterARAP = "WHERE h.balance_date BETWEEN ? AND ?";
-      params.push(from, to, from, to, from, to);
+      dateFilterJV = "WHERE h.transaction_date BETWEEN ? AND ?";
+      params.push(from, to, from, to, from, to, from, to);
     }
 
     const [rows] = await pool.execute(
@@ -4018,6 +4348,17 @@ END AS account_class,
         FROM arap_beginning_balance_lines l
         JOIN arap_beginning_balance_headers h ON h.id = l.header_id
         ${dateFilterARAP}
+
+        UNION ALL
+
+        SELECT
+          l.account_code,
+          l.account_title AS account_name,
+          COALESCE(l.debit, 0) AS debit,
+          COALESCE(l.credit, 0) AS credit
+        FROM jv_lines l
+        JOIN jv_headers h ON h.id = l.jv_id
+        ${dateFilterJV}
       ) tb
       LEFT JOIN chart_of_accounts c 
   ON TRIM(CAST(c.code AS CHAR)) = TRIM(CAST(tb.account_code AS CHAR))
