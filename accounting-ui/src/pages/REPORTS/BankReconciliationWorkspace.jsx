@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import BankReconMatchModal from "../../components/BankReconMatchModal.jsx";
+import BankReconAuditLogPanel from "../../components/BankReconAuditLogPanel.jsx";
 import "./BankReconciliation.css";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
@@ -65,6 +67,12 @@ export default function BankReconciliationWorkspace() {
   const [adjustmentAccountPicks, setAdjustmentAccountPicks] = useState({});
   const [adjustmentBusyId, setAdjustmentBusyId] = useState(null);
 
+  const [summary, setSummary] = useState(null);
+  const [finalizing, setFinalizing] = useState(false);
+  const [reopening, setReopening] = useState(false);
+  const [downloadingReport, setDownloadingReport] = useState(false);
+  const [auditLog, setAuditLog] = useState([]);
+
   useEffect(() => {
     loadSession();
     loadImportBatches();
@@ -73,7 +81,275 @@ export default function BankReconciliationWorkspace() {
     loadOutstandingItems();
     loadAdjustments();
     loadCoaAccounts();
+    loadSummary();
+    loadAuditLog();
   }, [id]);
+
+  async function loadSummary() {
+    try {
+      const res = await fetch(`${API_BASE}/api/bank-recon/sessions/${id}/summary`, {
+        credentials: "include",
+        headers: authHeaders(),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        if (handleAuthError(res.status)) return;
+        return;
+      }
+
+      setSummary(data);
+    } catch (err) {
+      console.error("LOAD SUMMARY ERROR:", err);
+    }
+  }
+
+  async function loadAuditLog() {
+    try {
+      const res = await fetch(`${API_BASE}/api/bank-recon/sessions/${id}/audit-log`, {
+        credentials: "include",
+        headers: authHeaders(),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        if (handleAuthError(res.status)) return;
+        return;
+      }
+
+      setAuditLog(data);
+    } catch (err) {
+      console.error("LOAD AUDIT LOG ERROR:", err);
+    }
+  }
+
+  async function finalizeSession() {
+    setFinalizing(true);
+
+    try {
+      let overrideReason;
+
+      if (summary && !summary.canFinalizeCleanly) {
+        overrideReason = prompt(
+          `This session isn't fully reconciled (difference: ₱ ${formatMoney(
+            summary.difference
+          )}, ${summary.pendingAdjustmentsCount} pending adjustment(s), ${
+            summary.unresolvedStatementLinesCount
+          } unresolved line(s)). Enter a reason to finalize anyway, or cancel.`
+        );
+        if (!overrideReason || !overrideReason.trim()) {
+          setFinalizing(false);
+          return;
+        }
+      } else if (!confirm("Finalize this reconciliation session?")) {
+        setFinalizing(false);
+        return;
+      }
+
+      const res = await fetch(`${API_BASE}/api/bank-recon/sessions/${id}/finalize`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...authHeaders(),
+        },
+        credentials: "include",
+        body: JSON.stringify({ overrideReason }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        if (handleAuthError(res.status)) return;
+        alert(data.message || "Failed to finalize session.");
+        return;
+      }
+
+      await loadSession();
+      await loadSummary();
+      await loadAuditLog();
+    } catch (err) {
+      console.error("FINALIZE SESSION ERROR:", err);
+      alert("Unable to connect to server.");
+    } finally {
+      setFinalizing(false);
+    }
+  }
+
+  async function reopenSession() {
+    const reason = prompt("Enter a reason for reopening this finalized session:");
+    if (!reason || !reason.trim()) return;
+
+    setReopening(true);
+
+    try {
+      const res = await fetch(`${API_BASE}/api/bank-recon/sessions/${id}/reopen`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...authHeaders(),
+        },
+        credentials: "include",
+        body: JSON.stringify({ reason }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        if (handleAuthError(res.status)) return;
+        alert(data.message || "Failed to reopen session.");
+        return;
+      }
+
+      await loadSession();
+      await loadSummary();
+      await loadAuditLog();
+    } catch (err) {
+      console.error("REOPEN SESSION ERROR:", err);
+      alert("Unable to connect to server.");
+    } finally {
+      setReopening(false);
+    }
+  }
+
+  async function downloadReportPDF() {
+    setDownloadingReport(true);
+
+    try {
+      const res = await fetch(`${API_BASE}/api/bank-recon/sessions/${id}/report`, {
+        credentials: "include",
+        headers: authHeaders(),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        if (handleAuthError(res.status)) return;
+        alert(data.message || "Failed to load report.");
+        return;
+      }
+
+      await renderReportPDF(data);
+    } catch (err) {
+      console.error("DOWNLOAD REPORT ERROR:", err);
+      alert("Unable to connect to server.");
+    } finally {
+      setDownloadingReport(false);
+    }
+  }
+
+  async function renderReportPDF(data) {
+    const { session: s, summary: sum, confirmedMatches, postedAdjustments } = data;
+
+    const pdf = await PDFDocument.create();
+    const font = await pdf.embedFont(StandardFonts.Helvetica);
+    const boldFont = await pdf.embedFont(StandardFonts.HelveticaBold);
+    const marginX = 40;
+    const pageWidth = 612;
+    const pageHeight = 792;
+    const dark = rgb(0.06, 0.09, 0.16);
+    const grey = rgb(0.4, 0.46, 0.55);
+
+    let page = pdf.addPage([pageWidth, pageHeight]);
+    let y = pageHeight - 50;
+
+    function ensureSpace(needed) {
+      if (y - needed < 40) {
+        page = pdf.addPage([pageWidth, pageHeight]);
+        y = pageHeight - 50;
+      }
+    }
+
+    function text(str, x, size, opts = {}) {
+      page.drawText(String(str ?? ""), {
+        x,
+        y,
+        size,
+        font: opts.bold ? boldFont : font,
+        color: opts.color || dark,
+      });
+    }
+
+    function line(str, opts = {}) {
+      ensureSpace(20);
+      text(str, marginX, opts.size || 10, opts);
+      y -= opts.gap || 16;
+    }
+
+    line("Bank Reconciliation Report", { bold: true, size: 16, gap: 22 });
+    line(`${s.bankCode} - ${s.bankName}${s.bankAccountNo ? ` (${s.bankAccountNo})` : ""}`, {
+      bold: true,
+      size: 11,
+    });
+    line(`Period: ${s.periodStart} to ${s.periodEnd}`, { color: grey });
+    line(`Status: ${s.status}`, { color: grey, gap: 22 });
+
+    line("Summary", { bold: true, size: 12, gap: 18 });
+    line(`Statement Ending Balance: ${formatMoney(sum.statementEndingBalance)}`);
+    line(`Add: Deposits in Transit: ${formatMoney(sum.depositsInTransitTotal)}`);
+    line(`Less: Outstanding Checks: ${formatMoney(sum.outstandingChecksTotal)}`);
+    line(`Adjusted Bank Balance: ${formatMoney(sum.adjustedBank)}`, { bold: true });
+    line(`Book Balance: ${formatMoney(sum.bookBalance)}`, { bold: true, gap: 18 });
+    line(`Difference: ${formatMoney(sum.difference)}`, { bold: true, gap: 26 });
+
+    line(`Confirmed Matches (${confirmedMatches.length})`, { bold: true, size: 12, gap: 18 });
+    if (confirmedMatches.length === 0) {
+      line("None", { color: grey });
+    } else {
+      confirmedMatches.forEach((m) => {
+        line(
+          `${m.txnDate}  ${m.bookSourceType} #${m.bookSourceId}  ${formatMoney(m.amount)}  (${m.matchType})`,
+          { size: 9 }
+        );
+      });
+    }
+
+    y -= 10;
+    line(`Posted Adjustments (${postedAdjustments.length})`, { bold: true, size: 12, gap: 18 });
+    if (postedAdjustments.length === 0) {
+      line("None", { color: grey });
+    } else {
+      postedAdjustments.forEach((a) => {
+        line(`${a.txnDate}  ${a.adjustmentType}  ${formatMoney(a.amount)}  JV #${a.jvId}`, {
+          size: 9,
+        });
+      });
+    }
+
+    y -= 10;
+    line(`Outstanding Checks (${sum.outstandingChecks.length})`, { bold: true, size: 12, gap: 18 });
+    if (sum.outstandingChecks.length === 0) {
+      line("None", { color: grey });
+    } else {
+      sum.outstandingChecks.forEach((c) => {
+        line(`${c.date}  ${c.sourceType} ${c.voucherNo}  ${c.payeeOrCustomer}  ${formatMoney(c.amount)}`, {
+          size: 9,
+        });
+      });
+    }
+
+    y -= 10;
+    line(`Deposits in Transit (${sum.depositsInTransit.length})`, { bold: true, size: 12, gap: 18 });
+    if (sum.depositsInTransit.length === 0) {
+      line("None", { color: grey });
+    } else {
+      sum.depositsInTransit.forEach((d) => {
+        line(`${d.date}  ${d.sourceType} ${d.voucherNo}  ${d.payeeOrCustomer}  ${formatMoney(d.amount)}`, {
+          size: 9,
+        });
+      });
+    }
+
+    const bytes = await pdf.save();
+    const blob = new Blob([bytes], { type: "application/pdf" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `bank-reconciliation-session-${s.id}.pdf`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
 
   async function refreshBoard() {
     await Promise.all([
@@ -81,6 +357,8 @@ export default function BankReconciliationWorkspace() {
       loadBookItems(),
       loadOutstandingItems(),
       loadAdjustments(),
+      loadSummary(),
+      loadAuditLog(),
     ]);
   }
 
@@ -194,6 +472,8 @@ export default function BankReconciliationWorkspace() {
       }
 
       await loadAdjustments();
+      await loadSummary();
+      await loadAuditLog();
     } catch (err) {
       console.error("APPROVE ADJUSTMENT ERROR:", err);
       alert("Unable to connect to server.");
@@ -223,6 +503,8 @@ export default function BankReconciliationWorkspace() {
       }
 
       await loadAdjustments();
+      await loadSummary();
+      await loadAuditLog();
     } catch (err) {
       console.error("REJECT ADJUSTMENT ERROR:", err);
       alert("Unable to connect to server.");
@@ -253,6 +535,8 @@ export default function BankReconciliationWorkspace() {
 
       alert(`Posted as JV ${data.voucherNo}.`);
       await loadAdjustments();
+      await loadSummary();
+      await loadAuditLog();
     } catch (err) {
       console.error("POST ADJUSTMENT ERROR:", err);
       alert("Unable to connect to server.");
@@ -725,9 +1009,31 @@ export default function BankReconciliationWorkspace() {
           </p>
         </div>
 
-        <button onClick={() => navigate("/reports/bank-reconciliation")} className="brc-btn">
-          Back to Sessions
-        </button>
+        <div style={{ display: "flex", gap: 10 }}>
+          <button
+            onClick={downloadReportPDF}
+            className="brc-btn"
+            disabled={downloadingReport}
+          >
+            {downloadingReport ? "Preparing..." : "Download Report (PDF)"}
+          </button>
+          {isFinalized ? (
+            <button onClick={reopenSession} className="brc-btn" disabled={reopening}>
+              {reopening ? "Reopening..." : "Reopen"}
+            </button>
+          ) : (
+            <button
+              onClick={finalizeSession}
+              className="brc-btn primary"
+              disabled={finalizing}
+            >
+              {finalizing ? "Finalizing..." : "Finalize"}
+            </button>
+          )}
+          <button onClick={() => navigate("/reports/bank-reconciliation")} className="brc-btn">
+            Back to Sessions
+          </button>
+        </div>
       </div>
 
       <div className="brc-card">
@@ -1003,10 +1309,13 @@ export default function BankReconciliationWorkspace() {
                           {line.matchStatus === "SUGGESTED" ? "Review Matches" : "Find Match"}
                         </button>
                       )}
-                      {!isFinalized && line.matchStatus === "MATCHED" && (
+                      {!isFinalized && line.matchStatus === "MATCHED" && line.confirmedMatchId && (
                         <button onClick={() => unmatchLine(line)} className="danger">
                           Unmatch
                         </button>
+                      )}
+                      {!isFinalized && line.matchStatus === "MATCHED" && !line.confirmedMatchId && (
+                        <span style={{ color: "#64748b", fontSize: 13 }}>Resolved via adjustment</span>
                       )}
                       {!isFinalized && line.matchStatus === "IGNORED" && (
                         <button onClick={() => openModal(line)}>Un-ignore</button>
@@ -1221,14 +1530,58 @@ export default function BankReconciliationWorkspace() {
       </div>
 
       <div className="brc-card">
-        <h2>Reconciliation Workflow</h2>
-        <p style={{ color: "#64748b" }}>
-          Adjustment posting to a JV and session finalization/reporting are being rolled out
-          in upcoming phases of this module. This session's statement balances (
-          <strong>₱ {formatMoney(session.statementBeginningBalance)}</strong> to{" "}
-          <strong>₱ {formatMoney(session.statementEndingBalance)}</strong>) are recorded and
-          ready for those steps once available.
-        </p>
+        <h2>Reconciliation Summary</h2>
+
+        {!summary ? (
+          "Loading..."
+        ) : (
+          <>
+            <div className="brc-grid">
+              <div>
+                <label>Statement Ending Balance</label>
+                <input value={`₱ ${formatMoney(summary.statementEndingBalance)}`} readOnly />
+              </div>
+              <div>
+                <label>Add: Deposits in Transit</label>
+                <input value={`₱ ${formatMoney(summary.depositsInTransitTotal)}`} readOnly />
+              </div>
+              <div>
+                <label>Less: Outstanding Checks</label>
+                <input value={`₱ ${formatMoney(summary.outstandingChecksTotal)}`} readOnly />
+              </div>
+              <div>
+                <label>Adjusted Bank Balance</label>
+                <input value={`₱ ${formatMoney(summary.adjustedBank)}`} readOnly />
+              </div>
+              <div>
+                <label>Book Balance</label>
+                <input value={`₱ ${formatMoney(summary.bookBalance)}`} readOnly />
+              </div>
+              <div>
+                <label>Difference</label>
+                <input
+                  value={`₱ ${formatMoney(summary.difference)}`}
+                  readOnly
+                  style={{
+                    fontWeight: 800,
+                    color: summary.difference === 0 ? "#166534" : "#991b1b",
+                  }}
+                />
+              </div>
+            </div>
+
+            <p style={{ color: "#64748b", marginTop: 14 }}>
+              {summary.canFinalizeCleanly
+                ? "Fully reconciled - ready to finalize."
+                : `Not yet fully reconciled: ${summary.pendingAdjustmentsCount} pending adjustment(s), ${summary.unresolvedStatementLinesCount} unresolved statement line(s). Finalizing now requires an override reason.`}
+            </p>
+          </>
+        )}
+      </div>
+
+      <div className="brc-card">
+        <h2>Audit Log</h2>
+        <BankReconAuditLogPanel entries={auditLog} />
       </div>
     </div>
   );

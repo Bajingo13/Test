@@ -4913,6 +4913,9 @@ async function loadBookTransactions(
     [bankAccountId, fromDate, toDate]
   );
 
+  // Excludes JVs that themselves came from posting a bank-recon adjustment -
+  // those already exist specifically to resolve one statement line and must
+  // never be re-offered as an independent unmatched/outstanding book item.
   const jvRows = bankCoaAccountId
     ? (
         await conn.execute(
@@ -4921,7 +4924,8 @@ async function loadBookTransactions(
                   jh.reference_no AS referenceNo, jh.description, jl.debit, jl.credit
            FROM jv_lines jl
            JOIN jv_headers jh ON jh.id = jl.jv_id
-           WHERE jl.account_id = ? AND jh.status = 'Posted' AND jh.transaction_date BETWEEN ? AND ?`,
+           WHERE jl.account_id = ? AND jh.status = 'Posted' AND jh.transaction_date BETWEEN ? AND ?
+             AND (jh.source_module IS NULL OR jh.source_module != 'BANK_RECON')`,
           [bankCoaAccountId, fromDate, toDate]
         )
       )[0]
@@ -4985,6 +4989,101 @@ async function loadBookTransactions(
   }
 
   return txns;
+}
+
+// ---- Reconciliation summary (Phase 9) ----
+// Adjusted Bank = Statement Ending Balance + Deposits in Transit - Outstanding Checks.
+// Book Balance is derived from the session's own statement-beginning-balance
+// (assumed already reconciled as of period start, per standard practice)
+// plus posted CV/OR/JV activity on this bank account within the period -
+// approved adjustments already hit the ledger once posted as a JV in
+// Phase 8, so there is no separate "+ interest - charges" term here the
+// way a textbook formula has it: that would double-count once posted.
+async function computeSessionSummary(conn, session) {
+  const bookTxns = await loadBookTransactions(
+    conn,
+    session.bankAccountId,
+    session.bankCoaAccountId,
+    session.periodStart,
+    session.periodEnd,
+    session.dateToleranceDays
+  );
+
+  const [confirmedRows] = await conn.execute(
+    `SELECT book_source_type AS sourceType, book_source_id AS sourceId, book_line_id AS lineId
+     FROM bank_recon_matches WHERE session_id = ? AND status = 'CONFIRMED'`,
+    [session.id]
+  );
+  const confirmedKeys = new Set(
+    confirmedRows.map((r) => `${r.sourceType}:${r.sourceId}:${r.lineId ?? ""}`)
+  );
+
+  const unmatched = bookTxns.filter(
+    (t) =>
+      !confirmedKeys.has(`${t.sourceType}:${t.sourceId}:${t.lineId ?? ""}`) &&
+      t.date <= session.periodEnd
+  );
+  const outstandingChecks = unmatched.filter((t) => t.direction === "OUT");
+  const depositsInTransit = unmatched.filter((t) => t.direction === "IN");
+  const outstandingChecksTotal = outstandingChecks.reduce((sum, t) => sum + t.amount, 0);
+  const depositsInTransitTotal = depositsInTransit.reduce((sum, t) => sum + t.amount, 0);
+
+  const [cvSum] = await conn.execute(
+    `SELECT COALESCE(SUM(total_debit), 0) AS total FROM cv_headers
+     WHERE bank_account_id = ? AND status = 'Posted' AND transaction_date BETWEEN ? AND ?`,
+    [session.bankAccountId, session.periodStart, session.periodEnd]
+  );
+  const [orSum] = await conn.execute(
+    `SELECT COALESCE(SUM(total_debit), 0) AS total FROM or_headers
+     WHERE bank_account_id = ? AND status = 'Posted' AND transaction_date BETWEEN ? AND ?`,
+    [session.bankAccountId, session.periodStart, session.periodEnd]
+  );
+
+  let jvNet = 0;
+  if (session.bankCoaAccountId) {
+    const [jvSum] = await conn.execute(
+      `SELECT COALESCE(SUM(jl.debit), 0) AS debitTotal, COALESCE(SUM(jl.credit), 0) AS creditTotal
+       FROM jv_lines jl JOIN jv_headers jh ON jh.id = jl.jv_id
+       WHERE jl.account_id = ? AND jh.status = 'Posted' AND jh.transaction_date BETWEEN ? AND ?`,
+      [session.bankCoaAccountId, session.periodStart, session.periodEnd]
+    );
+    jvNet = Number(jvSum[0].debitTotal) - Number(jvSum[0].creditTotal);
+  }
+
+  const bookBalance =
+    Number(session.statementBeginningBalance) - Number(cvSum[0].total) + Number(orSum[0].total) + jvNet;
+
+  const adjustedBank =
+    Number(session.statementEndingBalance) + depositsInTransitTotal - outstandingChecksTotal;
+  const difference = round2(adjustedBank - bookBalance);
+
+  const [pendingAdjRows] = await conn.execute(
+    "SELECT COUNT(*) AS cnt FROM bank_recon_adjustments WHERE session_id = ? AND status IN ('PENDING', 'APPROVED')",
+    [session.id]
+  );
+  const [unresolvedLinesRows] = await conn.execute(
+    "SELECT COUNT(*) AS cnt FROM bank_recon_statement_lines WHERE session_id = ? AND match_status IN ('UNMATCHED', 'SUGGESTED')",
+    [session.id]
+  );
+
+  const pendingAdjustmentsCount = pendingAdjRows[0].cnt;
+  const unresolvedStatementLinesCount = unresolvedLinesRows[0].cnt;
+
+  return {
+    statementBeginningBalance: Number(session.statementBeginningBalance),
+    statementEndingBalance: Number(session.statementEndingBalance),
+    bookBalance: round2(bookBalance),
+    outstandingChecks,
+    outstandingChecksTotal: round2(outstandingChecksTotal),
+    depositsInTransit,
+    depositsInTransitTotal: round2(depositsInTransitTotal),
+    adjustedBank: round2(adjustedBank),
+    difference,
+    pendingAdjustmentsCount,
+    unresolvedStatementLinesCount,
+    canFinalizeCleanly:
+      difference === 0 && pendingAdjustmentsCount === 0 && unresolvedStatementLinesCount === 0,
+  };
 }
 
 // Returns null when the candidate falls outside 2x the amount variance or
@@ -6184,6 +6283,14 @@ app.post("/api/bank-recon/adjustments/:id/post", authenticateToken, async (req, 
       id,
     ]);
 
+    // The statement line is now fully explained by this adjustment's JV -
+    // without this it would sit at UNMATCHED forever and its own resolving
+    // JV would (incorrectly) show up as a fresh unmatched book item.
+    await conn.execute(
+      "UPDATE bank_recon_statement_lines SET match_status = 'MATCHED' WHERE id = ?",
+      [adj.statement_line_id]
+    );
+
     await logAudit(conn, {
       module: "JV",
       entityType: "JV",
@@ -6212,6 +6319,244 @@ app.post("/api/bank-recon/adjustments/:id/post", authenticateToken, async (req, 
     await conn.rollback();
     console.error("POST ADJUSTMENT ERROR:", err);
     res.status(500).json({ message: "Failed to post adjustment" });
+  } finally {
+    conn.release();
+  }
+});
+
+// ---- Finalization + report + audit viewer (Phase 9) ----
+
+app.get("/api/bank-recon/sessions/:id/summary", authenticateToken, async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const { id } = req.params;
+
+    const [sessionRows] = await conn.execute(`${BANK_RECON_SESSION_SELECT} WHERE s.id = ?`, [id]);
+
+    if (sessionRows.length === 0) {
+      return res.status(404).json({ message: "Reconciliation session not found" });
+    }
+
+    const session = sessionRows[0];
+    const summary = await computeSessionSummary(conn, session);
+
+    res.json({ status: session.status, ...summary });
+  } catch (err) {
+    console.error("GET SESSION SUMMARY ERROR:", err);
+    res.status(500).json({ message: "Failed to load session summary" });
+  } finally {
+    conn.release();
+  }
+});
+
+app.post("/api/bank-recon/sessions/:id/finalize", authenticateToken, async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const { id } = req.params;
+    const { overrideReason } = req.body;
+
+    const [sessionRows] = await conn.execute(`${BANK_RECON_SESSION_SELECT} WHERE s.id = ?`, [id]);
+
+    if (sessionRows.length === 0) {
+      return res.status(404).json({ message: "Reconciliation session not found" });
+    }
+
+    const session = sessionRows[0];
+
+    if (session.status === "FINALIZED") {
+      return res.status(400).json({ message: "Session is already finalized" });
+    }
+
+    const summary = await computeSessionSummary(conn, session);
+
+    if (!summary.canFinalizeCleanly && !String(overrideReason || "").trim()) {
+      return res.status(400).json({
+        message:
+          "Cannot finalize: unresolved items remain. Provide an override reason to finalize anyway.",
+        difference: summary.difference,
+        pendingAdjustmentsCount: summary.pendingAdjustmentsCount,
+        unresolvedStatementLinesCount: summary.unresolvedStatementLinesCount,
+      });
+    }
+
+    const userId = req.user?.id || null;
+
+    await conn.beginTransaction();
+
+    await conn.execute(
+      "UPDATE bank_recon_sessions SET status = 'FINALIZED', finalized_by = ?, finalized_at = NOW() WHERE id = ?",
+      [userId, id]
+    );
+
+    await logAudit(conn, {
+      module: "BANK_RECON",
+      entityType: "SESSION",
+      entityId: Number(id),
+      action: "FINALIZE",
+      description: summary.canFinalizeCleanly
+        ? `Session #${id} finalized (difference = 0)`
+        : `Session #${id} finalized with override: ${overrideReason}`,
+      afterData: {
+        difference: summary.difference,
+        overrideReason: overrideReason || null,
+        pendingAdjustmentsCount: summary.pendingAdjustmentsCount,
+        unresolvedStatementLinesCount: summary.unresolvedStatementLinesCount,
+      },
+      user: req.user,
+    });
+
+    await conn.commit();
+
+    res.json({ success: true, message: "Session finalized" });
+  } catch (err) {
+    await conn.rollback();
+    console.error("FINALIZE SESSION ERROR:", err);
+    res.status(500).json({ message: "Failed to finalize session" });
+  } finally {
+    conn.release();
+  }
+});
+
+app.post("/api/bank-recon/sessions/:id/reopen", authenticateToken, async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+
+    if (!String(reason || "").trim()) {
+      return res.status(400).json({ message: "A reason is required to reopen a finalized session" });
+    }
+
+    const [sessionRows] = await conn.execute(
+      "SELECT status FROM bank_recon_sessions WHERE id = ?",
+      [id]
+    );
+
+    if (sessionRows.length === 0) {
+      return res.status(404).json({ message: "Reconciliation session not found" });
+    }
+    if (sessionRows[0].status !== "FINALIZED") {
+      return res.status(400).json({ message: "Session is not finalized" });
+    }
+
+    const userId = req.user?.id || null;
+
+    await conn.beginTransaction();
+
+    await conn.execute(
+      "UPDATE bank_recon_sessions SET status = 'IN_PROGRESS', finalized_by = NULL, finalized_at = NULL WHERE id = ?",
+      [id]
+    );
+
+    await logAudit(conn, {
+      module: "BANK_RECON",
+      entityType: "SESSION",
+      entityId: Number(id),
+      action: "REOPEN",
+      description: `Session #${id} reopened: ${reason}`,
+      afterData: { reason },
+      user: req.user,
+    });
+
+    await conn.commit();
+
+    res.json({ success: true, message: "Session reopened" });
+  } catch (err) {
+    await conn.rollback();
+    console.error("REOPEN SESSION ERROR:", err);
+    res.status(500).json({ message: "Failed to reopen session" });
+  } finally {
+    conn.release();
+  }
+});
+
+app.get("/api/bank-recon/sessions/:id/audit-log", authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [rows] = await pool.execute(
+      `SELECT
+        id, module, entity_type AS entityType, entity_id AS entityId, action, description,
+        before_data AS beforeData, after_data AS afterData, user_id AS userId, username,
+        created_at AS createdAt
+      FROM audit_logs
+      WHERE module = 'BANK_RECON' AND (
+        (entity_type = 'SESSION' AND entity_id = ?)
+        OR (entity_type = 'IMPORT_BATCH' AND entity_id IN (SELECT id FROM bank_recon_import_batches WHERE session_id = ?))
+        OR (entity_type = 'STATEMENT_LINE' AND entity_id IN (SELECT id FROM bank_recon_statement_lines WHERE session_id = ?))
+        OR (entity_type = 'MATCH' AND entity_id IN (SELECT id FROM bank_recon_matches WHERE session_id = ?))
+        OR (entity_type = 'ADJUSTMENT' AND entity_id IN (SELECT id FROM bank_recon_adjustments WHERE session_id = ?))
+      )
+      ORDER BY id DESC`,
+      [id, id, id, id, id]
+    );
+
+    res.json(rows);
+  } catch (err) {
+    console.error("GET SESSION AUDIT LOG ERROR:", err);
+    res.status(500).json({ message: "Failed to load session audit log" });
+  }
+});
+
+app.get("/api/bank-recon/sessions/:id/report", authenticateToken, async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const { id } = req.params;
+
+    const [sessionRows] = await conn.execute(`${BANK_RECON_SESSION_SELECT} WHERE s.id = ?`, [id]);
+
+    if (sessionRows.length === 0) {
+      return res.status(404).json({ message: "Reconciliation session not found" });
+    }
+
+    const session = sessionRows[0];
+    const summary = await computeSessionSummary(conn, session);
+
+    const [confirmedMatches] = await conn.execute(
+      `SELECT
+        m.id, m.book_source_type AS bookSourceType, m.book_source_id AS bookSourceId,
+        m.match_type AS matchType, m.confidence_score AS confidenceScore, m.amount,
+        DATE_FORMAT(sl.txn_date, '%Y-%m-%d') AS txnDate, sl.description AS statementDescription
+      FROM bank_recon_matches m
+      JOIN bank_recon_statement_lines sl ON sl.id = m.statement_line_id
+      WHERE m.session_id = ? AND m.status = 'CONFIRMED'
+      ORDER BY sl.txn_date ASC`,
+      [id]
+    );
+
+    const [postedAdjustments] = await conn.execute(
+      `SELECT
+        a.id, a.adjustment_type AS adjustmentType, a.amount, a.description, a.jv_id AS jvId,
+        DATE_FORMAT(sl.txn_date, '%Y-%m-%d') AS txnDate
+      FROM bank_recon_adjustments a
+      JOIN bank_recon_statement_lines sl ON sl.id = a.statement_line_id
+      WHERE a.session_id = ? AND a.status = 'POSTED'
+      ORDER BY sl.txn_date ASC`,
+      [id]
+    );
+
+    res.json({
+      session: {
+        id: session.id,
+        bankCode: session.bankCode,
+        bankName: session.bankName,
+        bankAccountNo: session.bankAccountNo,
+        periodStart: session.periodStart,
+        periodEnd: session.periodEnd,
+        status: session.status,
+        finalizedAt: session.finalizedAt,
+      },
+      summary,
+      confirmedMatches,
+      postedAdjustments,
+    });
+  } catch (err) {
+    console.error("GET SESSION REPORT ERROR:", err);
+    res.status(500).json({ message: "Failed to load session report" });
   } finally {
     conn.release();
   }
