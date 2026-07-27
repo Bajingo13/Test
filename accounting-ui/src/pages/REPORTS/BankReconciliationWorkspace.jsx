@@ -21,6 +21,17 @@ function handleAuthError(status) {
   return false;
 }
 
+const MAPPING_FIELDS = [
+  { key: "date", label: "Date", required: true },
+  { key: "description", label: "Description" },
+  { key: "referenceNo", label: "Reference No." },
+  { key: "checkNo", label: "Check No." },
+  { key: "debit", label: "Debit" },
+  { key: "credit", label: "Credit" },
+  { key: "amount", label: "Amount (single signed column)" },
+  { key: "runningBalance", label: "Running Balance" },
+];
+
 export default function BankReconciliationWorkspace() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -29,9 +40,160 @@ export default function BankReconciliationWorkspace() {
   const [form, setForm] = useState(null);
   const [saving, setSaving] = useState(false);
 
+  const [importBatches, setImportBatches] = useState([]);
+  const [statementLines, setStatementLines] = useState([]);
+  const [pendingFile, setPendingFile] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const [mappingHeaders, setMappingHeaders] = useState(null);
+  const [mappingSelections, setMappingSelections] = useState({});
+
   useEffect(() => {
     loadSession();
+    loadImportBatches();
+    loadStatementLines();
   }, [id]);
+
+  async function loadImportBatches() {
+    try {
+      const res = await fetch(`${API_BASE}/api/bank-recon/sessions/${id}/import-batches`, {
+        credentials: "include",
+        headers: authHeaders(),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        if (handleAuthError(res.status)) return;
+        return;
+      }
+
+      setImportBatches(data);
+    } catch (err) {
+      console.error("LOAD IMPORT BATCHES ERROR:", err);
+    }
+  }
+
+  async function loadStatementLines() {
+    try {
+      const res = await fetch(`${API_BASE}/api/bank-recon/sessions/${id}/statement-lines`, {
+        credentials: "include",
+        headers: authHeaders(),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        if (handleAuthError(res.status)) return;
+        return;
+      }
+
+      setStatementLines(data);
+    } catch (err) {
+      console.error("LOAD STATEMENT LINES ERROR:", err);
+    }
+  }
+
+  function handleFileChange(e) {
+    const file = e.target.files?.[0] || null;
+    setPendingFile(file);
+    setMappingHeaders(null);
+    setMappingSelections({});
+  }
+
+  async function performImport(file, columnMapping) {
+    setUploading(true);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      if (columnMapping) {
+        formData.append("columnMapping", JSON.stringify(columnMapping));
+      }
+
+      const res = await fetch(`${API_BASE}/api/bank-recon/sessions/${id}/import`, {
+        method: "POST",
+        headers: authHeaders(),
+        credentials: "include",
+        body: formData,
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        if (handleAuthError(res.status)) return;
+
+        if (data.headers) {
+          setMappingHeaders(data.headers);
+          alert(data.message || "Please map the statement columns below and try again.");
+          return;
+        }
+
+        alert(data.message || "Failed to import statement.");
+        return;
+      }
+
+      let message = data.message || "Statement imported.";
+      if (data.skippedRows?.length) {
+        message += `\n\nSkipped rows:\n${data.skippedRows
+          .map((r) => `Row ${r.row}: ${r.reason}`)
+          .join("\n")}`;
+      }
+      alert(message);
+
+      setPendingFile(null);
+      setMappingHeaders(null);
+      setMappingSelections({});
+      await loadImportBatches();
+      await loadStatementLines();
+    } catch (err) {
+      console.error("IMPORT BANK STATEMENT ERROR:", err);
+      alert("Unable to connect to server.");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  function handleUploadClick() {
+    if (!pendingFile) return alert("Choose a CSV or Excel file first.");
+    performImport(pendingFile, null);
+  }
+
+  function handleMappingSubmit() {
+    if (!mappingSelections.date) {
+      return alert("Date column is required.");
+    }
+    if (!mappingSelections.debit && !mappingSelections.credit && !mappingSelections.amount) {
+      return alert("Map at least a Debit/Credit pair or a single Amount column.");
+    }
+
+    performImport(pendingFile, mappingSelections);
+  }
+
+  async function deleteBatch(batchId) {
+    if (!confirm("Delete this import batch and all its statement lines?")) return;
+
+    try {
+      const res = await fetch(`${API_BASE}/api/bank-recon/import-batches/${batchId}`, {
+        method: "DELETE",
+        credentials: "include",
+        headers: authHeaders(),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        if (handleAuthError(res.status)) return;
+        alert(data.message || "Failed to delete import batch.");
+        return;
+      }
+
+      await loadImportBatches();
+      await loadStatementLines();
+    } catch (err) {
+      console.error("DELETE IMPORT BATCH ERROR:", err);
+      alert("Unable to connect to server.");
+    }
+  }
 
   async function loadSession() {
     try {
@@ -242,14 +404,165 @@ export default function BankReconciliationWorkspace() {
         )}
       </div>
 
+      {!isFinalized && (
+        <div className="brc-card">
+          <h2>Import Bank Statement</h2>
+
+          <div className="brc-import-row">
+            <input
+              type="file"
+              accept=".csv,.xls,.xlsx"
+              onChange={handleFileChange}
+              disabled={uploading}
+            />
+            <button
+              onClick={handleUploadClick}
+              className="brc-btn primary"
+              disabled={uploading || !pendingFile}
+            >
+              {uploading ? "Uploading..." : "Upload"}
+            </button>
+          </div>
+
+          {mappingHeaders && (
+            <div className="brc-mapping-box">
+              <h3>Map Columns</h3>
+              <p style={{ color: "#64748b", marginTop: 0 }}>
+                We couldn't automatically detect all required columns. Match each field to a
+                column from your file.
+              </p>
+
+              <div className="brc-grid">
+                {MAPPING_FIELDS.map((field) => (
+                  <div key={field.key}>
+                    <label>
+                      {field.label}
+                      {field.required ? " *" : ""}
+                    </label>
+                    <select
+                      value={mappingSelections[field.key] || ""}
+                      onChange={(e) =>
+                        setMappingSelections({
+                          ...mappingSelections,
+                          [field.key]: e.target.value,
+                        })
+                      }
+                    >
+                      <option value="">-- none --</option>
+                      {mappingHeaders.map((h, idx) => (
+                        <option key={idx} value={h}>
+                          {h}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ))}
+              </div>
+
+              <div className="brc-actions">
+                <button onClick={() => setMappingHeaders(null)}>Cancel</button>
+                <button
+                  onClick={handleMappingSubmit}
+                  className="brc-btn primary"
+                  disabled={uploading}
+                >
+                  {uploading ? "Importing..." : "Import with This Mapping"}
+                </button>
+              </div>
+            </div>
+          )}
+
+          <h3>Import Batches</h3>
+          <div className="brc-table-wrap">
+            <table className="brc-table">
+              <thead>
+                <tr>
+                  <th>File</th>
+                  <th>Type</th>
+                  <th>Rows</th>
+                  <th>Imported At</th>
+                  <th>Status</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {importBatches.length === 0 ? (
+                  <tr>
+                    <td colSpan="6" className="brc-empty">
+                      No statements imported yet.
+                    </td>
+                  </tr>
+                ) : (
+                  importBatches.map((b) => (
+                    <tr key={b.id}>
+                      <td>{b.fileName}</td>
+                      <td>{b.fileType}</td>
+                      <td>{b.rowCount}</td>
+                      <td>{new Date(b.importedAt).toLocaleString("en-PH")}</td>
+                      <td>{b.status}</td>
+                      <td>
+                        <button onClick={() => deleteBatch(b.id)} className="danger">
+                          Delete
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      <div className="brc-card">
+        <h2>Statement Lines ({statementLines.length})</h2>
+
+        <div className="brc-table-wrap">
+          <table className="brc-table">
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Description</th>
+                <th>Reference</th>
+                <th>Check No.</th>
+                <th>Debit</th>
+                <th>Credit</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {statementLines.length === 0 ? (
+                <tr>
+                  <td colSpan="7" className="brc-empty">
+                    No statement lines yet. Import a bank statement above.
+                  </td>
+                </tr>
+              ) : (
+                statementLines.map((line) => (
+                  <tr key={line.id}>
+                    <td>{line.txnDate}</td>
+                    <td>{line.description}</td>
+                    <td>{line.referenceNo}</td>
+                    <td>{line.checkNo}</td>
+                    <td className="amount">₱ {formatMoney(line.debit)}</td>
+                    <td className="amount">₱ {formatMoney(line.credit)}</td>
+                    <td>{line.matchStatus}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       <div className="brc-card">
         <h2>Reconciliation Workflow</h2>
         <p style={{ color: "#64748b" }}>
-          Statement import, matching, adjustments, and finalization are being rolled out
-          in upcoming phases of this module. This session's balances (
+          Matching, adjustments, and finalization are being rolled out in upcoming phases
+          of this module. This session's statement balances (
           <strong>₱ {formatMoney(session.statementBeginningBalance)}</strong> to{" "}
-          <strong>₱ {formatMoney(session.statementEndingBalance)}</strong>) are recorded
-          and ready for those steps once available.
+          <strong>₱ {formatMoney(session.statementEndingBalance)}</strong>) are recorded and
+          ready for those steps once available.
         </p>
       </div>
     </div>

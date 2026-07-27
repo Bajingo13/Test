@@ -192,6 +192,35 @@
   font-weight: 700;
 }
 
+.brc-import-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 18px;
+  flex-wrap: wrap;
+}
+
+.brc-mapping-box {
+  background: #f8fafc;
+  border: 1px solid #dbe4f0;
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 18px;
+}
+
+.brc-mapping-box h3 {
+  margin-top: 0;
+}
+
+.brc-card h3 {
+  color: #0f172a;
+  margin: 18px 0 12px;
+}
+
+button.danger {
+  color: #dc2626;
+}
+
 @media (max-width: 900px) {
   .brc-header-card {
     flex-direction: column;

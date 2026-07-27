@@ -7,6 +7,9 @@ const cors = require("cors");
 const pool = require("./db");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
+const multer = require("multer");
+const { parse: parseCsv } = require("csv-parse/sync");
+const ExcelJS = require("exceljs");
 
 console.log("ENV FILE:", require("path").resolve(".env"));
 console.log("JWT_SECRET loaded:", Boolean(process.env.JWT_SECRET));
@@ -26,6 +29,21 @@ app.use(express.json());
 
 app.get("/health", (req, res) => {
   res.json({ status: "ok" });
+});
+
+// Bank statement uploads: kept in memory (never written to disk) and capped
+// at 10MB; only CSV/XLS/XLSX are accepted for the bank reconciliation import.
+const bankStatementUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname || "").toLowerCase();
+    if ([".csv", ".xls", ".xlsx"].includes(ext)) {
+      cb(null, true);
+    } else {
+      cb(new Error("Only .csv, .xls, or .xlsx files are supported"));
+    }
+  },
 });
 
 
@@ -4082,8 +4100,8 @@ app.get("/api/audit-logs", authenticateToken, async (req, res) => {
 });
 
 // ===================== BANK RECONCILIATION API =====================
-// Session management only (Phase 3). Import/matching/adjustments/finalize
-// are handled by later phases and their own route groups.
+// Session management (Phase 3) and statement import (Phase 4). Matching/
+// adjustments/finalize are handled by later phases and their own routes.
 
 const BANK_RECON_SESSION_SELECT = `
   SELECT
@@ -4331,6 +4349,476 @@ app.patch("/api/bank-recon/sessions/:id", authenticateToken, async (req, res) =>
     await conn.rollback();
     console.error("UPDATE BANK RECON SESSION ERROR:", err);
     res.status(500).json({ message: "Failed to update reconciliation session" });
+  } finally {
+    conn.release();
+  }
+});
+
+// ---- Statement import (Phase 4) ----
+
+function handleUpload(uploadMiddleware) {
+  return (req, res, next) => {
+    uploadMiddleware(req, res, (err) => {
+      if (err) {
+        return res.status(400).json({ message: err.message || "File upload failed" });
+      }
+      next();
+    });
+  };
+}
+
+const BANK_STMT_FIELD_ALIASES = {
+  date: ["date", "transaction date", "txn date", "posting date", "value date", "trans date"],
+  description: ["description", "particulars", "details", "narrative", "transaction description", "remarks"],
+  referenceNo: ["reference", "reference no", "reference no.", "ref no", "ref no.", "ref#", "ref #", "transaction ref"],
+  checkNo: ["check no", "check no.", "cheque no", "cheque no.", "check number", "chk no", "check #"],
+  debit: ["debit", "withdrawal", "withdrawals", "dr", "money out", "debit amount", "out"],
+  credit: ["credit", "deposit", "deposits", "cr", "money in", "credit amount", "in"],
+  amount: ["amount", "transaction amount", "value"],
+  runningBalance: ["balance", "running balance", "closing balance", "ending balance"],
+};
+
+function normalizeHeaderKey(header) {
+  return String(header || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function resolveColumnMapping(headers, explicitMapping) {
+  const normalizedHeaders = headers.map((h) => normalizeHeaderKey(h));
+  const mapping = {};
+
+  for (const field of Object.keys(BANK_STMT_FIELD_ALIASES)) {
+    if (explicitMapping && explicitMapping[field]) {
+      const idx = headers.findIndex((h) => String(h) === String(explicitMapping[field]));
+      if (idx !== -1) {
+        mapping[field] = idx;
+        continue;
+      }
+    }
+
+    const aliasIdx = normalizedHeaders.findIndex((h) =>
+      BANK_STMT_FIELD_ALIASES[field].includes(h)
+    );
+    if (aliasIdx !== -1) {
+      mapping[field] = aliasIdx;
+    }
+  }
+
+  return mapping;
+}
+
+// Deliberately avoids `date.toISOString()` for anything derived from a
+// local/ambiguous string - `new Date(nonIsoString)` parses in the server's
+// local timezone, so converting the result back via UTC getters silently
+// shifts the calendar day whenever local time is ahead of UTC (e.g. UTC+8).
+// Each branch below reads the calendar date back out the same way it went
+// in (UTC in, UTC out; local in, local out) so the day never drifts.
+function parseStatementDate(value) {
+  if (value === undefined || value === null || value === "") return null;
+
+  if (value instanceof Date && !isNaN(value)) {
+    // exceljs date cells are UTC-midnight-anchored (Excel dates carry no
+    // timezone of their own), so read them back out via UTC getters.
+    const y = value.getUTCFullYear();
+    const m = String(value.getUTCMonth() + 1).padStart(2, "0");
+    const d = String(value.getUTCDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  }
+
+  const str = String(value).trim();
+  if (!str) return null;
+
+  const isoMatch = str.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (isoMatch) {
+    const [, y, m, d] = isoMatch;
+    return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+  }
+
+  const slashMatch = str.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$/);
+  if (slashMatch) {
+    const [, a, b, yearRaw] = slashMatch;
+    const year = yearRaw.length === 2 ? `20${yearRaw}` : yearRaw;
+    const month = String(a).padStart(2, "0");
+    const day = String(b).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+
+  if (/\d{4}/.test(str)) {
+    const native = new Date(str);
+    if (!isNaN(native)) {
+      const y = native.getFullYear();
+      const m = String(native.getMonth() + 1).padStart(2, "0");
+      const d = String(native.getDate()).padStart(2, "0");
+      return `${y}-${m}-${d}`;
+    }
+  }
+
+  return null;
+}
+
+function parseStatementAmount(value) {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value === "number") return value;
+
+  let str = String(value).trim();
+  if (!str) return null;
+
+  const isNegativeParens = /^\(.*\)$/.test(str);
+  str = str.replace(/[₱PHPphp,\s()]/g, "");
+
+  if (str === "" || str === "-") return null;
+
+  let num = Number(str);
+  if (isNaN(num)) return null;
+
+  if (isNegativeParens) num = -Math.abs(num);
+
+  return num;
+}
+
+function buildStatementLine(rowValues, mapping) {
+  const get = (field) =>
+    mapping[field] !== undefined ? rowValues[mapping[field]] : undefined;
+
+  const txnDate = parseStatementDate(get("date"));
+  const description = get("description") != null ? String(get("description")).trim() : "";
+  const referenceNo = get("referenceNo") != null ? String(get("referenceNo")).trim() : "";
+  const checkNo = get("checkNo") != null ? String(get("checkNo")).trim() : "";
+
+  let debit = mapping.debit !== undefined ? parseStatementAmount(get("debit")) : null;
+  let credit = mapping.credit !== undefined ? parseStatementAmount(get("credit")) : null;
+
+  if (mapping.debit === undefined && mapping.credit === undefined && mapping.amount !== undefined) {
+    const amt = parseStatementAmount(get("amount"));
+    if (amt !== null) {
+      if (amt < 0) {
+        debit = Math.abs(amt);
+        credit = 0;
+      } else {
+        debit = 0;
+        credit = amt;
+      }
+    }
+  }
+
+  const runningBalance =
+    mapping.runningBalance !== undefined ? parseStatementAmount(get("runningBalance")) : null;
+
+  return {
+    txnDate,
+    description,
+    referenceNo,
+    checkNo,
+    debit: debit || 0,
+    credit: credit || 0,
+    runningBalance,
+  };
+}
+
+function unwrapCellValue(value) {
+  if (value && typeof value === "object") {
+    if (value instanceof Date) return value;
+    if ("result" in value) return value.result;
+    if ("richText" in value) return value.richText.map((t) => t.text).join("");
+    if ("text" in value) return value.text;
+  }
+  return value;
+}
+
+async function extractRowsFromXlsx(buffer) {
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(buffer);
+  const worksheet = workbook.worksheets[0];
+
+  if (!worksheet) return { headers: [], dataRows: [] };
+
+  const allRows = [];
+
+  worksheet.eachRow({ includeEmpty: false }, (row) => {
+    const values = row.values.slice(1).map(unwrapCellValue);
+    allRows.push(values);
+  });
+
+  const headers = (allRows[0] || []).map((h) => (h == null ? "" : String(h)));
+  const dataRows = allRows.slice(1);
+
+  return { headers, dataRows };
+}
+
+app.post(
+  "/api/bank-recon/sessions/:id/import",
+  authenticateToken,
+  handleUpload(bankStatementUpload.single("file")),
+  async (req, res) => {
+    const conn = await pool.getConnection();
+
+    try {
+      const { id } = req.params;
+
+      if (!req.file) {
+        return res.status(400).json({ message: "No file uploaded" });
+      }
+
+      const [sessionRows] = await conn.execute(
+        "SELECT id, status FROM bank_recon_sessions WHERE id = ?",
+        [id]
+      );
+
+      if (sessionRows.length === 0) {
+        return res.status(404).json({ message: "Reconciliation session not found" });
+      }
+      if (sessionRows[0].status === "FINALIZED") {
+        return res.status(400).json({ message: "Cannot import into a finalized session" });
+      }
+
+      const ext = path.extname(req.file.originalname || "").toLowerCase();
+      const fileType = ext === ".csv" ? "CSV" : "XLSX";
+
+      let headers = [];
+      let dataRows = [];
+
+      if (fileType === "CSV") {
+        const records = parseCsv(req.file.buffer, {
+          columns: false,
+          skip_empty_lines: true,
+          trim: true,
+          relax_column_count: true,
+        });
+        headers = records[0] || [];
+        dataRows = records.slice(1);
+      } else {
+        const extracted = await extractRowsFromXlsx(req.file.buffer);
+        headers = extracted.headers;
+        dataRows = extracted.dataRows;
+      }
+
+      if (headers.length === 0) {
+        return res.status(400).json({ message: "The file appears to be empty" });
+      }
+
+      let explicitMapping = null;
+      if (req.body.columnMapping) {
+        try {
+          explicitMapping = JSON.parse(req.body.columnMapping);
+        } catch {
+          explicitMapping = null;
+        }
+      }
+
+      const mapping = resolveColumnMapping(headers, explicitMapping);
+
+      if (mapping.date === undefined) {
+        return res.status(400).json({
+          message: "Could not detect a date column. Please provide columnMapping.",
+          headers,
+        });
+      }
+      if (mapping.debit === undefined && mapping.credit === undefined && mapping.amount === undefined) {
+        return res.status(400).json({
+          message: "Could not detect debit/credit or amount columns. Please provide columnMapping.",
+          headers,
+        });
+      }
+
+      const parsedLines = [];
+      const skippedRows = [];
+
+      dataRows.forEach((row, idx) => {
+        const line = buildStatementLine(row, mapping);
+
+        if (!line.txnDate) {
+          skippedRows.push({ row: idx + 2, reason: "Unrecognized or missing date" });
+          return;
+        }
+        if (!line.debit && !line.credit) {
+          skippedRows.push({ row: idx + 2, reason: "No debit/credit/amount value" });
+          return;
+        }
+
+        parsedLines.push(line);
+      });
+
+      if (parsedLines.length === 0) {
+        return res.status(400).json({
+          message: "No valid statement lines could be parsed from the file",
+          skippedRows,
+        });
+      }
+
+      await conn.beginTransaction();
+
+      const [batchResult] = await conn.execute(
+        `INSERT INTO bank_recon_import_batches(session_id, file_name, file_type, row_count, column_mapping, status, imported_by)
+         VALUES(?,?,?,?,?,?,?)`,
+        [
+          id,
+          req.file.originalname || "",
+          fileType,
+          parsedLines.length,
+          JSON.stringify({ headers, mapping }),
+          "IMPORTED",
+          req.user?.id || null,
+        ]
+      );
+
+      const batchId = batchResult.insertId;
+
+      for (const line of parsedLines) {
+        await conn.execute(
+          `INSERT INTO bank_recon_statement_lines(
+            batch_id, session_id, txn_date, description, reference_no, check_no, debit, credit, running_balance, match_status
+          ) VALUES(?,?,?,?,?,?,?,?,?, 'UNMATCHED')`,
+          [
+            batchId,
+            id,
+            line.txnDate,
+            line.description || "",
+            line.referenceNo || "",
+            line.checkNo || "",
+            line.debit || 0,
+            line.credit || 0,
+            line.runningBalance,
+          ]
+        );
+      }
+
+      await logAudit(conn, {
+        module: "BANK_RECON",
+        entityType: "IMPORT_BATCH",
+        entityId: batchId,
+        action: "IMPORT",
+        description: `Imported ${parsedLines.length} statement line(s) from ${req.file.originalname} into session #${id}`,
+        afterData: {
+          fileName: req.file.originalname,
+          fileType,
+          rowCount: parsedLines.length,
+          skippedCount: skippedRows.length,
+        },
+        user: req.user,
+      });
+
+      await conn.commit();
+
+      res.json({
+        success: true,
+        batchId,
+        rowCount: parsedLines.length,
+        skippedRows,
+        message: `Imported ${parsedLines.length} statement line(s)${
+          skippedRows.length ? `, ${skippedRows.length} row(s) skipped` : ""
+        }`,
+      });
+    } catch (err) {
+      await conn.rollback();
+      console.error("IMPORT BANK STATEMENT ERROR:", err);
+      res.status(500).json({ message: err.message || "Failed to import bank statement" });
+    } finally {
+      conn.release();
+    }
+  }
+);
+
+app.get("/api/bank-recon/sessions/:id/import-batches", authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [rows] = await pool.execute(
+      `SELECT
+        id,
+        session_id AS sessionId,
+        file_name AS fileName,
+        file_type AS fileType,
+        row_count AS rowCount,
+        column_mapping AS columnMapping,
+        status,
+        imported_by AS importedBy,
+        imported_at AS importedAt
+      FROM bank_recon_import_batches
+      WHERE session_id = ?
+      ORDER BY id DESC`,
+      [id]
+    );
+
+    res.json(rows);
+  } catch (err) {
+    console.error("GET IMPORT BATCHES ERROR:", err);
+    res.status(500).json({ message: "Failed to load import batches" });
+  }
+});
+
+app.get("/api/bank-recon/sessions/:id/statement-lines", authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [rows] = await pool.execute(
+      `SELECT
+        id,
+        batch_id AS batchId,
+        DATE_FORMAT(txn_date, '%Y-%m-%d') AS txnDate,
+        description,
+        reference_no AS referenceNo,
+        check_no AS checkNo,
+        debit,
+        credit,
+        running_balance AS runningBalance,
+        match_status AS matchStatus
+      FROM bank_recon_statement_lines
+      WHERE session_id = ?
+      ORDER BY txn_date ASC, id ASC`,
+      [id]
+    );
+
+    res.json(rows);
+  } catch (err) {
+    console.error("GET STATEMENT LINES ERROR:", err);
+    res.status(500).json({ message: "Failed to load statement lines" });
+  }
+});
+
+app.delete("/api/bank-recon/import-batches/:id", authenticateToken, async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const { id } = req.params;
+
+    const [existing] = await conn.execute(
+      "SELECT session_id, file_name, row_count FROM bank_recon_import_batches WHERE id = ?",
+      [id]
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json({ message: "Import batch not found" });
+    }
+
+    const [sessionRows] = await conn.execute(
+      "SELECT status FROM bank_recon_sessions WHERE id = ?",
+      [existing[0].session_id]
+    );
+
+    if (sessionRows[0]?.status === "FINALIZED") {
+      return res.status(400).json({ message: "Cannot modify a finalized session" });
+    }
+
+    await conn.beginTransaction();
+
+    await conn.execute("DELETE FROM bank_recon_import_batches WHERE id = ?", [id]);
+
+    await logAudit(conn, {
+      module: "BANK_RECON",
+      entityType: "IMPORT_BATCH",
+      entityId: Number(id),
+      action: "DELETE",
+      description: `Import batch "${existing[0].file_name}" (${existing[0].row_count} rows) deleted from session #${existing[0].session_id}`,
+      beforeData: existing[0],
+      user: req.user,
+    });
+
+    await conn.commit();
+
+    res.json({ success: true, message: "Import batch deleted" });
+  } catch (err) {
+    await conn.rollback();
+    console.error("DELETE IMPORT BATCH ERROR:", err);
+    res.status(500).json({ message: "Failed to delete import batch" });
   } finally {
     conn.release();
   }
