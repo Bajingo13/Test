@@ -1,5 +1,6 @@
-import { Fragment, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import BankReconMatchModal from "../../components/BankReconMatchModal.jsx";
 import "./BankReconciliation.css";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
@@ -48,9 +49,12 @@ export default function BankReconciliationWorkspace() {
   const [mappingSelections, setMappingSelections] = useState({});
 
   const [runningMatching, setRunningMatching] = useState(false);
-  const [expandedLineId, setExpandedLineId] = useState(null);
-  const [candidatesByLine, setCandidatesByLine] = useState({});
+  const [bulkConfirming, setBulkConfirming] = useState(false);
   const [bookItems, setBookItems] = useState([]);
+
+  const [modalLine, setModalLine] = useState(null);
+  const [modalCandidates, setModalCandidates] = useState([]);
+  const [modalBusy, setModalBusy] = useState(false);
 
   useEffect(() => {
     loadSession();
@@ -98,8 +102,7 @@ export default function BankReconciliationWorkspace() {
       }
 
       alert(data.message);
-      setExpandedLineId(null);
-      setCandidatesByLine({});
+      closeModal();
       await loadStatementLines();
       await loadBookItems();
     } catch (err) {
@@ -110,18 +113,47 @@ export default function BankReconciliationWorkspace() {
     }
   }
 
-  async function toggleCandidates(lineId) {
-    if (expandedLineId === lineId) {
-      setExpandedLineId(null);
-      return;
-    }
-
-    setExpandedLineId(lineId);
-
-    if (candidatesByLine[lineId]) return;
+  async function bulkConfirmExact() {
+    setBulkConfirming(true);
 
     try {
-      const res = await fetch(`${API_BASE}/api/bank-recon/statement-lines/${lineId}/candidates`, {
+      const res = await fetch(`${API_BASE}/api/bank-recon/matches/bulk-confirm`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...authHeaders(),
+        },
+        credentials: "include",
+        body: JSON.stringify({ sessionId: id }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        if (handleAuthError(res.status)) return;
+        alert(data.message || "Failed to bulk-confirm matches.");
+        return;
+      }
+
+      alert(data.message);
+      await loadStatementLines();
+      await loadBookItems();
+    } catch (err) {
+      console.error("BULK CONFIRM ERROR:", err);
+      alert("Unable to connect to server.");
+    } finally {
+      setBulkConfirming(false);
+    }
+  }
+
+  async function openModal(line) {
+    setModalLine(line);
+    setModalCandidates([]);
+
+    if (line.matchStatus !== "SUGGESTED") return;
+
+    try {
+      const res = await fetch(`${API_BASE}/api/bank-recon/statement-lines/${line.id}/candidates`, {
         credentials: "include",
         headers: authHeaders(),
       });
@@ -133,9 +165,151 @@ export default function BankReconciliationWorkspace() {
         return;
       }
 
-      setCandidatesByLine((prev) => ({ ...prev, [lineId]: data }));
+      setModalCandidates(data);
     } catch (err) {
       console.error("LOAD MATCH CANDIDATES ERROR:", err);
+    }
+  }
+
+  function closeModal() {
+    setModalLine(null);
+    setModalCandidates([]);
+  }
+
+  async function confirmCandidate(matchId) {
+    setModalBusy(true);
+
+    try {
+      const res = await fetch(`${API_BASE}/api/bank-recon/matches/${matchId}/confirm`, {
+        method: "POST",
+        credentials: "include",
+        headers: authHeaders(),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        if (handleAuthError(res.status)) return;
+        alert(data.message || "Failed to confirm match.");
+        return;
+      }
+
+      closeModal();
+      await loadStatementLines();
+      await loadBookItems();
+    } catch (err) {
+      console.error("CONFIRM MATCH ERROR:", err);
+      alert("Unable to connect to server.");
+    } finally {
+      setModalBusy(false);
+    }
+  }
+
+  async function manualMatch(bookItem) {
+    if (!modalLine) return;
+
+    const amount =
+      Number(modalLine.debit) > 0 ? Number(modalLine.debit) : Number(modalLine.credit);
+
+    if (!confirm(`Match this statement line to ${bookItem.sourceType} ${bookItem.voucherNo}?`)) {
+      return;
+    }
+
+    setModalBusy(true);
+
+    try {
+      const res = await fetch(`${API_BASE}/api/bank-recon/matches`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...authHeaders(),
+        },
+        credentials: "include",
+        body: JSON.stringify({
+          statementLineId: modalLine.id,
+          bookSourceType: bookItem.sourceType,
+          bookSourceId: bookItem.sourceId,
+          bookLineId: bookItem.lineId || null,
+          amount,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        if (handleAuthError(res.status)) return;
+        alert(data.message || "Failed to create match.");
+        return;
+      }
+
+      closeModal();
+      await loadStatementLines();
+      await loadBookItems();
+    } catch (err) {
+      console.error("MANUAL MATCH ERROR:", err);
+      alert("Unable to connect to server.");
+    } finally {
+      setModalBusy(false);
+    }
+  }
+
+  async function ignoreLine() {
+    if (!modalLine) return;
+
+    setModalBusy(true);
+
+    try {
+      const res = await fetch(
+        `${API_BASE}/api/bank-recon/statement-lines/${modalLine.id}/ignore`,
+        {
+          method: "POST",
+          credentials: "include",
+          headers: authHeaders(),
+        }
+      );
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        if (handleAuthError(res.status)) return;
+        alert(data.message || "Failed to update statement line.");
+        return;
+      }
+
+      closeModal();
+      await loadStatementLines();
+    } catch (err) {
+      console.error("IGNORE LINE ERROR:", err);
+      alert("Unable to connect to server.");
+    } finally {
+      setModalBusy(false);
+    }
+  }
+
+  async function unmatchLine(line) {
+    if (!line.confirmedMatchId) return;
+    if (!confirm("Unmatch this statement line? It will return to Unmatched status.")) return;
+
+    try {
+      const res = await fetch(`${API_BASE}/api/bank-recon/matches/${line.confirmedMatchId}`, {
+        method: "DELETE",
+        credentials: "include",
+        headers: authHeaders(),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        if (handleAuthError(res.status)) return;
+        alert(data.message || "Failed to unmatch.");
+        return;
+      }
+
+      await loadStatementLines();
+      await loadBookItems();
+    } catch (err) {
+      console.error("UNMATCH ERROR:", err);
+      alert("Unable to connect to server.");
     }
   }
 
@@ -604,9 +778,14 @@ export default function BankReconciliationWorkspace() {
         <div className="brc-import-row" style={{ justifyContent: "space-between" }}>
           <h2 style={{ margin: 0 }}>Statement Lines ({statementLines.length})</h2>
           {!isFinalized && (
-            <button onClick={runMatching} className="brc-btn primary" disabled={runningMatching}>
-              {runningMatching ? "Running Matching..." : "Run Matching"}
-            </button>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button onClick={bulkConfirmExact} className="brc-btn" disabled={bulkConfirming}>
+                {bulkConfirming ? "Confirming..." : "Confirm All Exact"}
+              </button>
+              <button onClick={runMatching} className="brc-btn primary" disabled={runningMatching}>
+                {runningMatching ? "Running Matching..." : "Run Matching"}
+              </button>
+            </div>
           )}
         </div>
 
@@ -633,76 +812,53 @@ export default function BankReconciliationWorkspace() {
                 </tr>
               ) : (
                 statementLines.map((line) => (
-                  <Fragment key={line.id}>
-                    <tr>
-                      <td>{line.txnDate}</td>
-                      <td>{line.description}</td>
-                      <td>{line.referenceNo}</td>
-                      <td>{line.checkNo}</td>
-                      <td className="amount">₱ {formatMoney(line.debit)}</td>
-                      <td className="amount">₱ {formatMoney(line.credit)}</td>
-                      <td>
-                        <span className={`brc-match-badge ${line.matchStatus.toLowerCase()}`}>
-                          {line.matchStatus}
-                        </span>
-                      </td>
-                      <td>
-                        {line.matchStatus === "SUGGESTED" && (
-                          <button onClick={() => toggleCandidates(line.id)}>
-                            {expandedLineId === line.id ? "Hide" : "View"} Matches
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                    {expandedLineId === line.id && (
-                      <tr>
-                        <td colSpan="8" style={{ background: "#f8fafc" }}>
-                          {!candidatesByLine[line.id] ? (
-                            "Loading candidates..."
-                          ) : candidatesByLine[line.id].length === 0 ? (
-                            "No candidates found."
-                          ) : (
-                            <table className="brc-table" style={{ minWidth: "auto" }}>
-                              <thead>
-                                <tr>
-                                  <th>Type</th>
-                                  <th>Source</th>
-                                  <th>Voucher No.</th>
-                                  <th>Payee/Customer</th>
-                                  <th>Date</th>
-                                  <th>Amount</th>
-                                  <th>Score</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {candidatesByLine[line.id].map((c) => (
-                                  <tr key={c.id}>
-                                    <td>{c.matchType}</td>
-                                    <td>{c.bookSourceType}</td>
-                                    <td>{c.detail?.voucherNo}</td>
-                                    <td>
-                                      {c.detail?.payeeName ||
-                                        c.detail?.customerName ||
-                                        c.detail?.preparedFor}
-                                    </td>
-                                    <td>{c.detail?.txnDate}</td>
-                                    <td className="amount">₱ {formatMoney(c.amount)}</td>
-                                    <td>{c.confidenceScore}</td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          )}
-                        </td>
-                      </tr>
-                    )}
-                  </Fragment>
+                  <tr key={line.id}>
+                    <td>{line.txnDate}</td>
+                    <td>{line.description}</td>
+                    <td>{line.referenceNo}</td>
+                    <td>{line.checkNo}</td>
+                    <td className="amount">₱ {formatMoney(line.debit)}</td>
+                    <td className="amount">₱ {formatMoney(line.credit)}</td>
+                    <td>
+                      <span className={`brc-match-badge ${line.matchStatus.toLowerCase()}`}>
+                        {line.matchStatus}
+                      </span>
+                    </td>
+                    <td>
+                      {!isFinalized && (line.matchStatus === "SUGGESTED" || line.matchStatus === "UNMATCHED") && (
+                        <button onClick={() => openModal(line)}>
+                          {line.matchStatus === "SUGGESTED" ? "Review Matches" : "Find Match"}
+                        </button>
+                      )}
+                      {!isFinalized && line.matchStatus === "MATCHED" && (
+                        <button onClick={() => unmatchLine(line)} className="danger">
+                          Unmatch
+                        </button>
+                      )}
+                      {!isFinalized && line.matchStatus === "IGNORED" && (
+                        <button onClick={() => openModal(line)}>Un-ignore</button>
+                      )}
+                    </td>
+                  </tr>
                 ))
               )}
             </tbody>
           </table>
         </div>
       </div>
+
+      {modalLine && (
+        <BankReconMatchModal
+          statementLine={modalLine}
+          candidates={modalCandidates}
+          bookItems={bookItems}
+          busy={modalBusy}
+          onClose={closeModal}
+          onConfirmCandidate={confirmCandidate}
+          onManualMatch={manualMatch}
+          onIgnore={ignoreLine}
+        />
+      )}
 
       <div className="brc-card">
         <h2>Unmatched Book Items ({bookItems.length})</h2>

@@ -259,3 +259,71 @@ button.danger {
     grid-template-columns: 1fr;
   }
 }
+
+.brc-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 20px;
+}
+
+.brc-modal {
+  background: #fff;
+  border-radius: 16px;
+  padding: 24px;
+  width: 100%;
+  max-width: 900px;
+  max-height: 85vh;
+  overflow-y: auto;
+  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.3);
+}
+
+.brc-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.brc-modal-header h2 {
+  margin: 0;
+  color: #0f172a;
+}
+
+.brc-modal-header p {
+  margin: 6px 0 0;
+  color: #64748b;
+}
+
+.brc-modal-close {
+  border: none;
+  background: transparent;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  color: #64748b;
+  padding: 0;
+}
+
+.brc-modal-section {
+  margin-bottom: 20px;
+}
+
+.brc-modal-section h3 {
+  margin: 0 0 10px;
+  color: #0f172a;
+}
+
+.brc-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 10px;
+  border-top: 1px solid #edf2f7;
+  padding-top: 16px;
+}

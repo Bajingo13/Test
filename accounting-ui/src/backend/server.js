@@ -4752,19 +4752,22 @@ app.get("/api/bank-recon/sessions/:id/statement-lines", authenticateToken, async
 
     const [rows] = await pool.execute(
       `SELECT
-        id,
-        batch_id AS batchId,
-        DATE_FORMAT(txn_date, '%Y-%m-%d') AS txnDate,
-        description,
-        reference_no AS referenceNo,
-        check_no AS checkNo,
-        debit,
-        credit,
-        running_balance AS runningBalance,
-        match_status AS matchStatus
-      FROM bank_recon_statement_lines
-      WHERE session_id = ?
-      ORDER BY txn_date ASC, id ASC`,
+        sl.id,
+        sl.batch_id AS batchId,
+        DATE_FORMAT(sl.txn_date, '%Y-%m-%d') AS txnDate,
+        sl.description,
+        sl.reference_no AS referenceNo,
+        sl.check_no AS checkNo,
+        sl.debit,
+        sl.credit,
+        sl.running_balance AS runningBalance,
+        sl.match_status AS matchStatus,
+        m.id AS confirmedMatchId
+      FROM bank_recon_statement_lines sl
+      LEFT JOIN bank_recon_matches m
+        ON m.statement_line_id = sl.id AND m.status = 'CONFIRMED'
+      WHERE sl.session_id = ?
+      ORDER BY sl.txn_date ASC, sl.id ASC`,
       [id]
     );
 
@@ -5331,6 +5334,378 @@ app.get("/api/bank-recon/sessions/:id/book-items", authenticateToken, async (req
   } catch (err) {
     console.error("GET BOOK ITEMS ERROR:", err);
     res.status(500).json({ message: "Failed to load book items" });
+  } finally {
+    conn.release();
+  }
+});
+
+// ---- Match confirm/unmatch/ignore (Phase 6) ----
+// 1:1 matches only for now (many-to-one is explicitly out of scope for this
+// plan). Confirming a candidate auto-rejects its sibling PENDING candidates
+// for the same statement line, since only one can end up CONFIRMED.
+
+app.post("/api/bank-recon/matches/:id/confirm", authenticateToken, async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const { id } = req.params;
+
+    const [rows] = await conn.execute(
+      `SELECT m.*, s.status AS sessionStatus
+       FROM bank_recon_matches m
+       JOIN bank_recon_sessions s ON s.id = m.session_id
+       WHERE m.id = ?`,
+      [id]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ message: "Match not found" });
+    }
+
+    const match = rows[0];
+
+    if (match.sessionStatus === "FINALIZED") {
+      return res.status(400).json({ message: "Cannot modify a finalized session" });
+    }
+    if (match.status !== "PENDING") {
+      return res.status(400).json({ message: `Match is already ${match.status}` });
+    }
+
+    const userId = req.user?.id || null;
+
+    await conn.beginTransaction();
+
+    await conn.execute(
+      "UPDATE bank_recon_matches SET status = 'CONFIRMED', matched_by = ?, matched_at = NOW() WHERE id = ?",
+      [userId, id]
+    );
+
+    await conn.execute(
+      `UPDATE bank_recon_matches
+       SET status = 'REJECTED', unmatched_by = ?, unmatched_at = NOW()
+       WHERE statement_line_id = ? AND status = 'PENDING' AND id != ?`,
+      [userId, match.statement_line_id, id]
+    );
+
+    await conn.execute(
+      "UPDATE bank_recon_statement_lines SET match_status = 'MATCHED' WHERE id = ?",
+      [match.statement_line_id]
+    );
+
+    await logAudit(conn, {
+      module: "BANK_RECON",
+      entityType: "MATCH",
+      entityId: Number(id),
+      action: "MATCH",
+      description: `Confirmed ${match.match_type} match: statement line #${match.statement_line_id} <-> ${match.book_source_type} #${match.book_source_id}`,
+      beforeData: { status: match.status },
+      afterData: { status: "CONFIRMED" },
+      user: req.user,
+    });
+
+    await conn.commit();
+
+    res.json({ success: true, message: "Match confirmed" });
+  } catch (err) {
+    await conn.rollback();
+    console.error("CONFIRM MATCH ERROR:", err);
+    res.status(500).json({ message: "Failed to confirm match" });
+  } finally {
+    conn.release();
+  }
+});
+
+app.post("/api/bank-recon/matches/bulk-confirm", authenticateToken, async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const { sessionId } = req.body;
+
+    if (!sessionId) {
+      return res.status(400).json({ message: "sessionId is required" });
+    }
+
+    const [sessionRows] = await conn.execute(
+      "SELECT status FROM bank_recon_sessions WHERE id = ?",
+      [sessionId]
+    );
+
+    if (sessionRows.length === 0) {
+      return res.status(404).json({ message: "Reconciliation session not found" });
+    }
+    if (sessionRows[0].status === "FINALIZED") {
+      return res.status(400).json({ message: "Cannot modify a finalized session" });
+    }
+
+    const [exactMatches] = await conn.execute(
+      "SELECT id, statement_line_id AS statementLineId FROM bank_recon_matches WHERE session_id = ? AND status = 'PENDING' AND match_type = 'EXACT'",
+      [sessionId]
+    );
+
+    const userId = req.user?.id || null;
+
+    await conn.beginTransaction();
+
+    for (const m of exactMatches) {
+      await conn.execute(
+        "UPDATE bank_recon_matches SET status = 'CONFIRMED', matched_by = ?, matched_at = NOW() WHERE id = ?",
+        [userId, m.id]
+      );
+      await conn.execute(
+        `UPDATE bank_recon_matches
+         SET status = 'REJECTED', unmatched_by = ?, unmatched_at = NOW()
+         WHERE statement_line_id = ? AND status = 'PENDING' AND id != ?`,
+        [userId, m.statementLineId, m.id]
+      );
+      await conn.execute(
+        "UPDATE bank_recon_statement_lines SET match_status = 'MATCHED' WHERE id = ?",
+        [m.statementLineId]
+      );
+    }
+
+    await logAudit(conn, {
+      module: "BANK_RECON",
+      entityType: "SESSION",
+      entityId: Number(sessionId),
+      action: "MATCH",
+      description: `Bulk-confirmed ${exactMatches.length} exact match(es) in session #${sessionId}`,
+      afterData: { confirmedCount: exactMatches.length },
+      user: req.user,
+    });
+
+    await conn.commit();
+
+    res.json({
+      success: true,
+      confirmedCount: exactMatches.length,
+      message: `Confirmed ${exactMatches.length} exact match(es)`,
+    });
+  } catch (err) {
+    await conn.rollback();
+    console.error("BULK CONFIRM MATCHES ERROR:", err);
+    res.status(500).json({ message: "Failed to bulk-confirm matches" });
+  } finally {
+    conn.release();
+  }
+});
+
+app.post("/api/bank-recon/matches", authenticateToken, async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const { statementLineId, bookSourceType, bookSourceId, bookLineId, amount } = req.body;
+
+    if (!statementLineId || !bookSourceType || !bookSourceId) {
+      return res
+        .status(400)
+        .json({ message: "statementLineId, bookSourceType, and bookSourceId are required" });
+    }
+    if (!["CV", "OR", "JV"].includes(bookSourceType)) {
+      return res.status(400).json({ message: "Invalid bookSourceType" });
+    }
+
+    const [lineRows] = await conn.execute(
+      `SELECT sl.id, sl.session_id AS sessionId, sl.match_status AS matchStatus, s.status AS sessionStatus
+       FROM bank_recon_statement_lines sl
+       JOIN bank_recon_sessions s ON s.id = sl.session_id
+       WHERE sl.id = ?`,
+      [statementLineId]
+    );
+
+    if (lineRows.length === 0) {
+      return res.status(404).json({ message: "Statement line not found" });
+    }
+
+    const line = lineRows[0];
+
+    if (line.sessionStatus === "FINALIZED") {
+      return res.status(400).json({ message: "Cannot modify a finalized session" });
+    }
+    if (line.matchStatus === "MATCHED") {
+      return res.status(400).json({ message: "Statement line is already matched" });
+    }
+
+    const userId = req.user?.id || null;
+
+    await conn.beginTransaction();
+
+    await conn.execute(
+      `UPDATE bank_recon_matches
+       SET status = 'REJECTED', unmatched_by = ?, unmatched_at = NOW()
+       WHERE statement_line_id = ? AND status = 'PENDING'`,
+      [userId, statementLineId]
+    );
+
+    const [result] = await conn.execute(
+      `INSERT INTO bank_recon_matches(
+        session_id, statement_line_id, book_source_type, book_source_id, book_line_id,
+        match_type, confidence_score, status, amount, created_by, matched_by, matched_at
+      ) VALUES (?,?,?,?,?, 'MANUAL', NULL, 'CONFIRMED', ?, ?, ?, NOW())`,
+      [
+        line.sessionId,
+        statementLineId,
+        bookSourceType,
+        bookSourceId,
+        bookLineId || null,
+        Number(amount) || 0,
+        userId,
+        userId,
+      ]
+    );
+
+    await conn.execute(
+      "UPDATE bank_recon_statement_lines SET match_status = 'MATCHED' WHERE id = ?",
+      [statementLineId]
+    );
+
+    await logAudit(conn, {
+      module: "BANK_RECON",
+      entityType: "MATCH",
+      entityId: result.insertId,
+      action: "MATCH",
+      description: `Manually matched statement line #${statementLineId} to ${bookSourceType} #${bookSourceId}`,
+      afterData: { bookSourceType, bookSourceId, bookLineId, amount },
+      user: req.user,
+    });
+
+    await conn.commit();
+
+    res.json({ success: true, id: result.insertId, message: "Match created" });
+  } catch (err) {
+    await conn.rollback();
+    console.error("CREATE MANUAL MATCH ERROR:", err);
+    res.status(500).json({ message: "Failed to create match" });
+  } finally {
+    conn.release();
+  }
+});
+
+app.delete("/api/bank-recon/matches/:id", authenticateToken, async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const { id } = req.params;
+
+    const [rows] = await conn.execute(
+      `SELECT m.*, s.status AS sessionStatus
+       FROM bank_recon_matches m
+       JOIN bank_recon_sessions s ON s.id = m.session_id
+       WHERE m.id = ?`,
+      [id]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ message: "Match not found" });
+    }
+
+    const match = rows[0];
+
+    if (match.sessionStatus === "FINALIZED") {
+      return res.status(400).json({ message: "Cannot modify a finalized session" });
+    }
+    if (match.status !== "CONFIRMED") {
+      return res.status(400).json({ message: "Only confirmed matches can be unmatched" });
+    }
+
+    const userId = req.user?.id || null;
+
+    await conn.beginTransaction();
+
+    await conn.execute(
+      "UPDATE bank_recon_matches SET status = 'REJECTED', unmatched_by = ?, unmatched_at = NOW() WHERE id = ?",
+      [userId, id]
+    );
+
+    await conn.execute(
+      "UPDATE bank_recon_statement_lines SET match_status = 'UNMATCHED' WHERE id = ?",
+      [match.statement_line_id]
+    );
+
+    await logAudit(conn, {
+      module: "BANK_RECON",
+      entityType: "MATCH",
+      entityId: Number(id),
+      action: "UNMATCH",
+      description: `Unmatched statement line #${match.statement_line_id} from ${match.book_source_type} #${match.book_source_id}`,
+      beforeData: { status: match.status },
+      afterData: { status: "REJECTED" },
+      user: req.user,
+    });
+
+    await conn.commit();
+
+    res.json({ success: true, message: "Match unmatched" });
+  } catch (err) {
+    await conn.rollback();
+    console.error("UNMATCH ERROR:", err);
+    res.status(500).json({ message: "Failed to unmatch" });
+  } finally {
+    conn.release();
+  }
+});
+
+app.post("/api/bank-recon/statement-lines/:id/ignore", authenticateToken, async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const { id } = req.params;
+
+    const [rows] = await conn.execute(
+      `SELECT sl.id, sl.match_status AS matchStatus, s.status AS sessionStatus
+       FROM bank_recon_statement_lines sl
+       JOIN bank_recon_sessions s ON s.id = sl.session_id
+       WHERE sl.id = ?`,
+      [id]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ message: "Statement line not found" });
+    }
+
+    const line = rows[0];
+
+    if (line.sessionStatus === "FINALIZED") {
+      return res.status(400).json({ message: "Cannot modify a finalized session" });
+    }
+    if (line.matchStatus === "MATCHED") {
+      return res
+        .status(400)
+        .json({ message: "Cannot ignore a matched line - unmatch it first" });
+    }
+
+    const nextStatus = line.matchStatus === "IGNORED" ? "UNMATCHED" : "IGNORED";
+
+    await conn.beginTransaction();
+
+    await conn.execute("UPDATE bank_recon_statement_lines SET match_status = ? WHERE id = ?", [
+      nextStatus,
+      id,
+    ]);
+
+    await logAudit(conn, {
+      module: "BANK_RECON",
+      entityType: "STATEMENT_LINE",
+      entityId: Number(id),
+      action: nextStatus === "IGNORED" ? "IGNORE" : "CONFIG_UPDATE",
+      description: `Statement line #${id} ${
+        nextStatus === "IGNORED" ? "marked as ignored" : "un-ignored"
+      }`,
+      beforeData: { matchStatus: line.matchStatus },
+      afterData: { matchStatus: nextStatus },
+      user: req.user,
+    });
+
+    await conn.commit();
+
+    res.json({
+      success: true,
+      status: nextStatus,
+      message: nextStatus === "IGNORED" ? "Line ignored" : "Line un-ignored",
+    });
+  } catch (err) {
+    await conn.rollback();
+    console.error("IGNORE STATEMENT LINE ERROR:", err);
+    res.status(500).json({ message: "Failed to update statement line" });
   } finally {
     conn.release();
   }
