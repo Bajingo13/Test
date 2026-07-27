@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import "./BankReconciliation.css";
 
@@ -47,11 +47,97 @@ export default function BankReconciliationWorkspace() {
   const [mappingHeaders, setMappingHeaders] = useState(null);
   const [mappingSelections, setMappingSelections] = useState({});
 
+  const [runningMatching, setRunningMatching] = useState(false);
+  const [expandedLineId, setExpandedLineId] = useState(null);
+  const [candidatesByLine, setCandidatesByLine] = useState({});
+  const [bookItems, setBookItems] = useState([]);
+
   useEffect(() => {
     loadSession();
     loadImportBatches();
     loadStatementLines();
+    loadBookItems();
   }, [id]);
+
+  async function loadBookItems() {
+    try {
+      const res = await fetch(`${API_BASE}/api/bank-recon/sessions/${id}/book-items`, {
+        credentials: "include",
+        headers: authHeaders(),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        if (handleAuthError(res.status)) return;
+        return;
+      }
+
+      setBookItems(data);
+    } catch (err) {
+      console.error("LOAD BOOK ITEMS ERROR:", err);
+    }
+  }
+
+  async function runMatching() {
+    setRunningMatching(true);
+
+    try {
+      const res = await fetch(`${API_BASE}/api/bank-recon/sessions/${id}/run-matching`, {
+        method: "POST",
+        credentials: "include",
+        headers: authHeaders(),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        if (handleAuthError(res.status)) return;
+        alert(data.message || "Failed to run matching.");
+        return;
+      }
+
+      alert(data.message);
+      setExpandedLineId(null);
+      setCandidatesByLine({});
+      await loadStatementLines();
+      await loadBookItems();
+    } catch (err) {
+      console.error("RUN MATCHING ERROR:", err);
+      alert("Unable to connect to server.");
+    } finally {
+      setRunningMatching(false);
+    }
+  }
+
+  async function toggleCandidates(lineId) {
+    if (expandedLineId === lineId) {
+      setExpandedLineId(null);
+      return;
+    }
+
+    setExpandedLineId(lineId);
+
+    if (candidatesByLine[lineId]) return;
+
+    try {
+      const res = await fetch(`${API_BASE}/api/bank-recon/statement-lines/${lineId}/candidates`, {
+        credentials: "include",
+        headers: authHeaders(),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        if (handleAuthError(res.status)) return;
+        return;
+      }
+
+      setCandidatesByLine((prev) => ({ ...prev, [lineId]: data }));
+    } catch (err) {
+      console.error("LOAD MATCH CANDIDATES ERROR:", err);
+    }
+  }
 
   async function loadImportBatches() {
     try {
@@ -515,7 +601,14 @@ export default function BankReconciliationWorkspace() {
       )}
 
       <div className="brc-card">
-        <h2>Statement Lines ({statementLines.length})</h2>
+        <div className="brc-import-row" style={{ justifyContent: "space-between" }}>
+          <h2 style={{ margin: 0 }}>Statement Lines ({statementLines.length})</h2>
+          {!isFinalized && (
+            <button onClick={runMatching} className="brc-btn primary" disabled={runningMatching}>
+              {runningMatching ? "Running Matching..." : "Run Matching"}
+            </button>
+          )}
+        </div>
 
         <div className="brc-table-wrap">
           <table className="brc-table">
@@ -528,25 +621,124 @@ export default function BankReconciliationWorkspace() {
                 <th>Debit</th>
                 <th>Credit</th>
                 <th>Status</th>
+                <th>Action</th>
               </tr>
             </thead>
             <tbody>
               {statementLines.length === 0 ? (
                 <tr>
-                  <td colSpan="7" className="brc-empty">
+                  <td colSpan="8" className="brc-empty">
                     No statement lines yet. Import a bank statement above.
                   </td>
                 </tr>
               ) : (
                 statementLines.map((line) => (
-                  <tr key={line.id}>
-                    <td>{line.txnDate}</td>
-                    <td>{line.description}</td>
-                    <td>{line.referenceNo}</td>
-                    <td>{line.checkNo}</td>
-                    <td className="amount">₱ {formatMoney(line.debit)}</td>
-                    <td className="amount">₱ {formatMoney(line.credit)}</td>
-                    <td>{line.matchStatus}</td>
+                  <Fragment key={line.id}>
+                    <tr>
+                      <td>{line.txnDate}</td>
+                      <td>{line.description}</td>
+                      <td>{line.referenceNo}</td>
+                      <td>{line.checkNo}</td>
+                      <td className="amount">₱ {formatMoney(line.debit)}</td>
+                      <td className="amount">₱ {formatMoney(line.credit)}</td>
+                      <td>
+                        <span className={`brc-match-badge ${line.matchStatus.toLowerCase()}`}>
+                          {line.matchStatus}
+                        </span>
+                      </td>
+                      <td>
+                        {line.matchStatus === "SUGGESTED" && (
+                          <button onClick={() => toggleCandidates(line.id)}>
+                            {expandedLineId === line.id ? "Hide" : "View"} Matches
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                    {expandedLineId === line.id && (
+                      <tr>
+                        <td colSpan="8" style={{ background: "#f8fafc" }}>
+                          {!candidatesByLine[line.id] ? (
+                            "Loading candidates..."
+                          ) : candidatesByLine[line.id].length === 0 ? (
+                            "No candidates found."
+                          ) : (
+                            <table className="brc-table" style={{ minWidth: "auto" }}>
+                              <thead>
+                                <tr>
+                                  <th>Type</th>
+                                  <th>Source</th>
+                                  <th>Voucher No.</th>
+                                  <th>Payee/Customer</th>
+                                  <th>Date</th>
+                                  <th>Amount</th>
+                                  <th>Score</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {candidatesByLine[line.id].map((c) => (
+                                  <tr key={c.id}>
+                                    <td>{c.matchType}</td>
+                                    <td>{c.bookSourceType}</td>
+                                    <td>{c.detail?.voucherNo}</td>
+                                    <td>
+                                      {c.detail?.payeeName ||
+                                        c.detail?.customerName ||
+                                        c.detail?.preparedFor}
+                                    </td>
+                                    <td>{c.detail?.txnDate}</td>
+                                    <td className="amount">₱ {formatMoney(c.amount)}</td>
+                                    <td>{c.confidenceScore}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="brc-card">
+        <h2>Unmatched Book Items ({bookItems.length})</h2>
+        <p style={{ color: "#64748b", marginTop: 0 }}>
+          CV, OR, and posted JV entries touching this bank account that have no confirmed
+          match yet.
+        </p>
+
+        <div className="brc-table-wrap">
+          <table className="brc-table">
+            <thead>
+              <tr>
+                <th>Source</th>
+                <th>Voucher No.</th>
+                <th>Payee/Customer</th>
+                <th>Date</th>
+                <th>Direction</th>
+                <th>Amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              {bookItems.length === 0 ? (
+                <tr>
+                  <td colSpan="6" className="brc-empty">
+                    No unmatched book items for this bank account/period.
+                  </td>
+                </tr>
+              ) : (
+                bookItems.map((item) => (
+                  <tr key={`${item.sourceType}-${item.sourceId}-${item.lineId || 0}`}>
+                    <td>{item.sourceType}</td>
+                    <td>{item.voucherNo}</td>
+                    <td>{item.payeeOrCustomer}</td>
+                    <td>{item.date}</td>
+                    <td>{item.direction === "OUT" ? "Money Out" : "Money In"}</td>
+                    <td className="amount">₱ {formatMoney(item.amount)}</td>
                   </tr>
                 ))
               )}
@@ -558,8 +750,8 @@ export default function BankReconciliationWorkspace() {
       <div className="brc-card">
         <h2>Reconciliation Workflow</h2>
         <p style={{ color: "#64748b" }}>
-          Matching, adjustments, and finalization are being rolled out in upcoming phases
-          of this module. This session's statement balances (
+          Match confirmation, adjustments, and finalization are being rolled out in upcoming
+          phases of this module. This session's statement balances (
           <strong>₱ {formatMoney(session.statementBeginningBalance)}</strong> to{" "}
           <strong>₱ {formatMoney(session.statementEndingBalance)}</strong>) are recorded and
           ready for those steps once available.

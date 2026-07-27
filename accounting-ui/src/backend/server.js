@@ -4111,6 +4111,7 @@ const BANK_RECON_SESSION_SELECT = `
     bc.bank_name AS bankName,
     bc.account_no AS bankAccountNo,
     bc.account_name AS bankAccountName,
+    bc.coa_account_id AS bankCoaAccountId,
     DATE_FORMAT(s.period_start, '%Y-%m-%d') AS periodStart,
     DATE_FORMAT(s.period_end, '%Y-%m-%d') AS periodEnd,
     s.statement_beginning_balance AS statementBeginningBalance,
@@ -4819,6 +4820,517 @@ app.delete("/api/bank-recon/import-batches/:id", authenticateToken, async (req, 
     await conn.rollback();
     console.error("DELETE IMPORT BATCH ERROR:", err);
     res.status(500).json({ message: "Failed to delete import batch" });
+  } finally {
+    conn.release();
+  }
+});
+
+// ---- Matching engine (Phase 5, compute-only) ----
+// Deterministic weighted-rule scoring. Only CV, OR, and JV touch a bank
+// account directly (invoice_headers/apv_headers have no bank_account_id -
+// they're AR/AP documents; a paid invoice shows up here as the OR that
+// applied against it, per the existing transaction_applications design).
+
+function normalizeIdentifier(value) {
+  if (!value) return "";
+  return String(value).trim().toLowerCase().replace(/^0+(?=\d)/, "");
+}
+
+function tokenize(text) {
+  return new Set(
+    String(text || "")
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((t) => t.length > 2)
+  );
+}
+
+function jaccardSimilarity(a, b) {
+  const setA = tokenize(a);
+  const setB = tokenize(b);
+  if (setA.size === 0 || setB.size === 0) return 0;
+
+  let intersection = 0;
+  for (const t of setA) {
+    if (setB.has(t)) intersection++;
+  }
+
+  const union = setA.size + setB.size - intersection;
+  return union === 0 ? 0 : intersection / union;
+}
+
+// Both sides of every date diff here are plain 'YYYY-MM-DD' strings pulled
+// via SQL DATE_FORMAT (see loadBookTransactions/statement-lines queries),
+// so anchoring to UTC midnight here is safe and never drifts a day.
+function daysBetween(dateStrA, dateStrB) {
+  const a = new Date(`${dateStrA}T00:00:00Z`);
+  const b = new Date(`${dateStrB}T00:00:00Z`);
+  return Math.round(Math.abs(a - b) / 86400000);
+}
+
+function shiftDate(dateStr, days) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + days);
+  return dt.toISOString().split("T")[0];
+}
+
+function round2(n) {
+  return Math.round(n * 100) / 100;
+}
+
+async function loadBookTransactions(
+  conn,
+  bankAccountId,
+  bankCoaAccountId,
+  periodStart,
+  periodEnd,
+  toleranceDays
+) {
+  const widenDays = (Number(toleranceDays) || 0) * 2;
+  const fromDate = shiftDate(periodStart, -widenDays);
+  const toDate = shiftDate(periodEnd, widenDays);
+
+  const [cvRows] = await conn.execute(
+    `SELECT id, voucher_no AS voucherNo, payee_name AS payeeName,
+            DATE_FORMAT(transaction_date, '%Y-%m-%d') AS txnDate,
+            reference_no AS referenceNo, check_no AS checkNo, total_debit AS totalDebit, description
+     FROM cv_headers
+     WHERE bank_account_id = ? AND status = 'Posted' AND transaction_date BETWEEN ? AND ?`,
+    [bankAccountId, fromDate, toDate]
+  );
+
+  const [orRows] = await conn.execute(
+    `SELECT id, voucher_no AS voucherNo, customer_name AS customerName,
+            DATE_FORMAT(transaction_date, '%Y-%m-%d') AS txnDate,
+            reference_no AS referenceNo, receipt_no AS receiptNo, check_no AS checkNo,
+            total_debit AS totalDebit, description
+     FROM or_headers
+     WHERE bank_account_id = ? AND status = 'Posted' AND transaction_date BETWEEN ? AND ?`,
+    [bankAccountId, fromDate, toDate]
+  );
+
+  const jvRows = bankCoaAccountId
+    ? (
+        await conn.execute(
+          `SELECT jl.id AS lineId, jh.id AS jvId, jh.voucher_no AS voucherNo, jh.prepared_for AS preparedFor,
+                  DATE_FORMAT(jh.transaction_date, '%Y-%m-%d') AS txnDate,
+                  jh.reference_no AS referenceNo, jh.description, jl.debit, jl.credit
+           FROM jv_lines jl
+           JOIN jv_headers jh ON jh.id = jl.jv_id
+           WHERE jl.account_id = ? AND jh.status = 'Posted' AND jh.transaction_date BETWEEN ? AND ?`,
+          [bankCoaAccountId, fromDate, toDate]
+        )
+      )[0]
+    : [];
+
+  const txns = [];
+
+  for (const cv of cvRows) {
+    txns.push({
+      sourceType: "CV",
+      sourceId: cv.id,
+      lineId: null,
+      amount: Number(cv.totalDebit),
+      direction: "OUT",
+      date: cv.txnDate,
+      referenceNo: cv.referenceNo,
+      checkNo: cv.checkNo,
+      receiptNo: "",
+      payeeOrCustomer: cv.payeeName,
+      description: cv.description,
+      voucherNo: cv.voucherNo,
+    });
+  }
+
+  for (const or of orRows) {
+    txns.push({
+      sourceType: "OR",
+      sourceId: or.id,
+      lineId: null,
+      amount: Number(or.totalDebit),
+      direction: "IN",
+      date: or.txnDate,
+      referenceNo: or.referenceNo,
+      checkNo: or.checkNo,
+      receiptNo: or.receiptNo,
+      payeeOrCustomer: or.customerName,
+      description: or.description,
+      voucherNo: or.voucherNo,
+    });
+  }
+
+  for (const jl of jvRows) {
+    const debit = Number(jl.debit);
+    const credit = Number(jl.credit);
+    if (debit <= 0 && credit <= 0) continue;
+
+    txns.push({
+      sourceType: "JV",
+      sourceId: jl.jvId,
+      lineId: jl.lineId,
+      amount: debit > 0 ? debit : credit,
+      direction: debit > 0 ? "IN" : "OUT",
+      date: jl.txnDate,
+      referenceNo: jl.referenceNo,
+      checkNo: "",
+      receiptNo: "",
+      payeeOrCustomer: jl.preparedFor,
+      description: jl.description,
+      voucherNo: jl.voucherNo,
+    });
+  }
+
+  return txns;
+}
+
+// Returns null when the candidate falls outside 2x the amount variance or
+// 2x the date tolerance (excluded entirely), otherwise a scored candidate.
+function scoreCandidate(stmtLine, bookTxn, session) {
+  const stmtAmount = Number(stmtLine.debit) > 0 ? Number(stmtLine.debit) : Number(stmtLine.credit);
+  const bookAmount = bookTxn.amount;
+  const amountDiff = Math.abs(stmtAmount - bookAmount);
+
+  const varianceEdge =
+    session.amountVarianceType === "PERCENT"
+      ? stmtAmount * (Number(session.amountVarianceValue) / 100)
+      : Number(session.amountVarianceValue);
+
+  let amountScore = 0;
+  if (amountDiff === 0) {
+    amountScore = 40;
+  } else if (varianceEdge > 0 && amountDiff <= varianceEdge) {
+    amountScore = 40 * (1 - amountDiff / varianceEdge);
+  } else if (varianceEdge > 0 && amountDiff <= varianceEdge * 2) {
+    amountScore = 0;
+  } else {
+    return null;
+  }
+
+  const tolerance = Number(session.dateToleranceDays) || 0;
+  const dateDiffDays = daysBetween(stmtLine.txnDate, bookTxn.date);
+
+  let dateScore = 0;
+  if (dateDiffDays === 0) {
+    dateScore = 20;
+  } else if (tolerance > 0 && dateDiffDays <= tolerance) {
+    dateScore = 20 * (1 - dateDiffDays / tolerance);
+  } else if (tolerance > 0 && dateDiffDays <= tolerance * 2) {
+    dateScore = 0;
+  } else {
+    return null;
+  }
+
+  const stmtIdentifiers = [stmtLine.referenceNo, stmtLine.checkNo]
+    .map(normalizeIdentifier)
+    .filter(Boolean);
+  const bookIdentifiers = [bookTxn.referenceNo, bookTxn.checkNo, bookTxn.receiptNo]
+    .map(normalizeIdentifier)
+    .filter(Boolean);
+
+  let identifierScore = 0;
+  let identifierExact = false;
+
+  if (stmtIdentifiers.length && bookIdentifiers.length) {
+    if (stmtIdentifiers.some((s) => bookIdentifiers.includes(s))) {
+      identifierScore = 25;
+      identifierExact = true;
+    } else if (
+      stmtIdentifiers.some((s) =>
+        bookIdentifiers.some(
+          (b) => s.length >= 3 && b.length >= 3 && (s.includes(b) || b.includes(s))
+        )
+      )
+    ) {
+      identifierScore = 10;
+    }
+  }
+
+  const stmtDescNormalized = normalizeIdentifier(stmtLine.description);
+  const bookNameNormalized = normalizeIdentifier(bookTxn.payeeOrCustomer);
+
+  let payeeScore = 0;
+  if (bookNameNormalized) {
+    if (stmtDescNormalized === bookNameNormalized) {
+      payeeScore = 10;
+    } else if (bookNameNormalized.length >= 3 && stmtDescNormalized.includes(bookNameNormalized)) {
+      payeeScore = 5;
+    }
+  }
+
+  const descScore = jaccardSimilarity(stmtLine.description, bookTxn.description) * 5;
+
+  const totalScore = Math.min(
+    100,
+    amountScore + dateScore + identifierScore + payeeScore + descScore
+  );
+
+  // Amount(40) + date(20) + identifier(25) only sum to 85 of the 100
+  // possible points, so requiring totalScore >= 95 on top of these three
+  // being individually perfect would demand bonus payee/description
+  // similarity too - something free-text bank statement wording routinely
+  // lacks even on a genuinely exact match. EXACT is defined by the three
+  // conditions themselves, not an unreachable extra score floor.
+  const hasStmtIdentifier = stmtIdentifiers.length > 0;
+  const isExact =
+    amountDiff === 0 && dateDiffDays === 0 && (identifierExact || !hasStmtIdentifier);
+
+  return {
+    ...bookTxn,
+    totalScore: round2(totalScore),
+    matchType: isExact ? "EXACT" : "SUGGESTED",
+    breakdown: {
+      amountScore: round2(amountScore),
+      dateScore: round2(dateScore),
+      identifierScore,
+      payeeScore,
+      descScore: round2(descScore),
+    },
+  };
+}
+
+app.post("/api/bank-recon/sessions/:id/run-matching", authenticateToken, async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const { id } = req.params;
+
+    const [sessionRows] = await conn.execute(`${BANK_RECON_SESSION_SELECT} WHERE s.id = ?`, [id]);
+
+    if (sessionRows.length === 0) {
+      return res.status(404).json({ message: "Reconciliation session not found" });
+    }
+
+    const session = sessionRows[0];
+
+    if (session.status === "FINALIZED") {
+      return res.status(400).json({ message: "Cannot run matching on a finalized session" });
+    }
+
+    const [stmtLines] = await conn.execute(
+      `SELECT id, DATE_FORMAT(txn_date, '%Y-%m-%d') AS txnDate, description,
+              reference_no AS referenceNo, check_no AS checkNo, debit, credit
+       FROM bank_recon_statement_lines
+       WHERE session_id = ? AND match_status IN ('UNMATCHED', 'SUGGESTED')`,
+      [id]
+    );
+
+    if (stmtLines.length === 0) {
+      return res.json({
+        success: true,
+        processed: 0,
+        suggested: 0,
+        message: "No unmatched statement lines to process",
+      });
+    }
+
+    const bookTxns = await loadBookTransactions(
+      conn,
+      session.bankAccountId,
+      session.bankCoaAccountId,
+      session.periodStart,
+      session.periodEnd,
+      session.dateToleranceDays
+    );
+
+    const [confirmedRows] = await conn.execute(
+      `SELECT book_source_type AS sourceType, book_source_id AS sourceId, book_line_id AS lineId
+       FROM bank_recon_matches
+       WHERE session_id = ? AND status = 'CONFIRMED'`,
+      [id]
+    );
+    const confirmedKeys = new Set(
+      confirmedRows.map((r) => `${r.sourceType}:${r.sourceId}:${r.lineId ?? ""}`)
+    );
+
+    await conn.beginTransaction();
+
+    let suggestedCount = 0;
+
+    for (const line of stmtLines) {
+      await conn.execute(
+        "DELETE FROM bank_recon_matches WHERE statement_line_id = ? AND status = 'PENDING'",
+        [line.id]
+      );
+
+      const wantDirection = Number(line.debit) > 0 ? "OUT" : "IN";
+
+      const candidates = bookTxns
+        .filter((t) => t.direction === wantDirection)
+        .filter((t) => !confirmedKeys.has(`${t.sourceType}:${t.sourceId}:${t.lineId ?? ""}`))
+        .map((t) => scoreCandidate(line, t, session))
+        .filter((c) => c && c.totalScore >= 30)
+        .sort((a, b) => b.totalScore - a.totalScore)
+        .slice(0, 3);
+
+      for (const c of candidates) {
+        await conn.execute(
+          `INSERT INTO bank_recon_matches(
+            session_id, statement_line_id, book_source_type, book_source_id, book_line_id,
+            match_type, confidence_score, score_breakdown, status, amount, created_by
+          ) VALUES (?,?,?,?,?,?,?,?,'PENDING',?,?)`,
+          [
+            id,
+            line.id,
+            c.sourceType,
+            c.sourceId,
+            c.lineId,
+            c.matchType,
+            c.totalScore,
+            JSON.stringify(c.breakdown),
+            c.amount,
+            req.user?.id || null,
+          ]
+        );
+      }
+
+      const newStatus = candidates.length > 0 ? "SUGGESTED" : "UNMATCHED";
+
+      await conn.execute("UPDATE bank_recon_statement_lines SET match_status = ? WHERE id = ?", [
+        newStatus,
+        line.id,
+      ]);
+
+      if (newStatus === "SUGGESTED") suggestedCount++;
+    }
+
+    await logAudit(conn, {
+      module: "BANK_RECON",
+      entityType: "SESSION",
+      entityId: Number(id),
+      action: "MATCH",
+      description: `Matching engine run on session #${id}: ${stmtLines.length} line(s) processed, ${suggestedCount} with suggestions`,
+      afterData: { processed: stmtLines.length, suggested: suggestedCount },
+      user: req.user,
+    });
+
+    await conn.commit();
+
+    res.json({
+      success: true,
+      processed: stmtLines.length,
+      suggested: suggestedCount,
+      message: `Processed ${stmtLines.length} statement line(s), ${suggestedCount} with suggested matches`,
+    });
+  } catch (err) {
+    await conn.rollback();
+    console.error("RUN MATCHING ERROR:", err);
+    res.status(500).json({ message: "Failed to run matching" });
+  } finally {
+    conn.release();
+  }
+});
+
+app.get(
+  "/api/bank-recon/statement-lines/:id/candidates",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      const [rows] = await pool.execute(
+        `SELECT
+          m.id,
+          m.book_source_type AS bookSourceType,
+          m.book_source_id AS bookSourceId,
+          m.book_line_id AS bookLineId,
+          m.match_type AS matchType,
+          m.confidence_score AS confidenceScore,
+          m.score_breakdown AS scoreBreakdown,
+          m.status,
+          m.amount
+        FROM bank_recon_matches m
+        WHERE m.statement_line_id = ? AND m.status = 'PENDING'
+        ORDER BY m.confidence_score DESC`,
+        [id]
+      );
+
+      const enriched = [];
+
+      for (const row of rows) {
+        let detail = null;
+
+        if (row.bookSourceType === "CV") {
+          const [d] = await pool.execute(
+            `SELECT voucher_no AS voucherNo, payee_name AS payeeName,
+                    DATE_FORMAT(transaction_date, '%Y-%m-%d') AS txnDate,
+                    reference_no AS referenceNo, check_no AS checkNo, description
+             FROM cv_headers WHERE id = ?`,
+            [row.bookSourceId]
+          );
+          detail = d[0] || null;
+        } else if (row.bookSourceType === "OR") {
+          const [d] = await pool.execute(
+            `SELECT voucher_no AS voucherNo, customer_name AS customerName,
+                    DATE_FORMAT(transaction_date, '%Y-%m-%d') AS txnDate,
+                    reference_no AS referenceNo, receipt_no AS receiptNo, check_no AS checkNo, description
+             FROM or_headers WHERE id = ?`,
+            [row.bookSourceId]
+          );
+          detail = d[0] || null;
+        } else if (row.bookSourceType === "JV") {
+          const [d] = await pool.execute(
+            `SELECT jh.voucher_no AS voucherNo, jh.prepared_for AS preparedFor,
+                    DATE_FORMAT(jh.transaction_date, '%Y-%m-%d') AS txnDate,
+                    jh.reference_no AS referenceNo, jh.description
+             FROM jv_headers jh WHERE jh.id = ?`,
+            [row.bookSourceId]
+          );
+          detail = d[0] || null;
+        }
+
+        enriched.push({ ...row, detail });
+      }
+
+      res.json(enriched);
+    } catch (err) {
+      console.error("GET MATCH CANDIDATES ERROR:", err);
+      res.status(500).json({ message: "Failed to load match candidates" });
+    }
+  }
+);
+
+app.get("/api/bank-recon/sessions/:id/book-items", authenticateToken, async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const { id } = req.params;
+
+    const [sessionRows] = await conn.execute(`${BANK_RECON_SESSION_SELECT} WHERE s.id = ?`, [id]);
+
+    if (sessionRows.length === 0) {
+      return res.status(404).json({ message: "Reconciliation session not found" });
+    }
+
+    const session = sessionRows[0];
+
+    const bookTxns = await loadBookTransactions(
+      conn,
+      session.bankAccountId,
+      session.bankCoaAccountId,
+      session.periodStart,
+      session.periodEnd,
+      session.dateToleranceDays
+    );
+
+    const [confirmedRows] = await conn.execute(
+      `SELECT book_source_type AS sourceType, book_source_id AS sourceId, book_line_id AS lineId
+       FROM bank_recon_matches
+       WHERE session_id = ? AND status = 'CONFIRMED'`,
+      [id]
+    );
+    const confirmedKeys = new Set(
+      confirmedRows.map((r) => `${r.sourceType}:${r.sourceId}:${r.lineId ?? ""}`)
+    );
+
+    const unmatched = bookTxns.filter(
+      (t) => !confirmedKeys.has(`${t.sourceType}:${t.sourceId}:${t.lineId ?? ""}`)
+    );
+
+    res.json(unmatched);
+  } catch (err) {
+    console.error("GET BOOK ITEMS ERROR:", err);
+    res.status(500).json({ message: "Failed to load book items" });
   } finally {
     conn.release();
   }
