@@ -6065,6 +6065,158 @@ app.post("/api/bank-recon/adjustments/:id/reject", authenticateToken, async (req
   }
 });
 
+// ---- Adjustment posting to JV (Phase 8) ----
+// Only APPROVED adjustments (with an account already picked) can post, and
+// only once - the adjustment moves straight to POSTED, never back to
+// PENDING/APPROVED, so there is no double-post path.
+
+app.post("/api/bank-recon/adjustments/:id/post", authenticateToken, async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const { id } = req.params;
+
+    const [rows] = await conn.execute(
+      `SELECT a.*, sl.debit AS lineDebit, sl.credit AS lineCredit,
+              sl.reference_no AS lineReferenceNo, sl.check_no AS lineCheckNo,
+              DATE_FORMAT(sl.txn_date, '%Y-%m-%d') AS txnDate,
+              s.status AS sessionStatus, s.bank_account_id AS bankAccountId
+       FROM bank_recon_adjustments a
+       JOIN bank_recon_statement_lines sl ON sl.id = a.statement_line_id
+       JOIN bank_recon_sessions s ON s.id = a.session_id
+       WHERE a.id = ?`,
+      [id]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ message: "Adjustment not found" });
+    }
+
+    const adj = rows[0];
+
+    if (adj.sessionStatus === "FINALIZED") {
+      return res.status(400).json({ message: "Cannot modify a finalized session" });
+    }
+    if (adj.status !== "APPROVED") {
+      return res
+        .status(400)
+        .json({ message: `Adjustment must be APPROVED before posting (currently ${adj.status})` });
+    }
+    if (!adj.suggested_account_id) {
+      return res.status(400).json({ message: "Adjustment has no account assigned" });
+    }
+
+    const [bankRows] = await conn.execute(
+      "SELECT coa_account_id AS coaAccountId, coa_code AS coaCode, bank_name AS bankName FROM bank_codes WHERE id = ?",
+      [adj.bankAccountId]
+    );
+
+    if (bankRows.length === 0 || !bankRows[0].coaAccountId) {
+      return res
+        .status(400)
+        .json({ message: "Bank account has no linked Chart of Accounts entry" });
+    }
+
+    const bank = bankRows[0];
+
+    const [accountRows] = await conn.execute(
+      "SELECT code, title FROM chart_of_accounts WHERE id = ?",
+      [adj.suggested_account_id]
+    );
+
+    if (accountRows.length === 0) {
+      return res.status(400).json({ message: "Selected account not found" });
+    }
+
+    const account = accountRows[0];
+    const isMoneyOut = Number(adj.lineDebit) > 0;
+    const amount = Number(adj.amount);
+    const userId = req.user?.id || null;
+    const voucherNo = `JV-BR-${adj.session_id}-${adj.id}`;
+
+    await conn.beginTransaction();
+
+    const [jvResult] = await conn.execute(
+      `INSERT INTO jv_headers(
+        voucher_no, transaction_date, reference_no, prepared_for, description,
+        total_debit, total_credit, status, source_module, source_reference_id,
+        created_by, posted_by, posted_at
+      ) VALUES (?,?,?,?,?,?,?, 'Posted', 'BANK_RECON', ?, ?, ?, NOW())`,
+      [
+        voucherNo,
+        adj.txnDate,
+        adj.lineReferenceNo || adj.lineCheckNo || "",
+        bank.bankName,
+        adj.description || `Bank reconciliation adjustment (${adj.adjustment_type})`,
+        amount,
+        amount,
+        Number(id),
+        userId,
+        userId,
+      ]
+    );
+
+    const jvId = jvResult.insertId;
+
+    // Money-out (bank charge, etc.): debit the suggested account, credit the
+    // bank. Money-in (interest, etc.): debit the bank, credit the suggested
+    // account.
+    const lines = isMoneyOut
+      ? [
+          { accountId: adj.suggested_account_id, code: account.code, title: account.title, debit: amount, credit: 0 },
+          { accountId: bank.coaAccountId, code: bank.coaCode, title: bank.bankName, debit: 0, credit: amount },
+        ]
+      : [
+          { accountId: bank.coaAccountId, code: bank.coaCode, title: bank.bankName, debit: amount, credit: 0 },
+          { accountId: adj.suggested_account_id, code: account.code, title: account.title, debit: 0, credit: amount },
+        ];
+
+    for (const line of lines) {
+      await conn.execute(
+        `INSERT INTO jv_lines(jv_id, account_id, account_code, account_title, particulars, debit, credit)
+         VALUES (?,?,?,?,?,?,?)`,
+        [jvId, line.accountId, line.code, line.title, adj.description || "", line.debit, line.credit]
+      );
+    }
+
+    await conn.execute("UPDATE bank_recon_adjustments SET status = 'POSTED', jv_id = ? WHERE id = ?", [
+      jvId,
+      id,
+    ]);
+
+    await logAudit(conn, {
+      module: "JV",
+      entityType: "JV",
+      entityId: jvId,
+      action: "POST",
+      description: `JV ${voucherNo} created and posted from bank reconciliation adjustment #${id}`,
+      afterData: { voucherNo, amount, sourceModule: "BANK_RECON", sourceReferenceId: Number(id) },
+      user: req.user,
+    });
+
+    await logAudit(conn, {
+      module: "BANK_RECON",
+      entityType: "ADJUSTMENT",
+      entityId: Number(id),
+      action: "POST_JV",
+      description: `Adjustment #${id} posted as JV ${voucherNo} (#${jvId})`,
+      beforeData: { status: "APPROVED" },
+      afterData: { status: "POSTED", jvId },
+      user: req.user,
+    });
+
+    await conn.commit();
+
+    res.json({ success: true, jvId, voucherNo, message: "Adjustment posted as JV" });
+  } catch (err) {
+    await conn.rollback();
+    console.error("POST ADJUSTMENT ERROR:", err);
+    res.status(500).json({ message: "Failed to post adjustment" });
+  } finally {
+    conn.release();
+  }
+});
+
 // ===================== ACCOUNT GROUP CODES API =====================
 
 app.get("/api/group-codes", async (req, res) => {

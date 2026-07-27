@@ -231,6 +231,36 @@ export default function BankReconciliationWorkspace() {
     }
   }
 
+  async function postAdjustment(adjId) {
+    if (!confirm("Post this adjustment as a Journal Voucher? This cannot be undone.")) return;
+
+    setAdjustmentBusyId(adjId);
+
+    try {
+      const res = await fetch(`${API_BASE}/api/bank-recon/adjustments/${adjId}/post`, {
+        method: "POST",
+        credentials: "include",
+        headers: authHeaders(),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        if (handleAuthError(res.status)) return;
+        alert(data.message || "Failed to post adjustment.");
+        return;
+      }
+
+      alert(`Posted as JV ${data.voucherNo}.`);
+      await loadAdjustments();
+    } catch (err) {
+      console.error("POST ADJUSTMENT ERROR:", err);
+      alert("Unable to connect to server.");
+    } finally {
+      setAdjustmentBusyId(null);
+    }
+  }
+
   async function runMatching() {
     setRunningMatching(true);
 
@@ -1168,6 +1198,18 @@ export default function BankReconciliationWorkspace() {
                             Reject
                           </button>
                         </>
+                      )}
+                      {adj.status === "APPROVED" && !isFinalized && (
+                        <button
+                          className="brc-btn primary"
+                          disabled={adjustmentBusyId === adj.id}
+                          onClick={() => postAdjustment(adj.id)}
+                        >
+                          Post as JV
+                        </button>
+                      )}
+                      {adj.status === "POSTED" && (
+                        <span style={{ color: "#64748b", fontSize: 13 }}>JV #{adj.jvId}</span>
                       )}
                     </td>
                   </tr>
