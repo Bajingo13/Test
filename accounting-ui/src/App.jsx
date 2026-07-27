@@ -43,12 +43,12 @@ import Posting from "./pages/POSTING/Posting";
 
 
 // REPORTS
-import ReportPage from "./pages/REPORTS/ReportPage";
 import TrialBalance from "./pages/REPORTS/TrialBalance";
 import AccountAnalysis from "./pages/REPORTS/AccountAnalysis";
 import { IncomeStatement } from "./pages/REPORTS/IncomeStatement.jsx";
 import BalanceSheet from "./pages/REPORTS/BalanceSheet.jsx";
 import BankReconciliation from "./pages/REPORTS/BankReconciliation.jsx";
+import BankReconciliationWorkspace from "./pages/REPORTS/BankReconciliationWorkspace.jsx";
 import ComparativeIncomeStatement from "./pages/REPORTS/ComparativeIncomeStatement.jsx";
 import ARAgingReport from "./pages/REPORTS/ARAging.jsx";
 import APAgingReport from "./pages/REPORTS/APAging.jsx";
@@ -144,7 +144,8 @@ function AppLayout() {
           <Route path="/reports" element={<Navigate to="/reports/trial-balance" replace />} />
           <Route path="/reports/trial-balance" element={<TrialBalance />} />
           <Route path="/reports/account-analysis" element={<AccountAnalysis />} />
-          <Route path="/reports/bank-reconciliation" element={<ReportPage title="Bank Reconciliation" />} />
+          <Route path="/reports/bank-reconciliation" element={<BankReconciliation />} />
+          <Route path="/reports/bank-reconciliation/:id" element={<BankReconciliationWorkspace />} />
           <Route path="/reports/balance-sheet" element={<BalanceSheet />} />
           <Route path="/reports/income-statement" element={<IncomeStatement />} />
           <Route path="/reports/ar-aging" element={<ARAgingReport />} />

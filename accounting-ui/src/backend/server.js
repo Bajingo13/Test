@@ -4081,6 +4081,261 @@ app.get("/api/audit-logs", authenticateToken, async (req, res) => {
   }
 });
 
+// ===================== BANK RECONCILIATION API =====================
+// Session management only (Phase 3). Import/matching/adjustments/finalize
+// are handled by later phases and their own route groups.
+
+const BANK_RECON_SESSION_SELECT = `
+  SELECT
+    s.id,
+    s.bank_account_id AS bankAccountId,
+    bc.bank_code AS bankCode,
+    bc.bank_name AS bankName,
+    bc.account_no AS bankAccountNo,
+    bc.account_name AS bankAccountName,
+    DATE_FORMAT(s.period_start, '%Y-%m-%d') AS periodStart,
+    DATE_FORMAT(s.period_end, '%Y-%m-%d') AS periodEnd,
+    s.statement_beginning_balance AS statementBeginningBalance,
+    s.statement_ending_balance AS statementEndingBalance,
+    s.date_tolerance_days AS dateToleranceDays,
+    s.amount_variance_type AS amountVarianceType,
+    s.amount_variance_value AS amountVarianceValue,
+    s.status,
+    s.notes,
+    s.created_by AS createdBy,
+    s.created_at AS createdAt,
+    s.finalized_by AS finalizedBy,
+    s.finalized_at AS finalizedAt
+  FROM bank_recon_sessions s
+  JOIN bank_codes bc ON bc.id = s.bank_account_id
+`;
+
+app.get("/api/bank-recon/sessions", authenticateToken, async (req, res) => {
+  try {
+    const [rows] = await pool.execute(
+      `${BANK_RECON_SESSION_SELECT} ORDER BY s.id DESC`
+    );
+
+    res.json(rows);
+  } catch (err) {
+    console.error("GET BANK RECON SESSIONS ERROR:", err);
+    res.status(500).json({ message: "Failed to load reconciliation sessions" });
+  }
+});
+
+app.post("/api/bank-recon/sessions", authenticateToken, async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const {
+      bankAccountId,
+      periodStart,
+      periodEnd,
+      statementBeginningBalance,
+      statementEndingBalance,
+      dateToleranceDays,
+      amountVarianceType,
+      amountVarianceValue,
+      notes,
+    } = req.body;
+
+    if (!bankAccountId) {
+      return res.status(400).json({ message: "Bank account is required" });
+    }
+    if (!periodStart || !periodEnd) {
+      return res.status(400).json({ message: "Period start and end are required" });
+    }
+    if (new Date(periodEnd) < new Date(periodStart)) {
+      return res.status(400).json({ message: "Period end cannot be before period start" });
+    }
+
+    const userId = req.user?.id || null;
+
+    await conn.beginTransaction();
+
+    const [result] = await conn.execute(
+      `INSERT INTO bank_recon_sessions(
+        bank_account_id,
+        period_start,
+        period_end,
+        statement_beginning_balance,
+        statement_ending_balance,
+        date_tolerance_days,
+        amount_variance_type,
+        amount_variance_value,
+        status,
+        notes,
+        created_by
+      )
+      VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+      [
+        bankAccountId,
+        periodStart,
+        periodEnd,
+        Number(statementBeginningBalance) || 0,
+        Number(statementEndingBalance) || 0,
+        Number(dateToleranceDays) || 3,
+        amountVarianceType === "PERCENT" ? "PERCENT" : "FIXED",
+        Number(amountVarianceValue) || 1.0,
+        "IN_PROGRESS",
+        notes || "",
+        userId,
+      ]
+    );
+
+    const sessionId = result.insertId;
+
+    await logAudit(conn, {
+      module: "BANK_RECON",
+      entityType: "SESSION",
+      entityId: sessionId,
+      action: "CREATE",
+      description: `Reconciliation session #${sessionId} created for bank account ${bankAccountId} (${periodStart} to ${periodEnd})`,
+      afterData: { bankAccountId, periodStart, periodEnd, statementBeginningBalance, statementEndingBalance },
+      user: req.user,
+    });
+
+    await conn.commit();
+
+    res.json({ success: true, id: sessionId, message: "Reconciliation session created" });
+  } catch (err) {
+    await conn.rollback();
+    console.error("CREATE BANK RECON SESSION ERROR:", err);
+    res.status(500).json({ message: "Failed to create reconciliation session" });
+  } finally {
+    conn.release();
+  }
+});
+
+app.get("/api/bank-recon/sessions/:id", authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [rows] = await pool.execute(
+      `${BANK_RECON_SESSION_SELECT} WHERE s.id = ?`,
+      [id]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ message: "Reconciliation session not found" });
+    }
+
+    res.json(rows[0]);
+  } catch (err) {
+    console.error("GET BANK RECON SESSION ERROR:", err);
+    res.status(500).json({ message: "Failed to load reconciliation session" });
+  }
+});
+
+app.patch("/api/bank-recon/sessions/:id", authenticateToken, async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const { id } = req.params;
+
+    const [existingRows] = await conn.execute(
+      "SELECT * FROM bank_recon_sessions WHERE id = ?",
+      [id]
+    );
+
+    if (existingRows.length === 0) {
+      return res.status(404).json({ message: "Reconciliation session not found" });
+    }
+
+    const existing = existingRows[0];
+
+    if (existing.status === "FINALIZED") {
+      return res.status(400).json({
+        message: "Cannot edit a finalized session. Reopen it first.",
+      });
+    }
+
+    const {
+      periodStart,
+      periodEnd,
+      statementBeginningBalance,
+      statementEndingBalance,
+      dateToleranceDays,
+      amountVarianceType,
+      amountVarianceValue,
+      notes,
+    } = req.body;
+
+    const next = {
+      periodStart: periodStart || existing.period_start,
+      periodEnd: periodEnd || existing.period_end,
+      statementBeginningBalance:
+        statementBeginningBalance !== undefined
+          ? Number(statementBeginningBalance) || 0
+          : existing.statement_beginning_balance,
+      statementEndingBalance:
+        statementEndingBalance !== undefined
+          ? Number(statementEndingBalance) || 0
+          : existing.statement_ending_balance,
+      dateToleranceDays:
+        dateToleranceDays !== undefined
+          ? Number(dateToleranceDays) || 0
+          : existing.date_tolerance_days,
+      amountVarianceType:
+        amountVarianceType === "PERCENT" || amountVarianceType === "FIXED"
+          ? amountVarianceType
+          : existing.amount_variance_type,
+      amountVarianceValue:
+        amountVarianceValue !== undefined
+          ? Number(amountVarianceValue) || 0
+          : existing.amount_variance_value,
+      notes: notes !== undefined ? notes : existing.notes,
+    };
+
+    await conn.beginTransaction();
+
+    await conn.execute(
+      `UPDATE bank_recon_sessions SET
+        period_start = ?,
+        period_end = ?,
+        statement_beginning_balance = ?,
+        statement_ending_balance = ?,
+        date_tolerance_days = ?,
+        amount_variance_type = ?,
+        amount_variance_value = ?,
+        notes = ?
+      WHERE id = ?`,
+      [
+        next.periodStart,
+        next.periodEnd,
+        next.statementBeginningBalance,
+        next.statementEndingBalance,
+        next.dateToleranceDays,
+        next.amountVarianceType,
+        next.amountVarianceValue,
+        next.notes,
+        id,
+      ]
+    );
+
+    await logAudit(conn, {
+      module: "BANK_RECON",
+      entityType: "SESSION",
+      entityId: Number(id),
+      action: "CONFIG_UPDATE",
+      description: `Reconciliation session #${id} settings updated`,
+      beforeData: existing,
+      afterData: next,
+      user: req.user,
+    });
+
+    await conn.commit();
+
+    res.json({ success: true, message: "Reconciliation session updated" });
+  } catch (err) {
+    await conn.rollback();
+    console.error("UPDATE BANK RECON SESSION ERROR:", err);
+    res.status(500).json({ message: "Failed to update reconciliation session" });
+  } finally {
+    conn.release();
+  }
+});
+
 // ===================== ACCOUNT GROUP CODES API =====================
 
 app.get("/api/group-codes", async (req, res) => {
