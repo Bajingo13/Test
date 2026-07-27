@@ -414,6 +414,30 @@ async function syncBankCodeForAccount(conn, coaId, code, title, validations) {
   }
 }
 
+// Writes an audit_logs row. Pass the active transaction's `conn` (not the
+// pool) when called inside a transaction so a logging failure rolls back
+// the action it's documenting instead of silently leaving no trail.
+async function logAudit(
+  db,
+  { module, entityType, entityId, action, description, beforeData = null, afterData = null, user = null }
+) {
+  await db.execute(
+    `INSERT INTO audit_logs(module, entity_type, entity_id, action, description, before_data, after_data, user_id, username)
+     VALUES (?,?,?,?,?,?,?,?,?)`,
+    [
+      module,
+      entityType,
+      entityId,
+      action,
+      description,
+      beforeData ? JSON.stringify(beforeData) : null,
+      afterData ? JSON.stringify(afterData) : null,
+      user?.id || null,
+      user?.username || null,
+    ]
+  );
+}
+
 // ===================== COA API =====================
 
 app.get("/api/coa", authenticateToken, async (req, res) => {
@@ -3724,6 +3748,19 @@ app.post("/api/jv", authenticateToken, async (req, res) => {
       );
     }
 
+    await logAudit(conn, {
+      module: "JV",
+      entityType: "JV",
+      entityId: jvId,
+      action: finalStatus === "Posted" ? "POST" : "CREATE",
+      description:
+        finalStatus === "Posted"
+          ? `JV ${voucherNo} created and posted`
+          : `JV ${voucherNo} created (${finalStatus})`,
+      afterData: { voucherNo, preparedFor, transactionDate, totalDebit, totalCredit, status: finalStatus },
+      user: req.user,
+    });
+
     await conn.commit();
 
     res.json({
@@ -3901,6 +3938,21 @@ app.put("/api/jv/:id", authenticateToken, async (req, res) => {
       );
     }
 
+    const isPostingNow = finalStatus === "Posted" && !wasAlreadyPosted;
+
+    await logAudit(conn, {
+      module: "JV",
+      entityType: "JV",
+      entityId: Number(id),
+      action: isPostingNow ? "POST" : "UPDATE",
+      description: isPostingNow
+        ? `JV ${voucherNo} posted`
+        : `JV ${voucherNo} updated (${finalStatus})`,
+      beforeData: existing[0],
+      afterData: { voucherNo, preparedFor, transactionDate, totalDebit, totalCredit, status: finalStatus },
+      user: req.user,
+    });
+
     await conn.commit();
 
     res.json({
@@ -3922,18 +3974,110 @@ app.put("/api/jv/:id", authenticateToken, async (req, res) => {
 });
 
 app.delete("/api/jv/:id", authenticateToken, async (req, res) => {
+  const conn = await pool.getConnection();
+
   try {
     const { id } = req.params;
 
-    await pool.execute("DELETE FROM jv_headers WHERE id = ?", [id]);
+    const [existing] = await conn.execute(
+      "SELECT voucher_no, status FROM jv_headers WHERE id = ?",
+      [id]
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json({ message: "JV not found" });
+    }
+
+    await conn.beginTransaction();
+
+    await conn.execute("DELETE FROM jv_headers WHERE id = ?", [id]);
+
+    await logAudit(conn, {
+      module: "JV",
+      entityType: "JV",
+      entityId: Number(id),
+      action: "DELETE",
+      description: `JV ${existing[0].voucher_no} deleted`,
+      beforeData: existing[0],
+      user: req.user,
+    });
+
+    await conn.commit();
 
     res.json({
       success: true,
       message: "JV deleted successfully",
     });
   } catch (err) {
+    await conn.rollback();
     console.error("DELETE JV ERROR:", err);
     res.status(500).json({ message: "Failed to delete JV" });
+  } finally {
+    conn.release();
+  }
+});
+
+// ===================== AUDIT LOG API =====================
+
+app.get("/api/audit-logs", authenticateToken, async (req, res) => {
+  try {
+    const { module, entityType, entityId, userId, from, to, limit } = req.query;
+
+    const clauses = [];
+    const params = [];
+
+    if (module) {
+      clauses.push("module = ?");
+      params.push(module);
+    }
+    if (entityType) {
+      clauses.push("entity_type = ?");
+      params.push(entityType);
+    }
+    if (entityId) {
+      clauses.push("entity_id = ?");
+      params.push(Number(entityId));
+    }
+    if (userId) {
+      clauses.push("user_id = ?");
+      params.push(Number(userId));
+    }
+    if (from) {
+      clauses.push("created_at >= ?");
+      params.push(from);
+    }
+    if (to) {
+      clauses.push("created_at <= ?");
+      params.push(to);
+    }
+
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    const safeLimit = Math.min(Number(limit) || 200, 1000);
+
+    const [rows] = await pool.execute(
+      `SELECT
+        id,
+        module,
+        entity_type AS entityType,
+        entity_id AS entityId,
+        action,
+        description,
+        before_data AS beforeData,
+        after_data AS afterData,
+        user_id AS userId,
+        username,
+        created_at AS createdAt
+      FROM audit_logs
+      ${where}
+      ORDER BY id DESC
+      LIMIT ${safeLimit}`,
+      params
+    );
+
+    res.json(rows);
+  } catch (err) {
+    console.error("GET AUDIT LOGS ERROR:", err);
+    res.status(500).json({ message: "Failed to load audit logs" });
   }
 });
 
