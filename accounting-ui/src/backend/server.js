@@ -5092,6 +5092,35 @@ function scoreCandidate(stmtLine, bookTxn, session) {
   };
 }
 
+// ---- Outstanding items + adjustment suggestions (Phase 7) ----
+
+const BANK_CHARGE_KEYWORDS = [
+  "service charge",
+  "bank charge",
+  "maintaining balance",
+  "debit memo",
+  "atm fee",
+];
+const INTEREST_INCOME_KEYWORDS = ["interest", "int income", "credit memo interest"];
+
+// Every statement line the matching engine can't explain becomes something
+// the user must explicitly decide on - a guessed BANK_CHARGE/INTEREST_INCOME
+// via keyword match, or OTHER when no keyword hits. Never auto-approved.
+function classifyAdjustmentSuggestion(line) {
+  const desc = String(line.description || "").toLowerCase();
+  const isDebit = Number(line.debit) > 0;
+  const isCredit = Number(line.credit) > 0;
+
+  if (isDebit && BANK_CHARGE_KEYWORDS.some((kw) => desc.includes(kw))) {
+    return { adjustmentType: "BANK_CHARGE", amount: Number(line.debit) };
+  }
+  if (isCredit && INTEREST_INCOME_KEYWORDS.some((kw) => desc.includes(kw))) {
+    return { adjustmentType: "INTEREST_INCOME", amount: Number(line.credit) };
+  }
+
+  return { adjustmentType: "OTHER", amount: isDebit ? Number(line.debit) : Number(line.credit) };
+}
+
 app.post("/api/bank-recon/sessions/:id/run-matching", authenticateToken, async (req, res) => {
   const conn = await pool.getConnection();
 
@@ -5195,6 +5224,35 @@ app.post("/api/bank-recon/sessions/:id/run-matching", authenticateToken, async (
       ]);
 
       if (newStatus === "SUGGESTED") suggestedCount++;
+
+      // A line with no viable book match either explains itself (bank
+      // charge/interest) or needs a human decision (OTHER) - either way it
+      // becomes a PENDING adjustment suggestion. Only refresh suggestions
+      // still PENDING; once a user has approved/rejected one, leave it be.
+      if (newStatus === "UNMATCHED") {
+        const [existingAdj] = await conn.execute(
+          "SELECT id FROM bank_recon_adjustments WHERE statement_line_id = ? AND status = 'PENDING'",
+          [line.id]
+        );
+
+        if (existingAdj.length === 0) {
+          const [anyAdj] = await conn.execute(
+            "SELECT id FROM bank_recon_adjustments WHERE statement_line_id = ?",
+            [line.id]
+          );
+
+          if (anyAdj.length === 0) {
+            const { adjustmentType, amount } = classifyAdjustmentSuggestion(line);
+
+            await conn.execute(
+              `INSERT INTO bank_recon_adjustments(
+                session_id, statement_line_id, adjustment_type, amount, description, status
+              ) VALUES (?,?,?,?,?, 'PENDING')`,
+              [id, line.id, adjustmentType, amount, line.description || ""]
+            );
+          }
+        }
+      }
     }
 
     await logAudit(conn, {
@@ -5706,6 +5764,302 @@ app.post("/api/bank-recon/statement-lines/:id/ignore", authenticateToken, async 
     await conn.rollback();
     console.error("IGNORE STATEMENT LINE ERROR:", err);
     res.status(500).json({ message: "Failed to update statement line" });
+  } finally {
+    conn.release();
+  }
+});
+
+// ---- Outstanding items (Phase 7, read-only/derived) ----
+// Book lines against this bank account with no confirmed bank match, dated
+// on or before the period end: a book-side credit (cash left the books but
+// hasn't cleared the bank) is an Outstanding Check; a book-side debit
+// (cash landed in the books but not yet on the statement) is a Deposit in
+// Transit. Both are just the existing book-items list filtered by date and
+// bucketed by direction - not a separate computation pass.
+
+app.get("/api/bank-recon/sessions/:id/outstanding-items", authenticateToken, async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const { id } = req.params;
+
+    const [sessionRows] = await conn.execute(`${BANK_RECON_SESSION_SELECT} WHERE s.id = ?`, [id]);
+
+    if (sessionRows.length === 0) {
+      return res.status(404).json({ message: "Reconciliation session not found" });
+    }
+
+    const session = sessionRows[0];
+
+    const bookTxns = await loadBookTransactions(
+      conn,
+      session.bankAccountId,
+      session.bankCoaAccountId,
+      session.periodStart,
+      session.periodEnd,
+      session.dateToleranceDays
+    );
+
+    const [confirmedRows] = await conn.execute(
+      `SELECT book_source_type AS sourceType, book_source_id AS sourceId, book_line_id AS lineId
+       FROM bank_recon_matches
+       WHERE session_id = ? AND status = 'CONFIRMED'`,
+      [id]
+    );
+    const confirmedKeys = new Set(
+      confirmedRows.map((r) => `${r.sourceType}:${r.sourceId}:${r.lineId ?? ""}`)
+    );
+
+    const unmatched = bookTxns.filter(
+      (t) =>
+        !confirmedKeys.has(`${t.sourceType}:${t.sourceId}:${t.lineId ?? ""}`) &&
+        t.date <= session.periodEnd
+    );
+
+    res.json({
+      outstandingChecks: unmatched.filter((t) => t.direction === "OUT"),
+      depositsInTransit: unmatched.filter((t) => t.direction === "IN"),
+    });
+  } catch (err) {
+    console.error("GET OUTSTANDING ITEMS ERROR:", err);
+    res.status(500).json({ message: "Failed to load outstanding items" });
+  } finally {
+    conn.release();
+  }
+});
+
+// ---- Adjustment suggestions (Phase 7: view/approve/reject; posting to a
+// real JV is Phase 8) ----
+
+app.get("/api/bank-recon/sessions/:id/adjustments", authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [rows] = await pool.execute(
+      `SELECT
+        a.id,
+        a.statement_line_id AS statementLineId,
+        a.adjustment_type AS adjustmentType,
+        a.suggested_account_id AS suggestedAccountId,
+        a.amount,
+        a.description,
+        a.status,
+        a.jv_id AS jvId,
+        a.created_at AS createdAt,
+        a.decided_by AS decidedBy,
+        a.decided_at AS decidedAt,
+        DATE_FORMAT(sl.txn_date, '%Y-%m-%d') AS txnDate,
+        sl.reference_no AS referenceNo,
+        sl.check_no AS checkNo
+      FROM bank_recon_adjustments a
+      JOIN bank_recon_statement_lines sl ON sl.id = a.statement_line_id
+      WHERE a.session_id = ?
+      ORDER BY a.status = 'PENDING' DESC, sl.txn_date ASC`,
+      [id]
+    );
+
+    res.json(rows);
+  } catch (err) {
+    console.error("GET ADJUSTMENTS ERROR:", err);
+    res.status(500).json({ message: "Failed to load adjustments" });
+  }
+});
+
+app.post("/api/bank-recon/sessions/:id/adjustments", authenticateToken, async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const { id } = req.params;
+    const { statementLineId, adjustmentType, suggestedAccountId, amount, description } = req.body;
+
+    if (!statementLineId || !adjustmentType) {
+      return res.status(400).json({ message: "statementLineId and adjustmentType are required" });
+    }
+    if (!["BANK_CHARGE", "INTEREST_INCOME", "OTHER"].includes(adjustmentType)) {
+      return res.status(400).json({ message: "Invalid adjustmentType" });
+    }
+
+    const [sessionRows] = await conn.execute(
+      "SELECT status FROM bank_recon_sessions WHERE id = ?",
+      [id]
+    );
+    if (sessionRows.length === 0) {
+      return res.status(404).json({ message: "Reconciliation session not found" });
+    }
+    if (sessionRows[0].status === "FINALIZED") {
+      return res.status(400).json({ message: "Cannot modify a finalized session" });
+    }
+
+    await conn.beginTransaction();
+
+    const [result] = await conn.execute(
+      `INSERT INTO bank_recon_adjustments(
+        session_id, statement_line_id, adjustment_type, suggested_account_id, amount, description, status
+      ) VALUES (?,?,?,?,?,?, 'PENDING')`,
+      [
+        id,
+        statementLineId,
+        adjustmentType,
+        suggestedAccountId || null,
+        Number(amount) || 0,
+        description || "",
+      ]
+    );
+
+    await logAudit(conn, {
+      module: "BANK_RECON",
+      entityType: "ADJUSTMENT",
+      entityId: result.insertId,
+      action: "CREATE",
+      description: `Adjustment (${adjustmentType}) added for statement line #${statementLineId} in session #${id}`,
+      afterData: { adjustmentType, amount, suggestedAccountId },
+      user: req.user,
+    });
+
+    await conn.commit();
+
+    res.json({ success: true, id: result.insertId, message: "Adjustment added" });
+  } catch (err) {
+    await conn.rollback();
+    console.error("CREATE ADJUSTMENT ERROR:", err);
+    res.status(500).json({ message: "Failed to add adjustment" });
+  } finally {
+    conn.release();
+  }
+});
+
+app.post("/api/bank-recon/adjustments/:id/approve", authenticateToken, async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const { id } = req.params;
+    const { adjustmentType, suggestedAccountId, amount, description } = req.body;
+
+    const [rows] = await conn.execute(
+      `SELECT a.*, s.status AS sessionStatus
+       FROM bank_recon_adjustments a
+       JOIN bank_recon_sessions s ON s.id = a.session_id
+       WHERE a.id = ?`,
+      [id]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ message: "Adjustment not found" });
+    }
+
+    const adj = rows[0];
+
+    if (adj.sessionStatus === "FINALIZED") {
+      return res.status(400).json({ message: "Cannot modify a finalized session" });
+    }
+    if (adj.status !== "PENDING") {
+      return res.status(400).json({ message: `Adjustment is already ${adj.status}` });
+    }
+    if (!suggestedAccountId && !adj.suggested_account_id) {
+      return res.status(400).json({ message: "An account must be selected to approve this adjustment" });
+    }
+
+    const userId = req.user?.id || null;
+
+    await conn.beginTransaction();
+
+    await conn.execute(
+      `UPDATE bank_recon_adjustments SET
+        status = 'APPROVED',
+        adjustment_type = ?,
+        suggested_account_id = ?,
+        amount = ?,
+        description = ?,
+        decided_by = ?,
+        decided_at = NOW()
+      WHERE id = ?`,
+      [
+        adjustmentType || adj.adjustment_type,
+        suggestedAccountId || adj.suggested_account_id,
+        amount !== undefined ? Number(amount) : adj.amount,
+        description !== undefined ? description : adj.description,
+        userId,
+        id,
+      ]
+    );
+
+    await logAudit(conn, {
+      module: "BANK_RECON",
+      entityType: "ADJUSTMENT",
+      entityId: Number(id),
+      action: "APPROVE_ADJUSTMENT",
+      description: `Adjustment #${id} approved`,
+      beforeData: { status: adj.status },
+      afterData: { status: "APPROVED" },
+      user: req.user,
+    });
+
+    await conn.commit();
+
+    res.json({ success: true, message: "Adjustment approved" });
+  } catch (err) {
+    await conn.rollback();
+    console.error("APPROVE ADJUSTMENT ERROR:", err);
+    res.status(500).json({ message: "Failed to approve adjustment" });
+  } finally {
+    conn.release();
+  }
+});
+
+app.post("/api/bank-recon/adjustments/:id/reject", authenticateToken, async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const { id } = req.params;
+
+    const [rows] = await conn.execute(
+      `SELECT a.*, s.status AS sessionStatus
+       FROM bank_recon_adjustments a
+       JOIN bank_recon_sessions s ON s.id = a.session_id
+       WHERE a.id = ?`,
+      [id]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ message: "Adjustment not found" });
+    }
+
+    const adj = rows[0];
+
+    if (adj.sessionStatus === "FINALIZED") {
+      return res.status(400).json({ message: "Cannot modify a finalized session" });
+    }
+    if (adj.status !== "PENDING") {
+      return res.status(400).json({ message: `Adjustment is already ${adj.status}` });
+    }
+
+    const userId = req.user?.id || null;
+
+    await conn.beginTransaction();
+
+    await conn.execute(
+      "UPDATE bank_recon_adjustments SET status = 'REJECTED', decided_by = ?, decided_at = NOW() WHERE id = ?",
+      [userId, id]
+    );
+
+    await logAudit(conn, {
+      module: "BANK_RECON",
+      entityType: "ADJUSTMENT",
+      entityId: Number(id),
+      action: "REJECT_ADJUSTMENT",
+      description: `Adjustment #${id} rejected`,
+      beforeData: { status: adj.status },
+      afterData: { status: "REJECTED" },
+      user: req.user,
+    });
+
+    await conn.commit();
+
+    res.json({ success: true, message: "Adjustment rejected" });
+  } catch (err) {
+    await conn.rollback();
+    console.error("REJECT ADJUSTMENT ERROR:", err);
+    res.status(500).json({ message: "Failed to reject adjustment" });
   } finally {
     conn.release();
   }

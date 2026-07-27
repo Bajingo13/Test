@@ -56,12 +56,33 @@ export default function BankReconciliationWorkspace() {
   const [modalCandidates, setModalCandidates] = useState([]);
   const [modalBusy, setModalBusy] = useState(false);
 
+  const [outstandingItems, setOutstandingItems] = useState({
+    outstandingChecks: [],
+    depositsInTransit: [],
+  });
+  const [adjustments, setAdjustments] = useState([]);
+  const [coaAccounts, setCoaAccounts] = useState([]);
+  const [adjustmentAccountPicks, setAdjustmentAccountPicks] = useState({});
+  const [adjustmentBusyId, setAdjustmentBusyId] = useState(null);
+
   useEffect(() => {
     loadSession();
     loadImportBatches();
     loadStatementLines();
     loadBookItems();
+    loadOutstandingItems();
+    loadAdjustments();
+    loadCoaAccounts();
   }, [id]);
+
+  async function refreshBoard() {
+    await Promise.all([
+      loadStatementLines(),
+      loadBookItems(),
+      loadOutstandingItems(),
+      loadAdjustments(),
+    ]);
+  }
 
   async function loadBookItems() {
     try {
@@ -80,6 +101,133 @@ export default function BankReconciliationWorkspace() {
       setBookItems(data);
     } catch (err) {
       console.error("LOAD BOOK ITEMS ERROR:", err);
+    }
+  }
+
+  async function loadOutstandingItems() {
+    try {
+      const res = await fetch(`${API_BASE}/api/bank-recon/sessions/${id}/outstanding-items`, {
+        credentials: "include",
+        headers: authHeaders(),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        if (handleAuthError(res.status)) return;
+        return;
+      }
+
+      setOutstandingItems(data);
+    } catch (err) {
+      console.error("LOAD OUTSTANDING ITEMS ERROR:", err);
+    }
+  }
+
+  async function loadAdjustments() {
+    try {
+      const res = await fetch(`${API_BASE}/api/bank-recon/sessions/${id}/adjustments`, {
+        credentials: "include",
+        headers: authHeaders(),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        if (handleAuthError(res.status)) return;
+        return;
+      }
+
+      setAdjustments(data);
+    } catch (err) {
+      console.error("LOAD ADJUSTMENTS ERROR:", err);
+    }
+  }
+
+  async function loadCoaAccounts() {
+    try {
+      const res = await fetch(`${API_BASE}/api/coa`, {
+        credentials: "include",
+        headers: authHeaders(),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        if (handleAuthError(res.status)) return;
+        return;
+      }
+
+      setCoaAccounts(data);
+    } catch (err) {
+      console.error("LOAD COA ERROR:", err);
+    }
+  }
+
+  async function approveAdjustment(adj) {
+    const accountId = adjustmentAccountPicks[adj.id] || adj.suggestedAccountId;
+
+    if (!accountId) {
+      alert("Select an account before approving.");
+      return;
+    }
+
+    setAdjustmentBusyId(adj.id);
+
+    try {
+      const res = await fetch(`${API_BASE}/api/bank-recon/adjustments/${adj.id}/approve`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...authHeaders(),
+        },
+        credentials: "include",
+        body: JSON.stringify({ suggestedAccountId: accountId }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        if (handleAuthError(res.status)) return;
+        alert(data.message || "Failed to approve adjustment.");
+        return;
+      }
+
+      await loadAdjustments();
+    } catch (err) {
+      console.error("APPROVE ADJUSTMENT ERROR:", err);
+      alert("Unable to connect to server.");
+    } finally {
+      setAdjustmentBusyId(null);
+    }
+  }
+
+  async function rejectAdjustment(adjId) {
+    if (!confirm("Reject this adjustment suggestion?")) return;
+
+    setAdjustmentBusyId(adjId);
+
+    try {
+      const res = await fetch(`${API_BASE}/api/bank-recon/adjustments/${adjId}/reject`, {
+        method: "POST",
+        credentials: "include",
+        headers: authHeaders(),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        if (handleAuthError(res.status)) return;
+        alert(data.message || "Failed to reject adjustment.");
+        return;
+      }
+
+      await loadAdjustments();
+    } catch (err) {
+      console.error("REJECT ADJUSTMENT ERROR:", err);
+      alert("Unable to connect to server.");
+    } finally {
+      setAdjustmentBusyId(null);
     }
   }
 
@@ -103,8 +251,7 @@ export default function BankReconciliationWorkspace() {
 
       alert(data.message);
       closeModal();
-      await loadStatementLines();
-      await loadBookItems();
+      await refreshBoard();
     } catch (err) {
       console.error("RUN MATCHING ERROR:", err);
       alert("Unable to connect to server.");
@@ -136,8 +283,7 @@ export default function BankReconciliationWorkspace() {
       }
 
       alert(data.message);
-      await loadStatementLines();
-      await loadBookItems();
+      await refreshBoard();
     } catch (err) {
       console.error("BULK CONFIRM ERROR:", err);
       alert("Unable to connect to server.");
@@ -195,8 +341,7 @@ export default function BankReconciliationWorkspace() {
       }
 
       closeModal();
-      await loadStatementLines();
-      await loadBookItems();
+      await refreshBoard();
     } catch (err) {
       console.error("CONFIRM MATCH ERROR:", err);
       alert("Unable to connect to server.");
@@ -243,8 +388,7 @@ export default function BankReconciliationWorkspace() {
       }
 
       closeModal();
-      await loadStatementLines();
-      await loadBookItems();
+      await refreshBoard();
     } catch (err) {
       console.error("MANUAL MATCH ERROR:", err);
       alert("Unable to connect to server.");
@@ -277,7 +421,7 @@ export default function BankReconciliationWorkspace() {
       }
 
       closeModal();
-      await loadStatementLines();
+      await refreshBoard();
     } catch (err) {
       console.error("IGNORE LINE ERROR:", err);
       alert("Unable to connect to server.");
@@ -305,8 +449,7 @@ export default function BankReconciliationWorkspace() {
         return;
       }
 
-      await loadStatementLines();
-      await loadBookItems();
+      await refreshBoard();
     } catch (err) {
       console.error("UNMATCH ERROR:", err);
       alert("Unable to connect to server.");
@@ -861,10 +1004,10 @@ export default function BankReconciliationWorkspace() {
       )}
 
       <div className="brc-card">
-        <h2>Unmatched Book Items ({bookItems.length})</h2>
+        <h2>Outstanding Checks ({outstandingItems.outstandingChecks.length})</h2>
         <p style={{ color: "#64748b", marginTop: 0 }}>
-          CV, OR, and posted JV entries touching this bank account that have no confirmed
-          match yet.
+          CV/JV payments recorded in the books, dated on or before the period end, that
+          haven't cleared the bank yet.
         </p>
 
         <div className="brc-table-wrap">
@@ -873,28 +1016,160 @@ export default function BankReconciliationWorkspace() {
               <tr>
                 <th>Source</th>
                 <th>Voucher No.</th>
-                <th>Payee/Customer</th>
+                <th>Payee</th>
                 <th>Date</th>
-                <th>Direction</th>
                 <th>Amount</th>
               </tr>
             </thead>
             <tbody>
-              {bookItems.length === 0 ? (
+              {outstandingItems.outstandingChecks.length === 0 ? (
                 <tr>
-                  <td colSpan="6" className="brc-empty">
-                    No unmatched book items for this bank account/period.
+                  <td colSpan="5" className="brc-empty">
+                    No outstanding checks.
                   </td>
                 </tr>
               ) : (
-                bookItems.map((item) => (
+                outstandingItems.outstandingChecks.map((item) => (
                   <tr key={`${item.sourceType}-${item.sourceId}-${item.lineId || 0}`}>
                     <td>{item.sourceType}</td>
                     <td>{item.voucherNo}</td>
                     <td>{item.payeeOrCustomer}</td>
                     <td>{item.date}</td>
-                    <td>{item.direction === "OUT" ? "Money Out" : "Money In"}</td>
                     <td className="amount">₱ {formatMoney(item.amount)}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="brc-card">
+        <h2>Deposits in Transit ({outstandingItems.depositsInTransit.length})</h2>
+        <p style={{ color: "#64748b", marginTop: 0 }}>
+          OR/JV receipts recorded in the books, dated on or before the period end, that
+          haven't landed on the bank statement yet.
+        </p>
+
+        <div className="brc-table-wrap">
+          <table className="brc-table">
+            <thead>
+              <tr>
+                <th>Source</th>
+                <th>Voucher No.</th>
+                <th>Customer</th>
+                <th>Date</th>
+                <th>Amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              {outstandingItems.depositsInTransit.length === 0 ? (
+                <tr>
+                  <td colSpan="5" className="brc-empty">
+                    No deposits in transit.
+                  </td>
+                </tr>
+              ) : (
+                outstandingItems.depositsInTransit.map((item) => (
+                  <tr key={`${item.sourceType}-${item.sourceId}-${item.lineId || 0}`}>
+                    <td>{item.sourceType}</td>
+                    <td>{item.voucherNo}</td>
+                    <td>{item.payeeOrCustomer}</td>
+                    <td>{item.date}</td>
+                    <td className="amount">₱ {formatMoney(item.amount)}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="brc-card">
+        <h2>Adjustment Suggestions ({adjustments.length})</h2>
+        <p style={{ color: "#64748b", marginTop: 0 }}>
+          Statement lines the matching engine couldn't explain - guessed as bank charge or
+          interest income from the description, or flagged Other/Unexplained. Each needs an
+          explicit Approve or Reject; approved adjustments post as a JV once Phase 8 lands.
+        </p>
+
+        <div className="brc-table-wrap">
+          <table className="brc-table">
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Description</th>
+                <th>Type</th>
+                <th>Amount</th>
+                <th>Account</th>
+                <th>Status</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {adjustments.length === 0 ? (
+                <tr>
+                  <td colSpan="7" className="brc-empty">
+                    No adjustment suggestions. Run Matching to generate them.
+                  </td>
+                </tr>
+              ) : (
+                adjustments.map((adj) => (
+                  <tr key={adj.id}>
+                    <td>{adj.txnDate}</td>
+                    <td>{adj.description}</td>
+                    <td>{adj.adjustmentType}</td>
+                    <td className="amount">₱ {formatMoney(adj.amount)}</td>
+                    <td>
+                      {adj.status === "PENDING" ? (
+                        <select
+                          value={adjustmentAccountPicks[adj.id] || adj.suggestedAccountId || ""}
+                          onChange={(e) =>
+                            setAdjustmentAccountPicks({
+                              ...adjustmentAccountPicks,
+                              [adj.id]: e.target.value,
+                            })
+                          }
+                        >
+                          <option value="">Select account</option>
+                          {coaAccounts.map((acc) => (
+                            <option key={acc.id} value={acc.id}>
+                              {acc.code} - {acc.title}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        coaAccounts.find(
+                          (acc) => String(acc.id) === String(adj.suggestedAccountId)
+                        )?.title || "-"
+                      )}
+                    </td>
+                    <td>
+                      <span className={`brc-match-badge ${adj.status.toLowerCase()}`}>
+                        {adj.status}
+                      </span>
+                    </td>
+                    <td>
+                      {adj.status === "PENDING" && !isFinalized && (
+                        <>
+                          <button
+                            className="brc-btn primary"
+                            disabled={adjustmentBusyId === adj.id}
+                            onClick={() => approveAdjustment(adj)}
+                          >
+                            Approve
+                          </button>
+                          <button
+                            className="danger"
+                            disabled={adjustmentBusyId === adj.id}
+                            onClick={() => rejectAdjustment(adj.id)}
+                            style={{ marginLeft: 6 }}
+                          >
+                            Reject
+                          </button>
+                        </>
+                      )}
+                    </td>
                   </tr>
                 ))
               )}
@@ -906,8 +1181,8 @@ export default function BankReconciliationWorkspace() {
       <div className="brc-card">
         <h2>Reconciliation Workflow</h2>
         <p style={{ color: "#64748b" }}>
-          Match confirmation, adjustments, and finalization are being rolled out in upcoming
-          phases of this module. This session's statement balances (
+          Adjustment posting to a JV and session finalization/reporting are being rolled out
+          in upcoming phases of this module. This session's statement balances (
           <strong>₱ {formatMoney(session.statementBeginningBalance)}</strong> to{" "}
           <strong>₱ {formatMoney(session.statementEndingBalance)}</strong>) are recorded and
           ready for those steps once available.
