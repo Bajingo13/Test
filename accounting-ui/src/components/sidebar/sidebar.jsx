@@ -66,6 +66,7 @@ export default function Sidebar({ sidebarOpen, setSidebarOpen }) {
     { name: "AR-Aging", path: "/reports/ar-aging" },
     { name: "AP-Aging", path: "/reports/ap-aging" },
     { name: "Bank Reconciliation", path: "/reports/bank-reconciliation" },
+    { name: "AI Reconciliation Assistant", path: "/reports/ai-reconciliation" },
     { name: "Balance Sheet", path: "/reports/balance-sheet" },
     { name: "Income Statement", path: "/reports/income-statement" },
     { name: "Cash Flow Statement", path: "/reports/cash-flow-statement" },

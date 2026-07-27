@@ -4043,6 +4043,7 @@ app.get("/api/audit-logs", authenticateToken, async (req, res) => {
 // ===================== BANK RECONCILIATION API =====================
 // Extracted into services/controllers/routes (see backend/routes/bankRecon.routes.js).
 app.use("/api/bank-recon", require("./routes/bankRecon.routes"));
+app.use("/api/ai/bank-recon", require("./routes/aiRecon.routes"));
 
 // ===================== ACCOUNT GROUP CODES API =====================
 
