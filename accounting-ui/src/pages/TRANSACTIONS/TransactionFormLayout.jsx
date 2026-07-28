@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
+import PartyQuickAddModal from "../../components/PartyQuickAddModal";
 import "./TransactionFormLayout.css";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
@@ -50,6 +51,7 @@ export default function TransactionFormLayout({
   showCheckNo = false,
   defaultDescription = "",
   defaultLines = [createLine(), createLine()],
+  partyType = null,
 }) {
   const [searchParams] = useSearchParams();
 
@@ -62,6 +64,7 @@ export default function TransactionFormLayout({
   const [unpaidApvs, setUnpaidApvs] = useState([]);
   const [showApvModal, setShowApvModal] = useState(false);
   const [apvApplications, setApvApplications] = useState([]);
+  const [showPartyModal, setShowPartyModal] = useState(false);
 
   const [invoiceApplications, setInvoiceApplications] = useState([]);
   const [unpaidInvoices, setUnpaidInvoices] = useState([]);
@@ -227,19 +230,27 @@ export default function TransactionFormLayout({
         return;
       }
 
+      const wantsSupplier = partyLabel.toLowerCase().includes("supplier");
+      const wantsCustomer = partyLabel.toLowerCase().includes("customer");
+
       let filtered = data;
 
-      if (partyLabel.toLowerCase().includes("supplier")) {
+      if (wantsSupplier && wantsCustomer) {
+        // e.g. Debit/Credit Memo's "Customer / Supplier" label - both types
+        // are legitimate here, unlike the single-type cases below.
+        filtered = data.filter((item) => item.type === "SUPPLIER" || item.type === "CUSTOMER");
+      } else if (wantsSupplier) {
         filtered = data.filter((item) => item.type === "SUPPLIER");
-      }
-
-      if (partyLabel.toLowerCase().includes("customer")) {
+      } else if (wantsCustomer) {
         filtered = data.filter((item) => item.type === "CUSTOMER");
       }
 
-      setPartyOptions(filtered.filter((item) => item.status === "ACTIVE"));
+      const active = filtered.filter((item) => item.status === "ACTIVE");
+      setPartyOptions(active);
+      return active;
     } catch (err) {
       console.error("LOAD GENLIB ERROR:", err);
+      return partyOptions;
     }
   }
 
@@ -889,8 +900,12 @@ if (code === "OR" || code === "CV") {
     setForm((prev) => ({ ...prev, [field]: value }));
   }
 
-  function handlePartyChange(value) {
-    const selectedParty = partyOptions.find(
+  // optionsOverride lets a caller pass a just-fetched party list instead of
+  // relying on `partyOptions` state, which wouldn't reflect a record created
+  // a moment earlier in the same tick (see handlePartyCreated below).
+  function handlePartyChange(value, optionsOverride) {
+    const options = optionsOverride || partyOptions;
+    const selectedParty = options.find(
       (party) => party.name.toLowerCase() === value.toLowerCase()
     );
 
@@ -925,6 +940,17 @@ if (code === "OR" || code === "CV") {
 // here used to run via setTimeout with a stale closure over the *previous* party
 // (this handler fires on every keystroke), so the list almost always came back
 // empty or filtered by the wrong customer/supplier.
+  }
+
+  // Fired by PartyQuickAddModal after a successful save. Re-fetches the
+  // party list (so the new record is present) and selects it through the
+  // exact same handlePartyChange path a manual pick goes through - reuses
+  // its existing AP/AR line-sync and APV TIN/ATC side effects rather than
+  // duplicating that logic here.
+  async function handlePartyCreated(newRecord) {
+    const freshOptions = await loadParties();
+    handlePartyChange(newRecord.name, freshOptions);
+    setShowPartyModal(false);
   }
 
   function updateLine(id, field, value) {
@@ -1502,23 +1528,54 @@ if (code === "OR") {
 
                 <div className="transaction-field">
                   <label className="transaction-label">{partyLabel}</label>
-                  <input
-                    type="text"
-                    list={`${code}-party-list`}
-                    value={form.party}
-                    onChange={(e) => handlePartyChange(e.target.value)}
-                    placeholder={`Select ${partyLabel.toLowerCase()}`}
-                    className="transaction-input"
-                  />
+                  <div className="transaction-party-row">
+                    <input
+                      type="text"
+                      list={`${code}-party-list`}
+                      value={form.party}
+                      onChange={(e) => handlePartyChange(e.target.value)}
+                      placeholder={`Select ${partyLabel.toLowerCase()}`}
+                      className="transaction-input"
+                    />
 
-                  <datalist id={`${code}-party-list`}>
-                    {partyOptions.map((party) => (
-                      <option key={party.id} value={party.name}>
-                        {party.code} - {party.type}
-                      </option>
-                    ))}
-                  </datalist>
+                    <datalist id={`${code}-party-list`}>
+                      {partyOptions.map((party) => (
+                        <option key={party.id} value={party.name}>
+                          {party.code} - {party.type}
+                        </option>
+                      ))}
+                    </datalist>
+
+                    {partyType && (
+                      <button
+                        type="button"
+                        className="transaction-party-add-btn"
+                        onClick={() => setShowPartyModal(true)}
+                        title={
+                          partyType === "BOTH"
+                            ? "Add New Customer or Supplier"
+                            : `Add New ${partyType === "SUPPLIER" ? "Supplier" : "Customer"}`
+                        }
+                        aria-label={
+                          partyType === "BOTH"
+                            ? "Add New Customer or Supplier"
+                            : `Add New ${partyType === "SUPPLIER" ? "Supplier" : "Customer"}`
+                        }
+                      >
+                        +
+                      </button>
+                    )}
+                  </div>
                 </div>
+
+                {partyType && (
+                  <PartyQuickAddModal
+                    open={showPartyModal}
+                    partyType={partyType}
+                    onClose={() => setShowPartyModal(false)}
+                    onCreated={handlePartyCreated}
+                  />
+                )}
 
                 <div className="transaction-field">
                   <label className="transaction-label">

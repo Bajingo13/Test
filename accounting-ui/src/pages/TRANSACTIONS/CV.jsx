@@ -7,6 +7,7 @@ export default function CV() {
       title="Check Voucher"
       code="CV"
       partyLabel="Payee"
+      partyType="SUPPLIER"
       defaultDescription="Cash disbursement through check"
       defaultLines={[
         {

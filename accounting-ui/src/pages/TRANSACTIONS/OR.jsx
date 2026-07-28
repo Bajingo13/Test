@@ -7,6 +7,7 @@ export default function OR() {
       title="Official Receipt"
       code="OR"
       partyLabel="Customer"
+      partyType="CUSTOMER"
       showCheckNo={true}
       defaultDescription="Collection from customer"
       defaultLines={[

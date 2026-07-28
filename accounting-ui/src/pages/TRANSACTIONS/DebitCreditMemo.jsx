@@ -7,6 +7,7 @@ export default function DebitCreditMemo() {
       title="Debit / Credit Memo"
       code="DCM"
       partyLabel="Customer / Supplier"
+      partyType="BOTH"
       defaultDescription="Debit or credit memo adjustment"
       defaultLines={[
         {

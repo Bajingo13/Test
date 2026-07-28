@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { generateNextCode } from "../../utils/genLibCode";
 import "./GenLib.css";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
@@ -122,15 +123,6 @@ export default function GenLib() {
 
   function updateField(key, value) {
     setForm((prev) => ({ ...prev, [key]: value }));
-  }
-
-  function generateNextCode(list) {
-    const numbers = list
-      .map((item) => Number(String(item.code).replace(/[^\d]/g, "")))
-      .filter((num) => !Number.isNaN(num));
-
-    const next = numbers.length ? Math.max(...numbers) + 1 : 1;
-    return `GL-${String(next).padStart(4, "0")}`;
   }
 
   function handleAdd() {

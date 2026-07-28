@@ -7,6 +7,7 @@ export default function APV() {
       title="Accounts Payable Voucher"
       code="APV"
       partyLabel="Supplier"
+      partyType="SUPPLIER"
       defaultDescription="Expense or asset purchase on account"
       defaultLines={[
         {

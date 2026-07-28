@@ -7,6 +7,7 @@ export default function Invoice() {
       title="Invoice"
       code="INV"
       partyLabel="Customer"
+      partyType="CUSTOMER"
       defaultDescription="Sales invoice on account"
       defaultLines={[
         {
