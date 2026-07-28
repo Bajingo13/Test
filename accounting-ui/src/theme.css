@@ -61,31 +61,22 @@
   --accent-teal-bg: #eaf8fb;
   --accent-text: #ffffff;
 
-  /* Sidebar - its own token set, independent of page content, derived from
-     the brand base colors: bright cyan/turquoise for light mode, deep navy
-     for dark mode. Light mode's background is bright, so its text/icons/
-     active-state go DARK for contrast rather than the "always white on
-     dark" approach that worked when the sidebar was dark in both themes. */
-  --sidebar-bg: #26bfd6;
-  --sidebar-header-bg: #1fa8bd;
-  --sidebar-text: #0b2c36;
-  --sidebar-text-muted: rgba(11, 44, 54, 0.68);
-  --sidebar-text-disabled: rgba(11, 44, 54, 0.4);
-  --sidebar-hover-bg: rgba(255, 255, 255, 0.35);
-  --sidebar-active-bg: #0e3742;
-  --sidebar-active-bg-rgb: 14, 55, 66;
-  --sidebar-active-text: #ffffff;
-  --sidebar-active-indicator: #ffffff;
-  --sidebar-border: rgba(11, 44, 54, 0.18);
-  --sidebar-divider: rgba(11, 44, 54, 0.14);
-  --sidebar-scrollbar: rgba(11, 44, 54, 0.28);
-  --sidebar-scrollbar-hover: rgba(11, 44, 54, 0.42);
-  --sidebar-badge-bg: #e63946;
-  --sidebar-badge-text: #ffffff;
-  --sidebar-focus-ring: #0e3742;
-  --sidebar-danger-text: #8a1f1f;
-  --sidebar-danger-hover-bg: rgba(138, 31, 31, 0.12);
-  --sidebar-danger-hover-text: #6b1414;
+  /* Sidebar - its own tokens so it can differ from page content.
+     Light theme: the lighter navy/slate requested. */
+  --sidebar-bg: #2a3b5c;
+  --sidebar-text: #ffffff;
+  --sidebar-text-muted: #d9e2f1;
+  --sidebar-hover: #3a4d73;
+  --sidebar-border: rgba(255, 255, 255, 0.1);
+  --sidebar-active-start: #4f46e5;
+  --sidebar-active-end: #5b4df0;
+  --sidebar-active-rgb: 79, 70, 229;
+  --sidebar-scrollbar: rgba(255, 255, 255, 0.22);
+  --sidebar-text-disabled: #6b7994;
+  --sidebar-focus-ring: #818cf8;
+  --sidebar-danger-text: #fca5a5;
+  --sidebar-danger-hover-bg: #3b1c1c;
+  --sidebar-danger-hover-text: #fecaca;
 }
 
 [data-theme="dark"] {
@@ -136,26 +127,18 @@
   --accent-teal-bg: rgba(19, 181, 200, 0.16);
   --accent-text: #ffffff;
 
-  /* Dark mode sidebar: deep navy base. Active state steps up to a richer
-     navy-blue with a bright cyan indicator, tying back to light mode's
-     brand color as an accent rather than a full background. */
-  --sidebar-bg: #16213a;
-  --sidebar-header-bg: #1d2c4c;
-  --sidebar-text: #e7ecf5;
-  --sidebar-text-muted: rgba(231, 236, 245, 0.68);
-  --sidebar-text-disabled: rgba(231, 236, 245, 0.38);
-  --sidebar-hover-bg: rgba(255, 255, 255, 0.07);
-  --sidebar-active-bg: #1f3b5c;
-  --sidebar-active-bg-rgb: 31, 59, 92;
-  --sidebar-active-text: #ffffff;
-  --sidebar-active-indicator: #2dc6db;
-  --sidebar-border: rgba(255, 255, 255, 0.08);
-  --sidebar-divider: rgba(255, 255, 255, 0.1);
+  /* Sidebar stays a dark navy in dark mode - today's existing color. */
+  --sidebar-bg: #16243b;
+  --sidebar-text: #ffffff;
+  --sidebar-text-muted: #cbd5e1;
+  --sidebar-hover: #243552;
+  --sidebar-border: rgba(255, 255, 255, 0.06);
+  --sidebar-active-start: #4f46e5;
+  --sidebar-active-end: #5b4df0;
+  --sidebar-active-rgb: 79, 70, 229;
   --sidebar-scrollbar: rgba(255, 255, 255, 0.18);
-  --sidebar-scrollbar-hover: rgba(255, 255, 255, 0.28);
-  --sidebar-badge-bg: #ff6b6b;
-  --sidebar-badge-text: #ffffff;
-  --sidebar-focus-ring: #2dc6db;
+  --sidebar-text-disabled: #6b7994;
+  --sidebar-focus-ring: #818cf8;
   --sidebar-danger-text: #fca5a5;
   --sidebar-danger-hover-bg: #3b1c1c;
   --sidebar-danger-hover-text: #fecaca;

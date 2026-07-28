@@ -11,8 +11,7 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  transition: width 0.3s ease, padding 0.3s ease, background-color 0.25s ease,
-    color 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
+  transition: all 0.3s ease, background 0.2s ease;
   z-index: 1000;
 }
 
@@ -40,9 +39,7 @@
   margin-bottom: 26px;
   padding-top: 8px;
   cursor: pointer;
-  border-radius: 12px;
-  background: var(--sidebar-header-bg);
-  transition: transform 0.2s ease, background-color 0.25s ease;
+  transition: all 0.2s ease;
 }
 
 .sidebar-logo-box:hover {
@@ -93,13 +90,12 @@
 }
 
 .sidebar-nav::-webkit-scrollbar-thumb {
-  background: var(--sidebar-scrollbar);
+  background: rgba(255, 255, 255, 0.2);
   border-radius: 999px;
-  transition: background-color 0.25s ease;
 }
 
 .sidebar-nav::-webkit-scrollbar-thumb:hover {
-  background: var(--sidebar-scrollbar-hover);
+  background: rgba(255, 255, 255, 0.35);
 }
 
 .nav-link,
@@ -115,7 +111,7 @@
   cursor: pointer;
   border-radius: 10px;
   box-sizing: border-box;
-  transition: background-color 0.25s ease, color 0.25s ease, box-shadow 0.25s ease;
+  transition: all 0.2s ease;
 }
 
 .nav-link,
@@ -125,20 +121,19 @@
 
 .nav-link:hover,
 .nav-section-btn:hover {
-  background: var(--sidebar-hover-bg);
+  background: var(--sidebar-hover);
 }
 
 .nav-link.active,
 .nav-section-btn.active {
-  background: var(--sidebar-active-bg);
-  color: var(--sidebar-active-text);
-  box-shadow: inset 3px 0 0 var(--sidebar-active-indicator);
+  background: linear-gradient(90deg, var(--sidebar-active-start), var(--sidebar-active-end));
+  color: #fff;
 }
 
 .sidebar-logout-button {
   margin-top: 16px;
   padding-top: 16px;
-  border-top: 1px solid var(--sidebar-divider);
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
   color: var(--sidebar-danger-text);
   font-weight: 600;
 }
@@ -171,15 +166,14 @@
 }
 
 .submenu-link:hover {
-  background: var(--sidebar-hover-bg);
-  color: var(--sidebar-text);
+  background: rgba(var(--sidebar-active-rgb), 0.18);
+  color: #ffffff;
 }
 
 .active-submenu {
-  background: var(--sidebar-active-bg);
-  color: var(--sidebar-active-text);
+  background: linear-gradient(90deg, var(--sidebar-active-start), var(--sidebar-active-end));
+  color: #fff;
   font-weight: 600;
-  box-shadow: inset 3px 0 0 var(--sidebar-active-indicator);
 }
 
 .sidebar::-webkit-scrollbar {
@@ -191,13 +185,12 @@
 }
 
 .sidebar::-webkit-scrollbar-thumb {
-  background: var(--sidebar-scrollbar);
+  background: rgba(255, 255, 255, 0.18);
   border-radius: 999px;
-  transition: background-color 0.25s ease;
 }
 
 .sidebar::-webkit-scrollbar-thumb:hover {
-  background: var(--sidebar-scrollbar-hover);
+  background: rgba(255, 255, 255, 0.28);
 }
 
 .submenu-parent {
@@ -213,8 +206,7 @@
   margin-left: 18px;
   margin-bottom: 8px;
   padding-left: 10px;
-  border-left: 2px solid var(--sidebar-divider);
-  transition: border-color 0.25s ease;
+  border-left: 2px solid rgba(255, 255, 255, 0.16);
 }
 
 .nested-submenu-link {
@@ -223,17 +215,17 @@
   color: var(--sidebar-text-muted);
   text-decoration: none;
   border-radius: 9px;
-  transition: background-color 0.25s ease, color 0.25s ease;
+  transition: all 0.2s ease;
 }
 
 .nested-submenu-link:hover {
-  background: var(--sidebar-hover-bg);
-  color: var(--sidebar-text);
+  background: rgba(var(--sidebar-active-rgb), 0.18);
+  color: #ffffff;
 }
 
 .active-nested-submenu {
-  background: rgba(var(--sidebar-active-bg-rgb), 0.85);
-  color: var(--sidebar-active-text);
+  background: rgba(var(--sidebar-active-rgb), 0.35);
+  color: #ffffff;
   font-weight: 700;
 }
 
@@ -273,12 +265,12 @@
   text-align: left;
   border-radius: 9px;
   cursor: pointer;
-  transition: background-color 0.25s ease, color 0.25s ease, box-shadow 0.25s ease;
+  transition: background 0.18s ease, color 0.18s ease;
 }
 
 .rt-node:hover {
-  background: var(--sidebar-hover-bg);
-  color: var(--sidebar-text);
+  background: rgba(var(--sidebar-active-rgb), 0.18);
+  color: #ffffff;
 }
 
 .rt-node:focus-visible {
@@ -300,10 +292,9 @@
 }
 
 .rt-node.rt-active {
-  background: var(--sidebar-active-bg);
-  color: var(--sidebar-active-text);
+  background: linear-gradient(90deg, var(--sidebar-active-start), var(--sidebar-active-end));
+  color: #ffffff;
   font-weight: 600;
-  box-shadow: inset 3px 0 0 var(--sidebar-active-indicator);
 }
 
 .rt-node.rt-active .rt-icon {
@@ -316,8 +307,8 @@
 }
 
 .rt-node.rt-category.rt-category-active {
-  color: var(--sidebar-text);
-  background: rgba(var(--sidebar-active-bg-rgb), 0.14);
+  color: #ffffff;
+  background: rgba(var(--sidebar-active-rgb), 0.14);
 }
 
 .rt-node.rt-disabled {
@@ -359,23 +350,4 @@
 
 .rt-children-inner {
   overflow: hidden;
-}
-
-/* Notification badge - not wired to any nav item today, but the tokens
-   (--sidebar-badge-bg/--sidebar-badge-text) exist in theme.css and this
-   class is ready to drop onto a nav-link/rt-node when one needs a count. */
-.sidebar-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
-  border-radius: 999px;
-  background: var(--sidebar-badge-bg);
-  color: var(--sidebar-badge-text);
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 1;
-  transition: background-color 0.25s ease, color 0.25s ease;
 }
