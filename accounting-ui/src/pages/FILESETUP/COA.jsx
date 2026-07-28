@@ -63,6 +63,7 @@ export default function COA() {
   const [loading, setLoading] = useState(false);
   const [groupCode, setGroupCode] = useState("");
   const [importing, setImporting] = useState(false);
+  const [showPicker, setShowPicker] = useState(false);
   const importInputRef = useRef(null);
 
   useEffect(() => {
@@ -201,6 +202,12 @@ export default function COA() {
 
   function handleView() {
     setMode("view");
+    setShowPicker(true);
+  }
+
+  function pickAccount(account) {
+    loadAccount(account);
+    setShowPicker(false);
   }
 
   async function handleSave() {
@@ -425,45 +432,6 @@ export default function COA() {
   return (
     <div className="coa-page">
       <div className="coa-layout">
-        <aside className="coa-sidebar-panel">
-          <div className="coa-sidebar-header">
-            <p className="coa-mini-label">File Setup</p>
-            <h2>Chart of Accounts</h2>
-            <input
-              type="text"
-              placeholder="Search code or title"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="coa-search"
-            />
-          </div>
-
-          <div className="coa-account-list">
-            {loading ? (
-              <div className="empty-cell">Loading accounts...</div>
-            ) : filteredAccounts.length > 0 ? (
-              filteredAccounts.map((account) => (
-                <button
-                  key={account.id}
-                  type="button"
-                  className={
-                    selectedId === account.id
-                      ? "coa-account-card active"
-                      : "coa-account-card"
-                  }
-                  onClick={() => loadAccount(account)}
-                >
-                  <div className="coa-account-code">{account.code}</div>
-                  <div className="coa-account-title">{account.title}</div>
-                  <div className="coa-account-class">{account.accountClass}</div>
-                </button>
-              ))
-            ) : (
-              <div className="empty-cell">No accounts found.</div>
-            )}
-          </div>
-        </aside>
-
         <section className="coa-main-panel">
           <div className="coa-header">
             <div>
@@ -511,6 +479,67 @@ export default function COA() {
               />
             </div>
           </div>
+
+          {showPicker && (
+            <div className="coa-picker-panel">
+              <div className="coa-picker-header">
+                <div>
+                  <h3>Accounts</h3>
+                  <span>{filteredAccounts.length} item(s)</span>
+                </div>
+                <input
+                  type="text"
+                  placeholder="Search code or title"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  className="coa-picker-search"
+                />
+                <button
+                  type="button"
+                  className="coa-picker-close"
+                  onClick={() => setShowPicker(false)}
+                  aria-label="Close"
+                >
+                  &times;
+                </button>
+              </div>
+
+              <div className="coa-picker-table-wrap">
+                <table className="coa-picker-table">
+                  <thead>
+                    <tr>
+                      <th>Code</th>
+                      <th>Title</th>
+                      <th>Class</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {loading ? (
+                      <tr>
+                        <td colSpan={3} className="empty-cell">Loading accounts...</td>
+                      </tr>
+                    ) : filteredAccounts.length > 0 ? (
+                      filteredAccounts.map((account) => (
+                        <tr
+                          key={account.id}
+                          className={selectedId === account.id ? "selected-row" : ""}
+                          onClick={() => pickAccount(account)}
+                        >
+                          <td>{account.code}</td>
+                          <td>{account.title}</td>
+                          <td>{account.accountClass}</td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td colSpan={3} className="empty-cell">No accounts found.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
 
           <div className="coa-card">
             <div className="coa-grid">

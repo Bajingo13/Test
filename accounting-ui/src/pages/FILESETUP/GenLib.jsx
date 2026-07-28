@@ -48,7 +48,7 @@ export default function GenLib() {
   const [mode, setMode] = useState("view");
   const [search, setSearch] = useState("");
   const [activeTab, setActiveTab] = useState("main");
-  const [showTable, setShowTable] = useState(true);
+  const [showTable, setShowTable] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
   const [loading, setLoading] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -316,50 +316,6 @@ export default function GenLib() {
   return (
     <div className="gl-page">
       <div className="gl-layout">
-        <aside className="gl-sidebar">
-          <div className="gl-sidebar-header">
-            <p className="gl-mini-label">File Setup</p>
-            <h2>General Libraries</h2>
-            <input
-              className="gl-search"
-              type="text"
-              placeholder="Search code, name, type..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
-          </div>
-
-          <div className="gl-list">
-            {loading ? (
-              <div className="gl-empty-list">Loading records...</div>
-            ) : filteredRecords.length > 0 ? (
-              filteredRecords.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  className={
-                    selectedId === item.id
-                      ? "gl-list-card active"
-                      : "gl-list-card"
-                  }
-                  onClick={() => loadRecord(item)}
-                >
-                  <div className="gl-list-top">
-                    <span className="gl-code">{item.code}</span>
-                    <span className="gl-badge">{item.type}</span>
-                  </div>
-                  <div className="gl-name">{item.name}</div>
-                  <div className="gl-meta">
-                    {item.status} • {item.email || item.mobile || "No contact"}
-                  </div>
-                </button>
-              ))
-            ) : (
-              <div className="gl-empty-list">No records found.</div>
-            )}
-          </div>
-        </aside>
-
         <section className="gl-main">
           <div className="gl-header">
             <div>
@@ -374,16 +330,18 @@ export default function GenLib() {
               <button className="btn btn-primary" onClick={handleAdd}>Add</button>
               <button className="btn" onClick={handleEdit}>Edit</button>
               <button className="btn btn-danger" onClick={handleDelete}>Delete</button>
-              <button className="btn" onClick={() => setMode("view")}>View</button>
+              <button
+                className="btn"
+                onClick={() => {
+                  setMode("view");
+                  setShowTable(true);
+                }}
+              >
+                View
+              </button>
               <button className="btn" onClick={() => window.print()}>Print</button>
               <button className="btn" onClick={handlePrevious}>Previous</button>
               <button className="btn" onClick={handleNext}>Next</button>
-              <button
-                className="btn btn-dark"
-                onClick={() => setShowTable((prev) => !prev)}
-              >
-                {showTable ? "Hide Table" : "Show Table"}
-              </button>
               <button className="btn" onClick={downloadTemplate}>
                 Generate Template
               </button>
@@ -406,6 +364,21 @@ export default function GenLib() {
                 <div className="gl-table-top">
                   <h3>Records</h3>
                   <span>{filteredRecords.length} item(s)</span>
+                  <input
+                    className="gl-search"
+                    type="text"
+                    placeholder="Search code, name, type..."
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    className="gl-table-close"
+                    onClick={() => setShowTable(false)}
+                    aria-label="Close"
+                  >
+                    &times;
+                  </button>
                 </div>
 
                 <div className="gl-table-wrap">
@@ -426,7 +399,10 @@ export default function GenLib() {
                           <tr
                             key={item.id}
                             className={selectedId === item.id ? "selected-row" : ""}
-                            onClick={() => loadRecord(item)}
+                            onClick={() => {
+                              loadRecord(item);
+                              setShowTable(false);
+                            }}
                           >
                             <td>{item.code}</td>
                             <td>{item.name}</td>
