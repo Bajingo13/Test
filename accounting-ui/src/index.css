@@ -1,8 +1,9 @@
 body {
   margin: 0;
   font-family: Arial, sans-serif;
-  background: white;
-  color: black;
+  background: var(--bg-page);
+  color: var(--text-primary);
+  transition: background 0.2s ease, color 0.2s ease;
 }
 
 #root {

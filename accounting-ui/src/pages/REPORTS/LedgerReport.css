@@ -1,8 +1,8 @@
 .lgr-page {
   padding: 28px;
-  background: #f5f7fb;
+  background: var(--bg-page);
   min-height: 100vh;
-  color: #1f2937;
+  color: var(--text-primary);
 }
 
 .lgr-header {
@@ -16,11 +16,11 @@
 }
 
 .lgr-filters {
-  background: white;
+  background: var(--bg-surface);
   padding: 22px;
   border-radius: 14px;
   margin-bottom: 20px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
+  box-shadow: 0 4px 16px rgba(var(--shadow-rgb), 0.06);
 }
 
 .lgr-filters h2 {
@@ -49,10 +49,10 @@
 .lgr-filter-grid select {
   height: 54px;
   padding: 0 16px;
-  border: 1px solid #cbd5e1;
+  border: 1px solid var(--border-color-strong);
   border-radius: 12px;
   font-size: 16px;
-  background: white;
+  background: var(--bg-surface);
 }
 
 .lgr-actions {
@@ -72,18 +72,18 @@
 }
 
 .lgr-actions .primary {
-  background: #2563eb;
+  background: var(--accent-blue);
   color: white;
 }
 
 .lgr-actions .secondary {
-  background: #e5e7eb;
-  color: #111827;
+  background: var(--neutral-bg);
+  color: var(--text-primary);
 }
 
 .lgr-actions .dark {
-  background: #0f172a;
-  color: white;
+  background: var(--dark-btn-bg);
+  color: var(--dark-btn-text);
 }
 
 .lgr-actions button:disabled {
@@ -92,11 +92,11 @@
 }
 
 .lgr-report-card {
-  background: white;
+  background: var(--bg-surface);
   border-radius: 14px;
   padding: 20px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
-  color: black;
+  box-shadow: 0 4px 16px rgba(var(--shadow-rgb), 0.06);
+  color: var(--text-primary);
 }
 
 .lgr-report-title {
@@ -114,7 +114,7 @@
   margin: 0;
   font-size: 16px;
   font-weight: 700;
-  color: #475569;
+  color: var(--text-secondary);
 }
 
 .lgr-summary-grid {
@@ -125,36 +125,36 @@
 }
 
 .lgr-summary-item {
-  border: 1px solid #edf2f7;
+  border: 1px solid var(--border-color);
   border-radius: 10px;
   padding: 12px 14px;
-  background: #f8fafc;
+  background: var(--bg-surface-muted);
 }
 
 .lgr-summary-item .label {
   font-size: 11px;
   text-transform: uppercase;
-  color: #64748b;
+  color: var(--text-secondary);
   font-weight: 700;
 }
 
 .lgr-summary-item .value {
   font-size: 18px;
   font-weight: 800;
-  color: #0f172a;
+  color: var(--text-primary);
   margin-top: 4px;
 }
 
 .lgr-account-section {
   margin-bottom: 28px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--border-color);
   border-radius: 10px;
   overflow: hidden;
 }
 
 .lgr-account-header {
-  background: #0f2a5f;
-  color: white;
+  background: var(--dark-btn-bg);
+  color: var(--dark-btn-text);
   padding: 10px 14px;
   display: flex;
   justify-content: space-between;
@@ -179,19 +179,19 @@
 }
 
 .lgr-table th {
-  background: #f8fafc;
-  color: #334155;
+  background: var(--bg-surface-muted);
+  color: var(--text-secondary);
   padding: 8px 10px;
   font-size: 12px;
   text-transform: uppercase;
-  border-bottom: 2px solid #dbe4f0;
+  border-bottom: 2px solid var(--border-color);
   text-align: left;
 }
 
 .lgr-table td {
   padding: 7px 10px;
   font-size: 13px;
-  border-bottom: 1px solid #f1f5f9;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .lgr-table .amount {
@@ -202,14 +202,14 @@
 
 .lgr-table tfoot td {
   font-weight: 800;
-  border-top: 2px solid #dbe4f0;
+  border-top: 2px solid var(--border-color);
   border-bottom: none;
 }
 
 .lgr-empty {
   text-align: center;
   padding: 40px;
-  color: #64748b;
+  color: var(--text-secondary);
   font-weight: 700;
 }
 

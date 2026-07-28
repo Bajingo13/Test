@@ -1,8 +1,8 @@
 .aa-page {
   padding: 28px;
-  background: #f5f7fb;
+  background: var(--bg-page);
   min-height: 100vh;
-  color: #1f2937;
+  color: var(--text-primary);
 }
 
 .aa-header {
@@ -16,11 +16,11 @@
 }
 
 .aa-filters {
-  background: white;
+  background: var(--bg-surface);
   padding: 22px;
   border-radius: 14px;
   margin-bottom: 20px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
+  box-shadow: 0 4px 16px rgba(var(--shadow-rgb), 0.06);
 }
 
 .aa-filters h2 {
@@ -49,10 +49,10 @@
 .aa-filter-grid select {
   height: 54px;
   padding: 0 16px;
-  border: 1px solid #cbd5e1;
+  border: 1px solid var(--border-color-strong);
   border-radius: 12px;
   font-size: 16px;
-  background: white;
+  background: var(--bg-surface);
 }
 
 .aa-actions {
@@ -71,26 +71,26 @@
 }
 
 .aa-actions .primary {
-  background: #2563eb;
+  background: var(--accent-blue);
   color: white;
 }
 
 .aa-actions .secondary {
-  background: #e5e7eb;
-  color: #111827;
+  background: var(--neutral-bg);
+  color: var(--text-primary);
 }
 
 .aa-actions .dark {
-  background: #0f172a;
-  color: white;
+  background: var(--dark-btn-bg);
+  color: var(--dark-btn-text);
 }
 
 .aa-report-card {
-  background: white;
+  background: var(--bg-surface);
   border-radius: 14px;
   padding: 28px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
-  color: black;
+  box-shadow: 0 4px 16px rgba(var(--shadow-rgb), 0.06);
+  color: var(--text-primary);
 }
 
 .aa-report-title {
@@ -126,7 +126,7 @@
 }
 
 .aa-table thead tr {
-  border: 3px solid #000;
+  border: 3px solid var(--text-primary);
 }
 
 .aa-table th {
@@ -137,7 +137,7 @@
 
 .aa-table td {
   padding: 7px 8px;
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid var(--border-color);
   font-size: 14px;
 }
 
@@ -244,17 +244,17 @@
 .empty {
   text-align: center;
   padding: 24px;
-  color: #6b7280;
+  color: var(--text-secondary);
 }
 
 .aa-table tfoot tr {
-  border-top: 3px solid #000;
+  border-top: 3px solid var(--text-primary);
 }
 
 .aa-table tfoot td {
   padding: 10px 8px;
   font-weight: 900;
-  border-bottom: 3px double #000;
+  border-bottom: 3px double var(--text-primary);
 }
 
 .aa-clickable-row {
@@ -262,7 +262,7 @@
 }
 
 .aa-clickable-row:hover {
-  background: #eff6ff;
+  background: var(--info-bg);
 }
 
 /* PRINT FIX — remove old 9-column print behavior */

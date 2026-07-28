@@ -1,6 +1,6 @@
 .fs-page {
   min-height: 100vh;
-  background: #f5f7fb;
+  background: var(--bg-page);
   padding: 24px;
   font-family: Arial, sans-serif;
 }
@@ -14,20 +14,20 @@
 
 .fs-header h1 {
   margin: 0;
-  color: #111827;
+  color: var(--text-primary);
 }
 
 .fs-header p {
   margin: 6px 0 0;
-  color: #6b7280;
+  color: var(--text-secondary);
 }
 
 .fs-card {
-  background: white;
+  background: var(--bg-surface);
   border-radius: 16px;
   padding: 20px;
   margin-bottom: 20px;
-  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+  box-shadow: 0 8px 24px rgba(var(--shadow-rgb), 0.06);
 }
 
 .fs-toolbar {
@@ -41,7 +41,7 @@
 .fs-field input,
 .fs-field select,
 .fs-field textarea {
-  border: 1px solid #d1d5db;
+  border: 1px solid var(--border-color-strong);
   border-radius: 10px;
   padding: 11px 12px;
   font-size: 14px;
@@ -53,8 +53,8 @@
 
 .fs-btn {
   border: none;
-  background: #e5e7eb;
-  color: #374151;
+  background: var(--neutral-bg);
+  color: var(--neutral-text);
   padding: 10px 16px;
   border-radius: 10px;
   font-weight: 700;
@@ -62,13 +62,13 @@
 }
 
 .fs-btn.primary {
-  background: #2563eb;
+  background: var(--accent-blue);
   color: white;
 }
 
 .fs-btn.danger {
-  background: #fee2e2;
-  color: #b91c1c;
+  background: var(--danger-bg);
+  color: var(--danger-hover);
 }
 
 .fs-grid {
@@ -85,7 +85,7 @@
 .fs-field label {
   font-weight: 700;
   margin-bottom: 6px;
-  color: #374151;
+  color: var(--text-secondary);
 }
 
 .fs-table {
@@ -96,18 +96,18 @@
 .fs-table th,
 .fs-table td {
   padding: 12px;
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid var(--border-color);
   text-align: left;
 }
 
 .fs-table th {
-  background: #f9fafb;
-  color: #374151;
+  background: var(--bg-surface-muted);
+  color: var(--text-secondary);
 }
 
 .fs-empty {
   text-align: center;
-  color: #6b7280;
+  color: var(--text-secondary);
   font-weight: 600;
   padding: 30px;
 }

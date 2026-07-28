@@ -1,17 +1,17 @@
 .glbb-page {
   min-height: 100vh;
-  background: #f3f6fb;
+  background: var(--bg-page);
   padding: 24px;
   font-family: Arial, sans-serif;
 }
 
 .glbb-card {
-  background: #ffffff;
-  border: 1px solid #dbe4f0;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
   border-radius: 16px;
   padding: 20px;
   margin-bottom: 18px;
-  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+  box-shadow: 0 8px 24px rgba(var(--shadow-rgb), 0.06);
 }
 
 .glbb-header {
@@ -23,13 +23,13 @@
 
 .glbb-header h1 {
   margin: 0;
-  color: #0f172a;
+  color: var(--text-primary);
   font-size: 30px;
 }
 
 .glbb-header p {
   margin: 6px 0 0;
-  color: #64748b;
+  color: var(--text-secondary);
 }
 
 .glbb-header-actions,
@@ -41,9 +41,9 @@
 }
 
 button {
-  border: 1px solid #cbd5e1;
-  background: #ffffff;
-  color: #0f172a;
+  border: 1px solid var(--border-color-strong);
+  background: var(--bg-surface);
+  color: var(--text-primary);
   height: 42px;
   padding: 0 16px;
   border-radius: 10px;
@@ -52,13 +52,13 @@ button {
 }
 
 button.primary {
-  background: #0f2a5f;
-  color: white;
-  border-color: #0f2a5f;
+  background: var(--dark-btn-bg);
+  color: var(--dark-btn-text);
+  border-color: var(--dark-btn-bg);
 }
 
 button.danger {
-  color: #dc2626;
+  color: var(--danger);
 }
 
 .glbb-info-grid,
@@ -78,13 +78,13 @@ button.danger {
 label {
   font-size: 13px;
   font-weight: 800;
-  color: #334155;
+  color: var(--text-secondary);
   margin-bottom: 7px;
 }
 
 input {
   height: 42px;
-  border: 1px solid #cbd5e1;
+  border: 1px solid var(--border-color-strong);
   border-radius: 10px;
   padding: 0 12px;
   font-size: 14px;
@@ -92,7 +92,7 @@ input {
 }
 
 input:focus {
-  border-color: #0f2a5f;
+  border-color: var(--dark-btn-bg);
 }
 
 .glbb-section-title {
@@ -106,12 +106,12 @@ input:focus {
 .glbb-card h2 {
   margin: 0 0 14px;
   font-size: 20px;
-  color: #0f172a;
+  color: var(--text-primary);
 }
 
 .glbb-table-wrap {
   overflow-x: auto;
-  border: 1px solid #dbe4f0;
+  border: 1px solid var(--border-color);
   border-radius: 12px;
 }
 
@@ -122,17 +122,17 @@ input:focus {
 }
 
 .glbb-table th {
-  background: #f8fafc;
-  color: #334155;
+  background: var(--bg-surface-muted);
+  color: var(--text-secondary);
   font-size: 13px;
   text-transform: uppercase;
   padding: 12px 10px;
-  border-bottom: 1px solid #dbe4f0;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .glbb-table td {
   padding: 12px 10px;
-  border-bottom: 1px solid #edf2f7;
+  border-bottom: 1px solid var(--border-color);
   font-size: 14px;
 }
 
@@ -141,11 +141,11 @@ input:focus {
 }
 
 .glbb-table tbody tr:hover {
-  background: #f1f5f9;
+  background: var(--bg-hover);
 }
 
 .glbb-table tbody tr.selected {
-  background: #dbeafe;
+  background: var(--info-bg);
 }
 
 .glbb-table .amount {
@@ -154,14 +154,14 @@ input:focus {
 }
 
 .glbb-table tfoot td {
-  background: #f8fafc;
+  background: var(--bg-surface-muted);
   font-weight: 900;
 }
 
 .empty {
   text-align: center;
   padding: 36px !important;
-  color: #64748b;
+  color: var(--text-secondary);
   font-weight: 700;
 }
 
@@ -172,15 +172,15 @@ input:focus {
 }
 
 .glbb-detail-grid div {
-  border: 1px solid #dbe4f0;
+  border: 1px solid var(--border-color);
   border-radius: 12px;
   padding: 14px;
-  background: #f8fafc;
+  background: var(--bg-surface-muted);
 }
 
 .glbb-detail-grid span {
   display: block;
-  color: #64748b;
+  color: var(--text-secondary);
   font-size: 12px;
   font-weight: 800;
   text-transform: uppercase;
@@ -188,12 +188,12 @@ input:focus {
 }
 
 .glbb-detail-grid strong {
-  color: #0f2a5f;
+  color: var(--dark-btn-bg);
   font-size: 15px;
 }
 
 .glbb-muted {
-  color: #64748b;
+  color: var(--text-secondary);
   font-weight: 600;
 }
 

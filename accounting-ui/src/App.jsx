@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { ThemeProvider } from "./context/ThemeContext";
 import Sidebar from "./components/sidebar/sidebar";
 import Dashboard from "./pages/DASHBOARD/dashboard";
 import COA from "./pages/FILESETUP/COA";
@@ -99,7 +100,7 @@ function AppLayout() {
           marginLeft: isLoginPage ? "0" : sidebarOpen ? "270px" : "110px",
           padding: isLoginPage ? "0" : "24px",
           flex: 1,
-          background: isLoginPage ? "transparent" : "#f3f4f6",
+          background: isLoginPage ? "transparent" : "var(--bg-page)",
           boxSizing: "border-box",
           minHeight: "100vh",
           transition: "margin-left 0.3s ease",
@@ -190,8 +191,10 @@ function AppLayout() {
 
 export default function App() {
   return (
-    <BrowserRouter>
-      <AppLayout />
-    </BrowserRouter>
+    <ThemeProvider>
+      <BrowserRouter>
+        <AppLayout />
+      </BrowserRouter>
+    </ThemeProvider>
   );
 }

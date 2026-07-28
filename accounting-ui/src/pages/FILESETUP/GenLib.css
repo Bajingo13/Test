@@ -1,6 +1,6 @@
 .gl-page {
   min-height: 100vh;
-  background: #f3f5f9;
+  background: var(--bg-page);
 }
 
 .gl-layout {
@@ -10,10 +10,10 @@
 }
 
 .gl-main {
-  background: #ffffff;
-  border: 1px solid #e3e8f0;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
   border-radius: 20px;
-  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+  box-shadow: 0 8px 24px rgba(var(--shadow-rgb), 0.06);
 }
 
 .gl-mini-label {
@@ -22,17 +22,17 @@
   font-weight: 700;
   letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: #4f46e5;
+  color: var(--accent-indigo);
 }
 
 .gl-header h1 {
   margin: 0;
-  color: #0f172a;
+  color: var(--text-primary);
 }
 
 .gl-search {
   padding: 10px 14px;
-  border: 1px solid #d9e1ec;
+  border: 1px solid var(--border-color-strong);
   border-radius: 10px;
   outline: none;
   font-size: 14px;
@@ -42,7 +42,7 @@
 .field input:focus,
 .field select:focus,
 .field textarea:focus {
-  border-color: #4f46e5;
+  border-color: var(--accent-indigo);
 }
 
 .gl-header {
@@ -51,12 +51,12 @@
   align-items: flex-start;
   gap: 16px;
   padding: 24px;
-  border-bottom: 1px solid #eef2f7;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .gl-subtext {
   margin-top: 8px;
-  color: #64748b;
+  color: var(--text-secondary);
   font-size: 14px;
 }
 
@@ -72,7 +72,7 @@
 
 .gl-table-section {
   margin-bottom: 24px;
-  border: 1px solid #e8edf4;
+  border: 1px solid var(--border-color);
   border-radius: 18px;
   padding: 18px;
 }
@@ -86,14 +86,14 @@
 
 .gl-table-top h3 {
   margin: 0;
-  color: #0f172a;
+  color: var(--text-primary);
 }
 
 .gl-table-top span {
   font-size: 13px;
   font-weight: 700;
-  color: #4f46e5;
-  background: #eef2ff;
+  color: var(--accent-indigo);
+  background: var(--accent-indigo-bg);
   padding: 8px 12px;
   border-radius: 999px;
   white-space: nowrap;
@@ -109,7 +109,7 @@
   background: transparent;
   font-size: 22px;
   line-height: 1;
-  color: #64748b;
+  color: var(--text-secondary);
   cursor: pointer;
   padding: 0 4px;
 }
@@ -126,14 +126,14 @@
 .gl-table th,
 .gl-table td {
   padding: 14px;
-  border-top: 1px solid #edf2f7;
+  border-top: 1px solid var(--border-color);
   text-align: left;
   font-size: 14px;
 }
 
 .gl-table th {
-  background: #f8fafc;
-  color: #475569;
+  background: var(--bg-surface-muted);
+  color: var(--text-secondary);
   font-weight: 700;
 }
 
@@ -142,11 +142,11 @@
 }
 
 .gl-table tbody tr:hover {
-  background: #f8fafc;
+  background: var(--bg-surface-muted);
 }
 
 .selected-row {
-  background: #eef2ff;
+  background: var(--accent-indigo-bg);
 }
 
 .gl-top-grid,
@@ -177,25 +177,25 @@
   margin-bottom: 8px;
   font-size: 14px;
   font-weight: 700;
-  color: #334155;
+  color: var(--text-secondary);
 }
 
 .field input,
 .field select,
 .field textarea {
   padding: 12px 14px;
-  border: 1px solid #d9e1ec;
+  border: 1px solid var(--border-color-strong);
   border-radius: 12px;
   font-size: 14px;
   outline: none;
-  background: #fff;
+  background: var(--bg-surface);
 }
 
 .field input:disabled,
 .field select:disabled,
 .field textarea:disabled {
-  background: #f8fafc;
-  color: #64748b;
+  background: var(--bg-disabled);
+  color: var(--text-secondary);
 }
 
 .gl-tabs {
@@ -207,9 +207,9 @@
 }
 
 .gl-tab {
-  border: 1px solid #d7deea;
-  background: #fff;
-  color: #334155;
+  border: 1px solid var(--border-color-strong);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
   padding: 10px 16px;
   border-radius: 12px;
   font-size: 14px;
@@ -218,13 +218,13 @@
 }
 
 .gl-tab.active {
-  background: #4f46e5;
-  border-color: #4f46e5;
+  background: var(--accent-indigo);
+  border-color: var(--accent-indigo);
   color: #fff;
 }
 
 .tab-panel {
-  border: 1px solid #e8edf4;
+  border: 1px solid var(--border-color);
   border-radius: 18px;
   padding: 20px;
 }
@@ -239,7 +239,7 @@
   gap: 10px;
   min-height: 46px;
   font-weight: 600;
-  color: #334155;
+  color: var(--text-secondary);
 }
 
 .gl-actions {
@@ -247,14 +247,14 @@
   display: flex;
   justify-content: flex-end;
   gap: 12px;
-  border-top: 1px solid #eef2f7;
+  border-top: 1px solid var(--border-color);
   padding-top: 20px;
 }
 
 .btn {
-  border: 1px solid #d7deea;
-  background: #ffffff;
-  color: #334155;
+  border: 1px solid var(--border-color-strong);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
   padding: 11px 16px;
   border-radius: 12px;
   font-size: 14px;
@@ -264,42 +264,42 @@
 }
 
 .btn:hover {
-  background: #f8fafc;
+  background: var(--bg-surface-muted);
 }
 
 .btn-primary {
-  background: #4f46e5;
-  border-color: #4f46e5;
+  background: var(--accent-indigo);
+  border-color: var(--accent-indigo);
   color: #ffffff;
 }
 
 .btn-primary:hover {
-  background: #4338ca;
+  background: var(--accent-indigo-hover);
 }
 
 .btn-danger {
-  background: #dc2626;
-  border-color: #dc2626;
+  background: var(--danger);
+  border-color: var(--danger);
   color: #ffffff;
 }
 
 .btn-danger:hover {
-  background: #b91c1c;
+  background: var(--danger-hover);
 }
 
 .btn-dark {
-  background: #0f172a;
-  border-color: #0f172a;
-  color: #ffffff;
+  background: var(--dark-btn-bg);
+  border-color: var(--dark-btn-bg);
+  color: var(--dark-btn-text);
 }
 
 .btn-dark:hover {
-  background: #020617;
+  background: var(--dark-btn-hover);
 }
 
 .empty-cell {
   text-align: center;
-  color: #94a3b8;
+  color: var(--text-muted);
 }
 
 @media (max-width: 1100px) {

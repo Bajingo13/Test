@@ -4,6 +4,7 @@ import NavTree from "./NavTree";
 import { REPORTS_MENU } from "./reportsMenuConfig";
 import { FILE_SETUP_MENU } from "./fileSetupMenuConfig";
 import { TRANSACTIONS_MENU } from "./transactionsMenuConfig";
+import ThemeToggle from "../ThemeToggle";
 import "./Sidebar.css";
 
 export default function Sidebar({ sidebarOpen, setSidebarOpen }) {
@@ -61,6 +62,10 @@ export default function Sidebar({ sidebarOpen, setSidebarOpen }) {
           alt="AstreaBlue"
           className="sidebar-logo-image"
         />
+      </div>
+
+      <div className="sidebar-theme-toggle-row">
+        <ThemeToggle />
       </div>
 
       {sidebarOpen && (

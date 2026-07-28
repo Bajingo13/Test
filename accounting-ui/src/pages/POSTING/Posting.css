@@ -1,8 +1,8 @@
 .posting-page {
   padding: 28px;
-  background: #f5f7fb;
+  background: var(--bg-page);
   min-height: 100vh;
-  color: #1f2937;
+  color: var(--text-primary);
 }
 
 .posting-header {
@@ -17,14 +17,14 @@
 
 .posting-header p {
   margin: 4px 0 0;
-  color: #6b7280;
+  color: var(--text-secondary);
 }
 
 .posting-card {
-  background: white;
+  background: var(--bg-surface);
   padding: 22px;
   border-radius: 14px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
+  box-shadow: 0 4px 16px rgba(var(--shadow-rgb), 0.06);
 }
 
 .posting-actions {
@@ -37,8 +37,8 @@
 .posting-btn {
   padding: 10px 18px;
   border-radius: 8px;
-  border: 1px solid #d1d5db;
-  background: white;
+  border: 1px solid var(--border-color-strong);
+  background: var(--bg-surface);
   font-weight: 600;
   cursor: pointer;
 }
@@ -49,9 +49,9 @@
 }
 
 .posting-btn-primary {
-  background: #1d4ed8;
+  background: var(--accent-blue-hover);
   color: white;
-  border-color: #1d4ed8;
+  border-color: var(--accent-blue-hover);
 }
 
 .posting-btn-secondary {
@@ -70,13 +70,13 @@
 .posting-table th,
 .posting-table td {
   padding: 10px 12px;
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid var(--border-color);
   text-align: left;
   font-size: 14px;
 }
 
 .posting-table th {
-  color: #6b7280;
+  color: var(--text-secondary);
   font-weight: 700;
   text-transform: uppercase;
   font-size: 12px;
@@ -88,7 +88,7 @@
 
 .posting-empty {
   text-align: center;
-  color: #9ca3af;
+  color: var(--text-muted);
   padding: 24px !important;
 }
 
@@ -96,8 +96,8 @@
   display: inline-block;
   padding: 2px 10px;
   border-radius: 999px;
-  background: #eef2ff;
-  color: #4338ca;
+  background: var(--accent-indigo-bg);
+  color: var(--accent-indigo-hover);
   font-size: 12px;
   font-weight: 700;
 }

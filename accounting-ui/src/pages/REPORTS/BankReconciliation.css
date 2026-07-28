@@ -1,18 +1,18 @@
 .brc-page {
   min-height: 100vh;
-  background: #f5f7fb;
+  background: var(--bg-page);
   padding: 24px;
   font-family: Arial, sans-serif;
 }
 
 .brc-header-card,
 .brc-card {
-  background: #fff;
-  border: 1px solid #dbe4f0;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
   border-radius: 16px;
   padding: 20px;
   margin-bottom: 18px;
-  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+  box-shadow: 0 8px 24px rgba(var(--shadow-rgb), 0.06);
 }
 
 .brc-header-card {
@@ -25,17 +25,17 @@
 .brc-header-card h1 {
   margin: 0;
   font-size: 30px;
-  color: #0f172a;
+  color: var(--text-primary);
 }
 
 .brc-header-card p {
   margin: 6px 0 0;
-  color: #64748b;
+  color: var(--text-secondary);
 }
 
 .brc-card h2 {
   margin: 0 0 16px;
-  color: #0f172a;
+  color: var(--text-primary);
 }
 
 .brc-list-toolbar {
@@ -49,7 +49,7 @@
   flex: 1;
   min-width: 220px;
   height: 42px;
-  border: 1px solid #cbd5e1;
+  border: 1px solid var(--border-color-strong);
   border-radius: 10px;
   padding: 0 12px;
   font-size: 14px;
@@ -58,7 +58,7 @@
 
 .brc-status-select {
   height: 42px;
-  border: 1px solid #cbd5e1;
+  border: 1px solid var(--border-color-strong);
   border-radius: 10px;
   padding: 0 12px;
   font-size: 14px;
@@ -87,7 +87,7 @@
 .brc-grid-full label {
   font-size: 13px;
   font-weight: 800;
-  color: #334155;
+  color: var(--text-secondary);
   margin-bottom: 7px;
 }
 
@@ -95,7 +95,7 @@
 .brc-grid select,
 .brc-grid-full input {
   height: 42px;
-  border: 1px solid #cbd5e1;
+  border: 1px solid var(--border-color-strong);
   border-radius: 10px;
   padding: 0 12px;
   font-size: 14px;
@@ -104,7 +104,7 @@
 
 .brc-table-wrap {
   overflow-x: auto;
-  border: 1px solid #dbe4f0;
+  border: 1px solid var(--border-color);
   border-radius: 12px;
 }
 
@@ -115,16 +115,16 @@
 }
 
 .brc-table th {
-  background: #f8fafc;
-  color: #334155;
+  background: var(--bg-surface-muted);
+  color: var(--text-secondary);
   padding: 12px 10px;
   font-size: 13px;
   text-transform: uppercase;
-  border: 1px solid #dbe4f0;
+  border: 1px solid var(--border-color);
 }
 
 .brc-table td {
-  border: 1px solid #edf2f7;
+  border: 1px solid var(--border-color);
   font-size: 14px;
   padding: 12px 10px;
 }
@@ -144,13 +144,13 @@
 }
 
 .brc-status-badge.in_progress {
-  background: #fef3c7;
-  color: #92400e;
+  background: var(--warning-bg);
+  color: var(--warning-text);
 }
 
 .brc-status-badge.finalized {
-  background: #dcfce7;
-  color: #166534;
+  background: var(--success-bg);
+  color: var(--success-text);
 }
 
 .brc-actions {
@@ -163,9 +163,9 @@
 .brc-btn,
 .brc-actions button,
 .brc-table button {
-  border: 1px solid #cbd5e1;
-  background: #fff;
-  color: #0f172a;
+  border: 1px solid var(--border-color-strong);
+  background: var(--bg-surface);
+  color: var(--text-primary);
   height: 38px;
   padding: 0 14px;
   border-radius: 10px;
@@ -175,9 +175,9 @@
 
 .brc-btn.primary,
 .brc-actions .primary {
-  background: #0f2a5f;
-  color: #fff;
-  border-color: #0f2a5f;
+  background: var(--dark-btn-bg);
+  color: var(--dark-btn-text);
+  border-color: var(--dark-btn-bg);
 }
 
 .brc-btn.primary:disabled {
@@ -188,7 +188,7 @@
 .brc-empty {
   text-align: center;
   padding: 36px !important;
-  color: #64748b;
+  color: var(--text-secondary);
   font-weight: 700;
 }
 
@@ -201,8 +201,8 @@
 }
 
 .brc-mapping-box {
-  background: #f8fafc;
-  border: 1px solid #dbe4f0;
+  background: var(--bg-surface-muted);
+  border: 1px solid var(--border-color);
   border-radius: 12px;
   padding: 16px;
   margin-bottom: 18px;
@@ -213,12 +213,12 @@
 }
 
 .brc-card h3 {
-  color: #0f172a;
+  color: var(--text-primary);
   margin: 18px 0 12px;
 }
 
 button.danger {
-  color: #dc2626;
+  color: var(--danger);
 }
 
 .brc-match-badge {
@@ -231,43 +231,43 @@ button.danger {
 }
 
 .brc-match-badge.unmatched {
-  background: #fee2e2;
-  color: #991b1b;
+  background: var(--danger-bg);
+  color: var(--danger-text);
 }
 
 .brc-match-badge.suggested {
-  background: #fef3c7;
-  color: #92400e;
+  background: var(--warning-bg);
+  color: var(--warning-text);
 }
 
 .brc-match-badge.matched {
-  background: #dcfce7;
-  color: #166534;
+  background: var(--success-bg);
+  color: var(--success-text);
 }
 
 .brc-match-badge.ignored {
-  background: #e5e7eb;
-  color: #374151;
+  background: var(--neutral-bg);
+  color: var(--neutral-text);
 }
 
 .brc-match-badge.pending {
-  background: #fef3c7;
-  color: #92400e;
+  background: var(--warning-bg);
+  color: var(--warning-text);
 }
 
 .brc-match-badge.approved {
-  background: #dbeafe;
-  color: #1e40af;
+  background: var(--info-bg);
+  color: var(--info-text);
 }
 
 .brc-match-badge.rejected {
-  background: #fee2e2;
-  color: #991b1b;
+  background: var(--danger-bg);
+  color: var(--danger-text);
 }
 
 .brc-match-badge.posted {
-  background: #dcfce7;
-  color: #166534;
+  background: var(--success-bg);
+  color: var(--success-text);
 }
 
 @media (max-width: 900px) {
@@ -283,7 +283,7 @@ button.danger {
 .brc-modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(15, 23, 42, 0.5);
+  background: rgba(var(--shadow-rgb), 0.5);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -292,14 +292,14 @@ button.danger {
 }
 
 .brc-modal {
-  background: #fff;
+  background: var(--bg-surface);
   border-radius: 16px;
   padding: 24px;
   width: 100%;
   max-width: 900px;
   max-height: 85vh;
   overflow-y: auto;
-  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.3);
+  box-shadow: 0 20px 60px rgba(var(--shadow-rgb), 0.3);
 }
 
 .brc-modal-header {
@@ -312,12 +312,12 @@ button.danger {
 
 .brc-modal-header h2 {
   margin: 0;
-  color: #0f172a;
+  color: var(--text-primary);
 }
 
 .brc-modal-header p {
   margin: 6px 0 0;
-  color: #64748b;
+  color: var(--text-secondary);
 }
 
 .brc-modal-close {
@@ -326,7 +326,7 @@ button.danger {
   font-size: 24px;
   line-height: 1;
   cursor: pointer;
-  color: #64748b;
+  color: var(--text-secondary);
   padding: 0;
 }
 
@@ -336,7 +336,7 @@ button.danger {
 
 .brc-modal-section h3 {
   margin: 0 0 10px;
-  color: #0f172a;
+  color: var(--text-primary);
 }
 
 .brc-modal-footer {
@@ -344,6 +344,6 @@ button.danger {
   justify-content: flex-end;
   gap: 10px;
   margin-top: 10px;
-  border-top: 1px solid #edf2f7;
+  border-top: 1px solid var(--border-color);
   padding-top: 16px;
 }

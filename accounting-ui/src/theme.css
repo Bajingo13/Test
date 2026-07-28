@@ -1,0 +1,145 @@
+/* App-wide theme tokens. Light values live on :root; dark values override
+   under [data-theme="dark"] (set on <html> by ThemeContext.jsx). Every page
+   CSS file should reference these tokens instead of hardcoding hex colors -
+   see the per-family notes below for which token replaces which color.
+
+   Brand accent hues are preserved per "family" (indigo for forms, blue for
+   report pages, teal for Dashboard/GroupCodes) rather than unified into one
+   color - this is a theme (light/dark), not a rebrand. Each accent gets a
+   dark-mode-safe variant for contrast against dark surfaces. */
+
+:root {
+  /* Neutral surfaces */
+  --bg-page: #f5f7fb;
+  --bg-surface: #ffffff;
+  --bg-surface-muted: #f8fafc;
+  --bg-disabled: #f8fafc;
+  --bg-hover: #f1f5f9;
+
+  /* Text */
+  --text-primary: #0f172a;
+  --text-secondary: #64748b;
+  --text-muted: #94a3b8;
+
+  /* Borders */
+  --border-color: #e5e7eb;
+  --border-color-strong: #cbd5e1;
+
+  /* Shadows (alpha-aware - consumed as rgba(var(--shadow-rgb), 0.06) etc.) */
+  --shadow-rgb: 15, 23, 42;
+
+  /* Status pairs (bg/text) */
+  --success-bg: #dcfce7;
+  --success-text: #166534;
+  --warning-bg: #fef3c7;
+  --warning-text: #92400e;
+  --danger-bg: #fee2e2;
+  --danger-text: #991b1b;
+  --info-bg: #dbeafe;
+  --info-text: #1e40af;
+  --neutral-bg: #e5e7eb;
+  --neutral-text: #374151;
+
+  /* Danger action (buttons/links, distinct from the danger status pair) */
+  --danger: #dc2626;
+  --danger-hover: #b91c1c;
+
+  /* Dark utility button (used across report/form toolbars for "Export/Print" etc.) */
+  --dark-btn-bg: #0f172a;
+  --dark-btn-hover: #020617;
+  --dark-btn-text: #ffffff;
+
+  /* Brand accents, per family */
+  --accent-indigo: #4f46e5;
+  --accent-indigo-hover: #4338ca;
+  --accent-indigo-bg: #eef2ff;
+  --accent-indigo-border: #c7d2fe;
+  --accent-blue: #2563eb;
+  --accent-blue-hover: #1d4ed8;
+  --accent-teal: #0b7fab;
+  --accent-teal-light: #13b5c8;
+  --accent-teal-bg: #eaf8fb;
+  --accent-text: #ffffff;
+
+  /* Sidebar - its own tokens so it can differ from page content.
+     Light theme: the lighter navy/slate requested. */
+  --sidebar-bg: #2a3b5c;
+  --sidebar-text: #ffffff;
+  --sidebar-text-muted: #d9e2f1;
+  --sidebar-hover: #3a4d73;
+  --sidebar-border: rgba(255, 255, 255, 0.1);
+  --sidebar-active-start: #4f46e5;
+  --sidebar-active-end: #5b4df0;
+  --sidebar-active-rgb: 79, 70, 229;
+  --sidebar-scrollbar: rgba(255, 255, 255, 0.22);
+  --sidebar-text-disabled: #6b7994;
+  --sidebar-focus-ring: #818cf8;
+  --sidebar-danger-text: #fca5a5;
+  --sidebar-danger-hover-bg: #3b1c1c;
+  --sidebar-danger-hover-text: #fecaca;
+}
+
+[data-theme="dark"] {
+  --bg-page: #0f172a;
+  --bg-surface: #1a2436;
+  --bg-surface-muted: #212d42;
+  --bg-disabled: #1e2a3f;
+  --bg-hover: #26334d;
+
+  --text-primary: #e6ebf5;
+  --text-secondary: #a3b0c7;
+  --text-muted: #7686a3;
+
+  --border-color: #2b3855;
+  --border-color-strong: #3a4a6b;
+
+  --shadow-rgb: 0, 0, 0;
+
+  --success-bg: rgba(34, 197, 94, 0.16);
+  --success-text: #4ade80;
+  --warning-bg: rgba(245, 158, 11, 0.16);
+  --warning-text: #fbbf24;
+  --danger-bg: rgba(239, 68, 68, 0.16);
+  --danger-text: #f87171;
+  --info-bg: rgba(59, 130, 246, 0.16);
+  --info-text: #60a5fa;
+  --neutral-bg: rgba(148, 163, 184, 0.18);
+  --neutral-text: #cbd5e1;
+
+  --danger: #ef4444;
+  --danger-hover: #f87171;
+
+  /* Lighter than --bg-page/--bg-surface on purpose - this token backs
+     primary action buttons (Generate/Save/Export), so it must stay
+     visibly distinct from the dark page behind it, not blend into it. */
+  --dark-btn-bg: #2c4a7c;
+  --dark-btn-hover: #375d99;
+  --dark-btn-text: #ffffff;
+
+  --accent-indigo: #6366f1;
+  --accent-indigo-hover: #818cf8;
+  --accent-indigo-bg: rgba(99, 102, 241, 0.16);
+  --accent-indigo-border: rgba(99, 102, 241, 0.4);
+  --accent-blue: #3b82f6;
+  --accent-blue-hover: #60a5fa;
+  --accent-teal: #13b5c8;
+  --accent-teal-light: #5fd8e6;
+  --accent-teal-bg: rgba(19, 181, 200, 0.16);
+  --accent-text: #ffffff;
+
+  /* Sidebar stays a dark navy in dark mode - today's existing color. */
+  --sidebar-bg: #16243b;
+  --sidebar-text: #ffffff;
+  --sidebar-text-muted: #cbd5e1;
+  --sidebar-hover: #243552;
+  --sidebar-border: rgba(255, 255, 255, 0.06);
+  --sidebar-active-start: #4f46e5;
+  --sidebar-active-end: #5b4df0;
+  --sidebar-active-rgb: 79, 70, 229;
+  --sidebar-scrollbar: rgba(255, 255, 255, 0.18);
+  --sidebar-text-disabled: #6b7994;
+  --sidebar-focus-ring: #818cf8;
+  --sidebar-danger-text: #fca5a5;
+  --sidebar-danger-hover-bg: #3b1c1c;
+  --sidebar-danger-hover-text: #fecaca;
+}

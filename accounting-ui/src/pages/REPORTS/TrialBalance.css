@@ -1,8 +1,8 @@
 .tb-page {
 padding: 28px;
-background: #f5f7fb;
+background: var(--bg-page);
 min-height: 100vh;
-color: #1f2937;
+color: var(--text-primary);
 }
 
 .tb-header {
@@ -16,11 +16,11 @@ font-weight: 800;
 }
 
 .tb-filters {
-background: white;
+background: var(--bg-surface);
 padding: 22px;
 border-radius: 14px;
 margin-bottom: 20px;
-box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
+box-shadow: 0 4px 16px rgba(var(--shadow-rgb), 0.06);
 }
 
 .tb-filters h2 {
@@ -49,10 +49,10 @@ margin-bottom: 8px;
 .tb-filter-grid select {
 height: 54px;
 padding: 0 16px;
-border: 1px solid #cbd5e1;
+border: 1px solid var(--border-color-strong);
 border-radius: 12px;
 font-size: 16px;
-background: white;
+background: var(--bg-surface);
 }
 
 .tb-actions {
@@ -71,28 +71,28 @@ cursor: pointer;
 }
 
 .tb-actions .primary {
-background: #2563eb;
+background: var(--accent-blue);
 color: white;
 }
 
 .tb-actions .secondary {
-background: #e5e7eb;
-color: #111827;
+background: var(--neutral-bg);
+color: var(--text-primary);
 }
 
 .tb-actions .dark {
-background: #0f172a;
-color: white;
+background: var(--dark-btn-bg);
+color: var(--dark-btn-text);
 }
 
 /* REPORT CARD */
 
 .tb-report-card {
-background: white;
+background: var(--bg-surface);
 border-radius: 14px;
 padding: 20px 20px 20px 8px;
-box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
-color: black;
+box-shadow: 0 4px 16px rgba(var(--shadow-rgb), 0.06);
+color: var(--text-primary);
 }
 
 .tb-report-top {
@@ -144,7 +144,7 @@ TRIAL BALANCE TABLE
 }
 
 .tb-report-table thead tr {
-  border: 3px solid #000;
+  border: 3px solid var(--text-primary);
 }
 
 .tb-report-table th {
@@ -257,14 +257,14 @@ PARTY | REF NO | DUE DATE | CURRENT | 1-30 | 31-60 | 61-90 | OVER 90 | BALANCE
 }
 
 .tb-report-table tfoot tr {
-  border-top: 3px solid #000;
+  border-top: 3px solid var(--text-primary);
 }
 
 .tb-report-table tfoot td {
   padding: 10px 8px;
   font-size: 16px;
   font-weight: 900;
-  border-bottom: 3px double #000;
+  border-bottom: 3px double var(--text-primary);
 }
 
 .tb-report-table tfoot td:nth-child(3),

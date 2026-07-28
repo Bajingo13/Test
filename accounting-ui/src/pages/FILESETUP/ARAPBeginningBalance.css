@@ -1,18 +1,18 @@
 .arap-page {
   min-height: 100vh;
-  background: #f5f7fb;
+  background: var(--bg-page);
   padding: 24px;
   font-family: Arial, sans-serif;
 }
 
 .arap-header-card,
 .arap-card {
-  background: #fff;
-  border: 1px solid #dbe4f0;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
   border-radius: 16px;
   padding: 20px;
   margin-bottom: 18px;
-  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+  box-shadow: 0 8px 24px rgba(var(--shadow-rgb), 0.06);
 }
 
 .arap-header-card {
@@ -25,17 +25,17 @@
 .arap-header-card h1 {
   margin: 0;
   font-size: 30px;
-  color: #0f172a;
+  color: var(--text-primary);
 }
 
 .arap-header-card p {
   margin: 6px 0 0;
-  color: #64748b;
+  color: var(--text-secondary);
 }
 
 .arap-card h2 {
   margin: 0 0 16px;
-  color: #0f172a;
+  color: var(--text-primary);
 }
 
 .arap-list-toolbar {
@@ -49,7 +49,7 @@
   flex: 1;
   min-width: 220px;
   height: 42px;
-  border: 1px solid #cbd5e1;
+  border: 1px solid var(--border-color-strong);
   border-radius: 10px;
   padding: 0 12px;
   font-size: 14px;
@@ -58,7 +58,7 @@
 
 .arap-status-select {
   height: 42px;
-  border: 1px solid #cbd5e1;
+  border: 1px solid var(--border-color-strong);
   border-radius: 10px;
   padding: 0 12px;
   font-size: 14px;
@@ -80,14 +80,14 @@
 .arap-grid label {
   font-size: 13px;
   font-weight: 800;
-  color: #334155;
+  color: var(--text-secondary);
   margin-bottom: 7px;
 }
 
 .arap-grid input,
 .arap-grid select {
   height: 42px;
-  border: 1px solid #cbd5e1;
+  border: 1px solid var(--border-color-strong);
   border-radius: 10px;
   padding: 0 12px;
   font-size: 14px;
@@ -97,7 +97,7 @@
 .arap-entry-table-wrap,
 .arap-table-wrap {
   overflow-x: auto;
-  border: 1px solid #dbe4f0;
+  border: 1px solid var(--border-color);
   border-radius: 12px;
 }
 
@@ -110,17 +110,17 @@
 
 .arap-entry-table th,
 .arap-table th {
-  background: #f8fafc;
-  color: #334155;
+  background: var(--bg-surface-muted);
+  color: var(--text-secondary);
   padding: 12px 10px;
   font-size: 13px;
   text-transform: uppercase;
-  border: 1px solid #dbe4f0;
+  border: 1px solid var(--border-color);
 }
 
 .arap-entry-table td,
 .arap-table td {
-  border: 1px solid #edf2f7;
+  border: 1px solid var(--border-color);
   font-size: 14px;
 }
 
@@ -146,12 +146,12 @@
 
 .arap-entry-table input:focus,
 .arap-entry-table select:focus {
-  background: #f8fafc;
+  background: var(--bg-surface-muted);
 }
 
 .arap-entry-table input[readonly] {
-  background: #f9fafb;
-  color: #334155;
+  background: var(--bg-surface-muted);
+  color: var(--text-secondary);
   font-weight: 700;
 }
 
@@ -169,9 +169,9 @@
 .arap-btn,
 .arap-actions button,
 .arap-table button {
-  border: 1px solid #cbd5e1;
-  background: #fff;
-  color: #0f172a;
+  border: 1px solid var(--border-color-strong);
+  background: var(--bg-surface);
+  color: var(--text-primary);
   height: 38px;
   padding: 0 14px;
   border-radius: 10px;
@@ -181,13 +181,13 @@
 
 .arap-btn.primary,
 .arap-actions .primary {
-  background: #0f2a5f;
-  color: #fff;
-  border-color: #0f2a5f;
+  background: var(--dark-btn-bg);
+  color: var(--dark-btn-text);
+  border-color: var(--dark-btn-bg);
 }
 
 button.danger {
-  color: #dc2626;
+  color: var(--danger);
   margin-left: 6px;
 }
 
@@ -197,14 +197,14 @@ button.danger {
 }
 
 .arap-table tfoot td {
-  background: #f8fafc;
+  background: var(--bg-surface-muted);
   font-weight: 900;
 }
 
 .arap-empty {
   text-align: center;
   padding: 36px !important;
-  color: #64748b;
+  color: var(--text-secondary);
   font-weight: 700;
 }
 

@@ -1,11 +1,11 @@
 .group-page {
   min-height: 100vh;
-  background: #f5f7f8;
+  background: var(--bg-page);
   padding: 26px;
 }
 
 .group-header {
-  background: linear-gradient(135deg, #0b7fab, #13b5c8);
+  background: linear-gradient(135deg, var(--accent-teal), var(--accent-teal-light));
   color: white;
   border-radius: 12px;
   padding: 26px;
@@ -33,8 +33,8 @@
 
 .group-header button {
   border: none;
-  background: #ffffff;
-  color: #0b7fab;
+  background: var(--bg-surface);
+  color: var(--accent-teal);
   padding: 12px 16px;
   border-radius: 9px;
   font-weight: 800;
@@ -48,16 +48,16 @@
 }
 
 .group-card {
-  background: white;
-  border: 1px solid #dce5ea;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
   border-radius: 12px;
   padding: 22px;
-  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.05);
+  box-shadow: 0 4px 16px rgba(var(--shadow-rgb), 0.05);
 }
 
 .group-card h2 {
   margin: 0 0 18px;
-  color: #0f172a;
+  color: var(--text-primary);
 }
 
 .group-form {
@@ -69,14 +69,14 @@
 .group-form label {
   font-size: 13px;
   font-weight: 800;
-  color: #334155;
+  color: var(--text-secondary);
 }
 
 .group-form input,
 .group-form select,
 .group-list-header input {
   padding: 12px;
-  border: 1px solid #ccdce3;
+  border: 1px solid var(--border-color-strong);
   border-radius: 9px;
   font-size: 14px;
   outline: none;
@@ -85,12 +85,12 @@
 .group-form input:focus,
 .group-form select:focus,
 .group-list-header input:focus {
-  border-color: #0b7fab;
+  border-color: var(--accent-teal);
 }
 
 .primary-btn {
   border: none;
-  background: #0b7fab;
+  background: var(--accent-teal);
   color: white;
   padding: 12px 16px;
   border-radius: 9px;
@@ -122,33 +122,33 @@
 
 .group-table th,
 .group-table td {
-  border-bottom: 1px solid #e5edf2;
+  border-bottom: 1px solid var(--border-color);
   padding: 12px;
   text-align: left;
   font-size: 14px;
 }
 
 .group-table th {
-  color: #475569;
-  background: #f8fafc;
+  color: var(--text-secondary);
+  background: var(--bg-surface-muted);
 }
 
 .group-table button {
   margin-right: 8px;
-  border: 1px solid #ccdce3;
-  background: white;
+  border: 1px solid var(--border-color-strong);
+  background: var(--bg-surface);
   padding: 8px 10px;
   border-radius: 7px;
   cursor: pointer;
 }
 
 .danger-btn {
-  color: #dc2626;
+  color: var(--danger);
 }
 
 .empty-cell {
   text-align: center;
-  color: #64748b;
+  color: var(--text-secondary);
   padding: 20px;
 }
 
