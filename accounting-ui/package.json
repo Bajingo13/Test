@@ -21,6 +21,7 @@
     "express": "^5.2.1",
     "express-session": "^1.19.0",
     "jsonwebtoken": "^9.0.3",
+    "lucide-react": "^1.27.0",
     "multer": "^2.2.0",
     "mysql2": "^3.22.0",
     "pdf-lib": "^1.17.1",

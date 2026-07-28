@@ -220,3 +220,126 @@
   color: #ffffff;
   font-weight: 700;
 }
+
+/* ==========================================================
+   Reports nav tree (NavTree.jsx) - recursive, config-driven,
+   arbitrarily nestable. Scoped to the `.rt-` prefix so it never
+   collides with the hand-rolled File Setup / Transactions menus.
+   ========================================================== */
+
+.rt-submenu {
+  margin-left: 0;
+}
+
+.rt-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rt-branch {
+  display: flex;
+  flex-direction: column;
+}
+
+.rt-node {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 12px 9px calc(14px + var(--rt-depth, 0) * 16px);
+  border: none;
+  background: transparent;
+  color: #d9e2f1;
+  font-size: 13.5px;
+  text-decoration: none;
+  text-align: left;
+  border-radius: 9px;
+  cursor: pointer;
+  transition: background 0.18s ease, color 0.18s ease;
+}
+
+.rt-node:hover {
+  background: rgba(79, 70, 229, 0.18);
+  color: #ffffff;
+}
+
+.rt-node:focus-visible {
+  outline: 2px solid #818cf8;
+  outline-offset: -2px;
+}
+
+.rt-icon {
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+
+.rt-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rt-node.rt-active {
+  background: linear-gradient(90deg, #4f46e5, #5b4df0);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.rt-node.rt-active .rt-icon {
+  opacity: 1;
+}
+
+.rt-node.rt-category {
+  font-weight: 700;
+  color: #e7ecf6;
+}
+
+.rt-node.rt-category.rt-category-active {
+  color: #ffffff;
+  background: rgba(79, 70, 229, 0.14);
+}
+
+.rt-node.rt-disabled {
+  color: #6b7994;
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.rt-node.rt-disabled:hover {
+  background: transparent;
+  color: #6b7994;
+}
+
+.rt-lock {
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
+.rt-chevron {
+  flex-shrink: 0;
+  transition: transform 0.2s ease;
+}
+
+.rt-chevron-open {
+  transform: rotate(90deg);
+}
+
+/* Grid-rows collapse trick: animates smoothly without knowing the
+   content's height in advance (max-height would need a magic number). */
+.rt-children {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.22s ease;
+}
+
+.rt-children-open {
+  grid-template-rows: 1fr;
+}
+
+.rt-children-inner {
+  overflow: hidden;
+}
