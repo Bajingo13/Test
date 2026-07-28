@@ -9,6 +9,11 @@ const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const { authenticateToken } = require("./lib/auth");
 const { logAudit } = require("./lib/audit");
+const LedgerReportService = require("./services/LedgerReportService");
+const { buildXlsxTemplate } = require("./services/TemplateExportService");
+const { templateImportUpload, handleUpload } = require("./lib/uploadMiddleware");
+const COAImportService = require("./services/COAImportService");
+const GenLibImportService = require("./services/GenLibImportService");
 
 console.log("ENV FILE:", require("path").resolve(".env"));
 console.log("JWT_SECRET loaded:", Boolean(process.env.JWT_SECRET));
@@ -368,6 +373,100 @@ app.delete("/api/genlib/:id", async (req, res) => {
   }
 });
 
+app.get("/api/genlib/template", async (req, res) => {
+  try {
+    const buffer = await buildXlsxTemplate({
+      sheetName: "General Libraries",
+      columns: [
+        { key: "code", header: "Code", width: 14 },
+        { key: "type", header: "Type", width: 14 },
+        { key: "name", header: "Name", width: 28 },
+        { key: "status", header: "Status", width: 12 },
+        { key: "startDate", header: "Start Date", width: 14, note: "Format: YYYY-MM-DD" },
+        { key: "address1", header: "Address1", width: 22 },
+        { key: "address2", header: "Address2", width: 22 },
+        { key: "address3", header: "Address3", width: 22 },
+        { key: "attention", header: "Attention", width: 18 },
+        { key: "position", header: "Position", width: 16 },
+        { key: "telephone", header: "Telephone", width: 16 },
+        { key: "fax", header: "Fax", width: 16 },
+        { key: "mobile", header: "Mobile", width: 16 },
+        { key: "tin", header: "TIN", width: 16 },
+        { key: "email", header: "Email", width: 22 },
+        { key: "atcCode", header: "ATC Code", width: 12 },
+        { key: "ewtCode", header: "EWT Code", width: 12 },
+        { key: "category", header: "Category", width: 14 },
+        { key: "branchCode", header: "Branch Code", width: 14 },
+        { key: "rdoCode", header: "RDO Code", width: 12 },
+        { key: "notes", header: "Notes", width: 24 },
+        { key: "isProspective", header: "Is Prospective", width: 14, note: "YES or NO" },
+        { key: "isClient", header: "Is Client", width: 12, note: "YES or NO" },
+      ],
+      sampleRow: {
+        code: "CUST-001",
+        type: "CUSTOMER",
+        name: "Sample Customer Inc.",
+        status: "ACTIVE",
+        startDate: "2026-01-01",
+        address1: "123 Sample St.",
+        category: "REGULAR",
+        isProspective: "NO",
+        isClient: "YES",
+      },
+      dropdowns: {
+        type: GenLibImportService.PARTY_TYPES,
+        status: GenLibImportService.STATUS_OPTIONS,
+        category: GenLibImportService.CATEGORY_OPTIONS,
+        isProspective: ["YES", "NO"],
+        isClient: ["YES", "NO"],
+      },
+    });
+
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    res.setHeader("Content-Disposition", 'attachment; filename="General_Libraries_Template.xlsx"');
+    res.send(Buffer.from(buffer));
+  } catch (err) {
+    console.error("GENLIB TEMPLATE ERROR:", err);
+    res.status(500).json({ message: "Failed to generate template" });
+  }
+});
+
+app.post(
+  "/api/genlib/import",
+  handleUpload(templateImportUpload.single("file")),
+  async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ message: "No file uploaded" });
+      }
+
+      const { headers, ready, skipped, warnings, missingRequiredColumns } =
+        await GenLibImportService.parseAndValidateRows(req.file.buffer, req.file.originalname);
+
+      if (headers.length === 0) {
+        return res.status(400).json({ message: "The file appears to be empty" });
+      }
+
+      if (missingRequiredColumns) {
+        return res.status(400).json({
+          message: "Could not find required Code and Name columns in the file",
+          headers,
+        });
+      }
+
+      const imported = await GenLibImportService.insertGenLibRows(ready);
+
+      res.json({ success: true, imported, skipped, warnings });
+    } catch (err) {
+      console.error("GENLIB IMPORT ERROR:", err);
+      res.status(500).json({ message: "Failed to import general libraries", error: err.message });
+    }
+  }
+);
+
 async function syncBankCodeForAccount(conn, coaId, code, title, validations) {
   const isBankAccount = (validations || []).includes("BANK / CASH");
 
@@ -565,6 +664,84 @@ app.delete("/api/coa/:id", authenticateToken, async (req, res) => {
     res.status(500).json({ message: "Failed to delete account" });
   }
 });
+
+app.get("/api/coa/template", authenticateToken, async (req, res) => {
+  try {
+    const buffer = await buildXlsxTemplate({
+      sheetName: "Chart of Accounts",
+      columns: [
+        { key: "code", header: "Code", width: 14 },
+        { key: "date", header: "Date", width: 14, note: "Format: YYYY-MM-DD. Leave blank to default to today." },
+        { key: "title", header: "Title", width: 30 },
+        { key: "accountClass", header: "Account Class", width: 16 },
+        { key: "description", header: "Description", width: 30 },
+        {
+          key: "validations",
+          header: "Validations",
+          width: 30,
+          note: `Semicolon-separated. Valid values: ${COAImportService.VALIDATION_OPTIONS.join("; ")}`,
+        },
+        { key: "groups", header: "Group Codes", width: 20, note: "Semicolon-separated group codes (see Group Codes setup)." },
+      ],
+      sampleRow: {
+        code: "1010",
+        date: "2026-01-01",
+        title: "Cash on Hand",
+        accountClass: "ASSET",
+        description: "Petty cash fund",
+        validations: "BANK / CASH",
+        groups: "",
+      },
+      dropdowns: {
+        accountClass: COAImportService.CLASS_OPTIONS,
+      },
+    });
+
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    res.setHeader("Content-Disposition", 'attachment; filename="Chart_of_Accounts_Template.xlsx"');
+    res.send(Buffer.from(buffer));
+  } catch (err) {
+    console.error("COA TEMPLATE ERROR:", err);
+    res.status(500).json({ message: "Failed to generate template" });
+  }
+});
+
+app.post(
+  "/api/coa/import",
+  authenticateToken,
+  handleUpload(templateImportUpload.single("file")),
+  async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ message: "No file uploaded" });
+      }
+
+      const { headers, ready, skipped, warnings, missingRequiredColumns } =
+        await COAImportService.parseAndValidateRows(req.file.buffer, req.file.originalname);
+
+      if (headers.length === 0) {
+        return res.status(400).json({ message: "The file appears to be empty" });
+      }
+
+      if (missingRequiredColumns) {
+        return res.status(400).json({
+          message: "Could not find required Code and Title columns in the file",
+          headers,
+        });
+      }
+
+      const imported = await COAImportService.insertCOARows(ready, syncBankCodeForAccount);
+
+      res.json({ success: true, imported, skipped, warnings });
+    } catch (err) {
+      console.error("COA IMPORT ERROR:", err);
+      res.status(500).json({ message: "Failed to import chart of accounts", error: err.message });
+    }
+  }
+);
 
 // ===================== INVOICE API =====================
 
@@ -4594,6 +4771,101 @@ app.get("/api/reports/account-analysis", async (req, res) => {
     console.error("ACCOUNT ANALYSIS REPORT ERROR:", err.message);
     res.status(500).json({
       message: "Failed to generate account analysis",
+      error: err.message,
+    });
+  }
+});
+
+// ====================== GENERAL LEDGER REPORT ======================
+// Same engine the Cash Flow Statement below reuses (LedgerReportService),
+// just without the account filter - every account with activity in range.
+
+app.get("/api/reports/general-ledger", async (req, res) => {
+  try {
+    const { from, to, accountCode } = req.query;
+
+    if (!from || !to) {
+      return res.status(400).json({ message: "from and to dates are required" });
+    }
+
+    const accountCodes = accountCode ? [accountCode] : null;
+
+    const [rows, beginningBalances] = await Promise.all([
+      LedgerReportService.getLedgerRows({ from, to, accountCodes }),
+      LedgerReportService.getBeginningBalances({ before: from, accountCodes }),
+    ]);
+
+    res.json(
+      rows.map((row) => ({
+        ...row,
+        beginning_balance: beginningBalances[row.account_code] || 0,
+      }))
+    );
+  } catch (err) {
+    console.error("GENERAL LEDGER REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate general ledger",
+      error: err.message,
+    });
+  }
+});
+
+// ====================== CASH FLOW STATEMENT (Cash Receipts & Disbursements) ==
+// Reuses LedgerReportService, scoped to accounts flagged BANK / CASH via
+// bank_codes (the same table Bank Reconciliation relies on, kept in sync
+// with COA's "BANK / CASH" validation by syncBankCodeForAccount).
+
+app.get("/api/reports/cash-flow-statement", async (req, res) => {
+  try {
+    const { from, to } = req.query;
+
+    if (!from || !to) {
+      return res.status(400).json({ message: "from and to dates are required" });
+    }
+
+    const [bankAccounts] = await pool.execute(
+      `SELECT coa_code, account_name, bank_name FROM bank_codes WHERE status = 'ACTIVE' AND coa_code IS NOT NULL AND coa_code != ''`
+    );
+
+    const accountCodes = bankAccounts.map((b) => b.coa_code);
+
+    if (accountCodes.length === 0) {
+      return res.json({ accounts: [], totalBeginningBalance: 0, totalEndingBalance: 0 });
+    }
+
+    const [rows, beginningBalances] = await Promise.all([
+      LedgerReportService.getLedgerRows({ from, to, accountCodes }),
+      LedgerReportService.getBeginningBalances({ before: from, accountCodes }),
+    ]);
+
+    const byAccount = new Map();
+    for (const code of accountCodes) {
+      const label = bankAccounts.find((b) => b.coa_code === code);
+      byAccount.set(code, {
+        accountCode: code,
+        accountTitle: (label && (label.account_name || label.bank_name)) || code,
+        beginningBalance: beginningBalances[code] || 0,
+        rows: [],
+        endingBalance: beginningBalances[code] || 0,
+      });
+    }
+
+    for (const row of rows) {
+      const acct = byAccount.get(row.account_code);
+      if (!acct) continue;
+      acct.rows.push(row);
+      acct.endingBalance = acct.beginningBalance + Number(row.running_balance || 0);
+    }
+
+    const accounts = Array.from(byAccount.values());
+    const totalBeginningBalance = accounts.reduce((sum, a) => sum + a.beginningBalance, 0);
+    const totalEndingBalance = accounts.reduce((sum, a) => sum + a.endingBalance, 0);
+
+    res.json({ accounts, totalBeginningBalance, totalEndingBalance });
+  } catch (err) {
+    console.error("CASH FLOW STATEMENT REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate cash flow statement",
       error: err.message,
     });
   }

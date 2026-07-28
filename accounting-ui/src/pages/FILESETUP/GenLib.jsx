@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import "./GenLib.css";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
@@ -51,6 +51,8 @@ export default function GenLib() {
   const [showTable, setShowTable] = useState(true);
   const [form, setForm] = useState(EMPTY_FORM);
   const [loading, setLoading] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const importInputRef = useRef(null);
 
   const isEditing = mode === "add" || mode === "edit";
 
@@ -235,6 +237,82 @@ export default function GenLib() {
     }
   }
 
+  async function downloadTemplate() {
+    try {
+      const res = await fetch(`${API_BASE}/api/genlib/template`, {
+        credentials: "include",
+      });
+
+      if (!res.ok) {
+        alert("Failed to generate template");
+        return;
+      }
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "General_Libraries_Template.xlsx";
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error("DOWNLOAD GENLIB TEMPLATE ERROR:", error);
+      alert("Unable to download template.");
+    }
+  }
+
+  function triggerImport() {
+    importInputRef.current?.click();
+  }
+
+  async function handleImportFileChange(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setImporting(true);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const res = await fetch(`${API_BASE}/api/genlib/import`, {
+        method: "POST",
+        credentials: "include",
+        body: formData,
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        alert(data.message || "Failed to import file");
+        return;
+      }
+
+      const lines = [`Imported ${data.imported} record(s).`];
+      if (data.skipped?.length) {
+        lines.push(
+          `Skipped ${data.skipped.length}:`,
+          ...data.skipped.map((s) => `  Row ${s.row}: ${s.reason}`)
+        );
+      }
+      if (data.warnings?.length) {
+        lines.push(
+          `Warnings (${data.warnings.length}):`,
+          ...data.warnings.map((w) => `  Row ${w.row}: ${w.message}`)
+        );
+      }
+      alert(lines.join("\n"));
+
+      await loadRecords();
+    } catch (error) {
+      console.error("IMPORT GENLIB ERROR:", error);
+      alert("Unable to import file.");
+    } finally {
+      setImporting(false);
+      e.target.value = "";
+    }
+  }
+
   return (
     <div className="gl-page">
       <div className="gl-layout">
@@ -306,6 +384,19 @@ export default function GenLib() {
               >
                 {showTable ? "Hide Table" : "Show Table"}
               </button>
+              <button className="btn" onClick={downloadTemplate}>
+                Generate Template
+              </button>
+              <button className="btn" onClick={triggerImport} disabled={importing}>
+                {importing ? "Importing..." : "Import"}
+              </button>
+              <input
+                type="file"
+                ref={importInputRef}
+                accept=".csv,.xls,.xlsx"
+                style={{ display: "none" }}
+                onChange={handleImportFileChange}
+              />
             </div>
           </div>
 

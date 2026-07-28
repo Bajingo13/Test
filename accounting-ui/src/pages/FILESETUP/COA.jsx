@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import "./COA.css";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
@@ -62,6 +62,8 @@ export default function COA() {
   const [form, setForm] = useState(EMPTY_FORM);
   const [loading, setLoading] = useState(false);
   const [groupCode, setGroupCode] = useState("");
+  const [importing, setImporting] = useState(false);
+  const importInputRef = useRef(null);
 
   useEffect(() => {
     loadAccounts();
@@ -340,6 +342,86 @@ export default function COA() {
     }));
   }
 
+  async function downloadTemplate() {
+    try {
+      const res = await fetch(`${API_BASE}/api/coa/template`, {
+        credentials: "include",
+        headers: authHeaders(),
+      });
+
+      if (!res.ok) {
+        if (handleAuthError(res.status)) return;
+        alert("Failed to generate template");
+        return;
+      }
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "Chart_of_Accounts_Template.xlsx";
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error("DOWNLOAD COA TEMPLATE ERROR:", error);
+      alert("Unable to download template.");
+    }
+  }
+
+  function triggerImport() {
+    importInputRef.current?.click();
+  }
+
+  async function handleImportFileChange(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setImporting(true);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const res = await fetch(`${API_BASE}/api/coa/import`, {
+        method: "POST",
+        credentials: "include",
+        headers: authHeaders(),
+        body: formData,
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        if (handleAuthError(res.status)) return;
+        alert(data.message || "Failed to import file");
+        return;
+      }
+
+      const lines = [`Imported ${data.imported} account(s).`];
+      if (data.skipped?.length) {
+        lines.push(
+          `Skipped ${data.skipped.length}:`,
+          ...data.skipped.map((s) => `  Row ${s.row}: ${s.reason}`)
+        );
+      }
+      if (data.warnings?.length) {
+        lines.push(
+          `Warnings (${data.warnings.length}):`,
+          ...data.warnings.map((w) => `  Row ${w.row}: ${w.message}`)
+        );
+      }
+      alert(lines.join("\n"));
+
+      await loadAccounts();
+    } catch (error) {
+      console.error("IMPORT COA ERROR:", error);
+      alert("Unable to import file.");
+    } finally {
+      setImporting(false);
+      e.target.value = "";
+    }
+  }
+
   return (
     <div className="coa-page">
       <div className="coa-layout">
@@ -414,6 +496,19 @@ export default function COA() {
               <button className="btn" onClick={handleNext}>
                 Next
               </button>
+              <button className="btn" onClick={downloadTemplate}>
+                Generate Template
+              </button>
+              <button className="btn" onClick={triggerImport} disabled={importing}>
+                {importing ? "Importing..." : "Import"}
+              </button>
+              <input
+                type="file"
+                ref={importInputRef}
+                accept=".csv,.xls,.xlsx"
+                style={{ display: "none" }}
+                onChange={handleImportFileChange}
+              />
             </div>
           </div>
 

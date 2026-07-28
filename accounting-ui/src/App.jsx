@@ -64,6 +64,8 @@ import ListOfLapsedPrepayments from "./pages/REPORTS/ListOfLapsedPrepayments.jsx
 import MonthlyFinalTaxAlphalist from "./pages/REPORTS/MonthlyFinalTaxAlphalist.jsx";
 import MonthlyExpandedTaxAlphalist from "./pages/REPORTS/MonthlyExpandedTaxAlphalist.jsx";
 import Form2307 from "./pages/REPORTS/Form2307.jsx";
+import GeneralLedger from "./pages/REPORTS/GeneralLedger.jsx";
+import CashFlowStatement from "./pages/REPORTS/CashFlowStatement.jsx";
 
 function PlaceholderPage({ title }) {
   return (
@@ -155,6 +157,8 @@ function AppLayout() {
           <Route path="/reports/input-vat-report" element={<InputVAT />} />
           <Route path="/reports/output-vat-report" element={<OutputVAT />} />
           <Route path="/reports/subsidiary-ledger" element={<SubsidiaryLedger />} />
+          <Route path="/reports/general-ledger" element={<GeneralLedger />} />
+          <Route path="/reports/cash-flow-statement" element={<CashFlowStatement />} />
           <Route path="/reports/fixed-asset-register" element={<FixedAssetReport />} />
           <Route path="/reports/prepaid-accounts-list" element={<ListOfPrepaidAccounts />} />
           <Route path="/reports/prepayment-lapsing" element={<PrepaymentLapsingReport />} />
