@@ -1,0 +1,50 @@
+// Data-driven File Setup navigation tree - same NavTree.jsx renderer the
+// Reports menu uses. See reportsMenuConfig.js for the pattern this follows.
+import {
+  BookOpen,
+  Library,
+  Tags,
+  Building2,
+  FolderTree,
+  FileText,
+  NotebookText,
+  Landmark,
+  SlidersHorizontal,
+  Coins,
+  FilePlus,
+  Percent,
+  Building,
+  Boxes,
+  Wallet,
+  ClipboardList,
+  ArrowDownToLine,
+  ArrowUpFromLine,
+} from "lucide-react";
+
+export const FILE_SETUP_MENU = [
+  { id: "coa", label: "Chart of Accounts", icon: BookOpen, path: "/coa" },
+  { id: "general-libraries", label: "General Libraries", icon: Library, path: "/general-libraries" },
+  { id: "group-code", label: "Group Code", icon: Tags, path: "/group-code" },
+  { id: "industry", label: "Industry", icon: Building2, path: "/industry" },
+  { id: "category-code", label: "Category Code", icon: FolderTree, path: "/category-code" },
+  {
+    id: "beginning-balances",
+    label: "Beginning Balances",
+    children: [
+      { id: "gl-beginning-balance", label: "GL Beginning Balance", icon: ClipboardList, path: "/beginning-balances/gl" },
+      { id: "ar-beginning-balance", label: "AR Beginning Balance", icon: ArrowDownToLine, path: "/beginning-balances/ar" },
+      { id: "ap-beginning-balance", label: "AP Beginning Balance", icon: ArrowUpFromLine, path: "/beginning-balances/ap" },
+    ],
+  },
+  { id: "book-template", label: "Book Template", icon: FileText, path: "/book-template" },
+  { id: "particulars-template", label: "Particulars Template", icon: NotebookText, path: "/particulars-template" },
+  { id: "bank-codes", label: "Bank Codes", icon: Landmark, path: "/bank-codes" },
+  { id: "transaction-setup", label: "Transaction Setup", icon: SlidersHorizontal, path: "/transaction-setup" },
+  { id: "currency-file-setup", label: "Currency File Setup", icon: Coins, path: "/currency-file-setup" },
+  { id: "additional-file-setup", label: "Additional File Setup", icon: FilePlus, path: "/additional-file-setup" },
+  { id: "tax-file-setup", label: "Tax File Setup", icon: Percent, path: "/tax-file-setup" },
+  { id: "ewt-library", label: "EWT Library", icon: Library, path: "/ewt-library" },
+  { id: "fixed-asset-setup", label: "Fixed Asset Setup", icon: Boxes, path: "/fixed-asset-setup" },
+  { id: "prepaid-account-setup", label: "Prepaid Account Setup", icon: Wallet, path: "/prepaid-account-setup" },
+  { id: "company-profile", label: "Company Profile", icon: Building, path: "/company-profile" },
+];
