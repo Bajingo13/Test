@@ -1,8 +1,14 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import TrialBalanceCheckerPanel from "../../components/TrialBalanceCheckerPanel";
 import "./TrialBalance.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
+
+function authHeaders() {
+  const token = localStorage.getItem("token");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
 
 export default function TrialBalance() {
   const navigate = useNavigate();
@@ -17,6 +23,8 @@ export default function TrialBalance() {
     runDate: "",
     runTime: "",
   });
+  const [balanceStatus, setBalanceStatus] = useState(null);
+  const [checkerOpen, setCheckerOpen] = useState(false);
 
   const totals = useMemo(() => {
     const debit = rows.reduce((sum, row) => sum + Number(row.debit || 0), 0);
@@ -72,33 +80,35 @@ export default function TrialBalance() {
       const finalRows = Array.isArray(data) ? data : data.data || [];
 
       setRows(finalRows);
-
-      const totalDebit = finalRows.reduce(
-        (sum, row) => sum + Number(row.debit || 0),
-        0
-      );
-
-      const totalCredit = finalRows.reduce(
-        (sum, row) => sum + Number(row.credit || 0),
-        0
-      );
-
-      const difference = Math.abs(totalDebit - totalCredit);
-
-      if (difference > 0.009) {
-        alert(
-          `DEBIT AND CREDIT NOT BALANCED BY A\nDIFFERENCE OF ${formatMoney(
-            difference
-          )}\n\nClick OK to continue.`
-        );
-      }
+      await loadBalanceStatus();
     } catch (err) {
       console.error(err);
       alert("Failed to generate Trial Balance. Please check the backend/server.");
       setRows([]);
+      setBalanceStatus(null);
     } finally {
       setGenerated(true);
       setLoading(false);
+    }
+  }
+
+  async function loadBalanceStatus() {
+    try {
+      const res = await fetch(
+        `${API_URL}/api/reports/trial-balance-checker/status?from=${fromDate}&to=${toDate}&tolerance=0.01`,
+        { credentials: "include", headers: authHeaders() }
+      );
+
+      if (!res.ok) {
+        setBalanceStatus(null);
+        return;
+      }
+
+      const data = await res.json();
+      setBalanceStatus(data);
+    } catch (err) {
+      console.error("TRIAL BALANCE STATUS ERROR:", err);
+      setBalanceStatus(null);
     }
   }
 
@@ -298,6 +308,32 @@ export default function TrialBalance() {
             </div>
           </div>
 
+          {balanceStatus && (
+            <div className="tb-balance-banner">
+              <span
+                className={`tb-balance-badge ${
+                  balanceStatus.status === "UNBALANCED" ? "unbalanced" : "balanced"
+                }`}
+              >
+                {balanceStatus.status === "BALANCED" && "Trial Balance is balanced"}
+                {balanceStatus.status === "WITHIN_TOLERANCE" && "Balanced within rounding tolerance"}
+                {balanceStatus.status === "UNBALANCED" && "Trial Balance is unbalanced"}
+              </span>
+              <span className="tb-balance-difference">
+                Difference: ₱ {formatMoney(Math.abs(Number(balanceStatus.difference || 0)))}
+              </span>
+              {balanceStatus.status === "UNBALANCED" && (
+                <button
+                  type="button"
+                  className="tb-check-difference-btn"
+                  onClick={() => setCheckerOpen(true)}
+                >
+                  Check Difference
+                </button>
+              )}
+            </div>
+          )}
+
           <table className="tb-report-table">
             <thead>
               <tr>
@@ -347,6 +383,14 @@ export default function TrialBalance() {
           </table>
         </div>
       )}
+
+      <TrialBalanceCheckerPanel
+        open={checkerOpen}
+        from={fromDate}
+        to={toDate}
+        tolerance="0.01"
+        onClose={() => setCheckerOpen(false)}
+      />
     </div>
   );
 }

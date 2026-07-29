@@ -15,6 +15,7 @@ const { templateImportUpload, handleUpload } = require("./lib/uploadMiddleware")
 const COAImportService = require("./services/COAImportService");
 const GenLibImportService = require("./services/GenLibImportService");
 const GLBeginningBalanceService = require("./services/GLBeginningBalanceService");
+const TrialBalanceDifferenceService = require("./services/trialBalanceDifferenceService");
 
 console.log("ENV FILE:", require("path").resolve(".env"));
 console.log("JWT_SECRET loaded:", Boolean(process.env.JWT_SECRET));
@@ -4223,6 +4224,7 @@ app.get("/api/audit-logs", authenticateToken, async (req, res) => {
 app.use("/api/bank-recon", require("./routes/bankRecon.routes"));
 app.use("/api/ai/bank-recon", require("./routes/aiRecon.routes"));
 app.use("/api/beginning-balances", require("./routes/beginningBalanceImport.routes"));
+app.use("/api/reports/trial-balance-checker", require("./routes/trialBalanceChecker.routes"));
 
 // ===================== ACCOUNT GROUP CODES API =====================
 
@@ -4599,98 +4601,7 @@ app.post("/api/gl-beginning-balances", async (req, res) => {
 app.get("/api/reports/trial-balance", async (req, res) => {
   try {
     const { from, to } = req.query;
-
-    const params = [];
-    let dateFilterAPV = "";
-    let dateFilterCV = "";
-    let dateFilterARAP = "";
-    let dateFilterJV = "";
-
-    if (from && to) {
-      dateFilterAPV = "WHERE h.transaction_date BETWEEN ? AND ?";
-      dateFilterCV = "WHERE h.transaction_date BETWEEN ? AND ?";
-      dateFilterARAP = "WHERE h.balance_date BETWEEN ? AND ?";
-      dateFilterJV = "WHERE h.transaction_date BETWEEN ? AND ?";
-      params.push(from, to, from, to, from, to, from, to);
-    }
-
-    const [rows] = await pool.execute(
-      `
-      SELECT
-        tb.account_code,
-        tb.account_name,
-    CASE
-  WHEN UPPER(TRIM(c.account_class)) = 'ASSET' THEN 'A'
-  WHEN UPPER(TRIM(c.account_class)) IN ('LIABILITY', 'LIABILITIES') THEN 'L'
-  WHEN UPPER(TRIM(c.account_class)) = 'INCOME' THEN 'I'
-  WHEN UPPER(TRIM(c.account_class)) IN ('CAPITAL', 'EQUITY') THEN 'C'
-  WHEN UPPER(TRIM(c.account_class)) = 'EXPENSE' THEN 'E'
-  ELSE ''
-END AS account_class,
-        CASE
-          WHEN SUM(tb.debit) - SUM(tb.credit) > 0
-          THEN SUM(tb.debit) - SUM(tb.credit)
-          ELSE 0
-        END AS debit,
-        CASE
-          WHEN SUM(tb.credit) - SUM(tb.debit) > 0
-          THEN SUM(tb.credit) - SUM(tb.debit)
-          ELSE 0
-        END AS credit
-      FROM (
-        SELECT
-          l.account_code,
-          l.account_title AS account_name,
-          COALESCE(l.debit, 0) AS debit,
-          COALESCE(l.credit, 0) AS credit
-        FROM apv_lines l
-        JOIN apv_headers h ON h.id = l.apv_id
-        ${dateFilterAPV}
-
-        UNION ALL
-
-        SELECT
-          l.account_code,
-          l.account_title AS account_name,
-          COALESCE(l.debit, 0) AS debit,
-          COALESCE(l.credit, 0) AS credit
-        FROM cv_lines l
-        JOIN cv_headers h ON h.id = l.cv_id
-        ${dateFilterCV}
-
-        UNION ALL
-
-        SELECT
-          l.account_code,
-          l.account_title AS account_name,
-          COALESCE(l.debit, 0) AS debit,
-          COALESCE(l.credit, 0) AS credit
-        FROM arap_beginning_balance_lines l
-        JOIN arap_beginning_balance_headers h ON h.id = l.header_id
-        ${dateFilterARAP}
-
-        UNION ALL
-
-        SELECT
-          l.account_code,
-          l.account_title AS account_name,
-          COALESCE(l.debit, 0) AS debit,
-          COALESCE(l.credit, 0) AS credit
-        FROM jv_lines l
-        JOIN jv_headers h ON h.id = l.jv_id
-        ${dateFilterJV}
-      ) tb
-      LEFT JOIN chart_of_accounts c 
-  ON TRIM(CAST(c.code AS CHAR)) = TRIM(CAST(tb.account_code AS CHAR))
-      WHERE tb.account_code IS NOT NULL
-        AND tb.account_code != ''
-      GROUP BY tb.account_code, tb.account_name, c.account_class
-      HAVING debit != 0 OR credit != 0
-      ORDER BY tb.account_code ASC
-      `,
-      params
-    );
-
+    const rows = await TrialBalanceDifferenceService.getTrialBalanceRows({ from, to });
     res.json(rows);
   } catch (err) {
     console.error("TRIAL BALANCE REPORT ERROR:", err.message);

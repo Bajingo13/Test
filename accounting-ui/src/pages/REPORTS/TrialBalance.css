@@ -39,6 +39,53 @@ display: flex;
 flex-direction: column;
 }
 
+.tb-balance-banner {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 14px 20px;
+  margin-bottom: 16px;
+  border-radius: 12px;
+  background: var(--bg-surface-muted);
+}
+
+.tb-balance-badge {
+  display: inline-block;
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.tb-balance-badge.balanced {
+  background: var(--success-bg);
+  color: var(--success-text);
+}
+
+.tb-balance-badge.unbalanced {
+  background: var(--danger-bg);
+  color: var(--danger-text);
+}
+
+.tb-balance-difference {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.tb-check-difference-btn {
+  margin-left: auto;
+  height: 38px;
+  padding: 0 18px;
+  border-radius: 10px;
+  border: 1px solid var(--danger-text);
+  background: var(--danger-bg);
+  color: var(--danger-text);
+  font-weight: 700;
+  cursor: pointer;
+}
+
 .tb-filter-grid label {
 font-size: 14px;
 font-weight: 700;
