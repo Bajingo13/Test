@@ -1,5 +1,13 @@
 import { useMemo, useState } from "react";
+import BeginningBalanceImportModal from "../../components/BeginningBalanceImportModal";
 import "./BeginningBalanceGL.css";
+
+const API_BASE = import.meta.env.VITE_API_URL || "";
+
+function authHeaders() {
+  const token = localStorage.getItem("token");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
 
 const emptyEntry = {
   id: null,
@@ -27,6 +35,8 @@ export default function BeginningBalance() {
   const [selectedId, setSelectedId] = useState(null);
   const [entry, setEntry] = useState(emptyEntry);
   const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [showImportModal, setShowImportModal] = useState(false);
 
   const selectedRow = rows.find((row) => row.id === selectedId);
 
@@ -139,13 +149,66 @@ export default function BeginningBalance() {
     setEntry(emptyEntry);
   }
 
-  function saveAll() {
-    console.log("SAVE GL BEGINNING BALANCE:", {
-      header,
-      rows,
-    });
+  async function saveAll() {
+    if (saving) return;
+    if (rows.length === 0) return alert("Add at least one entry before saving.");
 
-    alert("Beginning Balance ready to save to database.");
+    setSaving(true);
+
+    try {
+      const res = await fetch(`${API_BASE}/api/gl-beginning-balances`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        credentials: "include",
+        body: JSON.stringify({ header, rows }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        alert(data.message || "Failed to save GL beginning balance");
+        return;
+      }
+
+      alert(data.message || "GL beginning balance saved successfully");
+      setRows([]);
+      setSelectedId(null);
+      setEntry(emptyEntry);
+    } catch (error) {
+      console.error("SAVE GL BB ERROR:", error);
+      alert("Unable to connect to server.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function handleImported() {
+    setShowImportModal(false);
+  }
+
+  async function downloadTemplate() {
+    try {
+      const res = await fetch(`${API_BASE}/api/beginning-balances/gl/template?format=xlsx`, {
+        credentials: "include",
+        headers: authHeaders(),
+      });
+
+      if (!res.ok) {
+        alert("Failed to generate template");
+        return;
+      }
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "GL_Beginning_Balance_Template.xlsx";
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error("DOWNLOAD GL BB TEMPLATE ERROR:", error);
+      alert("Unable to download template.");
+    }
   }
 
   return (
@@ -159,7 +222,11 @@ export default function BeginningBalance() {
 
           <div className="glbb-header-actions">
             <button onClick={insertEntry}>+ Add Entry</button>
-            <button onClick={saveAll} className="primary">Save</button>
+            <button onClick={saveAll} className="primary" disabled={saving}>
+              {saving ? "Saving..." : "Save"}
+            </button>
+            <button onClick={downloadTemplate}>Download Template</button>
+            <button onClick={() => setShowImportModal(true)}>Import File</button>
           </div>
         </div>
 
@@ -358,6 +425,13 @@ export default function BeginningBalance() {
           <p className="glbb-muted">Select an entry from the table or click Add Entry.</p>
         )}
       </div>
+
+      <BeginningBalanceImportModal
+        open={showImportModal}
+        module="gl"
+        onClose={() => setShowImportModal(false)}
+        onImported={handleImported}
+      />
     </div>
   );
 }

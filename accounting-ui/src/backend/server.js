@@ -14,6 +14,7 @@ const { buildXlsxTemplate } = require("./services/TemplateExportService");
 const { templateImportUpload, handleUpload } = require("./lib/uploadMiddleware");
 const COAImportService = require("./services/COAImportService");
 const GenLibImportService = require("./services/GenLibImportService");
+const GLBeginningBalanceService = require("./services/GLBeginningBalanceService");
 
 console.log("ENV FILE:", require("path").resolve(".env"));
 console.log("JWT_SECRET loaded:", Boolean(process.env.JWT_SECRET));
@@ -4221,6 +4222,7 @@ app.get("/api/audit-logs", authenticateToken, async (req, res) => {
 // Extracted into services/controllers/routes (see backend/routes/bankRecon.routes.js).
 app.use("/api/bank-recon", require("./routes/bankRecon.routes"));
 app.use("/api/ai/bank-recon", require("./routes/aiRecon.routes"));
+app.use("/api/beginning-balances", require("./routes/beginningBalanceImport.routes"));
 
 // ===================== ACCOUNT GROUP CODES API =====================
 
@@ -4555,6 +4557,39 @@ app.delete("/api/arap-beginning-balances/:id", async (req, res) => {
   } catch (err) {
     console.error("DELETE ARAP BB ERROR:", err);
     res.status(500).json({ message: "Failed to remove beginning balance" });
+  }
+});
+
+// GL beginning balances previously had no backend at all - the manual
+// entry page only console.logged. These make it real, and are also what
+// the GL import commit path (services/beginningBalanceImportService.js)
+// calls into via GLBeginningBalanceService directly.
+app.get("/api/gl-beginning-balances", async (req, res) => {
+  try {
+    const data = await GLBeginningBalanceService.listGLBeginningBalances();
+    res.json(data);
+  } catch (err) {
+    console.error("LIST GL BB ERROR:", err);
+    res.status(500).json({ message: "Failed to load GL beginning balances" });
+  }
+});
+
+app.post("/api/gl-beginning-balances", async (req, res) => {
+  try {
+    const { header, rows } = req.body;
+
+    if (!header || !header.date) {
+      return res.status(400).json({ message: "Beginning balance date is required" });
+    }
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return res.status(400).json({ message: "At least one line is required" });
+    }
+
+    const { headerId } = await GLBeginningBalanceService.createGLBeginningBalance({ header, rows });
+    res.json({ success: true, message: "GL beginning balance saved successfully", headerId });
+  } catch (err) {
+    console.error("SAVE GL BB ERROR:", err);
+    res.status(500).json({ message: "Failed to save GL beginning balance" });
   }
 });
 
