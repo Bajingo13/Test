@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import BeginningBalanceImportModal from "../../components/BeginningBalanceImportModal";
 import "./ARAPBeginningBalance.css";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
@@ -61,6 +62,7 @@ export default function ARAPBeginningBalance({ balanceType }) {
   });
 
   const [form, setForm] = useState(emptyLine(balanceType));
+  const [showImportModal, setShowImportModal] = useState(false);
 
   useEffect(() => {
     loadParties();
@@ -284,6 +286,32 @@ export default function ARAPBeginningBalance({ balanceType }) {
     }
   }
 
+  async function downloadTemplate() {
+    try {
+      const res = await fetch(
+        `${API_BASE}/api/beginning-balances/${balanceType.toLowerCase()}/template?format=xlsx`,
+        { credentials: "include", headers: authHeaders() }
+      );
+
+      if (!res.ok) {
+        if (handleAuthError(res.status)) return;
+        alert("Failed to generate template");
+        return;
+      }
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${balanceType}_Beginning_Balance_Template.xlsx`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("DOWNLOAD BEGINNING BALANCE TEMPLATE ERROR:", err);
+      alert("Unable to download template.");
+    }
+  }
+
   async function removeBalance(id) {
     if (!confirm("Remove selected beginning balance?")) return;
 
@@ -317,9 +345,17 @@ export default function ARAPBeginningBalance({ balanceType }) {
           </p>
         </div>
 
-        <button onClick={resetForm} className="arap-btn primary">
-          + New Entry
-        </button>
+        <div className="arap-header-actions">
+          <button onClick={downloadTemplate} className="arap-btn">
+            Download Template
+          </button>
+          <button onClick={() => setShowImportModal(true)} className="arap-btn">
+            Import File
+          </button>
+          <button onClick={resetForm} className="arap-btn primary">
+            + New Entry
+          </button>
+        </div>
       </div>
 
       <div className="arap-card">
@@ -586,6 +622,13 @@ export default function ARAPBeginningBalance({ balanceType }) {
           </table>
         </div>
       </div>
+
+      <BeginningBalanceImportModal
+        open={showImportModal}
+        module={balanceType.toLowerCase()}
+        onClose={() => setShowImportModal(false)}
+        onImported={loadBalances}
+      />
     </div>
   );
 }

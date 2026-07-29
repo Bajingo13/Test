@@ -33,6 +33,13 @@
   color: var(--text-secondary);
 }
 
+.arap-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .arap-card h2 {
   margin: 0 0 16px;
   color: var(--text-primary);

@@ -95,6 +95,148 @@ function validateGLBatchBalance(resolvedRows) {
   return { totalDebit, totalCredit, difference, balanced: Math.abs(difference) < 0.01 };
 }
 
+// ---- AR / AP Beginning Balance (shared - AR and AP differ only in which
+// party type / COA validation flag a row must resolve against, and label
+// text, so this is one function parameterized rather than two near-copies) ----
+
+function validatePartyRow(row, context, { partyTypeLabel }) {
+  const errors = [];
+  const warnings = [];
+
+  const partyCode = String(row.partyCode || "").trim();
+  const accountCode = String(row.accountCode || "").trim();
+  const balanceDate = row.balanceDate ? parseStatementDate(row.balanceDate) : null;
+  const documentDate = row.documentDate ? parseStatementDate(row.documentDate) : null;
+  const dueDate = row.dueDate ? parseStatementDate(row.dueDate) : null;
+  const originalAmount =
+    row.originalAmount === "" || row.originalAmount == null ? null : parseStatementAmount(row.originalAmount);
+  const paidAmountRaw =
+    row.paidAmount === "" || row.paidAmount == null ? 0 : parseStatementAmount(row.paidAmount);
+  const paidAmount = paidAmountRaw || 0;
+  const balanceAmount =
+    row.balanceAmount === "" || row.balanceAmount == null ? null : parseStatementAmount(row.balanceAmount);
+
+  if (!partyCode) {
+    errors.push(err(`${partyTypeLabel} Code`, row.partyCode, `${partyTypeLabel} Code is required.`));
+  }
+
+  let party = null;
+  if (partyCode) {
+    party = context.partiesByCode.get(normalizeCode(partyCode));
+    if (!party) {
+      errors.push(
+        err(`${partyTypeLabel} Code`, partyCode, `${partyTypeLabel} Code "${partyCode}" does not exist in General Libraries.`)
+      );
+    } else if (
+      row.partyName &&
+      String(row.partyName).trim().toLowerCase() !== String(party.name).trim().toLowerCase()
+    ) {
+      warnings.push(
+        err(
+          `${partyTypeLabel} Name`,
+          row.partyName,
+          `${partyTypeLabel} Name does not match ${partyTypeLabel} Code ${partyCode} (General Libraries has "${party.name}") - ${partyTypeLabel} Code is what's actually used, name is reference only.`
+        )
+      );
+    }
+  }
+
+  let account = null;
+  if (!accountCode) {
+    errors.push(err("Account Code", row.accountCode, "Account Code is required."));
+  } else {
+    account = context.accountsByCode.get(normalizeCode(accountCode));
+    if (!account) {
+      errors.push(
+        err(
+          "Account Code",
+          accountCode,
+          `Account Code "${accountCode}" does not exist, or is not flagged as a valid ${partyTypeLabel === "Customer" ? "Accounts Receivable (AR CODE)" : "Accounts Payable (AP CODE)"} account in the Chart of Accounts.`
+        )
+      );
+    }
+  }
+
+  if (!row.balanceDate) {
+    errors.push(err("Beginning Balance Date", row.balanceDate, "Beginning Balance Date is required."));
+  } else if (!balanceDate) {
+    errors.push(err("Beginning Balance Date", row.balanceDate, "Beginning Balance Date is not a valid date."));
+  }
+
+  if (row.documentDate && !documentDate) {
+    errors.push(err("Document Date", row.documentDate, "Document Date is not a valid date."));
+  }
+
+  if (!row.dueDate) {
+    errors.push(err("Due Date", row.dueDate, "Due Date is required."));
+  } else if (!dueDate) {
+    errors.push(err("Due Date", row.dueDate, "Due Date is not a valid date."));
+  } else if (documentDate && dueDate < documentDate) {
+    errors.push(err("Due Date", row.dueDate, "Due Date cannot be earlier than Document Date."));
+  }
+
+  if (originalAmount === null) {
+    errors.push(err("Original Amount", row.originalAmount, "Original Amount is required."));
+  } else if (originalAmount < 0) {
+    errors.push(err("Original Amount", row.originalAmount, "Original Amount cannot be negative."));
+  }
+
+  if (paidAmountRaw !== null && paidAmountRaw < 0) {
+    errors.push(err("Paid Amount", row.paidAmount, "Paid Amount cannot be negative."));
+  } else if (originalAmount !== null && paidAmount > originalAmount) {
+    errors.push(err("Paid Amount", row.paidAmount, "Paid Amount cannot exceed Original Amount."));
+  }
+
+  if (originalAmount !== null && balanceAmount !== null) {
+    const expectedBalance = Math.round((originalAmount - paidAmount) * 100) / 100;
+    if (Math.abs(expectedBalance - balanceAmount) > 0.01) {
+      errors.push(
+        err(
+          "Balance Amount",
+          row.balanceAmount,
+          `Balance Amount must equal Original Amount minus Paid Amount (expected ${expectedBalance.toFixed(2)}).`
+        )
+      );
+    }
+  }
+
+  const resolvedBalance =
+    balanceAmount !== null
+      ? balanceAmount
+      : originalAmount !== null
+      ? Math.round((originalAmount - paidAmount) * 100) / 100
+      : 0;
+
+  return {
+    errors,
+    warnings,
+    resolved: {
+      partyId: party ? party.id : null,
+      partyCode: party ? party.code : partyCode,
+      partyName: party ? party.name : String(row.partyName || "").trim(),
+      accountId: account ? account.id : null,
+      accountCode: account ? account.code : accountCode,
+      accountTitle: account ? account.title : "",
+      documentNumber: row.documentNumber ? String(row.documentNumber).trim() : null,
+      balanceDate,
+      documentDate,
+      dueDate,
+      referenceNo: row.referenceNo ? String(row.referenceNo).trim() : null,
+      originalAmount: originalAmount || 0,
+      paidAmount,
+      balanceAmount: resolvedBalance,
+    },
+  };
+}
+
+function validateARRow(row, context) {
+  return validatePartyRow(row, context, { partyTypeLabel: "Customer" });
+}
+
+function validateAPRow(row, context) {
+  return validatePartyRow(row, context, { partyTypeLabel: "Supplier" });
+}
+
 // ---- Shared, module-agnostic checks ----
 
 // In-file duplicate detection - flags rows that are identical on the given
@@ -121,5 +263,7 @@ module.exports = {
   normalizeCode,
   validateGLRow,
   validateGLBatchBalance,
+  validateARRow,
+  validateAPRow,
   findInFileDuplicates,
 };
