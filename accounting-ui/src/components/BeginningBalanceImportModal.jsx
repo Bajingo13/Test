@@ -10,6 +10,37 @@ function authHeaders() {
 
 const MODULE_LABELS = { gl: "GL", ar: "AR", ap: "AP" };
 
+// GL rows are debit/credit lines against one account; AR/AP rows are party
+// documents (customer/supplier + amounts) - different enough that the
+// preview table needs different columns per module rather than one
+// GL-shaped table with blank cells for AR/AP.
+const PREVIEW_COLUMNS = {
+  gl: [
+    { header: "Account", render: (d) => d?.accountCode },
+    { header: "Date", render: (d) => d?.balanceDate },
+    { header: "Debit", render: (d) => (d?.debit ? formatMoney(d.debit) : ""), amount: true },
+    { header: "Credit", render: (d) => (d?.credit ? formatMoney(d.credit) : ""), amount: true },
+  ],
+  ar: [
+    { header: "Customer", render: (d) => (d?.partyCode ? `${d.partyCode} - ${d.partyName || ""}` : "") },
+    { header: "Account", render: (d) => d?.accountCode },
+    { header: "Doc No.", render: (d) => d?.documentNumber },
+    { header: "Balance Date", render: (d) => d?.balanceDate },
+    { header: "Due Date", render: (d) => d?.dueDate },
+    { header: "Original", render: (d) => (d?.originalAmount ? formatMoney(d.originalAmount) : ""), amount: true },
+    { header: "Balance", render: (d) => (d?.balanceAmount ? formatMoney(d.balanceAmount) : ""), amount: true },
+  ],
+  ap: [
+    { header: "Supplier", render: (d) => (d?.partyCode ? `${d.partyCode} - ${d.partyName || ""}` : "") },
+    { header: "Account", render: (d) => d?.accountCode },
+    { header: "Doc No.", render: (d) => d?.documentNumber },
+    { header: "Balance Date", render: (d) => d?.balanceDate },
+    { header: "Due Date", render: (d) => d?.dueDate },
+    { header: "Original", render: (d) => (d?.originalAmount ? formatMoney(d.originalAmount) : ""), amount: true },
+    { header: "Balance", render: (d) => (d?.balanceAmount ? formatMoney(d.balanceAmount) : ""), amount: true },
+  ],
+};
+
 function formatMoney(value) {
   return Number(value || 0).toLocaleString("en-PH", {
     minimumFractionDigits: 2,
@@ -33,10 +64,14 @@ export default function BeginningBalanceImportModal({ open, module, onClose, onI
   const [committing, setCommitting] = useState(false);
   const [commitError, setCommitError] = useState("");
   const [commitResult, setCommitResult] = useState(null);
+  const [history, setHistory] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState("");
   const fileInputRef = useRef(null);
   const closeButtonRef = useRef(null);
 
   const moduleLabel = MODULE_LABELS[module] || module?.toUpperCase();
+  const previewColumns = PREVIEW_COLUMNS[module] || PREVIEW_COLUMNS.gl;
 
   useEffect(() => {
     if (open) {
@@ -47,6 +82,8 @@ export default function BeginningBalanceImportModal({ open, module, onClose, onI
       setPreviewError("");
       setCommitError("");
       setCommitResult(null);
+      setHistory([]);
+      setHistoryError("");
       setTimeout(() => closeButtonRef.current?.focus(), 50);
     }
   }, [open]);
@@ -152,6 +189,55 @@ export default function BeginningBalanceImportModal({ open, module, onClose, onI
     }
   }
 
+  async function openHistory() {
+    setStep("history");
+    setHistoryLoading(true);
+    setHistoryError("");
+
+    try {
+      const res = await fetch(`${API_BASE}/api/beginning-balances/${module}/import-history`, {
+        credentials: "include",
+        headers: authHeaders(),
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        setHistoryError(data.message || "Failed to load import history");
+        return;
+      }
+
+      setHistory(data.history);
+    } catch (err) {
+      console.error("LOAD BB IMPORT HISTORY ERROR:", err);
+      setHistoryError("Unable to connect to server.");
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  async function downloadBatchErrors(batchId) {
+    try {
+      const res = await fetch(
+        `${API_BASE}/api/beginning-balances/${module}/import/${batchId}/errors?format=csv`,
+        { credentials: "include", headers: authHeaders() }
+      );
+      if (!res.ok) {
+        alert("Failed to download error file");
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${moduleLabel}_Import_Batch_${batchId}_Errors.csv`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("DOWNLOAD BATCH ERRORS ERROR:", err);
+      alert("Unable to download error file.");
+    }
+  }
+
   function downloadErrorFile() {
     if (!previewResult) return;
 
@@ -201,6 +287,9 @@ export default function BeginningBalanceImportModal({ open, module, onClose, onI
                 </button>
                 <button type="button" className="bbim-link-btn" onClick={() => downloadTemplate("csv")}>
                   Download CSV Template
+                </button>
+                <button type="button" className="bbim-link-btn" onClick={openHistory}>
+                  View Import History
                 </button>
               </div>
 
@@ -292,10 +381,9 @@ export default function BeginningBalanceImportModal({ open, module, onClose, onI
                     <tr>
                       <th>Row</th>
                       <th>Status</th>
-                      <th>Account</th>
-                      <th>Date</th>
-                      <th>Debit</th>
-                      <th>Credit</th>
+                      {previewColumns.map((col) => (
+                        <th key={col.header}>{col.header}</th>
+                      ))}
                       <th>Messages</th>
                     </tr>
                   </thead>
@@ -306,10 +394,11 @@ export default function BeginningBalanceImportModal({ open, module, onClose, onI
                         <td>
                           <span className={`bbim-badge bbim-badge-${r.status.toLowerCase()}`}>{r.status}</span>
                         </td>
-                        <td>{r.data?.accountCode}</td>
-                        <td>{r.data?.balanceDate}</td>
-                        <td className="amount">{r.data?.debit ? formatMoney(r.data.debit) : ""}</td>
-                        <td className="amount">{r.data?.credit ? formatMoney(r.data.credit) : ""}</td>
+                        {previewColumns.map((col) => (
+                          <td key={col.header} className={col.amount ? "amount" : undefined}>
+                            {col.render(r.data)}
+                          </td>
+                        ))}
                         <td className="bbim-messages">
                           {[...r.errors, ...r.warnings].map((issue, i) => (
                             <div key={i}>{issue.message}</div>
@@ -336,6 +425,60 @@ export default function BeginningBalanceImportModal({ open, module, onClose, onI
               Import complete: {commitResult.imported} record(s) imported
               {commitResult.skippedDuplicates > 0 && `, ${commitResult.skippedDuplicates} duplicate(s) skipped`}.
             </div>
+          )}
+
+          {step === "history" && (
+            <>
+              {historyError && <div className="bbim-error-banner">{historyError}</div>}
+              {historyLoading ? (
+                <p className="bbim-muted">Loading import history...</p>
+              ) : history.length === 0 ? (
+                <p className="bbim-muted">No {moduleLabel} imports yet.</p>
+              ) : (
+                <div className="bbim-row-table-wrap">
+                  <table className="bbim-row-table">
+                    <thead>
+                      <tr>
+                        <th>Date</th>
+                        <th>File</th>
+                        <th>Status</th>
+                        <th>Total</th>
+                        <th>Valid</th>
+                        <th>Invalid</th>
+                        <th>Warning</th>
+                        <th>By</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {history.map((h) => (
+                        <tr key={h.id}>
+                          <td>{h.created_at ? new Date(h.created_at).toLocaleString() : ""}</td>
+                          <td>{h.file_name}</td>
+                          <td>
+                            <span className={`bbim-badge bbim-badge-${h.status === "COMMITTED" ? "valid" : "warning"}`}>
+                              {h.status}
+                            </span>
+                          </td>
+                          <td>{h.total_rows}</td>
+                          <td>{h.valid_rows}</td>
+                          <td>{h.invalid_rows}</td>
+                          <td>{h.warning_rows}</td>
+                          <td>{h.created_by_username}</td>
+                          <td>
+                            {h.invalid_rows + h.warning_rows > 0 && (
+                              <button type="button" className="bbim-link-btn" onClick={() => downloadBatchErrors(h.id)}>
+                                Errors
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </>
           )}
         </div>
 
@@ -380,6 +523,12 @@ export default function BeginningBalanceImportModal({ open, module, onClose, onI
           {step === "done" && (
             <button type="button" className="bbim-btn-primary" onClick={onClose}>
               Close
+            </button>
+          )}
+
+          {step === "history" && (
+            <button type="button" className="bbim-btn-secondary" onClick={() => setStep("upload")}>
+              Back
             </button>
           )}
         </div>

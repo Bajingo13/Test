@@ -12,5 +12,7 @@ router.post(
   ctrl.previewImport
 );
 router.post("/:module/import/commit", authenticateToken, ctrl.commitImport);
+router.get("/:module/import-history", authenticateToken, ctrl.getImportHistory);
+router.get("/:module/import/:batchId/errors", authenticateToken, ctrl.getBatchErrors);
 
 module.exports = router;

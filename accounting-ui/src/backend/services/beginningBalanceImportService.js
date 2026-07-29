@@ -570,10 +570,67 @@ async function commitImport({ module, batchId, user }) {
   };
 }
 
+async function getImportHistory(module) {
+  const [rows] = await pool.execute(
+    `SELECT id, module, template_version, file_name, status, total_rows, valid_rows,
+            invalid_rows, warning_rows, total_debit, total_credit, duplicate_mode,
+            created_by_username, created_at, committed_at
+     FROM import_batches
+     WHERE module = ?
+     ORDER BY created_at DESC
+     LIMIT 100`,
+    [module.toUpperCase() + "_BEGINNING_BALANCE"]
+  );
+  return rows;
+}
+
+// Every stored row that carries at least one error or warning, flattened to
+// one line per message - this is both what the "View Validation Errors"
+// panel renders and what the downloadable error file contains.
+async function getBatchErrorRows(module, batchId) {
+  const [batchRows] = await pool.execute(
+    "SELECT id FROM import_batches WHERE id = ? AND module = ?",
+    [batchId, module.toUpperCase() + "_BEGINNING_BALANCE"]
+  );
+  if (batchRows.length === 0) {
+    throw Object.assign(new Error("Import batch not found"), { statusCode: 404 });
+  }
+
+  const [rows] = await pool.execute(
+    "SELECT row_num, status, errors FROM import_batch_rows WHERE batch_id = ? AND status IN ('INVALID', 'DUPLICATE', 'WARNING') ORDER BY row_num ASC",
+    [batchId]
+  );
+
+  const flattened = [];
+  for (const row of rows) {
+    const messages = row.errors || [];
+    for (const m of messages) {
+      flattened.push({
+        rowNumber: row.row_num,
+        status: row.status,
+        column: m.column,
+        value: m.value,
+        message: m.message,
+      });
+    }
+  }
+  return flattened;
+}
+
+function buildErrorCsv(errorRows) {
+  const columns = ["rowNumber", "status", "column", "value", "message"];
+  const header = ["Row Number", "Status", "Column", "Value", "Message"];
+  const lines = [header, ...errorRows.map((r) => columns.map((c) => r[c]))];
+  return lines.map((row) => row.map((cell) => `"${String(cell ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
+}
+
 module.exports = {
   TEMPLATE_VERSION,
   GL_FIELD_ALIASES,
   PARTY_FIELD_ALIASES,
   previewImport,
   commitImport,
+  getImportHistory,
+  getBatchErrorRows,
+  buildErrorCsv,
 };

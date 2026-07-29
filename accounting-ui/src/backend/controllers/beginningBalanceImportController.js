@@ -84,3 +84,38 @@ exports.commitImport = async (req, res) => {
     res.status(err.statusCode || 500).json({ message: err.message || "Failed to commit import" });
   }
 };
+
+exports.getImportHistory = async (req, res) => {
+  const module = checkModule(req, res);
+  if (!module) return;
+
+  try {
+    const history = await ImportService.getImportHistory(module);
+    res.json({ success: true, history });
+  } catch (err) {
+    console.error("BEGINNING BALANCE IMPORT HISTORY ERROR:", err);
+    res.status(err.statusCode || 500).json({ message: err.message || "Failed to load import history" });
+  }
+};
+
+exports.getBatchErrors = async (req, res) => {
+  const module = checkModule(req, res);
+  if (!module) return;
+
+  try {
+    const { batchId } = req.params;
+    const errorRows = await ImportService.getBatchErrorRows(module, batchId);
+
+    if (req.query.format === "csv") {
+      const csv = ImportService.buildErrorCsv(errorRows);
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition", `attachment; filename="${module.toUpperCase()}_Import_Batch_${batchId}_Errors.csv"`);
+      res.send(csv);
+    } else {
+      res.json({ success: true, errorRows });
+    }
+  } catch (err) {
+    console.error("BEGINNING BALANCE BATCH ERRORS ERROR:", err);
+    res.status(err.statusCode || 500).json({ message: err.message || "Failed to load batch errors" });
+  }
+};
