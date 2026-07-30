@@ -4,6 +4,7 @@ import NavTree from "./NavTree";
 import { REPORTS_MENU } from "./reportsMenuConfig";
 import { FILE_SETUP_MENU } from "./fileSetupMenuConfig";
 import { TRANSACTIONS_MENU } from "./transactionsMenuConfig";
+import { ADMINISTRATION_MENU } from "./administrationMenuConfig";
 import ThemeToggle from "../ThemeToggle";
 import "./Sidebar.css";
 
@@ -21,11 +22,13 @@ export default function Sidebar({ sidebarOpen, setSidebarOpen }) {
   const [openFileSetup, setOpenFileSetup] = useState(false);
   const [openTransactions, setOpenTransactions] = useState(false);
   const [openReports, setOpenReports] = useState(false);
+  const [openAdministration, setOpenAdministration] = useState(false);
 
   const closeAllDropdowns = () => {
     setOpenFileSetup(false);
     setOpenTransactions(false);
     setOpenReports(false);
+    setOpenAdministration(false);
   };
 
   const toggleSidebar = () => {
@@ -40,18 +43,28 @@ export default function Sidebar({ sidebarOpen, setSidebarOpen }) {
     setOpenFileSetup((prev) => !prev);
     setOpenTransactions(false);
     setOpenReports(false);
+    setOpenAdministration(false);
   };
 
   const toggleTransactions = () => {
     setOpenTransactions((prev) => !prev);
     setOpenFileSetup(false);
     setOpenReports(false);
+    setOpenAdministration(false);
   };
 
   const toggleReports = () => {
     setOpenReports((prev) => !prev);
     setOpenFileSetup(false);
     setOpenTransactions(false);
+    setOpenAdministration(false);
+  };
+
+  const toggleAdministration = () => {
+    setOpenAdministration((prev) => !prev);
+    setOpenFileSetup(false);
+    setOpenTransactions(false);
+    setOpenReports(false);
   };
 
   return (
@@ -116,6 +129,17 @@ export default function Sidebar({ sidebarOpen, setSidebarOpen }) {
           {openReports && (
             <div className="submenu rt-submenu">
               <NavTree nodes={REPORTS_MENU} namespace="reports" />
+            </div>
+          )}
+
+          <button type="button" className="nav-section-btn" onClick={toggleAdministration}>
+            <span>Administration</span>
+            <span>{openAdministration ? "▾" : "▸"}</span>
+          </button>
+
+          {openAdministration && (
+            <div className="submenu rt-submenu">
+              <NavTree nodes={ADMINISTRATION_MENU} namespace="administration" />
             </div>
           )}
 

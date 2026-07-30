@@ -1,0 +1,134 @@
+.ul-toolbar {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.ul-search-input {
+  flex: 1;
+  min-width: 220px;
+  height: 42px;
+  border: 1px solid var(--border-color-strong);
+  border-radius: 10px;
+  padding: 0 12px;
+  font-size: 14px;
+}
+
+.ul-select {
+  height: 42px;
+  border: 1px solid var(--border-color-strong);
+  border-radius: 10px;
+  padding: 0 10px;
+  font-size: 14px;
+}
+
+.ul-muted {
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.ul-error-banner {
+  background: var(--danger-bg);
+  color: var(--danger-text);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+
+.ul-table-wrap {
+  overflow-x: auto;
+}
+
+.ul-table {
+  width: 100%;
+  min-width: 900px;
+  border-collapse: collapse;
+}
+
+.ul-table th {
+  text-align: left;
+  padding: 8px 10px;
+  font-size: 11px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  border-bottom: 2px solid var(--border-color);
+}
+
+.ul-table td {
+  padding: 10px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border-color);
+  vertical-align: top;
+}
+
+.ul-empty {
+  text-align: center;
+  color: var(--text-secondary);
+  padding: 30px 0;
+}
+
+.ul-role-badge,
+.ul-status-badge {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.ul-role-super_admin {
+  background: var(--accent-indigo-bg);
+  color: var(--accent-indigo);
+}
+
+.ul-role-admin {
+  background: var(--info-bg);
+  color: var(--info-text);
+}
+
+.ul-role-accountant {
+  background: var(--neutral-bg);
+  color: var(--neutral-text);
+}
+
+.ul-status-active {
+  background: var(--success-bg);
+  color: var(--success-text);
+}
+
+.ul-status-inactive {
+  background: var(--neutral-bg);
+  color: var(--neutral-text);
+}
+
+.ul-status-suspended {
+  background: var(--danger-bg);
+  color: var(--danger-text);
+}
+
+.ul-row-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ul-link-btn {
+  border: none;
+  background: transparent;
+  color: var(--accent-blue);
+  font-weight: 700;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+  text-align: left;
+}
+
+.ul-link-btn.ul-danger {
+  color: var(--danger-text);
+}

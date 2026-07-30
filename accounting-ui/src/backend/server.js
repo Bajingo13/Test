@@ -180,6 +180,10 @@ app.post("/api/login", async (req, res) => {
       { expiresIn: "1d" }
     );
 
+    pool.execute("UPDATE users SET last_login_at = NOW() WHERE id = ?", [user.id]).catch((err) => {
+      console.error("UPDATE LAST LOGIN ERROR:", err.message);
+    });
+
     res.json({
       success: true,
       message: "Login successful",
@@ -4235,6 +4239,7 @@ app.use("/api/beginning-balances", require("./routes/beginningBalanceImport.rout
 app.use("/api/reports/trial-balance-checker", require("./routes/trialBalanceChecker.routes"));
 app.use("/api", require("./routes/roles.routes"));
 app.use("/api/invitations", require("./routes/invitations.routes"));
+app.use("/api/users", require("./routes/users.routes"));
 
 // ===================== ACCOUNT GROUP CODES API =====================
 

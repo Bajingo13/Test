@@ -9,6 +9,7 @@ import GroupCodes from "./pages/FILESETUP/GroupCodes";
 import Login from "./pages/login/login";
 import AcceptInvite from "./pages/ADMIN/AcceptInvite";
 import PendingInvitations from "./pages/ADMIN/PendingInvitations";
+import UserSettings from "./pages/ADMIN/UserSettings";
 
 // FILE SETUP
 import Industry from "./pages/FILESETUP/Industry";
@@ -113,6 +114,7 @@ function AppLayout() {
           <Route path="/login" element={<Login />} />
           <Route path="/accept-invite" element={<AcceptInvite />} />
           <Route path="/admin/invitations" element={<PendingInvitations />} />
+          <Route path="/admin/user-settings" element={<UserSettings />} />
           <Route path="/dashboard" element={<Dashboard />} />
 
           <Route path="/coa" element={<COA />} />

@@ -63,6 +63,11 @@ exports.acceptInvitation = async (req, res) => {
       { expiresIn: "1d" }
     );
 
+    const pool = require("../db");
+    pool.execute("UPDATE users SET last_login_at = NOW() WHERE id = ?", [result.userId]).catch((err) => {
+      console.error("UPDATE LAST LOGIN ERROR:", err.message);
+    });
+
     res.status(201).json({
       success: true,
       message: "Account activated successfully",

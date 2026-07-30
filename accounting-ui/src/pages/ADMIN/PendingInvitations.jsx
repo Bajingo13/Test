@@ -16,7 +16,7 @@ function formatDate(value) {
 
 // Standalone page for now (Phase 2 scope) - Phase 3 folds this into the
 // full UserSettings.jsx shell as a tab, reusing this same component.
-export default function PendingInvitations() {
+export default function PendingInvitations({ embedded = false }) {
   const [canView, setCanView] = useState(null);
   const [canCreate, setCanCreate] = useState(false);
   const [invitations, setInvitations] = useState([]);
@@ -107,24 +107,27 @@ export default function PendingInvitations() {
   }
 
   if (canView === null) {
-    return <div className="pi-page"><p className="pi-muted">Loading...</p></div>;
+    return embedded ? <p className="pi-muted">Loading...</p> : <div className="pi-page"><p className="pi-muted">Loading...</p></div>;
   }
 
   if (canView === false) {
+    const denied = <div className="pi-error-banner">You do not have permission to view invitations.</div>;
+    if (embedded) return denied;
     return (
       <div className="pi-page">
         <div className="pi-card">
           <h1>Pending Invitations</h1>
-          <div className="pi-error-banner">You do not have permission to view invitations.</div>
+          {denied}
         </div>
       </div>
     );
   }
 
-  return (
-    <div className="pi-page">
+  const content = (
+    <>
       <div className="pi-header">
-        <h1>Pending Invitations</h1>
+        {!embedded && <h1>Pending Invitations</h1>}
+        {embedded && <div />}
         {canCreate && (
           <button type="button" className="pi-btn-primary" onClick={() => setShowInviteModal(true)}>
             + Invite User
@@ -132,7 +135,7 @@ export default function PendingInvitations() {
         )}
       </div>
 
-      <div className="pi-card">
+      <div className={embedded ? "" : "pi-card"}>
         {error && <div className="pi-error-banner">{error}</div>}
         {loading ? (
           <p className="pi-muted">Loading invitations...</p>
@@ -186,6 +189,8 @@ export default function PendingInvitations() {
         onClose={() => setShowInviteModal(false)}
         onInvited={loadInvitations}
       />
-    </div>
+    </>
   );
+
+  return embedded ? content : <div className="pi-page">{content}</div>;
 }

@@ -1,0 +1,56 @@
+.us-page {
+  padding: 28px;
+  background: var(--bg-page);
+  min-height: 100vh;
+  color: var(--text-primary);
+}
+
+.us-page h1 {
+  margin: 0 0 20px;
+  font-size: 26px;
+  font-weight: 800;
+}
+
+.us-muted {
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.us-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.us-tab {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-weight: 700;
+  font-size: 14px;
+  padding: 10px 16px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+
+.us-tab.active {
+  color: var(--accent-indigo);
+  border-bottom-color: var(--accent-indigo);
+}
+
+.us-card {
+  background: var(--bg-surface);
+  border-radius: 14px;
+  padding: 22px;
+  box-shadow: 0 4px 16px rgba(var(--shadow-rgb), 0.06);
+}
+
+.us-error-banner {
+  background: var(--danger-bg);
+  color: var(--danger-text);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+}

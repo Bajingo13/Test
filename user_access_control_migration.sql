@@ -141,6 +141,14 @@ SET @col_exists = (
 SET @sql = IF(@col_exists = 0, 'ALTER TABLE users ADD COLUMN created_by INT NULL', 'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
+-- users.last_login_at (Phase 3 - User List's "Last Login" column)
+SET @col_exists = (
+  SELECT COUNT(*) FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'last_login_at'
+);
+SET @sql = IF(@col_exists = 0, 'ALTER TABLE users ADD COLUMN last_login_at TIMESTAMP NULL', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
 -- Seed roles (idempotent via INSERT IGNORE against the UNIQUE code column)
 INSERT IGNORE INTO roles (code, name, description, is_system) VALUES
   ('SUPER_ADMIN', 'Super Admin', 'System owner - full access to all companies, branches, and modules - only role that can configure restrictions for other roles.', 1),
