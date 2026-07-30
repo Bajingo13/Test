@@ -4,6 +4,11 @@ import "./BalanceSheet.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
 
+function authHeaders() {
+  const token = localStorage.getItem("token");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 export default function BalanceSheet() {
   const navigate = useNavigate();
   const today = new Date().toISOString().slice(0, 10);
@@ -55,7 +60,10 @@ export default function BalanceSheet() {
     setLoading(true);
 
     try {
-      const res = await fetch(`${API_URL}/api/reports/balance-sheet?to=${toDate}`);
+      const res = await fetch(`${API_URL}/api/reports/balance-sheet?to=${toDate}`, {
+        credentials: "include",
+        headers: authHeaders(),
+      });
 
       if (!res.ok) throw new Error("Failed to generate balance sheet");
 

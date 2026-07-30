@@ -4,6 +4,11 @@ import "./PrepaidReports.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
 
+function authHeaders() {
+  const token = localStorage.getItem("token");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 export default function AlphalistReportBase({ title, reportTitle, taxType }) {
   const [month, setMonth] = useState(new Date().toISOString().slice(0, 7));
   const [rows, setRows] = useState([]);
@@ -29,7 +34,8 @@ export default function AlphalistReportBase({ title, reportTitle, taxType }) {
 
     try {
       const res = await fetch(
-        `${API_URL}/api/reports/alphalist?taxType=${taxType}&month=${month}`
+        `${API_URL}/api/reports/alphalist?taxType=${taxType}&month=${month}`,
+        { credentials: "include", headers: authHeaders() }
       );
 
       if (!res.ok) throw new Error("Failed to generate alphalist report");

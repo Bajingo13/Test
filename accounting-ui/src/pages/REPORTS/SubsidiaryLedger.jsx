@@ -69,7 +69,8 @@ export default function SubsidiaryLedger() {
 
     try {
       const res = await fetch(
-        `${API_URL}/api/reports/subsidiary-ledger?type=${ledgerType}&partyId=${partyId}&from=${fromDate}&to=${toDate}`
+        `${API_URL}/api/reports/subsidiary-ledger?type=${ledgerType}&partyId=${partyId}&from=${fromDate}&to=${toDate}`,
+        { credentials: "include", headers: authHeaders() }
       );
 
       if (!res.ok) throw new Error("Failed to generate subsidiary ledger");

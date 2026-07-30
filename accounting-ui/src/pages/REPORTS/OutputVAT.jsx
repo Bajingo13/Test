@@ -63,7 +63,8 @@ export default function OutputVAT() {
 
     try {
       const res = await fetch(
-        `${API_URL}/api/reports/output-vat?from=${fromDate}&to=${toDate}&accountCode=${accountCode}`
+        `${API_URL}/api/reports/output-vat?from=${fromDate}&to=${toDate}&accountCode=${accountCode}`,
+        { credentials: "include", headers: authHeaders() }
       );
 
       if (!res.ok) throw new Error("Failed to generate Output VAT report");

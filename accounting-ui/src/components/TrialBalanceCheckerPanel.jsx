@@ -45,6 +45,8 @@ export default function TrialBalanceCheckerPanel({ open, from, to, tolerance, on
   const navigate = useNavigate();
 
   const [status, setStatus] = useState(null);
+  const [statusLoading, setStatusLoading] = useState(false);
+  const [statusError, setStatusError] = useState(null);
   const [runResult, setRunResult] = useState(null);
   const [checking, setChecking] = useState(false);
   const [checkError, setCheckError] = useState("");
@@ -61,28 +63,62 @@ export default function TrialBalanceCheckerPanel({ open, from, to, tolerance, on
   const [draftForm, setDraftForm] = useState(null);
   const [draftSubmitting, setDraftSubmitting] = useState(false);
 
+  const missingParams = !from || !to;
+
   useEffect(() => {
-    if (!open) return;
+    if (!open || missingParams) return;
     setRunResult(null);
     setCheckError("");
+    setStatusError(null);
     setSearch("");
     setCategoryFilter("ALL");
     setSeverityFilter("ALL");
     loadStatus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, from, to, tolerance]);
 
-  if (!open) return null;
-
   async function loadStatus() {
+    setStatusLoading(true);
+    setStatusError(null);
     try {
       const res = await fetch(
         `${API_URL}/api/reports/trial-balance-checker/status?from=${from}&to=${to}&tolerance=${tolerance}`,
         { credentials: "include", headers: authHeaders() }
       );
-      const data = await res.json();
-      if (res.ok) setStatus(data);
+
+      if (res.status === 401 || res.status === 403) {
+        setStatusError({ type: "access-denied", message: "You don't have permission to view the Trial Balance Checker." });
+        return;
+      }
+      if (res.status === 404) {
+        setStatusError({ type: "not-found", message: "The Trial Balance Checker endpoint was not found on the server." });
+        return;
+      }
+
+      let data = null;
+      try {
+        data = await res.json();
+      } catch {
+        data = null;
+      }
+
+      if (!res.ok) {
+        if (import.meta.env.DEV) {
+          console.error("LOAD TB CHECKER STATUS ERROR:", res.status, data);
+        }
+        setStatusError({
+          type: "server",
+          message: data?.message || `The server returned an error (${res.status}) while loading the checker status.`,
+        });
+        return;
+      }
+
+      setStatus(data);
     } catch (err) {
-      console.error("LOAD TB CHECKER STATUS ERROR:", err);
+      if (import.meta.env.DEV) console.error("LOAD TB CHECKER STATUS ERROR:", err);
+      setStatusError({ type: "network", message: "Unable to connect to the server. Please check your connection and try again." });
+    } finally {
+      setStatusLoading(false);
     }
   }
 
@@ -99,16 +135,31 @@ export default function TrialBalanceCheckerPanel({ open, from, to, tolerance, on
         body: JSON.stringify({ from, to, tolerance }),
       });
 
-      const data = await res.json();
+      if (res.status === 401 || res.status === 403) {
+        setCheckError("You don't have permission to run the Trial Balance Checker.");
+        return;
+      }
+      if (res.status === 404) {
+        setCheckError("The Trial Balance Checker endpoint was not found on the server.");
+        return;
+      }
+
+      let data = null;
+      try {
+        data = await res.json();
+      } catch {
+        data = null;
+      }
 
       if (!res.ok) {
-        setCheckError(data.message || "Failed to run the checker");
+        if (import.meta.env.DEV) console.error("RUN TB CHECK ERROR:", res.status, data);
+        setCheckError(data?.message || `The server returned an error (${res.status}) while running the checker.`);
         return;
       }
 
       setRunResult(data);
     } catch (err) {
-      console.error("RUN TB CHECK ERROR:", err);
+      if (import.meta.env.DEV) console.error("RUN TB CHECK ERROR:", err);
       setCheckError("Unable to connect to server.");
     } finally {
       setChecking(false);
@@ -286,6 +337,37 @@ export default function TrialBalanceCheckerPanel({ open, from, to, tolerance, on
     return [...new Set(runResult.findings.map((f) => f.category))];
   }, [runResult]);
 
+  if (!open) return null;
+
+  if (missingParams) {
+    return (
+      <div className="tbcp-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
+        <div className="tbcp-modal" role="dialog" aria-modal="true" aria-label="Unbalanced Trial Balance Checker">
+          <div className="tbcp-header">
+            <h2>Unbalanced Trial Balance Checker</h2>
+            <button type="button" className="tbcp-close" onClick={onClose} aria-label="Close">
+              &times;
+            </button>
+          </div>
+          <div className="tbcp-body">
+            <div className="tbcp-error-banner">
+              Missing date range. Generate a Trial Balance report first, then click "Check Difference"
+              from that report so the checker knows which period to inspect.
+            </div>
+          </div>
+          <div className="tbcp-footer">
+            <span />
+            <div className="tbcp-footer-right">
+              <button type="button" className="tbcp-btn-primary" onClick={onClose}>
+                Back to Trial Balance
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="tbcp-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
       <div className="tbcp-modal" role="dialog" aria-modal="true" aria-label="Unbalanced Trial Balance Checker">
@@ -318,7 +400,22 @@ export default function TrialBalanceCheckerPanel({ open, from, to, tolerance, on
 
           {checkError && <div className="tbcp-error-banner">{checkError}</div>}
 
-          {!runResult && (
+          {statusLoading && (
+            <p className="tbcp-muted">Loading current Trial Balance status...</p>
+          )}
+
+          {statusError && !statusLoading && (
+            <div className="tbcp-error-banner">
+              {statusError.message}
+              <div style={{ marginTop: 8 }}>
+                <button type="button" className="tbcp-link-btn" onClick={loadStatus}>
+                  Retry
+                </button>
+              </div>
+            </div>
+          )}
+
+          {!runResult && !statusLoading && !statusError && (
             <p className="tbcp-muted">
               This will inspect General Journal, AP Voucher, Check Voucher, and Beginning Balance
               records for the selected period and report every finding that could be contributing
@@ -393,8 +490,8 @@ export default function TrialBalanceCheckerPanel({ open, from, to, tolerance, on
                     {filteredFindings.map((f) => (
                       <tr key={f.id}>
                         <td>
-                          <span className={`tbcp-badge tbcp-badge-${f.severity.toLowerCase()}`}>
-                            {f.severity.replace("_", " ")}
+                          <span className={`tbcp-badge tbcp-badge-${(f.severity || "unknown").toLowerCase()}`}>
+                            {(f.severity || "UNKNOWN").replace("_", " ")}
                           </span>
                           {f.investigated ? (
                             <div>

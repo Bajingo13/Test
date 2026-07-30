@@ -3,6 +3,11 @@ import "./TrialBalance.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
 
+function authHeaders() {
+  const token = localStorage.getItem("token");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 export default function ARAging() {
   const [asOfDate, setAsOfDate] = useState(new Date().toISOString().slice(0, 10));
   const [rows, setRows] = useState([]);
@@ -66,7 +71,10 @@ export default function ARAging() {
     });
 
     try {
-      const res = await fetch(`${API_URL}/api/reports/ar-aging?asOf=${asOfDate}`);
+      const res = await fetch(`${API_URL}/api/reports/ar-aging?asOf=${asOfDate}`, {
+        credentials: "include",
+        headers: authHeaders(),
+      });
       if (!res.ok) throw new Error("Failed to fetch AP Aging");
 
       const data = await res.json();

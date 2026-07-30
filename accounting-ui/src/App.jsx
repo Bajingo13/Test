@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { ThemeProvider } from "./context/ThemeContext";
+import ErrorBoundary from "./components/ErrorBoundary";
 import Sidebar from "./components/sidebar/sidebar";
 import Dashboard from "./pages/DASHBOARD/dashboard";
 import COA from "./pages/FILESETUP/COA";
@@ -112,6 +113,7 @@ function AppLayout() {
           transition: "margin-left 0.3s ease",
         }}
       >
+        <ErrorBoundary key={location.pathname} backTo="/dashboard" backToLabel="Back to Dashboard">
         <Routes>
           <Route path="/" element={<Navigate to="/login" replace />} />
           <Route path="/login" element={<Login />} />
@@ -196,6 +198,7 @@ function AppLayout() {
   element={<BeginningBalanceAP />}
 />
         </Routes>
+        </ErrorBoundary>
       </main>
     </div>
   );

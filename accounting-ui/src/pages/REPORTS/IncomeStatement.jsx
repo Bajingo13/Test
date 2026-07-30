@@ -4,6 +4,11 @@ import "./IncomeStatement.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
 
+function authHeaders() {
+  const token = localStorage.getItem("token");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 export function IncomeStatement() {
   const navigate = useNavigate();
   const today = new Date().toISOString().slice(0, 10);
@@ -42,7 +47,8 @@ export function IncomeStatement() {
     setLoading(true);
     try {
       const res = await fetch(
-        `${API_URL}/api/reports/income-statement?from=${fromDate}&to=${toDate}`
+        `${API_URL}/api/reports/income-statement?from=${fromDate}&to=${toDate}`,
+        { credentials: "include", headers: authHeaders() }
       );
 
       if (!res.ok) throw new Error("Failed to generate income statement");

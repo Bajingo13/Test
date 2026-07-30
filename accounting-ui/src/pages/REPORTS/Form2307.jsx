@@ -5,6 +5,11 @@ import "./Form2307.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
 
+function authHeaders() {
+  const token = localStorage.getItem("token");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 const QUARTERS = [
   { value: 1, label: "Q1 (Jan - Mar)" },
   { value: 2, label: "Q2 (Apr - Jun)" },
@@ -32,7 +37,10 @@ export default function Form2307() {
 
   async function loadSuppliers() {
     try {
-      const res = await fetch(`${API_URL}/api/genlib`, { credentials: "include" });
+      const res = await fetch(`${API_URL}/api/genlib`, {
+        credentials: "include",
+        headers: authHeaders(),
+      });
       const data = await res.json();
       setSuppliers(Array.isArray(data) ? data.filter((p) => p.type === "SUPPLIER") : []);
     } catch (err) {
@@ -232,7 +240,8 @@ export default function Form2307() {
 
     try {
       const res = await fetch(
-        `${API_URL}/api/reports/2307?supplierId=${supplierId}&year=${year}&quarter=${quarter}`
+        `${API_URL}/api/reports/2307?supplierId=${supplierId}&year=${year}&quarter=${quarter}`,
+        { credentials: "include", headers: authHeaders() }
       );
 
       if (!res.ok) throw new Error("Failed to generate 2307 report");

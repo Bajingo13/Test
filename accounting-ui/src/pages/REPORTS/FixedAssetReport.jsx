@@ -3,6 +3,11 @@ import "./AccountAnalysis.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
 
+function authHeaders() {
+  const token = localStorage.getItem("token");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 export default function FixedAssetReport() {
   const [asOfDate, setAsOfDate] = useState(new Date().toISOString().slice(0, 10));
   const [rows, setRows] = useState([]);
@@ -28,7 +33,10 @@ export default function FixedAssetReport() {
     setLoading(true);
 
     try {
-      const res = await fetch(`${API_URL}/api/reports/fixed-asset-register?asOf=${asOfDate}`);
+      const res = await fetch(`${API_URL}/api/reports/fixed-asset-register?asOf=${asOfDate}`, {
+        credentials: "include",
+        headers: authHeaders(),
+      });
       if (!res.ok) throw new Error("Failed to generate fixed asset register");
 
       const data = await res.json();

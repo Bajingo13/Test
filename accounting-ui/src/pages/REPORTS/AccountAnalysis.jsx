@@ -89,7 +89,8 @@ export default function AccountAnalysis() {
 
     try {
       const res = await fetch(
-        `${API_URL}/api/reports/account-analysis?from=${finalFromDate}&to=${finalToDate}&accountCode=${finalAccountCode}`
+        `${API_URL}/api/reports/account-analysis?from=${finalFromDate}&to=${finalToDate}&accountCode=${finalAccountCode}`,
+        { credentials: "include", headers: authHeaders() }
       );
 
       if (!res.ok) throw new Error("Failed to generate account analysis");

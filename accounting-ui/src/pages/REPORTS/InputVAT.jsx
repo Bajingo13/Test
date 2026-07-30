@@ -63,7 +63,8 @@ export default function InputVAT() {
 
     try {
       const res = await fetch(
-        `${API_URL}/api/reports/account-analysis?from=${fromDate}&to=${toDate}&accountCode=${accountCode}`
+        `${API_URL}/api/reports/account-analysis?from=${fromDate}&to=${toDate}&accountCode=${accountCode}`,
+        { credentials: "include", headers: authHeaders() }
       );
 
       if (!res.ok) throw new Error("Failed to generate Input VAT report");

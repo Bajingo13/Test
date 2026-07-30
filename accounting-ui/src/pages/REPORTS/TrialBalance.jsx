@@ -71,7 +71,8 @@ export default function TrialBalance() {
 
     try {
       const res = await fetch(
-        `${API_URL}/api/reports/trial-balance?from=${fromDate}&to=${toDate}`
+        `${API_URL}/api/reports/trial-balance?from=${fromDate}&to=${toDate}`,
+        { credentials: "include", headers: authHeaders() }
       );
 
       if (!res.ok) throw new Error("Failed to fetch trial balance");

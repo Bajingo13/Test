@@ -4,6 +4,11 @@ import "./PrepaidReports.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
 
+function authHeaders() {
+  const token = localStorage.getItem("token");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 export default function PrepaidListReportBase({ title, reportTitle, endpoint, showMonthsElapsed }) {
   const [asOfDate, setAsOfDate] = useState(new Date().toISOString().slice(0, 10));
   const [rows, setRows] = useState([]);
@@ -29,7 +34,10 @@ export default function PrepaidListReportBase({ title, reportTitle, endpoint, sh
     setLoading(true);
 
     try {
-      const res = await fetch(`${API_URL}${endpoint}?asOf=${asOfDate}`);
+      const res = await fetch(`${API_URL}${endpoint}?asOf=${asOfDate}`, {
+        credentials: "include",
+        headers: authHeaders(),
+      });
       if (!res.ok) throw new Error("Failed to generate report");
 
       const data = await res.json();

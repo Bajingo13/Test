@@ -4,6 +4,11 @@ import "./PrepaidReports.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
 
+function authHeaders() {
+  const token = localStorage.getItem("token");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 export default function PrepaidSubsidiary() {
   const [prepaidAccounts, setPrepaidAccounts] = useState([]);
   const [prepaidId, setPrepaidId] = useState("");
@@ -18,7 +23,10 @@ export default function PrepaidSubsidiary() {
 
   async function loadPrepaidAccounts() {
     try {
-      const res = await fetch(`${API_URL}/api/prepaid-accounts`, { credentials: "include" });
+      const res = await fetch(`${API_URL}/api/prepaid-accounts`, {
+        credentials: "include",
+        headers: authHeaders(),
+      });
       const data = await res.json();
       setPrepaidAccounts(Array.isArray(data) ? data : []);
     } catch (err) {
@@ -42,7 +50,8 @@ export default function PrepaidSubsidiary() {
 
     try {
       const res = await fetch(
-        `${API_URL}/api/reports/prepaid-subsidiary?prepaidId=${prepaidId}&asOf=${asOfDate}`
+        `${API_URL}/api/reports/prepaid-subsidiary?prepaidId=${prepaidId}&asOf=${asOfDate}`,
+        { credentials: "include", headers: authHeaders() }
       );
 
       if (!res.ok) throw new Error("Failed to generate prepaid subsidiary report");
