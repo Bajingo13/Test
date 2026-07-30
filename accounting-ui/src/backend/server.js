@@ -4311,6 +4311,7 @@ app.use("/api/invitations", require("./routes/invitations.routes"));
 app.use("/api/users", require("./routes/users.routes"));
 app.use("/api/access-restrictions", require("./routes/accessRestrictions.routes"));
 app.use("/api/permission-templates", require("./routes/templates.routes"));
+app.use("/api/print", require("./routes/transactionPrint.routes"));
 
 // ===================== ACCOUNT GROUP CODES API =====================
 

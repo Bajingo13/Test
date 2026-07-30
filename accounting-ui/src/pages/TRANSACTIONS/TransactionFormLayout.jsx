@@ -1,7 +1,16 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import PartyQuickAddModal from "../../components/PartyQuickAddModal";
+import TransactionPrintOptionsModal from "../../components/TransactionPrintOptionsModal";
 import "./TransactionFormLayout.css";
+
+function getCurrentUser() {
+  try {
+    return JSON.parse(localStorage.getItem("user") || "null");
+  } catch {
+    return null;
+  }
+}
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
 
@@ -52,12 +61,14 @@ export default function TransactionFormLayout({
   defaultDescription = "",
   defaultLines = [createLine(), createLine()],
   partyType = null,
+  printModuleType = null,
 }) {
   const [searchParams] = useSearchParams();
 
   const [mode, setMode] = useState("list");
   const [transactions, setTransactions] = useState([]);
   const [selectedTransaction, setSelectedTransaction] = useState(null);
+  const [showPrintOptionsModal, setShowPrintOptionsModal] = useState(false);
 
   const [accountOptions, setAccountOptions] = useState([]);
   const [partyOptions, setPartyOptions] = useState([]);
@@ -1479,20 +1490,30 @@ if (code === "OR") {
                   )
                 )}
 
-                <div className="print-dropdown">
-                  <button type="button" className="transaction-secondary-button">
-                    🖨 Print / Export
+                {printModuleType && selectedTransaction?.id ? (
+                  <button
+                    type="button"
+                    className="transaction-secondary-button"
+                    onClick={() => setShowPrintOptionsModal(true)}
+                  >
+                    🖨 Print
                   </button>
+                ) : (
+                  <div className="print-dropdown">
+                    <button type="button" className="transaction-secondary-button">
+                      🖨 Print / Export
+                    </button>
 
-                  <div className="print-dropdown-menu">
-                    <button type="button" onClick={handlePrint}>
-                      Print to Printer
-                    </button>
-                    <button type="button" onClick={handleExportCSV}>
-                      Export to Excel / CSV
-                    </button>
+                    <div className="print-dropdown-menu">
+                      <button type="button" onClick={handlePrint}>
+                        Print to Printer
+                      </button>
+                      <button type="button" onClick={handleExportCSV}>
+                        Export to Excel / CSV
+                      </button>
+                    </div>
                   </div>
-                </div>
+                )}
 
                 <button
                   className="transaction-secondary-button"
@@ -2350,20 +2371,30 @@ if (code === "OR") {
 
 
             <div className="transaction-bottom-bar no-print">
-              <div className="print-dropdown">
-                <button type="button" className="transaction-secondary-button">
-                  🖨 Print / Export
+              {printModuleType && selectedTransaction?.id ? (
+                <button
+                  type="button"
+                  className="transaction-secondary-button"
+                  onClick={() => setShowPrintOptionsModal(true)}
+                >
+                  🖨 Print
                 </button>
+              ) : (
+                <div className="print-dropdown">
+                  <button type="button" className="transaction-secondary-button">
+                    🖨 Print / Export
+                  </button>
 
-                <div className="print-dropdown-menu">
-                  <button type="button" onClick={handlePrint}>
-                    Print to Printer
-                  </button>
-                  <button type="button" onClick={handleExportCSV}>
-                    Export to Excel / CSV
-                  </button>
+                  <div className="print-dropdown-menu">
+                    <button type="button" onClick={handlePrint}>
+                      Print to Printer
+                    </button>
+                    <button type="button" onClick={handleExportCSV}>
+                      Export to Excel / CSV
+                    </button>
+                  </div>
                 </div>
-              </div>
+              )}
 
               <button
                 onClick={() => handleSave("Draft")}
@@ -2382,6 +2413,16 @@ if (code === "OR") {
 </button>
             </div>
           </>
+        )}
+
+        {printModuleType && (
+          <TransactionPrintOptionsModal
+            open={showPrintOptionsModal}
+            onClose={() => setShowPrintOptionsModal(false)}
+            transactionType={printModuleType}
+            transactionId={selectedTransaction?.id}
+            currentUser={getCurrentUser()}
+          />
         )}
       </div>
     </div>

@@ -8,6 +8,7 @@ export default function Invoice() {
       code="INV"
       partyLabel="Customer"
       partyType="CUSTOMER"
+      printModuleType="invoice"
       defaultDescription="Sales invoice on account"
       defaultLines={[
         {
