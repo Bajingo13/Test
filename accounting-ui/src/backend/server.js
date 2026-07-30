@@ -137,7 +137,7 @@ app.post("/api/login", async (req, res) => {
     const { username, password } = req.body;
 
     const [rows] = await pool.execute(
-      "SELECT id, username, password, role FROM users WHERE username = ?",
+      "SELECT id, username, password, role, status, token_version FROM users WHERE username = ?",
       [username]
     );
 
@@ -162,11 +162,19 @@ app.post("/api/login", async (req, res) => {
       });
     }
 
+    if (user.status && user.status !== "ACTIVE") {
+      return res.status(403).json({
+        success: false,
+        message: "This account is not active. Contact your administrator.",
+      });
+    }
+
     const token = jwt.sign(
       {
         id: user.id,
         username: user.username,
         role: user.role,
+        tv: user.token_version ?? 0,
       },
       process.env.JWT_SECRET,
       { expiresIn: "1d" }
@@ -4225,6 +4233,7 @@ app.use("/api/bank-recon", require("./routes/bankRecon.routes"));
 app.use("/api/ai/bank-recon", require("./routes/aiRecon.routes"));
 app.use("/api/beginning-balances", require("./routes/beginningBalanceImport.routes"));
 app.use("/api/reports/trial-balance-checker", require("./routes/trialBalanceChecker.routes"));
+app.use("/api", require("./routes/roles.routes"));
 
 // ===================== ACCOUNT GROUP CODES API =====================
 
