@@ -10,5 +10,7 @@ router.get("/roles", authenticateToken, ctrl.listRoles);
 router.get("/roles/:id/permissions", authenticateToken, ctrl.getRolePermissions);
 router.get("/permissions", authenticateToken, ctrl.listPermissions);
 router.get("/me/permissions", authenticateToken, ctrl.getMyPermissions);
+router.get("/companies", authenticateToken, ctrl.listCompanies);
+router.get("/branches", authenticateToken, ctrl.listBranches);
 
 module.exports = router;

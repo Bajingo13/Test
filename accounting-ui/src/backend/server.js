@@ -4234,6 +4234,7 @@ app.use("/api/ai/bank-recon", require("./routes/aiRecon.routes"));
 app.use("/api/beginning-balances", require("./routes/beginningBalanceImport.routes"));
 app.use("/api/reports/trial-balance-checker", require("./routes/trialBalanceChecker.routes"));
 app.use("/api", require("./routes/roles.routes"));
+app.use("/api/invitations", require("./routes/invitations.routes"));
 
 // ===================== ACCOUNT GROUP CODES API =====================
 

@@ -253,11 +253,18 @@ INSERT IGNORE INTO permissions (module_key, action, label) VALUES
 
 -- Seed a starter ADMIN/ACCOUNTANT default grant set (editable later via the
 -- Phase 4 matrix UI - this is a reasonable starting point, not final policy).
--- ADMIN: everything except Administration.* (Super-Admin-only surface).
+-- ADMIN: everything except the genuinely Super-Admin-only Administration
+-- surfaces (role/permission configuration, access restrictions, audit
+-- logs, system configuration). Admin DOES get User Settings and
+-- Invitations per spec ("view and manage users within assigned scope",
+-- "invite Accountants") - the earlier version of this migration excluded
+-- ALL of ADMIN.%, which was wrong; fixed here.
 INSERT IGNORE INTO role_permissions (role_id, permission_id, granted)
 SELECT r.id, p.id, 1
 FROM roles r
-JOIN permissions p ON p.module_key NOT LIKE 'ADMIN.%'
+JOIN permissions p ON p.module_key NOT IN (
+  'ADMIN.ROLES_PERMISSIONS', 'ADMIN.ACCESS_RESTRICTIONS', 'ADMIN.AUDIT_LOGS', 'ADMIN.SYSTEM_CONFIGURATION'
+)
 WHERE r.code = 'ADMIN';
 
 -- ACCOUNTANT: transaction/ledger/report modules, view-and-do actions, no

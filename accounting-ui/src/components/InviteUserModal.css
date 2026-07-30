@@ -1,0 +1,163 @@
+.ium-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(var(--shadow-rgb), 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 1200;
+}
+
+.ium-modal {
+  width: min(560px, 96vw);
+  max-height: 90vh;
+  background: var(--bg-surface);
+  border-radius: 18px;
+  box-shadow: 0 28px 70px rgba(var(--shadow-rgb), 0.32);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.ium-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 22px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.ium-header h2 {
+  margin: 0;
+  font-size: 20px;
+  color: var(--text-primary);
+}
+
+.ium-close {
+  border: none;
+  background: var(--bg-surface-muted);
+  color: var(--text-primary);
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.ium-body {
+  padding: 20px 22px;
+  overflow-y: auto;
+}
+
+.ium-field {
+  margin-bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ium-field label {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.ium-field input,
+.ium-field select {
+  height: 42px;
+  border: 1px solid var(--border-color-strong);
+  border-radius: 10px;
+  padding: 0 12px;
+  font-size: 14px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+
+.ium-checkbox-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 10px 12px;
+  max-height: 140px;
+  overflow-y: auto;
+}
+
+.ium-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.ium-muted {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.ium-error-banner {
+  background: var(--danger-bg);
+  color: var(--danger-text);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  margin: 14px 0;
+}
+
+.ium-success-banner {
+  background: var(--success-bg);
+  color: var(--success-text);
+  border-radius: 10px;
+  padding: 16px;
+}
+
+.ium-link-box {
+  display: block;
+  background: var(--bg-surface-muted);
+  color: var(--text-primary);
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  word-break: break-all;
+  margin-top: 6px;
+}
+
+.ium-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.ium-btn-secondary,
+.ium-btn-primary {
+  height: 42px;
+  padding: 0 18px;
+  border-radius: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.ium-btn-secondary {
+  border: 1px solid var(--border-color-strong);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+
+.ium-btn-primary {
+  border: 1px solid var(--dark-btn-bg);
+  background: var(--dark-btn-bg);
+  color: var(--dark-btn-text);
+}
+
+.ium-btn-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

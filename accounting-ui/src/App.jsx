@@ -7,6 +7,8 @@ import COA from "./pages/FILESETUP/COA";
 import GenLib from "./pages/FILESETUP/GenLib";
 import GroupCodes from "./pages/FILESETUP/GroupCodes";
 import Login from "./pages/login/login";
+import AcceptInvite from "./pages/ADMIN/AcceptInvite";
+import PendingInvitations from "./pages/ADMIN/PendingInvitations";
 
 // FILE SETUP
 import Industry from "./pages/FILESETUP/Industry";
@@ -79,7 +81,7 @@ function PlaceholderPage({ title }) {
 
 function AppLayout() {
   const location = useLocation();
-  const isLoginPage = location.pathname === "/login";
+  const isLoginPage = location.pathname === "/login" || location.pathname === "/accept-invite";
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
@@ -109,6 +111,8 @@ function AppLayout() {
         <Routes>
           <Route path="/" element={<Navigate to="/login" replace />} />
           <Route path="/login" element={<Login />} />
+          <Route path="/accept-invite" element={<AcceptInvite />} />
+          <Route path="/admin/invitations" element={<PendingInvitations />} />
           <Route path="/dashboard" element={<Dashboard />} />
 
           <Route path="/coa" element={<COA />} />

@@ -1,0 +1,120 @@
+.pi-page {
+  padding: 28px;
+  background: var(--bg-page);
+  min-height: 100vh;
+  color: var(--text-primary);
+}
+
+.pi-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+
+.pi-header h1 {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 800;
+}
+
+.pi-card {
+  background: var(--bg-surface);
+  border-radius: 14px;
+  padding: 22px;
+  box-shadow: 0 4px 16px rgba(var(--shadow-rgb), 0.06);
+}
+
+.pi-muted {
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.pi-error-banner {
+  background: var(--danger-bg);
+  color: var(--danger-text);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.pi-btn-primary {
+  height: 42px;
+  padding: 0 18px;
+  border-radius: 10px;
+  border: 1px solid var(--dark-btn-bg);
+  background: var(--dark-btn-bg);
+  color: var(--dark-btn-text);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.pi-table-wrap {
+  overflow-x: auto;
+}
+
+.pi-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.pi-table th {
+  text-align: left;
+  padding: 8px 10px;
+  font-size: 11px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  border-bottom: 2px solid var(--border-color);
+}
+
+.pi-table td {
+  padding: 10px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.pi-badge {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.pi-badge-pending {
+  background: var(--warning-bg);
+  color: var(--warning-text);
+}
+
+.pi-badge-accepted {
+  background: var(--success-bg);
+  color: var(--success-text);
+}
+
+.pi-badge-revoked,
+.pi-badge-expired {
+  background: var(--danger-bg);
+  color: var(--danger-text);
+}
+
+.pi-row-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.pi-link-btn {
+  border: none;
+  background: transparent;
+  color: var(--accent-blue);
+  font-weight: 700;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+}
+
+.pi-link-btn.pi-danger {
+  color: var(--danger-text);
+}
