@@ -4,11 +4,23 @@ const path = require("path");
 const fs = require("fs");
 const express = require("express");
 const cors = require("cors");
+const rateLimit = require("express-rate-limit");
 const pool = require("./db");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const { authenticateToken } = require("./lib/auth");
-const { logAudit } = require("./lib/audit");
+const { logAudit, requestMeta } = require("./lib/audit");
+
+// 20 attempts per 15 minutes per IP, on top of the per-account lockout
+// below - the two are independent layers (one IP hammering many usernames,
+// one username being hammered from many IPs).
+const loginRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: "Too many login attempts. Please try again later." },
+});
 const LedgerReportService = require("./services/LedgerReportService");
 const { buildXlsxTemplate } = require("./services/TemplateExportService");
 const { templateImportUpload, handleUpload } = require("./lib/uploadMiddleware");
@@ -132,16 +144,27 @@ async function updateApvPaymentStatus(conn, apvId) {
 
 // ===================== LOGIN =====================
 
-app.post("/api/login", async (req, res) => {
+const MAX_FAILED_LOGIN_ATTEMPTS = 5;
+const LOCKOUT_MINUTES = 15;
+
+app.post("/api/login", loginRateLimiter, async (req, res) => {
   try {
     const { username, password } = req.body;
+    const { ipAddress, userAgent } = requestMeta(req);
 
     const [rows] = await pool.execute(
-      "SELECT id, username, password, role, status, token_version FROM users WHERE username = ?",
+      `SELECT id, username, password, role, status, token_version, failed_login_count, locked_until,
+         (locked_until IS NOT NULL AND locked_until > NOW()) AS is_locked
+       FROM users WHERE username = ?`,
       [username]
     );
 
     if (rows.length === 0) {
+      await logAudit(pool, {
+        module: "AUTH", entityType: "LOGIN", action: "LOGIN_FAILURE",
+        description: `Login failed for unknown username "${username}"`,
+        ipAddress, userAgent,
+      });
       return res.status(401).json({
         success: false,
         message: "Invalid username or password",
@@ -150,12 +173,40 @@ app.post("/api/login", async (req, res) => {
 
     const user = rows[0];
 
+    if (user.is_locked) {
+      await logAudit(pool, {
+        module: "AUTH", entityType: "LOGIN", action: "LOGIN_FAILURE",
+        description: `Login blocked for ${user.username} - account locked until ${user.locked_until}`,
+        user, ipAddress, userAgent,
+      });
+      return res.status(403).json({
+        success: false,
+        message: "Account temporarily locked due to repeated failed attempts. Please try again later.",
+      });
+    }
+
     // If your passwords are still plain text, temporarily use:
     // const isMatch = password === user.password;
 
     const isMatch = await bcrypt.compare(password, user.password);
 
     if (!isMatch) {
+      const nextCount = (user.failed_login_count || 0) + 1;
+      const lockingNow = nextCount >= MAX_FAILED_LOGIN_ATTEMPTS;
+
+      await pool.execute(
+        `UPDATE users SET failed_login_count = ?, locked_until = ${lockingNow ? "DATE_ADD(NOW(), INTERVAL ? MINUTE)" : "locked_until"} WHERE id = ?`,
+        lockingNow ? [nextCount, LOCKOUT_MINUTES, user.id] : [nextCount, user.id]
+      );
+
+      await logAudit(pool, {
+        module: "AUTH", entityType: "LOGIN", action: "LOGIN_FAILURE",
+        description: lockingNow
+          ? `Login failed for ${user.username} - account locked for ${LOCKOUT_MINUTES} minutes after ${nextCount} failed attempts`
+          : `Login failed for ${user.username} (attempt ${nextCount}/${MAX_FAILED_LOGIN_ATTEMPTS})`,
+        user, ipAddress, userAgent,
+      });
+
       return res.status(401).json({
         success: false,
         message: "Invalid username or password",
@@ -163,6 +214,11 @@ app.post("/api/login", async (req, res) => {
     }
 
     if (user.status && user.status !== "ACTIVE") {
+      await logAudit(pool, {
+        module: "AUTH", entityType: "LOGIN", action: "LOGIN_FAILURE",
+        description: `Login blocked for ${user.username} - account status is ${user.status}`,
+        user, ipAddress, userAgent,
+      });
       return res.status(403).json({
         success: false,
         message: "This account is not active. Contact your administrator.",
@@ -180,8 +236,17 @@ app.post("/api/login", async (req, res) => {
       { expiresIn: "1d" }
     );
 
-    pool.execute("UPDATE users SET last_login_at = NOW() WHERE id = ?", [user.id]).catch((err) => {
+    pool.execute(
+      "UPDATE users SET last_login_at = NOW(), failed_login_count = 0, locked_until = NULL WHERE id = ?",
+      [user.id]
+    ).catch((err) => {
       console.error("UPDATE LAST LOGIN ERROR:", err.message);
+    });
+
+    await logAudit(pool, {
+      module: "AUTH", entityType: "LOGIN", action: "LOGIN_SUCCESS",
+      description: `${user.username} logged in`,
+      user, ipAddress, userAgent,
     });
 
     res.json({
@@ -4241,6 +4306,7 @@ app.use("/api", require("./routes/roles.routes"));
 app.use("/api/invitations", require("./routes/invitations.routes"));
 app.use("/api/users", require("./routes/users.routes"));
 app.use("/api/access-restrictions", require("./routes/accessRestrictions.routes"));
+app.use("/api/permission-templates", require("./routes/templates.routes"));
 
 // ===================== ACCOUNT GROUP CODES API =====================
 

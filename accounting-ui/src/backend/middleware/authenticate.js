@@ -52,6 +52,12 @@ async function authenticateToken(req, res, next) {
         roleId: user.role_id,
         roleCode: user.role_code,
         status: user.status,
+        // Rides along on req.user so every logAudit(..., { user: req.user })
+        // call across every controller/service picks these up for free
+        // (see lib/audit.js's fallback) without threading extra params
+        // through dozens of function signatures.
+        ipAddress: req.ip || null,
+        userAgent: req.get?.("user-agent") || null,
       };
       next();
     } catch (dbErr) {

@@ -12,6 +12,7 @@ export default function InviteUserModal({ open, onClose, onInvited }) {
   const [roles, setRoles] = useState([]);
   const [companies, setCompanies] = useState([]);
   const [branches, setBranches] = useState([]);
+  const [templates, setTemplates] = useState([]);
 
   const [form, setForm] = useState({
     email: "",
@@ -20,6 +21,7 @@ export default function InviteUserModal({ open, onClose, onInvited }) {
     companyIds: [],
     branchIds: [],
     expiresInDays: 7,
+    permissionTemplateId: "",
   });
 
   const [submitting, setSubmitting] = useState(false);
@@ -28,19 +30,21 @@ export default function InviteUserModal({ open, onClose, onInvited }) {
 
   useEffect(() => {
     if (!open) return;
-    setForm({ email: "", fullName: "", roleId: "", companyIds: [], branchIds: [], expiresInDays: 7 });
+    setForm({ email: "", fullName: "", roleId: "", companyIds: [], branchIds: [], expiresInDays: 7, permissionTemplateId: "" });
     setError("");
     setResult(null);
 
     (async () => {
-      const [rolesRes, companiesRes, branchesRes] = await Promise.all([
+      const [rolesRes, companiesRes, branchesRes, templatesRes] = await Promise.all([
         fetch(`${API_URL}/api/roles`, { headers: authHeaders() }),
         fetch(`${API_URL}/api/companies`, { headers: authHeaders() }),
         fetch(`${API_URL}/api/branches`, { headers: authHeaders() }),
+        fetch(`${API_URL}/api/permission-templates`, { headers: authHeaders() }),
       ]);
       setRoles(await rolesRes.json());
       setCompanies(await companiesRes.json());
       setBranches(await branchesRes.json());
+      setTemplates(await templatesRes.json());
     })();
   }, [open]);
 
@@ -174,6 +178,16 @@ export default function InviteUserModal({ open, onClose, onInvited }) {
                   ))}
                   {branches.length === 0 && <p className="ium-muted">No branches available.</p>}
                 </div>
+              </div>
+
+              <div className="ium-field">
+                <label>Permission Template (optional)</label>
+                <select value={form.permissionTemplateId} onChange={(e) => setForm({ ...form, permissionTemplateId: e.target.value })}>
+                  <option value="">Use role defaults</option>
+                  {templates.map((t) => (
+                    <option key={t.id} value={t.id}>{t.name}</option>
+                  ))}
+                </select>
               </div>
 
               <div className="ium-field">

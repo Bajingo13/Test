@@ -1,0 +1,208 @@
+.ptm-page {
+  padding: 28px;
+  background: var(--bg-page);
+  min-height: 100vh;
+  color: var(--text-primary);
+}
+
+.ptm-page h1 {
+  margin: 0 0 20px;
+  font-size: 26px;
+  font-weight: 800;
+}
+
+.ptm-muted {
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.ptm-layout {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  gap: 20px;
+}
+
+.ptm-sidebar {
+  background: var(--bg-surface);
+  border-radius: 14px;
+  padding: 16px;
+  box-shadow: 0 4px 16px rgba(var(--shadow-rgb), 0.06);
+  align-self: start;
+}
+
+.ptm-new-btn {
+  width: 100%;
+  margin-bottom: 12px;
+}
+
+.ptm-template-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ptm-template-item {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border: none;
+  background: transparent;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: left;
+}
+
+.ptm-template-item:hover {
+  background: var(--bg-hover);
+}
+
+.ptm-template-item.active {
+  background: var(--accent-indigo-bg);
+  color: var(--accent-indigo);
+}
+
+.ptm-count {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.ptm-card {
+  background: var(--bg-surface);
+  border-radius: 14px;
+  padding: 22px;
+  box-shadow: 0 4px 16px rgba(var(--shadow-rgb), 0.06);
+}
+
+.ptm-editor-header {
+  display: flex;
+  gap: 16px;
+  align-items: end;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.ptm-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ptm-field-wide {
+  flex: 1;
+  min-width: 200px;
+}
+
+.ptm-field label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.ptm-field input {
+  height: 38px;
+  border: 1px solid var(--border-color-strong);
+  border-radius: 10px;
+  padding: 0 10px;
+  font-size: 13px;
+}
+
+.ptm-editor-actions {
+  display: flex;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.ptm-btn-primary,
+.ptm-btn-danger {
+  height: 38px;
+  padding: 0 16px;
+  border-radius: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  font-size: 13px;
+  border: none;
+}
+
+.ptm-btn-primary {
+  border: 1px solid var(--dark-btn-bg);
+  background: var(--dark-btn-bg);
+  color: var(--dark-btn-text);
+}
+
+.ptm-btn-danger {
+  background: var(--danger-bg);
+  color: var(--danger-text);
+}
+
+.ptm-btn-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.ptm-error-banner {
+  background: var(--danger-bg);
+  color: var(--danger-text);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+
+.ptm-success-banner {
+  background: var(--success-bg);
+  color: var(--success-text);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+
+.ptm-table-wrap {
+  overflow-x: auto;
+}
+
+.ptm-table {
+  width: 100%;
+  min-width: 800px;
+  border-collapse: collapse;
+}
+
+.ptm-table th {
+  text-align: center;
+  padding: 8px 10px;
+  font-size: 11px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  border-bottom: 2px solid var(--border-color);
+}
+
+.ptm-table th:first-child {
+  text-align: left;
+}
+
+.ptm-table td {
+  padding: 8px 10px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border-color);
+  text-align: center;
+}
+
+.ptm-module-cell {
+  text-align: left;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.ptm-na {
+  color: var(--text-muted);
+}

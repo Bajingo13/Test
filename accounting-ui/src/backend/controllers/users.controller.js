@@ -38,6 +38,15 @@ exports.updateUserStatus = async (req, res) => {
   }
 };
 
+exports.unlockUser = async (req, res) => {
+  try {
+    res.json(await UserService.unlockUser(req.params.id, req.user));
+  } catch (err) {
+    console.error("UNLOCK USER ERROR:", err.message);
+    res.status(err.statusCode || 500).json({ message: err.message || "Failed to unlock user" });
+  }
+};
+
 exports.revokeSessions = async (req, res) => {
   try {
     res.json(await UserService.revokeSessions(req.params.id, req.user));

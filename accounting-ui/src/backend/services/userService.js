@@ -13,7 +13,7 @@ async function isSuperAdmin(roleCode) {
 async function listUsers(actingUser) {
   if (actingUser.roleCode === "SUPER_ADMIN") {
     const [rows] = await pool.execute(
-      `SELECT u.id, u.username, u.email, u.full_name, u.status, u.last_login_at, u.created_at, u.created_by,
+      `SELECT u.id, u.username, u.email, u.full_name, u.status, u.last_login_at, u.locked_until, u.created_at, u.created_by,
          r.id AS role_id, r.code AS role_code, r.name AS role_name,
          creator.username AS created_by_username
        FROM users u
@@ -25,7 +25,7 @@ async function listUsers(actingUser) {
   }
 
   const [rows] = await pool.execute(
-    `SELECT DISTINCT u.id, u.username, u.email, u.full_name, u.status, u.last_login_at, u.created_at, u.created_by,
+    `SELECT DISTINCT u.id, u.username, u.email, u.full_name, u.status, u.last_login_at, u.locked_until, u.created_at, u.created_by,
        r.id AS role_id, r.code AS role_code, r.name AS role_name,
        creator.username AS created_by_username
      FROM users u
@@ -51,7 +51,7 @@ async function attachAccessSummaries(rows) {
 
 async function getUserOr404(id) {
   const [rows] = await pool.execute(
-    `SELECT u.id, u.username, u.email, u.full_name, u.status, u.last_login_at, u.created_at, u.created_by,
+    `SELECT u.id, u.username, u.email, u.full_name, u.status, u.last_login_at, u.locked_until, u.created_at, u.created_by,
        r.id AS role_id, r.code AS role_code, r.name AS role_name
      FROM users u LEFT JOIN roles r ON r.id = u.role_id
      WHERE u.id = ?`,
@@ -226,6 +226,24 @@ async function updateUserStatus(id, status, actingUser) {
   return getUser(id, actingUser);
 }
 
+async function unlockUser(id, actingUser) {
+  const target = await getUserOr404(id);
+  await assertInScope(target, actingUser);
+
+  await pool.execute("UPDATE users SET failed_login_count = 0, locked_until = NULL WHERE id = ?", [id]);
+
+  await logAudit(pool, {
+    module: "USERS",
+    entityType: "USER",
+    entityId: id,
+    action: "USER_UNLOCKED",
+    description: `${actingUser.username} unlocked ${target.username}'s account`,
+    user: actingUser,
+  });
+
+  return getUser(id, actingUser);
+}
+
 async function revokeSessions(id, actingUser) {
   const target = await getUserOr404(id);
   await assertInScope(target, actingUser);
@@ -244,4 +262,4 @@ async function revokeSessions(id, actingUser) {
   return { id, revoked: true };
 }
 
-module.exports = { listUsers, getUser, updateUserAccess, updateUserStatus, revokeSessions };
+module.exports = { listUsers, getUser, updateUserAccess, updateUserStatus, unlockUser, revokeSessions };

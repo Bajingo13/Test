@@ -30,7 +30,7 @@ function frontendBaseUrl() {
   return (process.env.FRONTEND_URL || "http://localhost:5173").split(",")[0].trim();
 }
 
-async function createInvitation({ email, fullName, roleId, companyIds, branchIds, expiresInDays, actingUser }) {
+async function createInvitation({ email, fullName, roleId, companyIds, branchIds, expiresInDays, permissionTemplateId, actingUser }) {
   const normalizedEmail = normalizeEmail(email);
   if (!isValidEmail(normalizedEmail)) {
     throw Object.assign(new Error("A valid email address is required."), { statusCode: 400 });
@@ -84,9 +84,9 @@ async function createInvitation({ email, fullName, roleId, companyIds, branchIds
 
   const [result] = await pool.execute(
     `INSERT INTO invitations
-      (email, full_name, role_id, company_ids, branch_ids, token_hash, status, expires_at, invited_by)
-     VALUES (?, ?, ?, ?, ?, ?, 'PENDING', DATE_ADD(NOW(), INTERVAL ? DAY), ?)`,
-    [normalizedEmail, String(fullName).trim(), roleId, JSON.stringify(companyIdList), JSON.stringify(branchIdList), hash, days, actingUser.id]
+      (email, full_name, role_id, company_ids, branch_ids, permission_template_id, token_hash, status, expires_at, invited_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', DATE_ADD(NOW(), INTERVAL ? DAY), ?)`,
+    [normalizedEmail, String(fullName).trim(), roleId, JSON.stringify(companyIdList), JSON.stringify(branchIdList), permissionTemplateId || null, hash, days, actingUser.id]
   );
   const invitationId = result.insertId;
 
@@ -318,6 +318,30 @@ async function acceptInvitation({ token, password, acceptedTerms }) {
     }
     for (const branchId of branchIds) {
       await conn.execute("INSERT IGNORE INTO user_branches (user_id, branch_id) VALUES (?, ?)", [newUserId, branchId]);
+    }
+
+    // A permission template, if selected at invite time, is copied into
+    // this new user's overrides as a one-time starting point - not a live
+    // link, so later template edits never silently change this user. This
+    // must write a COMPLETE override set (explicit allow AND explicit deny
+    // for every permission in the catalog, via the LEFT JOIN below), not
+    // just allow-rows for what the template includes - otherwise a
+    // restrictive template applied on top of a broader role wouldn't
+    // actually restrict anything, since unmentioned permissions would fall
+    // through to the role's own (broader) defaults.
+    if (invitation.permission_template_id) {
+      const [templateItems] = await conn.execute(
+        `SELECT p.id AS permission_id, COALESCE(i.granted, 0) AS granted
+         FROM permissions p
+         LEFT JOIN permission_template_items i ON i.permission_id = p.id AND i.template_id = ?`,
+        [invitation.permission_template_id]
+      );
+      for (const item of templateItems) {
+        await conn.execute(
+          "INSERT IGNORE INTO user_permissions (user_id, permission_id, granted, created_by, reason) VALUES (?, ?, ?, ?, ?)",
+          [newUserId, item.permission_id, item.granted, invitation.invited_by, "Applied from permission template at invitation acceptance"]
+        );
+      }
     }
 
     const [updateResult] = await conn.execute(

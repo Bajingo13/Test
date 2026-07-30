@@ -12,6 +12,7 @@ import PendingInvitations from "./pages/ADMIN/PendingInvitations";
 import UserSettings from "./pages/ADMIN/UserSettings";
 import RolePermissionMatrix from "./pages/ADMIN/RolePermissionMatrix";
 import AccessRestrictions from "./pages/ADMIN/AccessRestrictions";
+import PermissionTemplateManager from "./pages/ADMIN/PermissionTemplateManager";
 
 // FILE SETUP
 import Industry from "./pages/FILESETUP/Industry";
@@ -119,6 +120,7 @@ function AppLayout() {
           <Route path="/admin/user-settings" element={<UserSettings />} />
           <Route path="/admin/roles-permissions" element={<RolePermissionMatrix />} />
           <Route path="/admin/access-restrictions" element={<AccessRestrictions />} />
+          <Route path="/admin/permission-templates" element={<PermissionTemplateManager />} />
           <Route path="/dashboard" element={<Dashboard />} />
 
           <Route path="/coa" element={<COA />} />
