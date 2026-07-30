@@ -1,7 +1,28 @@
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { ChevronRight, FolderClosed, FolderOpen, Lock } from "lucide-react";
 import useExpandedNodes from "./useExpandedNodes";
+import { pathAllowed } from "./pathPermissionMap";
+
+// Drops leaf nodes the current user lacks VIEW access to (per
+// pathPermissionMap.js), and drops any category node left with zero
+// visible children as a result - this is navigation-visibility only, the
+// real security boundary is server-side authorizePermission middleware.
+function filterByAccess(nodes, canAccess) {
+  return nodes.reduce((acc, node) => {
+    if (node.children) {
+      const filteredChildren = filterByAccess(node.children, canAccess);
+      if (filteredChildren.length > 0) {
+        acc.push({ ...node, children: filteredChildren });
+      }
+      return acc;
+    }
+    if (!node.path || pathAllowed(node.path, canAccess)) {
+      acc.push(node);
+    }
+    return acc;
+  }, []);
+}
 
 // Reusable recursive nav-tree renderer: a node is either a leaf (`path` set
 // -> real link, `path: null` -> disabled "Coming Soon" row) or a category
@@ -96,21 +117,26 @@ function NavNode({ node, depth, expanded, toggle, activePath }) {
   );
 }
 
-export default function NavTree({ nodes, namespace }) {
+export default function NavTree({ nodes, namespace, canAccess }) {
   const location = useLocation();
   const { expanded, toggle, expandIds } = useExpandedNodes(namespace);
 
+  const visibleNodes = useMemo(
+    () => (canAccess ? filterByAccess(nodes, canAccess) : nodes),
+    [nodes, canAccess]
+  );
+
   useEffect(() => {
-    const ancestors = findAncestorIds(nodes, location.pathname);
+    const ancestors = findAncestorIds(visibleNodes, location.pathname);
     if (ancestors && ancestors.length) {
       expandIds(ancestors);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [location.pathname]);
+  }, [location.pathname, visibleNodes]);
 
   return (
     <div className="rt-tree">
-      {nodes.map((node) => (
+      {visibleNodes.map((node) => (
         <NavNode
           key={node.id}
           node={node}

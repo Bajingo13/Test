@@ -10,6 +10,7 @@ const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const { authenticateToken } = require("./lib/auth");
 const { logAudit, requestMeta } = require("./lib/audit");
+const authorizePermission = require("./middleware/authorizePermission");
 
 // 20 attempts per 15 minutes per IP, on top of the per-account lockout
 // below - the two are independent layers (one IP hammering many usernames,
@@ -267,7 +268,7 @@ app.post("/api/login", loginRateLimiter, async (req, res) => {
 
 // ===================== GENERAL LIBRARIES API =====================
 
-app.get("/api/genlib", async (req, res) => {
+app.get("/api/genlib", authenticateToken, authorizePermission("FILESETUP.GENLIB", "VIEW"), async (req, res) => {
   try {
     const [rows] = await pool.execute(`
       SELECT
@@ -312,7 +313,7 @@ app.get("/api/genlib", async (req, res) => {
   }
 });
 
-app.post("/api/genlib", async (req, res) => {
+app.post("/api/genlib", authenticateToken, authorizePermission("FILESETUP.GENLIB", "CREATE"), async (req, res) => {
   try {
     const item = req.body;
 
@@ -367,7 +368,7 @@ app.post("/api/genlib", async (req, res) => {
   }
 });
 
-app.put("/api/genlib/:id", async (req, res) => {
+app.put("/api/genlib/:id", authenticateToken, authorizePermission("FILESETUP.GENLIB", "EDIT"), async (req, res) => {
   try {
     const { id } = req.params;
     const item = req.body;
@@ -436,7 +437,7 @@ app.put("/api/genlib/:id", async (req, res) => {
   }
 });
 
-app.delete("/api/genlib/:id", async (req, res) => {
+app.delete("/api/genlib/:id", authenticateToken, authorizePermission("FILESETUP.GENLIB", "DELETE"), async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -452,7 +453,7 @@ app.delete("/api/genlib/:id", async (req, res) => {
   }
 });
 
-app.get("/api/genlib/template", async (req, res) => {
+app.get("/api/genlib/template", authenticateToken, authorizePermission("FILESETUP.GENLIB", "VIEW"), async (req, res) => {
   try {
     const buffer = await buildXlsxTemplate({
       sheetName: "General Libraries",
@@ -515,6 +516,8 @@ app.get("/api/genlib/template", async (req, res) => {
 
 app.post(
   "/api/genlib/import",
+  authenticateToken,
+  authorizePermission("FILESETUP.GENLIB", "CREATE"),
   handleUpload(templateImportUpload.single("file")),
   async (req, res) => {
     try {
@@ -577,7 +580,7 @@ async function syncBankCodeForAccount(conn, coaId, code, title, validations) {
 
 // ===================== COA API =====================
 
-app.get("/api/coa", authenticateToken, async (req, res) => {
+app.get("/api/coa", authenticateToken, authorizePermission("FILESETUP.COA", "VIEW"), async (req, res) => {
   try {
     const [accounts] = await pool.execute(`
       SELECT
@@ -624,7 +627,7 @@ app.get("/api/coa", authenticateToken, async (req, res) => {
   }
 });
 
-app.post("/api/coa", authenticateToken, async (req, res) => {
+app.post("/api/coa", authenticateToken, authorizePermission("FILESETUP.COA", "CREATE"), async (req, res) => {
   const conn = await pool.getConnection();
 
   try {
@@ -678,7 +681,7 @@ app.post("/api/coa", authenticateToken, async (req, res) => {
   }
 });
 
-app.put("/api/coa/:id", authenticateToken, async (req, res) => {
+app.put("/api/coa/:id", authenticateToken, authorizePermission("FILESETUP.COA", "EDIT"), async (req, res) => {
   const conn = await pool.getConnection();
 
   try {
@@ -728,7 +731,7 @@ app.put("/api/coa/:id", authenticateToken, async (req, res) => {
   }
 });
 
-app.delete("/api/coa/:id", authenticateToken, async (req, res) => {
+app.delete("/api/coa/:id", authenticateToken, authorizePermission("FILESETUP.COA", "DELETE"), async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -744,7 +747,7 @@ app.delete("/api/coa/:id", authenticateToken, async (req, res) => {
   }
 });
 
-app.get("/api/coa/template", authenticateToken, async (req, res) => {
+app.get("/api/coa/template", authenticateToken, authorizePermission("FILESETUP.COA", "VIEW"), async (req, res) => {
   try {
     const buffer = await buildXlsxTemplate({
       sheetName: "Chart of Accounts",
@@ -791,6 +794,7 @@ app.get("/api/coa/template", authenticateToken, async (req, res) => {
 app.post(
   "/api/coa/import",
   authenticateToken,
+  authorizePermission("FILESETUP.COA", "CREATE"),
   handleUpload(templateImportUpload.single("file")),
   async (req, res) => {
     try {
@@ -824,7 +828,7 @@ app.post(
 
 // ===================== INVOICE API =====================
 
-app.get("/api/invoices", async (req, res) => {
+app.get("/api/invoices", authenticateToken, authorizePermission("TRANSACTIONS.INVOICE", "VIEW"), async (req, res) => {
   try {
     const [rows] = await pool.execute(`
       SELECT
@@ -858,7 +862,7 @@ app.get("/api/invoices", async (req, res) => {
   }
 });
 
-app.get("/api/invoices/unpaid", async (req, res) => {
+app.get("/api/invoices/unpaid", authenticateToken, authorizePermission("TRANSACTIONS.INVOICE", "VIEW"), async (req, res) => {
   try {
     const { customerId, customerName } = req.query;
 
@@ -922,7 +926,7 @@ app.get("/api/invoices/unpaid", async (req, res) => {
   }
 });
 
-app.get("/api/invoices/:id", async (req, res) => {
+app.get("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACTIONS.INVOICE", "VIEW"), async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -1002,7 +1006,7 @@ app.get("/api/invoices/:id", async (req, res) => {
   }
 });
 
-app.post("/api/invoices", async (req, res) => {
+app.post("/api/invoices", authenticateToken, authorizePermission("TRANSACTIONS.INVOICE", "CREATE"), async (req, res) => {
   const conn = await pool.getConnection();
 
   try {
@@ -1116,7 +1120,7 @@ app.post("/api/invoices", async (req, res) => {
   }
 });
 
-app.put("/api/invoices/:id", async (req, res) => {
+app.put("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACTIONS.INVOICE", "EDIT"), async (req, res) => {
   const conn = await pool.getConnection();
 
   try {
@@ -1226,7 +1230,7 @@ app.put("/api/invoices/:id", async (req, res) => {
   }
 });
 
-app.delete("/api/invoices/:id", async (req, res) => {
+app.delete("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACTIONS.INVOICE", "DELETE"), async (req, res) => {
   const conn = await pool.getConnection();
 
   try {
@@ -1261,7 +1265,7 @@ app.delete("/api/invoices/:id", async (req, res) => {
 
 // ===================== OFFICIAL RECEIPT API =====================
 
-app.get("/api/or", async (req, res) => {
+app.get("/api/or", authenticateToken, authorizePermission("TRANSACTIONS.OR", "VIEW"), async (req, res) => {
   try {
     const [rows] = await pool.execute(`
       SELECT
@@ -1291,7 +1295,7 @@ app.get("/api/or", async (req, res) => {
   }
 });
 
-app.post("/api/or", async (req, res) => {
+app.post("/api/or", authenticateToken, authorizePermission("TRANSACTIONS.OR", "CREATE"), async (req, res) => {
   const conn = await pool.getConnection();
 
   try {
@@ -1443,7 +1447,7 @@ app.post("/api/or", async (req, res) => {
   }
 });
 
-app.get("/api/or/:id", async (req, res) => {
+app.get("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR", "VIEW"), async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -1519,7 +1523,7 @@ app.get("/api/or/:id", async (req, res) => {
   }
 });
 
-app.put("/api/or/:id", async (req, res) => {
+app.put("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR", "EDIT"), async (req, res) => {
   const conn = await pool.getConnection();
 
   try {
@@ -1863,7 +1867,7 @@ app.put("/api/or/:id", async (req, res) => {
 
 // ===================== APV API =====================
 
-app.get("/api/apv", async (req, res) => {
+app.get("/api/apv", authenticateToken, authorizePermission("TRANSACTIONS.APV", "VIEW"), async (req, res) => {
   try {
     const [rows] = await pool.execute(`
       SELECT
@@ -1895,7 +1899,7 @@ app.get("/api/apv", async (req, res) => {
   }
 });
 
-app.get("/api/apv/unpaid", async (req, res) => {
+app.get("/api/apv/unpaid", authenticateToken, authorizePermission("TRANSACTIONS.APV", "VIEW"), async (req, res) => {
   try {
     const { supplierId, supplierName } = req.query;
 
@@ -1959,7 +1963,7 @@ app.get("/api/apv/unpaid", async (req, res) => {
   }
 });
 
-app.get("/api/apv/:id", async (req, res) => {
+app.get("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV", "VIEW"), async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -2043,7 +2047,7 @@ app.get("/api/apv/:id", async (req, res) => {
   }
 });
 
-app.post("/api/apv", async (req, res) => {
+app.post("/api/apv", authenticateToken, authorizePermission("TRANSACTIONS.APV", "CREATE"), async (req, res) => {
   const conn = await pool.getConnection();
 
   try {
@@ -2176,7 +2180,7 @@ app.post("/api/apv", async (req, res) => {
   }
 });
 
-app.put("/api/apv/:id", async (req, res) => {
+app.put("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV", "EDIT"), async (req, res) => {
   const conn = await pool.getConnection();
 
   try {
@@ -2295,7 +2299,7 @@ app.put("/api/apv/:id", async (req, res) => {
   }
 });
 
-app.delete("/api/apv/:id", async (req, res) => {
+app.delete("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV", "DELETE"), async (req, res) => {
   const conn = await pool.getConnection();
 
   try {
@@ -2329,7 +2333,7 @@ app.delete("/api/apv/:id", async (req, res) => {
 
 // ===================== PURCHASE ORDER API =====================
 
-app.get("/api/purchase-orders", async (req, res) => {
+app.get("/api/purchase-orders", authenticateToken, authorizePermission("TRANSACTIONS.PURCHASE_ORDER", "VIEW"), async (req, res) => {
   try {
     const [rows] = await pool.execute(`
       SELECT
@@ -2357,7 +2361,7 @@ app.get("/api/purchase-orders", async (req, res) => {
   }
 });
 
-app.get("/api/purchase-orders/open", async (req, res) => {
+app.get("/api/purchase-orders/open", authenticateToken, authorizePermission("TRANSACTIONS.PURCHASE_ORDER", "VIEW"), async (req, res) => {
   try {
     const { supplierId, supplierName } = req.query;
 
@@ -2400,7 +2404,7 @@ app.get("/api/purchase-orders/open", async (req, res) => {
   }
 });
 
-app.get("/api/purchase-orders/:id", async (req, res) => {
+app.get("/api/purchase-orders/:id", authenticateToken, authorizePermission("TRANSACTIONS.PURCHASE_ORDER", "VIEW"), async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -2456,7 +2460,7 @@ app.get("/api/purchase-orders/:id", async (req, res) => {
   }
 });
 
-app.post("/api/purchase-orders", async (req, res) => {
+app.post("/api/purchase-orders", authenticateToken, authorizePermission("TRANSACTIONS.PURCHASE_ORDER", "CREATE"), async (req, res) => {
   const conn = await pool.getConnection();
 
   try {
@@ -2553,7 +2557,7 @@ app.post("/api/purchase-orders", async (req, res) => {
   }
 });
 
-app.put("/api/purchase-orders/:id", async (req, res) => {
+app.put("/api/purchase-orders/:id", authenticateToken, authorizePermission("TRANSACTIONS.PURCHASE_ORDER", "EDIT"), async (req, res) => {
   const conn = await pool.getConnection();
 
   try {
@@ -2647,7 +2651,7 @@ app.put("/api/purchase-orders/:id", async (req, res) => {
   }
 });
 
-app.delete("/api/purchase-orders/:id", async (req, res) => {
+app.delete("/api/purchase-orders/:id", authenticateToken, authorizePermission("TRANSACTIONS.PURCHASE_ORDER", "DELETE"), async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -2683,7 +2687,7 @@ async function generateQuotationNo(conn) {
   return `${prefix}${String(seq).padStart(5, "0")}`;
 }
 
-app.get("/api/quotations", async (req, res) => {
+app.get("/api/quotations", authenticateToken, authorizePermission("TRANSACTIONS.QUOTATION", "VIEW"), async (req, res) => {
   try {
     const [rows] = await pool.execute(`
       SELECT
@@ -2712,7 +2716,7 @@ app.get("/api/quotations", async (req, res) => {
   }
 });
 
-app.get("/api/quotations/:id", async (req, res) => {
+app.get("/api/quotations/:id", authenticateToken, authorizePermission("TRANSACTIONS.QUOTATION", "VIEW"), async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -2773,7 +2777,7 @@ app.get("/api/quotations/:id", async (req, res) => {
   }
 });
 
-app.post("/api/quotations", async (req, res) => {
+app.post("/api/quotations", authenticateToken, authorizePermission("TRANSACTIONS.QUOTATION", "CREATE"), async (req, res) => {
   const conn = await pool.getConnection();
 
   try {
@@ -2876,7 +2880,7 @@ app.post("/api/quotations", async (req, res) => {
   }
 });
 
-app.put("/api/quotations/:id", async (req, res) => {
+app.put("/api/quotations/:id", authenticateToken, authorizePermission("TRANSACTIONS.QUOTATION", "EDIT"), async (req, res) => {
   const conn = await pool.getConnection();
 
   try {
@@ -2991,7 +2995,7 @@ app.put("/api/quotations/:id", async (req, res) => {
   }
 });
 
-app.delete("/api/quotations/:id", async (req, res) => {
+app.delete("/api/quotations/:id", authenticateToken, authorizePermission("TRANSACTIONS.QUOTATION", "DELETE"), async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -3007,7 +3011,7 @@ app.delete("/api/quotations/:id", async (req, res) => {
   }
 });
 
-app.post("/api/quotations/:id/convert-to-invoice", async (req, res) => {
+app.post("/api/quotations/:id/convert-to-invoice", authenticateToken, authorizePermission("TRANSACTIONS.QUOTATION", "EDIT"), async (req, res) => {
   const conn = await pool.getConnection();
 
   try {
@@ -3207,7 +3211,7 @@ app.post("/api/quotations/:id/convert-to-invoice", async (req, res) => {
 
 // ===================== POSTING API =====================
 
-app.get("/api/posting/pending", async (req, res) => {
+app.get("/api/posting/pending", authenticateToken, authorizePermission("POSTING", "VIEW"), async (req, res) => {
   try {
     const [rows] = await pool.execute(`
       SELECT 'INV' AS sourceType, id, voucher_no AS voucherNo, customer_name AS party,
@@ -3259,7 +3263,7 @@ const AP_POST_TARGETS = [
   { table: "purchase_order_headers", status: "Open" },
 ];
 
-app.post("/api/posting/post", async (req, res) => {
+app.post("/api/posting/post", authenticateToken, authorizePermission("POSTING", "POST"), async (req, res) => {
   const conn = await pool.getConnection();
 
   try {
@@ -3303,7 +3307,7 @@ app.post("/api/posting/post", async (req, res) => {
 
 // ===================== PAYMENT APPLICATION API =====================
 
-app.post("/api/apply-payment", async (req, res) => {
+app.post("/api/apply-payment", authenticateToken, authorizePermission("POSTING", "POST"), async (req, res) => {
   const conn = await pool.getConnection();
 
   try {
@@ -3394,7 +3398,7 @@ app.post("/api/apply-payment", async (req, res) => {
 
 // ===================== CV API =====================
 
-app.get("/api/cv", async (req, res) => {
+app.get("/api/cv", authenticateToken, authorizePermission("TRANSACTIONS.CV", "VIEW"), async (req, res) => {
   try {
     const [rows] = await pool.execute(`
       SELECT
@@ -3423,7 +3427,7 @@ app.get("/api/cv", async (req, res) => {
   }
 });
 
-app.post("/api/cv", async (req, res) => {
+app.post("/api/cv", authenticateToken, authorizePermission("TRANSACTIONS.CV", "CREATE"), async (req, res) => {
   const conn = await pool.getConnection();
 
   try {
@@ -3572,7 +3576,7 @@ app.post("/api/cv", async (req, res) => {
   }
 });
 
-app.get("/api/cv/:id", async (req, res) => {
+app.get("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV", "VIEW"), async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -3647,7 +3651,7 @@ app.get("/api/cv/:id", async (req, res) => {
   }
 });
 
-app.put("/api/cv/:id", async (req, res) => {
+app.put("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV", "EDIT"), async (req, res) => {
   const conn = await pool.getConnection();
 
   try {
@@ -3853,7 +3857,7 @@ app.put("/api/cv/:id", async (req, res) => {
 // same create/update payload (handleSave(status) in TransactionFormLayout.jsx),
 // so these routes follow that same shape rather than adding a separate endpoint.
 
-app.get("/api/jv", authenticateToken, async (req, res) => {
+app.get("/api/jv", authenticateToken, authorizePermission("TRANSACTIONS.JV", "VIEW"), async (req, res) => {
   try {
     const [rows] = await pool.execute(`
       SELECT
@@ -3877,7 +3881,7 @@ app.get("/api/jv", authenticateToken, async (req, res) => {
   }
 });
 
-app.post("/api/jv", authenticateToken, async (req, res) => {
+app.post("/api/jv", authenticateToken, authorizePermission("TRANSACTIONS.JV", "CREATE"), async (req, res) => {
   const conn = await pool.getConnection();
 
   try {
@@ -3997,7 +4001,7 @@ app.post("/api/jv", authenticateToken, async (req, res) => {
   }
 });
 
-app.get("/api/jv/:id", authenticateToken, async (req, res) => {
+app.get("/api/jv/:id", authenticateToken, authorizePermission("TRANSACTIONS.JV", "VIEW"), async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -4050,7 +4054,7 @@ app.get("/api/jv/:id", authenticateToken, async (req, res) => {
   }
 });
 
-app.put("/api/jv/:id", authenticateToken, async (req, res) => {
+app.put("/api/jv/:id", authenticateToken, authorizePermission("TRANSACTIONS.JV", "EDIT"), async (req, res) => {
   const conn = await pool.getConnection();
 
   try {
@@ -4188,7 +4192,7 @@ app.put("/api/jv/:id", authenticateToken, async (req, res) => {
   }
 });
 
-app.delete("/api/jv/:id", authenticateToken, async (req, res) => {
+app.delete("/api/jv/:id", authenticateToken, authorizePermission("TRANSACTIONS.JV", "DELETE"), async (req, res) => {
   const conn = await pool.getConnection();
 
   try {
@@ -4234,7 +4238,7 @@ app.delete("/api/jv/:id", authenticateToken, async (req, res) => {
 
 // ===================== AUDIT LOG API =====================
 
-app.get("/api/audit-logs", authenticateToken, async (req, res) => {
+app.get("/api/audit-logs", authenticateToken, authorizePermission("ADMIN.AUDIT_LOGS", "VIEW"), async (req, res) => {
   try {
     const { module, entityType, entityId, userId, from, to, limit } = req.query;
 
@@ -4310,7 +4314,7 @@ app.use("/api/permission-templates", require("./routes/templates.routes"));
 
 // ===================== ACCOUNT GROUP CODES API =====================
 
-app.get("/api/group-codes", async (req, res) => {
+app.get("/api/group-codes", authenticateToken, authorizePermission("FILESETUP.GROUP_CODES", "VIEW"), async (req, res) => {
   try {
     const [rows] = await pool.execute(`
       SELECT
@@ -4330,7 +4334,7 @@ app.get("/api/group-codes", async (req, res) => {
   }
 });
 
-app.post("/api/group-codes", async (req, res) => {
+app.post("/api/group-codes", authenticateToken, authorizePermission("FILESETUP.GROUP_CODES", "CONFIGURE"), async (req, res) => {
   try {
     const { groupCode, groupDescription, accountClass, status } = req.body;
 
@@ -4362,7 +4366,7 @@ app.post("/api/group-codes", async (req, res) => {
   }
 });
 
-app.put("/api/group-codes/:id", async (req, res) => {
+app.put("/api/group-codes/:id", authenticateToken, authorizePermission("FILESETUP.GROUP_CODES", "CONFIGURE"), async (req, res) => {
   try {
     const { id } = req.params;
     const { groupCode, groupDescription, accountClass, status } = req.body;
@@ -4393,7 +4397,7 @@ app.put("/api/group-codes/:id", async (req, res) => {
   }
 });
 
-app.delete("/api/group-codes/:id", async (req, res) => {
+app.delete("/api/group-codes/:id", authenticateToken, authorizePermission("FILESETUP.GROUP_CODES", "CONFIGURE"), async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -4409,7 +4413,7 @@ app.delete("/api/group-codes/:id", async (req, res) => {
   }
 });
 
-app.get("/api/arap-beginning-balances/:type", async (req, res) => {
+app.get("/api/arap-beginning-balances/:type", authenticateToken, authorizePermission("FILESETUP.BEGINNING_BALANCES", "VIEW"), async (req, res) => {
   try {
     const { type } = req.params;
 
@@ -4451,7 +4455,7 @@ app.get("/api/arap-beginning-balances/:type", async (req, res) => {
   }
 });
 
-app.post("/api/arap-beginning-balances", async (req, res) => {
+app.post("/api/arap-beginning-balances", authenticateToken, authorizePermission("FILESETUP.BEGINNING_BALANCES", "CREATE"), async (req, res) => {
   const conn = await pool.getConnection();
 
   try {
@@ -4560,7 +4564,7 @@ app.post("/api/arap-beginning-balances", async (req, res) => {
   }
 });
 
-app.put("/api/arap-beginning-balances", async (req, res) => {
+app.put("/api/arap-beginning-balances", authenticateToken, authorizePermission("FILESETUP.BEGINNING_BALANCES", "EDIT"), async (req, res) => {
   const conn = await pool.getConnection();
 
   try {
@@ -4628,7 +4632,7 @@ app.put("/api/arap-beginning-balances", async (req, res) => {
   }
 });
 
-app.delete("/api/arap-beginning-balances/:id", async (req, res) => {
+app.delete("/api/arap-beginning-balances/:id", authenticateToken, authorizePermission("FILESETUP.BEGINNING_BALANCES", "DELETE"), async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -4648,7 +4652,7 @@ app.delete("/api/arap-beginning-balances/:id", async (req, res) => {
 // entry page only console.logged. These make it real, and are also what
 // the GL import commit path (services/beginningBalanceImportService.js)
 // calls into via GLBeginningBalanceService directly.
-app.get("/api/gl-beginning-balances", async (req, res) => {
+app.get("/api/gl-beginning-balances", authenticateToken, authorizePermission("FILESETUP.BEGINNING_BALANCES", "VIEW"), async (req, res) => {
   try {
     const data = await GLBeginningBalanceService.listGLBeginningBalances();
     res.json(data);
@@ -4658,7 +4662,7 @@ app.get("/api/gl-beginning-balances", async (req, res) => {
   }
 });
 
-app.post("/api/gl-beginning-balances", async (req, res) => {
+app.post("/api/gl-beginning-balances", authenticateToken, authorizePermission("FILESETUP.BEGINNING_BALANCES", "CREATE"), async (req, res) => {
   try {
     const { header, rows } = req.body;
 
@@ -4680,7 +4684,7 @@ app.post("/api/gl-beginning-balances", async (req, res) => {
 
 // ====================== TRIAL BALANCE REPORT =================
 
-app.get("/api/reports/trial-balance", async (req, res) => {
+app.get("/api/reports/trial-balance", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
   try {
     const { from, to } = req.query;
     const rows = await TrialBalanceDifferenceService.getTrialBalanceRows({ from, to });
@@ -4696,7 +4700,7 @@ app.get("/api/reports/trial-balance", async (req, res) => {
 
 // ====================== ACCOUNT ANALYSIS REPORT =================
 
-app.get("/api/reports/account-analysis", async (req, res) => {
+app.get("/api/reports/account-analysis", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
   try {
     const { from, to, accountCode } = req.query;
 
@@ -4808,7 +4812,7 @@ app.get("/api/reports/account-analysis", async (req, res) => {
 // Same engine the Cash Flow Statement below reuses (LedgerReportService),
 // just without the account filter - every account with activity in range.
 
-app.get("/api/reports/general-ledger", async (req, res) => {
+app.get("/api/reports/general-ledger", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
   try {
     const { from, to, accountCode } = req.query;
 
@@ -4843,7 +4847,7 @@ app.get("/api/reports/general-ledger", async (req, res) => {
 // bank_codes (the same table Bank Reconciliation relies on, kept in sync
 // with COA's "BANK / CASH" validation by syncBankCodeForAccount).
 
-app.get("/api/reports/cash-flow-statement", async (req, res) => {
+app.get("/api/reports/cash-flow-statement", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
   try {
     const { from, to } = req.query;
 
@@ -4901,7 +4905,7 @@ app.get("/api/reports/cash-flow-statement", async (req, res) => {
 
 // ====================== OUTPUT VAT REPORT =================
 
-app.get("/api/reports/output-vat", async (req, res) => {
+app.get("/api/reports/output-vat", authenticateToken, authorizePermission("REPORTS.BIR_COMPLIANCE", "VIEW"), async (req, res) => {
   try {
     const { from, to, accountCode } = req.query;
 
@@ -4980,7 +4984,7 @@ app.get("/api/reports/output-vat", async (req, res) => {
 
 // ====================== INCOME STATEMENT REPORT ======================
 
-app.get("/api/reports/income-statement", async (req, res) => {
+app.get("/api/reports/income-statement", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
   try {
     const { from, to } = req.query;
 
@@ -5069,7 +5073,7 @@ WHERE h.balance_date BETWEEN ? AND ?
 
 // ====================== BALANCE SHEET REPORT ======================
 
-app.get("/api/reports/balance-sheet", async (req, res) => {
+app.get("/api/reports/balance-sheet", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
   try {
     const { to } = req.query;
 
@@ -5159,7 +5163,7 @@ WHERE h.balance_date <= ?
 });
 
 // ====================== AGING REPORT ======================
-app.get("/api/reports/aging", async (req, res) => {
+app.get("/api/reports/aging", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
   try {
     const { type = "AP", asOf } = req.query;
     const reportType = String(type).toUpperCase();
@@ -5254,7 +5258,7 @@ app.get("/api/reports/aging", async (req, res) => {
 });
 
 // ====================== AP AGING REPORT ======================
-app.get("/api/reports/ap-aging", async (req, res) => {
+app.get("/api/reports/ap-aging", authenticateToken, authorizePermission("REPORTS.AP", "VIEW"), async (req, res) => {
   try {
     const { asOf } = req.query;
     const reportDate = asOf || new Date().toISOString().slice(0, 10);
@@ -5324,7 +5328,7 @@ app.get("/api/reports/ap-aging", async (req, res) => {
 
 
 // ====================== AR AGING REPORT ======================
-app.get("/api/reports/ar-aging", async (req, res) => {
+app.get("/api/reports/ar-aging", authenticateToken, authorizePermission("REPORTS.AR", "VIEW"), async (req, res) => {
   try {
     const { asOf } = req.query;
     const reportDate = asOf || new Date().toISOString().slice(0, 10);
@@ -5394,7 +5398,7 @@ app.get("/api/reports/ar-aging", async (req, res) => {
 
 // ====================== SUBSIDIARY LEDGER REPORT ======================
 
-app.get("/api/reports/subsidiary-ledger", async (req, res) => {
+app.get("/api/reports/subsidiary-ledger", authenticateToken, authorizePermission("LEDGER.SUBSIDIARY_LEDGER", "VIEW"), async (req, res) => {
   try {
     const { type, partyId, from, to } = req.query;
 
@@ -5500,7 +5504,7 @@ app.get("/api/reports/subsidiary-ledger", async (req, res) => {
 
 // ===================== FIXED ASSET API =====================
 
-app.get("/api/fixed-assets", async (req, res) => {
+app.get("/api/fixed-assets", authenticateToken, authorizePermission("FILESETUP.FIXED_ASSETS", "VIEW"), async (req, res) => {
   try {
     const [rows] = await pool.execute(`
       SELECT
@@ -5527,7 +5531,7 @@ app.get("/api/fixed-assets", async (req, res) => {
   }
 });
 
-app.post("/api/fixed-assets", async (req, res) => {
+app.post("/api/fixed-assets", authenticateToken, authorizePermission("FILESETUP.FIXED_ASSETS", "CREATE"), async (req, res) => {
   try {
     const {
       assetCode,
@@ -5568,7 +5572,7 @@ app.post("/api/fixed-assets", async (req, res) => {
   }
 });
 
-app.put("/api/fixed-assets/:id", async (req, res) => {
+app.put("/api/fixed-assets/:id", authenticateToken, authorizePermission("FILESETUP.FIXED_ASSETS", "EDIT"), async (req, res) => {
   try {
     const { id } = req.params;
     const {
@@ -5614,7 +5618,7 @@ app.put("/api/fixed-assets/:id", async (req, res) => {
   }
 });
 
-app.delete("/api/fixed-assets/:id", async (req, res) => {
+app.delete("/api/fixed-assets/:id", authenticateToken, authorizePermission("FILESETUP.FIXED_ASSETS", "DELETE"), async (req, res) => {
   try {
     const { id } = req.params;
     await pool.execute("DELETE FROM fixed_assets WHERE id = ?", [id]);
@@ -5627,7 +5631,7 @@ app.delete("/api/fixed-assets/:id", async (req, res) => {
 
 // ====================== FIXED ASSET REGISTER REPORT ======================
 
-app.get("/api/reports/fixed-asset-register", async (req, res) => {
+app.get("/api/reports/fixed-asset-register", authenticateToken, authorizePermission("REPORTS.FIXED_ASSETS", "VIEW"), async (req, res) => {
   try {
     const { asOf } = req.query;
     const reportDate = asOf || new Date().toISOString().slice(0, 10);
@@ -5671,7 +5675,7 @@ app.get("/api/reports/fixed-asset-register", async (req, res) => {
 
 // ===================== PREPAID ACCOUNTS API =====================
 
-app.get("/api/prepaid-accounts", async (req, res) => {
+app.get("/api/prepaid-accounts", authenticateToken, authorizePermission("FILESETUP.PREPAID_ACCOUNTS", "VIEW"), async (req, res) => {
   try {
     const [rows] = await pool.execute(`
       SELECT
@@ -5696,7 +5700,7 @@ app.get("/api/prepaid-accounts", async (req, res) => {
   }
 });
 
-app.post("/api/prepaid-accounts", async (req, res) => {
+app.post("/api/prepaid-accounts", authenticateToken, authorizePermission("FILESETUP.PREPAID_ACCOUNTS", "CREATE"), async (req, res) => {
   try {
     const {
       prepaidCode,
@@ -5735,7 +5739,7 @@ app.post("/api/prepaid-accounts", async (req, res) => {
   }
 });
 
-app.put("/api/prepaid-accounts/:id", async (req, res) => {
+app.put("/api/prepaid-accounts/:id", authenticateToken, authorizePermission("FILESETUP.PREPAID_ACCOUNTS", "EDIT"), async (req, res) => {
   try {
     const { id } = req.params;
     const {
@@ -5776,7 +5780,7 @@ app.put("/api/prepaid-accounts/:id", async (req, res) => {
   }
 });
 
-app.delete("/api/prepaid-accounts/:id", async (req, res) => {
+app.delete("/api/prepaid-accounts/:id", authenticateToken, authorizePermission("FILESETUP.PREPAID_ACCOUNTS", "DELETE"), async (req, res) => {
   try {
     const { id } = req.params;
     await pool.execute("DELETE FROM prepaid_accounts WHERE id = ?", [id]);
@@ -5809,7 +5813,7 @@ const PREPAID_COMPUTED_SQL = `
   WHERE status != 'Cancelled'
 `;
 
-app.get("/api/reports/prepaid-list", async (req, res) => {
+app.get("/api/reports/prepaid-list", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
   try {
     const { asOf } = req.query;
     const reportDate = asOf || new Date().toISOString().slice(0, 10);
@@ -5837,7 +5841,7 @@ app.get("/api/reports/prepaid-list", async (req, res) => {
   }
 });
 
-app.get("/api/reports/lapsed-prepayments", async (req, res) => {
+app.get("/api/reports/lapsed-prepayments", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
   try {
     const { asOf } = req.query;
     const reportDate = asOf || new Date().toISOString().slice(0, 10);
@@ -5863,7 +5867,7 @@ app.get("/api/reports/lapsed-prepayments", async (req, res) => {
   }
 });
 
-app.get("/api/reports/prepayment-lapsing", async (req, res) => {
+app.get("/api/reports/prepayment-lapsing", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
   try {
     const { asOf } = req.query;
     const reportDate = asOf || new Date().toISOString().slice(0, 10);
@@ -5891,7 +5895,7 @@ app.get("/api/reports/prepayment-lapsing", async (req, res) => {
   }
 });
 
-app.get("/api/reports/prepaid-subsidiary", async (req, res) => {
+app.get("/api/reports/prepaid-subsidiary", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
   try {
     const { prepaidId, asOf } = req.query;
     const reportDate = asOf || new Date().toISOString().slice(0, 10);
@@ -5957,7 +5961,7 @@ app.get("/api/reports/prepaid-subsidiary", async (req, res) => {
 
 // ===================== EWT LIBRARY API =====================
 
-app.get("/api/ewt-library", async (req, res) => {
+app.get("/api/ewt-library", authenticateToken, authorizePermission("FILESETUP.TAX_SETUP", "VIEW"), async (req, res) => {
   try {
     const [rows] = await pool.execute(`
       SELECT
@@ -5979,7 +5983,7 @@ app.get("/api/ewt-library", async (req, res) => {
   }
 });
 
-app.post("/api/ewt-library", async (req, res) => {
+app.post("/api/ewt-library", authenticateToken, authorizePermission("FILESETUP.TAX_SETUP", "CONFIGURE"), async (req, res) => {
   try {
     const { atcCode, description, taxType, rate, birForm, status } = req.body;
 
@@ -6003,7 +6007,7 @@ app.post("/api/ewt-library", async (req, res) => {
   }
 });
 
-app.put("/api/ewt-library/:id", async (req, res) => {
+app.put("/api/ewt-library/:id", authenticateToken, authorizePermission("FILESETUP.TAX_SETUP", "CONFIGURE"), async (req, res) => {
   try {
     const { id } = req.params;
     const { atcCode, description, taxType, rate, birForm, status } = req.body;
@@ -6030,7 +6034,7 @@ app.put("/api/ewt-library/:id", async (req, res) => {
   }
 });
 
-app.delete("/api/ewt-library/:id", async (req, res) => {
+app.delete("/api/ewt-library/:id", authenticateToken, authorizePermission("FILESETUP.TAX_SETUP", "CONFIGURE"), async (req, res) => {
   try {
     const { id } = req.params;
     await pool.execute("DELETE FROM ewt_library WHERE id = ?", [id]);
@@ -6046,7 +6050,7 @@ app.delete("/api/ewt-library/:id", async (req, res) => {
 // within a given month, grouped by payee -- the standard monthly
 // Final/Expanded Withholding Tax alphalist shape (payee, TIN, ATC, gross, tax withheld).
 
-app.get("/api/reports/alphalist", async (req, res) => {
+app.get("/api/reports/alphalist", authenticateToken, authorizePermission("REPORTS.BIR_COMPLIANCE", "VIEW"), async (req, res) => {
   try {
     const { taxType, month } = req.query;
 
@@ -6087,7 +6091,7 @@ app.get("/api/reports/alphalist", async (req, res) => {
 
 // ===================== COMPANY PROFILE API =====================
 
-app.get("/api/company-profile", async (req, res) => {
+app.get("/api/company-profile", authenticateToken, authorizePermission("FILESETUP.COMPANY_SETUP", "VIEW"), async (req, res) => {
   try {
     const [rows] = await pool.execute(
       "SELECT payor_name AS payorName, payor_tin AS payorTin, payor_address AS payorAddress, payor_zip AS payorZip FROM company_profile WHERE id = 1"
@@ -6100,7 +6104,7 @@ app.get("/api/company-profile", async (req, res) => {
   }
 });
 
-app.put("/api/company-profile", async (req, res) => {
+app.put("/api/company-profile", authenticateToken, authorizePermission("FILESETUP.COMPANY_SETUP", "CONFIGURE"), async (req, res) => {
   try {
     const { payorName, payorTin, payorAddress, payorZip } = req.body;
 
@@ -6119,7 +6123,7 @@ app.put("/api/company-profile", async (req, res) => {
 // ====================== BIR FORM 2307 REPORT ======================
 // Certificate of Creditable Tax Withheld at Source, per payee per quarter.
 
-app.get("/api/reports/2307", async (req, res) => {
+app.get("/api/reports/2307", authenticateToken, authorizePermission("REPORTS.BIR_COMPLIANCE", "VIEW"), async (req, res) => {
   try {
     const { supplierId, year, quarter } = req.query;
 
@@ -6211,7 +6215,7 @@ app.get("/api/reports/2307", async (req, res) => {
 
 // ===================== BANK CODES API =====================
 
-app.get("/api/bank-codes", async (req, res) => {
+app.get("/api/bank-codes", authenticateToken, authorizePermission("FILESETUP.BANK_CODES", "VIEW"), async (req, res) => {
   try {
     const [rows] = await pool.execute(`
       SELECT
@@ -6234,7 +6238,7 @@ app.get("/api/bank-codes", async (req, res) => {
   }
 });
 
-app.post("/api/bank-codes/sync", async (req, res) => {
+app.post("/api/bank-codes/sync", authenticateToken, authorizePermission("FILESETUP.BANK_CODES", "CONFIGURE"), async (req, res) => {
   const conn = await pool.getConnection();
 
   try {
@@ -6286,7 +6290,7 @@ app.post("/api/bank-codes/sync", async (req, res) => {
   }
 });
 
-app.post("/api/bank-codes", async (req, res) => {
+app.post("/api/bank-codes", authenticateToken, authorizePermission("FILESETUP.BANK_CODES", "CONFIGURE"), async (req, res) => {
   try {
     const { bankCode, bankName, accountNo, accountName, status } = req.body;
 
@@ -6303,7 +6307,7 @@ app.post("/api/bank-codes", async (req, res) => {
   }
 });
 
-app.put("/api/bank-codes/:id", async (req, res) => {
+app.put("/api/bank-codes/:id", authenticateToken, authorizePermission("FILESETUP.BANK_CODES", "CONFIGURE"), async (req, res) => {
   try {
     const { id } = req.params;
     const { bankCode, bankName, accountNo, accountName, status } = req.body;
@@ -6321,7 +6325,7 @@ app.put("/api/bank-codes/:id", async (req, res) => {
   }
 });
 
-app.delete("/api/bank-codes/:id", async (req, res) => {
+app.delete("/api/bank-codes/:id", authenticateToken, authorizePermission("FILESETUP.BANK_CODES", "CONFIGURE"), async (req, res) => {
   try {
     const { id } = req.params;
     await pool.execute("DELETE FROM bank_codes WHERE id = ?", [id]);

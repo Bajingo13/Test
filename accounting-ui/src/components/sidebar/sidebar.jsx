@@ -5,12 +5,14 @@ import { REPORTS_MENU } from "./reportsMenuConfig";
 import { FILE_SETUP_MENU } from "./fileSetupMenuConfig";
 import { TRANSACTIONS_MENU } from "./transactionsMenuConfig";
 import { ADMINISTRATION_MENU } from "./administrationMenuConfig";
+import usePermissions from "../../hooks/usePermissions";
 import ThemeToggle from "../ThemeToggle";
 import "./Sidebar.css";
 
 export default function Sidebar({ sidebarOpen, setSidebarOpen }) {
   const location = useLocation();
   const navigate = useNavigate();
+  const { can } = usePermissions();
 
   function handleLogout() {
     if (!window.confirm("Log out of the accounting system?")) return;
@@ -98,7 +100,7 @@ export default function Sidebar({ sidebarOpen, setSidebarOpen }) {
 
           {openFileSetup && (
             <div className="submenu rt-submenu">
-              <NavTree nodes={FILE_SETUP_MENU} namespace="file-setup" />
+              <NavTree nodes={FILE_SETUP_MENU} namespace="file-setup" canAccess={can} />
             </div>
           )}
 
@@ -109,7 +111,7 @@ export default function Sidebar({ sidebarOpen, setSidebarOpen }) {
 
           {openTransactions && (
             <div className="submenu rt-submenu">
-              <NavTree nodes={TRANSACTIONS_MENU} namespace="transactions" />
+              <NavTree nodes={TRANSACTIONS_MENU} namespace="transactions" canAccess={can} />
             </div>
           )}
 
@@ -128,7 +130,7 @@ export default function Sidebar({ sidebarOpen, setSidebarOpen }) {
 
           {openReports && (
             <div className="submenu rt-submenu">
-              <NavTree nodes={REPORTS_MENU} namespace="reports" />
+              <NavTree nodes={REPORTS_MENU} namespace="reports" canAccess={can} />
             </div>
           )}
 
@@ -139,7 +141,7 @@ export default function Sidebar({ sidebarOpen, setSidebarOpen }) {
 
           {openAdministration && (
             <div className="submenu rt-submenu">
-              <NavTree nodes={ADMINISTRATION_MENU} namespace="administration" />
+              <NavTree nodes={ADMINISTRATION_MENU} namespace="administration" canAccess={can} />
             </div>
           )}
 
