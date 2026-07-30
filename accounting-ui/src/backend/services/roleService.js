@@ -30,4 +30,57 @@ async function getRolePermissions(roleId) {
   return { role, permissions: rows };
 }
 
-module.exports = { listRoles, listPermissions, getRolePermissions };
+const { logAudit } = require("../lib/audit");
+
+// Bulk-replace a role's grants. SUPER_ADMIN's permissions are a hardcoded
+// always-allow bypass (see permissionService.can), not seeded rows - editing
+// them here would be a no-op at best and confusing at worst, so it's
+// explicitly rejected rather than silently accepted.
+async function setRolePermissions(roleId, grants, actingUser) {
+  const [roleRows] = await pool.execute("SELECT id, code, name FROM roles WHERE id = ?", [roleId]);
+  const role = roleRows[0];
+  if (!role) {
+    throw Object.assign(new Error("Role not found"), { statusCode: 404 });
+  }
+  if (role.code === "SUPER_ADMIN") {
+    throw Object.assign(new Error("Super Admin always has full access and cannot be restricted."), { statusCode: 400 });
+  }
+  if (!Array.isArray(grants)) {
+    throw Object.assign(new Error("grants must be an array of { permissionId, granted }."), { statusCode: 400 });
+  }
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    for (const g of grants) {
+      await conn.execute(
+        `INSERT INTO role_permissions (role_id, permission_id, granted)
+         VALUES (?, ?, ?)
+         ON DUPLICATE KEY UPDATE granted = VALUES(granted)`,
+        [roleId, g.permissionId, g.granted ? 1 : 0]
+      );
+    }
+
+    await logAudit(conn, {
+      module: "ROLES",
+      entityType: "ROLE",
+      entityId: roleId,
+      action: "PERMISSION_CHANGED",
+      description: `${actingUser.username} updated permissions for role ${role.name}`,
+      afterData: { grantCount: grants.length },
+      user: actingUser,
+    });
+
+    await conn.commit();
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
+  }
+
+  return getRolePermissions(roleId);
+}
+
+module.exports = { listRoles, listPermissions, getRolePermissions, setRolePermissions };

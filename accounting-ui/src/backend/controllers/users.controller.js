@@ -1,4 +1,5 @@
 const UserService = require("../services/userService");
+const RestrictionService = require("../services/restrictionService");
 
 exports.listUsers = async (req, res) => {
   try {
@@ -43,5 +44,24 @@ exports.revokeSessions = async (req, res) => {
   } catch (err) {
     console.error("REVOKE SESSIONS ERROR:", err.message);
     res.status(err.statusCode || 500).json({ message: err.message || "Failed to revoke sessions" });
+  }
+};
+
+// Super-Admin-only - the Access Restrictions module.
+exports.getUserAccess = async (req, res) => {
+  try {
+    res.json(await RestrictionService.getUserAccess(req.params.id));
+  } catch (err) {
+    console.error("GET USER ACCESS ERROR:", err.message);
+    res.status(err.statusCode || 500).json({ message: err.message || "Failed to load user access" });
+  }
+};
+
+exports.setUserAccess = async (req, res) => {
+  try {
+    res.json(await RestrictionService.setUserAccess(req.params.id, req.body.grants, req.user));
+  } catch (err) {
+    console.error("SET USER ACCESS ERROR:", err.message);
+    res.status(err.statusCode || 500).json({ message: err.message || "Failed to update user access" });
   }
 };

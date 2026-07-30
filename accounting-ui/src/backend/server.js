@@ -4240,6 +4240,7 @@ app.use("/api/reports/trial-balance-checker", require("./routes/trialBalanceChec
 app.use("/api", require("./routes/roles.routes"));
 app.use("/api/invitations", require("./routes/invitations.routes"));
 app.use("/api/users", require("./routes/users.routes"));
+app.use("/api/access-restrictions", require("./routes/accessRestrictions.routes"));
 
 // ===================== ACCOUNT GROUP CODES API =====================
 

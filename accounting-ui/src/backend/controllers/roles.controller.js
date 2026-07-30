@@ -30,6 +30,15 @@ exports.getRolePermissions = async (req, res) => {
   }
 };
 
+exports.updateRolePermissions = async (req, res) => {
+  try {
+    res.json(await RoleService.setRolePermissions(req.params.id, req.body.grants, req.user));
+  } catch (err) {
+    console.error("UPDATE ROLE PERMISSIONS ERROR:", err.message);
+    res.status(err.statusCode || 500).json({ message: err.message || "Failed to update role permissions" });
+  }
+};
+
 exports.getMyPermissions = async (req, res) => {
   try {
     res.json(await PermissionService.getEffectivePermissions(req.user.id));
