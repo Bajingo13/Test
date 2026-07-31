@@ -4,6 +4,7 @@ import usePermissions from "../hooks/usePermissions";
 import { PRINT_OPTIONS_BY_MODULE } from "../print/printOptionsConfig";
 import { buildDocumentPdf } from "../print/pdf/documentPdfBuilder";
 import { buildDocumentListPdf } from "../print/pdf/documentListPdfBuilder";
+import { COPY_TYPES, DEFAULT_COPY_TYPE, MAX_COPIES } from "../print/copyTypes";
 import "./TransactionPrintOptionsModal.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
@@ -27,6 +28,8 @@ export default function TransactionPrintOptionsModal({ open, onClose, transactio
   const [selectedId, setSelectedId] = useState(null);
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
+  const [copyType, setCopyType] = useState(DEFAULT_COPY_TYPE);
+  const [copies, setCopies] = useState(1);
 
   const [busy, setBusy] = useState(false);
   const [busyIntent, setBusyIntent] = useState(null);
@@ -39,6 +42,8 @@ export default function TransactionPrintOptionsModal({ open, onClose, transactio
     setSelectedId(null);
     setError(null);
     setPreviewUrl(null);
+    setCopyType(DEFAULT_COPY_TYPE);
+    setCopies(1);
     if (previewUrlRef.current) {
       URL.revokeObjectURL(previewUrlRef.current);
       previewUrlRef.current = null;
@@ -75,8 +80,9 @@ export default function TransactionPrintOptionsModal({ open, onClose, transactio
   }
 
   async function fetchDocumentData(mode, intent) {
+    const params = new URLSearchParams({ mode, intent, copyType, copies: String(copies) });
     const res = await fetch(
-      `${API_URL}/api/print/${transactionType}/${transactionId}?mode=${mode}&intent=${intent}`,
+      `${API_URL}/api/print/${transactionType}/${transactionId}?${params.toString()}`,
       { credentials: "include", headers: authHeaders() }
     );
     return handleResponse(res);
@@ -87,7 +93,7 @@ export default function TransactionPrintOptionsModal({ open, onClose, transactio
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json", ...authHeaders() },
-      body: JSON.stringify({ grouping, from: fromDate || null, to: toDate || null, intent }),
+      body: JSON.stringify({ grouping, from: fromDate || null, to: toDate || null, intent, copyType, copies }),
     });
     return handleResponse(res);
   }
@@ -117,7 +123,7 @@ export default function TransactionPrintOptionsModal({ open, onClose, transactio
 
     if (selectedOption.scope === "single") {
       const data = await fetchDocumentData(selectedOption.mode, intent);
-      const bytes = await buildDocumentPdf({ ...data, transactionType, mode: selectedOption.mode, generatedBy });
+      const bytes = await buildDocumentPdf({ ...data, transactionType, mode: selectedOption.mode, generatedBy, copyType, copies });
       return new Blob([bytes], { type: "application/pdf" });
     }
 
@@ -128,6 +134,8 @@ export default function TransactionPrintOptionsModal({ open, onClose, transactio
       columns: selectedOption.listColumns,
       filters: { from: fromDate, to: toDate },
       generatedBy,
+      copyType,
+      copies,
     });
     return new Blob([bytes], { type: "application/pdf" });
   }
@@ -229,6 +237,32 @@ export default function TransactionPrintOptionsModal({ open, onClose, transactio
                   <div>
                     <label>Date To</label>
                     <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
+                  </div>
+                </div>
+              )}
+
+              {selectedOption && (
+                <div className="tpom-filters">
+                  <div>
+                    <label>Copy Type</label>
+                    <select value={copyType} onChange={(e) => setCopyType(e.target.value)}>
+                      {COPY_TYPES.map((t) => (
+                        <option key={t} value={t}>{t}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label>Number of Copies</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={MAX_COPIES}
+                      value={copies}
+                      onChange={(e) => {
+                        const v = Number(e.target.value);
+                        setCopies(Number.isFinite(v) ? Math.min(Math.max(v, 1), MAX_COPIES) : 1);
+                      }}
+                    />
                   </div>
                 </div>
               )}

@@ -59,6 +59,37 @@ export async function createPdfKit({ pageSize = A4, marginX = 40, marginTop = 40
       }
       return false;
     },
+    // Unconditional new page - used between document copies (Original/
+    // Duplicate/Customer Copy/...) so each copy starts fresh regardless of
+    // how much room was left on the previous copy's last page.
+    forcePageBreak: () => {
+      addPage();
+    },
+    // Small bordered badge fixed near the top-right of the CURRENT page,
+    // independent of the content cursor (y) - used to stamp which copy
+    // (Original/Duplicate/Customer Copy/...) a document is. Call once at
+    // the start of each copy, after any forcePageBreak().
+    drawCopyBadge: (text) => {
+      if (!text) return;
+      const size = 9;
+      const padX = 10;
+      const padY = 5;
+      const label = String(text).toUpperCase();
+      const w = boldFont.widthOfTextAtSize(label, size) + padX * 2;
+      const h = size + padY * 2;
+      const x = pageSize.width - marginX - w;
+      const topY = pageSize.height - 24;
+      page.drawRectangle({
+        x,
+        y: topY - h,
+        width: w,
+        height: h,
+        borderColor: COLORS.dark,
+        borderWidth: 1,
+        color: COLORS.lightGrey,
+      });
+      page.drawText(label, { x: x + padX, y: topY - h + padY, size, font: boldFont, color: COLORS.dark });
+    },
     drawText: (text, x, opts = {}) => {
       page.drawText(String(text ?? ""), {
         x,

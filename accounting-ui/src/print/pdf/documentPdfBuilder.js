@@ -1,4 +1,5 @@
 import { createPdfKit, COLORS, wrapText, formatMoney } from "./pdfKit";
+import { DEFAULT_COPY_TYPE, MAX_COPIES } from "../copyTypes";
 
 const STATUS_WATERMARKS = { DRAFT: "DRAFT", CANCELLED: "CANCELLED", VOID: "VOID" };
 
@@ -27,13 +28,39 @@ const MODULE_META = {
 // mode is enforced server-side too (see transactionPrint.routes.js) - this
 // function only ever receives data the backend already decided the caller
 // is allowed to see.
-export async function buildDocumentPdf({ transactionType, doc, lines, entriesSummary, party, bankAccount, company, mode, generatedBy }) {
+export async function buildDocumentPdf({
+  transactionType,
+  doc,
+  lines,
+  entriesSummary,
+  party,
+  bankAccount,
+  company,
+  mode,
+  generatedBy,
+  copyType = DEFAULT_COPY_TYPE,
+  copies = 1,
+}) {
   const { documentLabel, partyRoleLabel } = MODULE_META[transactionType] || { documentLabel: "TRANSACTION", partyRoleLabel: "Party" };
   const withEntries = mode === "with_entries";
   const kit = await createPdfKit();
   const { marginX, pageWidth } = kit;
   const contentWidth = pageWidth - marginX * 2;
+  const copyCount = Math.min(Math.max(Number(copies) || 1, 1), MAX_COPIES);
 
+  for (let copyIndex = 0; copyIndex < copyCount; copyIndex++) {
+    if (copyIndex > 0) kit.forcePageBreak();
+    kit.drawCopyBadge(copyType);
+    drawOneCopy();
+  }
+
+  const watermark = STATUS_WATERMARKS[String(doc.status || "").toUpperCase()];
+  const generatedAt = new Date().toLocaleString("en-PH", { hour12: false });
+  return kit.finish({ generatedBy, generatedAt, watermark });
+
+  // One full copy of the document - called copyCount times above, each
+  // starting on its own fresh page via forcePageBreak()/drawCopyBadge().
+  function drawOneCopy() {
   // Company header
   kit.drawText(company?.name || "AstreaBlue Accounting System", marginX, { bold: true, size: 14 });
   kit.moveDown(16);
@@ -214,9 +241,5 @@ export async function buildDocumentPdf({ transactionType, doc, lines, entriesSum
     kit.drawText(label, x, { size: 8, color: COLORS.grey, y: sigTopY - 12 });
   });
   kit.moveDown(50);
-
-  const watermark = STATUS_WATERMARKS[String(doc.status || "").toUpperCase()];
-  const generatedAt = new Date().toLocaleString("en-PH", { hour12: false });
-
-  return kit.finish({ generatedBy, generatedAt, watermark });
+  }
 }

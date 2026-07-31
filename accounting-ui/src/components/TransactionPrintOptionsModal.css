@@ -174,13 +174,15 @@
   margin-bottom: 4px;
 }
 
-.tpom-filters input {
+.tpom-filters input,
+.tpom-filters select {
   width: 100%;
   height: 36px;
   border-radius: 8px;
   border: 1px solid var(--border-color-strong);
   background: var(--bg-surface);
   color: var(--text-primary);
+  font-size: 13px;
   padding: 0 10px;
   box-sizing: border-box;
 }
