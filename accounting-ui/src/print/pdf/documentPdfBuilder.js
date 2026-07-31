@@ -10,6 +10,9 @@ const MODULE_META = {
   or: { documentLabel: "OFFICIAL RECEIPT", partyRoleLabel: "Received From" },
   apv: { documentLabel: "AP VOUCHER", partyRoleLabel: "Pay To" },
   cv: { documentLabel: "CHECK VOUCHER", partyRoleLabel: "Payee" },
+  // JV has no party role at all - see partyRoleLabel: null handling below.
+  jv: { documentLabel: "JOURNAL VOUCHER", partyRoleLabel: null },
+  po: { documentLabel: "PURCHASE ORDER", partyRoleLabel: "Supplier" },
 };
 
 // Builds one transaction document PDF - "without entries" (customer/
@@ -62,6 +65,7 @@ export async function buildDocumentPdf({ transactionType, doc, lines, entriesSum
   if (doc.checkDate) metaPairs.push(["Check Date", doc.checkDate]);
   if (doc.paymentMethod) metaPairs.push(["Payment Method", doc.paymentMethod]);
   if (bankAccount) metaPairs.push(["Bank Account", `${bankAccount.bankCode} - ${bankAccount.bankName} (${bankAccount.accountNo})`]);
+  if (doc.preparedFor) metaPairs.push(["Prepared For", doc.preparedFor]);
   metaPairs.push(["Status", doc.status || "-"]);
 
   const metaColWidth = contentWidth / 2;
@@ -76,28 +80,30 @@ export async function buildDocumentPdf({ transactionType, doc, lines, entriesSum
     kit.moveDown(16);
   }
 
-  // Party block
-  kit.drawText(partyRoleLabel, marginX, { size: 8, bold: true, color: COLORS.grey });
-  kit.moveDown(13);
-  kit.drawText(party?.name || doc.partyName || "-", marginX, { size: 11, bold: true });
-  kit.moveDown(13);
-  if (party) {
-    const addressParts = [party.address1, party.address2, party.address3].filter(Boolean);
-    for (const part of addressParts) {
-      kit.drawText(part, marginX, { size: 9, color: COLORS.grey });
-      kit.moveDown(12);
+  // Party block - skipped entirely for modules with no party role (JV)
+  if (partyRoleLabel) {
+    kit.drawText(partyRoleLabel, marginX, { size: 8, bold: true, color: COLORS.grey });
+    kit.moveDown(13);
+    kit.drawText(party?.name || doc.partyName || "-", marginX, { size: 11, bold: true });
+    kit.moveDown(13);
+    if (party) {
+      const addressParts = [party.address1, party.address2, party.address3].filter(Boolean);
+      for (const part of addressParts) {
+        kit.drawText(part, marginX, { size: 9, color: COLORS.grey });
+        kit.moveDown(12);
+      }
+      if (party.tin) {
+        kit.drawText(`TIN: ${party.tin}`, marginX, { size: 9, color: COLORS.grey });
+        kit.moveDown(12);
+      }
+      const contact = party.telephone || party.mobile || party.email;
+      if (contact) {
+        kit.drawText(contact, marginX, { size: 9, color: COLORS.grey });
+        kit.moveDown(12);
+      }
     }
-    if (party.tin) {
-      kit.drawText(`TIN: ${party.tin}`, marginX, { size: 9, color: COLORS.grey });
-      kit.moveDown(12);
-    }
-    const contact = party.telephone || party.mobile || party.email;
-    if (contact) {
-      kit.drawText(contact, marginX, { size: 9, color: COLORS.grey });
-      kit.moveDown(12);
-    }
+    kit.moveDown(10);
   }
-  kit.moveDown(10);
 
   // Line items table
   const col = withEntries

@@ -7,6 +7,7 @@ export default function JV() {
       title="Journal Voucher"
       code="JV"
       partyLabel="Prepared For"
+      printModuleType="jv"
       defaultDescription="Manual journal entry"
       defaultLines={[
         {

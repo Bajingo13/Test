@@ -17,6 +17,7 @@ const MODULE_CONFIG = {
     headerTable: "invoice_headers",
     lineTable: "invoice_lines",
     lineIdCol: "invoice_id",
+    hasParty: true,
     partyIdCol: "customer_id",
     partyNameCol: "customer_name",
     hasDueDate: true,
@@ -29,6 +30,7 @@ const MODULE_CONFIG = {
     headerTable: "or_headers",
     lineTable: "or_lines",
     lineIdCol: "or_id",
+    hasParty: true,
     partyIdCol: "customer_id",
     partyNameCol: "customer_name",
     hasDueDate: false,
@@ -41,6 +43,7 @@ const MODULE_CONFIG = {
     headerTable: "apv_headers",
     lineTable: "apv_lines",
     lineIdCol: "apv_id",
+    hasParty: true,
     partyIdCol: "supplier_id",
     partyNameCol: "supplier_name",
     hasDueDate: true,
@@ -53,12 +56,41 @@ const MODULE_CONFIG = {
     headerTable: "cv_headers",
     lineTable: "cv_lines",
     lineIdCol: "cv_id",
+    hasParty: true,
     partyIdCol: "payee_id",
     partyNameCol: "payee_name",
     hasDueDate: false,
     hasPaidBalance: false,
     hasCheck: true,
     hasPaymentMethod: true,
+  },
+  // JV has no party at all (it's a pure double-entry accounting document,
+  // not a customer/supplier-facing one) - prepared_for is a free-text
+  // field, carried through via extraCols instead of the party machinery.
+  jv: {
+    moduleKey: "TRANSACTIONS.JV",
+    headerTable: "jv_headers",
+    lineTable: "jv_lines",
+    lineIdCol: "jv_id",
+    hasParty: false,
+    hasDueDate: false,
+    hasPaidBalance: false,
+    hasCheck: false,
+    hasPaymentMethod: false,
+    extraCols: ["prepared_for AS preparedFor"],
+  },
+  po: {
+    moduleKey: "TRANSACTIONS.PURCHASE_ORDER",
+    headerTable: "purchase_order_headers",
+    lineTable: "purchase_order_lines",
+    lineIdCol: "po_id",
+    hasParty: true,
+    partyIdCol: "supplier_id",
+    partyNameCol: "supplier_name",
+    hasDueDate: false,
+    hasPaidBalance: false,
+    hasCheck: false,
+    hasPaymentMethod: false,
   },
 };
 
@@ -103,25 +135,24 @@ function buildEntriesSummary(lineRows) {
 async function getTransactionDocument(transactionType, id, { withEntries }) {
   const cfg = getModuleConfig(transactionType);
 
-  const metaCols = [
-    "id",
-    "voucher_no AS voucherNo",
-    `${cfg.partyIdCol} AS partyId`,
-    `${cfg.partyNameCol} AS partyName`,
+  const metaCols = ["id", "voucher_no AS voucherNo"];
+  if (cfg.hasParty) metaCols.push(`${cfg.partyIdCol} AS partyId`, `${cfg.partyNameCol} AS partyName`);
+  metaCols.push(
     "DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate",
     "reference_no AS referenceNo",
     "description",
     "remarks",
     "total_debit AS totalDebit",
     "total_credit AS totalCredit",
-    "status",
-  ];
+    "status"
+  );
   if (cfg.hasDueDate) metaCols.push("DATE_FORMAT(due_date, '%Y-%m-%d') AS dueDate");
   if (cfg.hasPaidBalance) {
     metaCols.push("paid_amount AS paidAmount", "balance_amount AS balanceAmount", "payment_status AS paymentStatus");
   }
   if (cfg.hasCheck) metaCols.push("check_no AS checkNo", "DATE_FORMAT(check_date, '%Y-%m-%d') AS checkDate");
   if (cfg.hasPaymentMethod) metaCols.push("payment_method AS paymentMethod", "bank_account_id AS bankAccountId");
+  if (cfg.extraCols) metaCols.push(...cfg.extraCols);
 
   const [headers] = await pool.execute(
     `SELECT ${metaCols.join(", ")} FROM ${cfg.headerTable} WHERE id = ?`,
@@ -145,7 +176,7 @@ async function getTransactionDocument(transactionType, id, { withEntries }) {
   const entriesSummary = withEntries ? buildEntriesSummary(lineRows) : null;
 
   let party = null;
-  if (doc.partyId) {
+  if (cfg.hasParty && doc.partyId) {
     const [partyRows] = await pool.execute(
       `SELECT name, address1, address2, address3, tin, telephone, mobile, email
       FROM general_libraries WHERE id = ?`,
@@ -168,44 +199,47 @@ async function getTransactionDocument(transactionType, id, { withEntries }) {
   return { doc, lines, entriesSummary, party, bankAccount, company };
 }
 
-// grouping: "number" | "date" | "due_date" | "check_number" (flat sort) or
-// "party" | "payment_method" | "bank_account" (subtotal groups).
+// grouping: "number" | "date" | "due_date" | "check_number" | "reference"
+// (flat sort) or "party" | "payment_method" | "bank_account" | "status"
+// (subtotal groups).
 const FLAT_ORDER_BY = {
   number: "voucher_no ASC",
   date: "transaction_date ASC, voucher_no ASC",
   due_date: "due_date ASC, voucher_no ASC",
   check_number: "check_no ASC, voucher_no ASC",
+  reference: "reference_no ASC, voucher_no ASC",
 };
 
 const GROUP_ORDER_BY = {
   party: "partyName ASC, transaction_date ASC",
   payment_method: "paymentMethod ASC, transaction_date ASC",
   bank_account: "bankAccountId ASC, transaction_date ASC",
+  status: "status ASC, transaction_date ASC",
 };
 
 const GROUP_KEY_FIELD = {
   party: { key: "partyId", label: "partyName", fallbackLabel: "(No Party)" },
   payment_method: { key: "paymentMethod", label: "paymentMethod", fallbackLabel: "(No Payment Method)" },
   bank_account: { key: "bankAccountId", label: "bankAccountId", fallbackLabel: "(No Bank Account)" },
+  status: { key: "status", label: "status", fallbackLabel: "(No Status)" },
 };
 
 async function getTransactionList(transactionType, { from, to, grouping }) {
   const cfg = getModuleConfig(transactionType);
 
-  const cols = [
-    "id",
-    "voucher_no AS voucherNo",
-    `${cfg.partyIdCol} AS partyId`,
-    `${cfg.partyNameCol} AS partyName`,
+  const cols = ["id", "voucher_no AS voucherNo"];
+  if (cfg.hasParty) cols.push(`${cfg.partyIdCol} AS partyId`, `${cfg.partyNameCol} AS partyName`);
+  cols.push(
     "DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate",
     "reference_no AS referenceNo",
     "status",
-    "total_debit AS totalAmount",
-  ];
+    "total_debit AS totalAmount"
+  );
   if (cfg.hasPaidBalance) cols.push("paid_amount AS paidAmount", "balance_amount AS balanceAmount");
   if (cfg.hasDueDate) cols.push("DATE_FORMAT(due_date, '%Y-%m-%d') AS dueDate");
   if (cfg.hasCheck) cols.push("check_no AS checkNo");
   if (cfg.hasPaymentMethod) cols.push("payment_method AS paymentMethod", "bank_account_id AS bankAccountId");
+  if (cfg.extraCols) cols.push(...cfg.extraCols);
 
   const params = [];
   let where = "WHERE 1=1";

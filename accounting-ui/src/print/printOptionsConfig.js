@@ -7,6 +7,8 @@ import {
   Landmark,
   Hash,
   CreditCard,
+  Tag,
+  Filter,
 } from "lucide-react";
 
 // Per-module print option catalogs. This is the extension point Phase 3
@@ -29,6 +31,19 @@ function buildListColumns(partyLabel, extra = []) {
     { key: "status", label: "Status", width: 0.09 },
     ...extra,
     { key: "totalAmount", label: "Amount", width: 0.11, money: true },
+  ];
+}
+
+// JV has no party column at all - a separate column set rather than
+// passing partyLabel: null through buildListColumns.
+function buildListColumnsNoParty(extra = []) {
+  return [
+    { key: "voucherNo", label: "No.", width: 0.16 },
+    { key: "transactionDate", label: "Date", width: 0.14 },
+    { key: "referenceNo", label: "Reference", width: 0.2 },
+    { key: "status", label: "Status", width: 0.12 },
+    ...extra,
+    { key: "totalAmount", label: "Amount", width: 0.14, money: true },
   ];
 }
 
@@ -261,9 +276,122 @@ export const CV_PRINT_OPTIONS = [
   },
 ];
 
+// JV has no customer/supplier-facing form at all - a journal voucher IS
+// its accounting entries, so there's no "Without Entries" option (matches
+// the original spec, which never asked for one here). "Detailed Entries"
+// and "List by Account" are deferred: both need a line-level listing
+// architecture (a JV's lines can span several accounts, so "group by
+// account" doesn't fit the header-level list model every other module
+// uses) - not implemented in this phase, same discipline as deferring
+// APV/Invoice's "Detailed Particulars" in Phase 1/2.
+export const JV_PRINT_OPTIONS = [
+  {
+    id: "with_entries",
+    scope: "single",
+    mode: "with_entries",
+    label: "Print Journal Voucher",
+    description: "Full journal voucher including the Accounting Entries section - a JV has no separate customer-facing form.",
+    icon: FileSpreadsheet,
+    requiredPermissionAction: "PRINT_WITH_ENTRIES",
+  },
+  {
+    id: "list_by_number",
+    scope: "list",
+    grouping: "number",
+    label: "Print List by JV Number",
+    description: "Summarized list of journal vouchers sorted by JV number.",
+    icon: ListOrdered,
+    requiredPermissionAction: "PRINT",
+    needsFilters: true,
+    listTitle: "Journal Voucher List — By JV Number",
+    listColumns: buildListColumnsNoParty(),
+  },
+  {
+    id: "list_by_date",
+    scope: "list",
+    grouping: "date",
+    label: "Print List by Date",
+    description: "Summarized list of journal vouchers sorted chronologically.",
+    icon: CalendarDays,
+    requiredPermissionAction: "PRINT",
+    needsFilters: true,
+    listTitle: "Journal Voucher List — By Date",
+    listColumns: buildListColumnsNoParty(),
+  },
+  {
+    id: "list_by_reference",
+    scope: "list",
+    grouping: "reference",
+    label: "Print List by Reference",
+    description: "Summarized list of journal vouchers sorted by reference number.",
+    icon: Tag,
+    requiredPermissionAction: "PRINT",
+    needsFilters: true,
+    listTitle: "Journal Voucher List — By Reference",
+    listColumns: buildListColumnsNoParty(),
+  },
+];
+
+// "With Internal Costing" (permission-controlled) is deferred - it needs
+// margin/costing data that doesn't exist in purchase_order_lines today
+// (same schema-gap reasoning as Invoice's deferred item-level breakdown).
+export const PO_PRINT_OPTIONS = [
+  ...SINGLE_OPTIONS("Supplier"),
+  {
+    id: "list_by_number",
+    scope: "list",
+    grouping: "number",
+    label: "Print List by PO Number",
+    description: "Summarized list of purchase orders sorted by PO number.",
+    icon: ListOrdered,
+    requiredPermissionAction: "PRINT",
+    needsFilters: true,
+    listTitle: "Purchase Order List — By PO Number",
+    listColumns: buildListColumns("Supplier"),
+  },
+  {
+    id: "list_by_date",
+    scope: "list",
+    grouping: "date",
+    label: "Print List by Date",
+    description: "Summarized list of purchase orders sorted chronologically.",
+    icon: CalendarDays,
+    requiredPermissionAction: "PRINT",
+    needsFilters: true,
+    listTitle: "Purchase Order List — By Date",
+    listColumns: buildListColumns("Supplier"),
+  },
+  {
+    id: "list_by_supplier",
+    scope: "list",
+    grouping: "party",
+    label: "Print List by Supplier",
+    description: "Purchase orders grouped by supplier, with a subtotal per supplier and a grand total.",
+    icon: Users,
+    requiredPermissionAction: "PRINT",
+    needsFilters: true,
+    listTitle: "Purchase Order List — By Supplier",
+    listColumns: buildListColumns("Supplier"),
+  },
+  {
+    id: "list_by_status",
+    scope: "list",
+    grouping: "status",
+    label: "Print List by Status",
+    description: "Purchase orders grouped by status (Draft/Posted/Cancelled), with a subtotal per status.",
+    icon: Filter,
+    requiredPermissionAction: "PRINT",
+    needsFilters: true,
+    listTitle: "Purchase Order List — By Status",
+    listColumns: buildListColumns("Supplier"),
+  },
+];
+
 export const PRINT_OPTIONS_BY_MODULE = {
   invoice: { moduleKey: "TRANSACTIONS.INVOICE", title: "Invoice", options: INVOICE_PRINT_OPTIONS },
   or: { moduleKey: "TRANSACTIONS.OR", title: "Official Receipt", options: OR_PRINT_OPTIONS },
   apv: { moduleKey: "TRANSACTIONS.APV", title: "AP Voucher", options: APV_PRINT_OPTIONS },
   cv: { moduleKey: "TRANSACTIONS.CV", title: "Check Voucher", options: CV_PRINT_OPTIONS },
+  jv: { moduleKey: "TRANSACTIONS.JV", title: "Journal Voucher", options: JV_PRINT_OPTIONS },
+  po: { moduleKey: "TRANSACTIONS.PURCHASE_ORDER", title: "Purchase Order", options: PO_PRINT_OPTIONS },
 };

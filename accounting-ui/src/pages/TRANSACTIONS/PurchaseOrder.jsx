@@ -8,6 +8,7 @@ export default function PurchaseOrder() {
       code="PO"
       partyLabel="Supplier"
       partyType="SUPPLIER"
+      printModuleType="po"
       defaultDescription="Purchase order issued to supplier"
       defaultLines={[
         {
