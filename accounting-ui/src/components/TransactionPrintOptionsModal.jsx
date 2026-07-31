@@ -2,8 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Lock, Printer, Download, Eye } from "lucide-react";
 import usePermissions from "../hooks/usePermissions";
 import { PRINT_OPTIONS_BY_MODULE } from "../print/printOptionsConfig";
-import { buildInvoicePdf } from "../print/pdf/invoicePdfBuilder";
-import { buildInvoiceListPdf } from "../print/pdf/invoiceListPdfBuilder";
+import { buildDocumentPdf } from "../print/pdf/documentPdfBuilder";
+import { buildDocumentListPdf } from "../print/pdf/documentListPdfBuilder";
 import "./TransactionPrintOptionsModal.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
@@ -13,13 +13,12 @@ function authHeaders() {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
-const PDF_BUILDERS = {
-  invoice: { single: buildInvoicePdf, list: buildInvoiceListPdf },
-};
-
-// Reusable across every transaction module (Invoice today, OR/APV/CV/JV/PO
-// in later phases) - which options/permissions/PDF builder apply is looked
-// up from transactionType, nothing here is Invoice-specific.
+// Reusable across every transaction module opted into the framework
+// (Invoice, OR, APV, CV today; JV/PO in Phase 3) - which options/
+// permissions apply is looked up from transactionType via
+// printOptionsConfig.js, and both the single-document and list PDFs are
+// built by the same two generic functions (documentPdfBuilder.js /
+// documentListPdfBuilder.js) - nothing here is Invoice-specific.
 export default function TransactionPrintOptionsModal({ open, onClose, transactionType, transactionId, currentUser }) {
   const { can, loading: permsLoading } = usePermissions();
 
@@ -77,14 +76,14 @@ export default function TransactionPrintOptionsModal({ open, onClose, transactio
 
   async function fetchDocumentData(mode, intent) {
     const res = await fetch(
-      `${API_URL}/api/print/invoice/${transactionId}?mode=${mode}&intent=${intent}`,
+      `${API_URL}/api/print/${transactionType}/${transactionId}?mode=${mode}&intent=${intent}`,
       { credentials: "include", headers: authHeaders() }
     );
     return handleResponse(res);
   }
 
   async function fetchListData(grouping, intent) {
-    const res = await fetch(`${API_URL}/api/print/invoice-list`, {
+    const res = await fetch(`${API_URL}/api/print/${transactionType}/list`, {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json", ...authHeaders() },
@@ -114,17 +113,22 @@ export default function TransactionPrintOptionsModal({ open, onClose, transactio
 
   async function buildPdfBlob(intent) {
     if (!selectedOption) throw new Error("Select a print option first.");
-    const builders = PDF_BUILDERS[transactionType];
     const generatedBy = currentUser?.username || currentUser?.fullName || "Unknown User";
 
     if (selectedOption.scope === "single") {
       const data = await fetchDocumentData(selectedOption.mode, intent);
-      const bytes = await builders.single({ ...data, mode: selectedOption.mode, generatedBy });
+      const bytes = await buildDocumentPdf({ ...data, transactionType, mode: selectedOption.mode, generatedBy });
       return new Blob([bytes], { type: "application/pdf" });
     }
 
     const data = await fetchListData(selectedOption.grouping, intent);
-    const bytes = await builders.list({ ...data, filters: { from: fromDate, to: toDate }, generatedBy });
+    const bytes = await buildDocumentListPdf({
+      ...data,
+      title: selectedOption.listTitle,
+      columns: selectedOption.listColumns,
+      filters: { from: fromDate, to: toDate },
+      generatedBy,
+    });
     return new Blob([bytes], { type: "application/pdf" });
   }
 

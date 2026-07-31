@@ -8,6 +8,7 @@ export default function CV() {
       code="CV"
       partyLabel="Payee"
       partyType="SUPPLIER"
+      printModuleType="cv"
       defaultDescription="Cash disbursement through check"
       defaultLines={[
         {

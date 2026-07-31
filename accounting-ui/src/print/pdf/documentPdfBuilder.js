@@ -2,13 +2,30 @@ import { createPdfKit, COLORS, wrapText, formatMoney } from "./pdfKit";
 
 const STATUS_WATERMARKS = { DRAFT: "DRAFT", CANCELLED: "CANCELLED", VOID: "VOID" };
 
-// Builds one Invoice document PDF - "without entries" (customer-facing,
-// description + amount only) or "with entries" (adds the Accounting
-// Entries section: account code/title, debit, credit, balanced status).
+// Presentation-only lookup (labels), separate from MODULE_CONFIG on the
+// backend (which is about tables/columns) - the backend never has to know
+// how a module's document is titled or what its party role is called.
+const MODULE_META = {
+  invoice: { documentLabel: "INVOICE", partyRoleLabel: "Bill To" },
+  or: { documentLabel: "OFFICIAL RECEIPT", partyRoleLabel: "Received From" },
+  apv: { documentLabel: "AP VOUCHER", partyRoleLabel: "Pay To" },
+  cv: { documentLabel: "CHECK VOUCHER", partyRoleLabel: "Payee" },
+};
+
+// Builds one transaction document PDF - "without entries" (customer/
+// supplier-facing, description + amount only) or "with entries" (adds the
+// Accounting Entries section: account code/title, debit, credit, balanced
+// status). Shared across every module opted into the printing framework
+// (Invoice today, OR/APV/CV added in Phase 2) - which fields exist on
+// `doc` (dueDate, paidAmount/balanceAmount, checkNo/checkDate,
+// paymentMethod) varies per module and is handled by presence checks, not
+// per-module copies of this function.
+//
 // mode is enforced server-side too (see transactionPrint.routes.js) - this
 // function only ever receives data the backend already decided the caller
 // is allowed to see.
-export async function buildInvoicePdf({ invoice, lines, entriesSummary, customer, company, mode, generatedBy }) {
+export async function buildDocumentPdf({ transactionType, doc, lines, entriesSummary, party, bankAccount, company, mode, generatedBy }) {
+  const { documentLabel, partyRoleLabel } = MODULE_META[transactionType] || { documentLabel: "TRANSACTION", partyRoleLabel: "Party" };
   const withEntries = mode === "with_entries";
   const kit = await createPdfKit();
   const { marginX, pageWidth } = kit;
@@ -26,53 +43,55 @@ export async function buildInvoicePdf({ invoice, lines, entriesSummary, customer
     kit.moveDown(12);
   }
 
-  kit.drawRight(withEntries ? "INVOICE (ACCOUNTING COPY)" : "INVOICE", marginX + contentWidth, {
+  kit.drawRight(withEntries ? `${documentLabel} (ACCOUNTING COPY)` : documentLabel, marginX + contentWidth, {
     bold: true,
     size: 16,
     y: kit.getY() + 28,
   });
-  kit.drawRight(`No. ${invoice.voucherNo || "-"}`, marginX + contentWidth, { size: 10, y: kit.getY() + 14 });
+  kit.drawRight(`No. ${doc.voucherNo || "-"}`, marginX + contentWidth, { size: 10, y: kit.getY() + 14 });
 
   kit.moveDown(14);
   kit.drawLine({ x1: marginX, x2: marginX + contentWidth, thickness: 1, color: COLORS.accent });
   kit.moveDown(16);
 
-  // Invoice meta (2 columns)
-  const metaLeftX = marginX;
-  const metaRightX = marginX + contentWidth / 2;
-  const metaTopY = kit.getY();
+  // Meta block - built from whichever optional fields this module's `doc` has
+  const metaPairs = [["Date", doc.transactionDate || "-"]];
+  if (doc.dueDate) metaPairs.push(["Due Date", doc.dueDate]);
+  metaPairs.push(["Reference No.", doc.referenceNo || "-"]);
+  if (doc.checkNo) metaPairs.push(["Check No.", doc.checkNo]);
+  if (doc.checkDate) metaPairs.push(["Check Date", doc.checkDate]);
+  if (doc.paymentMethod) metaPairs.push(["Payment Method", doc.paymentMethod]);
+  if (bankAccount) metaPairs.push(["Bank Account", `${bankAccount.bankCode} - ${bankAccount.bankName} (${bankAccount.accountNo})`]);
+  metaPairs.push(["Status", doc.status || "-"]);
 
-  kit.drawText("Invoice Date", metaLeftX, { size: 8, bold: true, color: COLORS.grey });
-  kit.drawText("Due Date", metaRightX, { size: 8, bold: true, color: COLORS.grey });
-  kit.moveDown(12);
-  kit.drawText(invoice.transactionDate || "-", metaLeftX, { size: 10 });
-  kit.drawText(invoice.dueDate || "-", metaRightX, { size: 10 });
-  kit.moveDown(16);
+  const metaColWidth = contentWidth / 2;
+  for (let i = 0; i < metaPairs.length; i += 2) {
+    const [label1, value1] = metaPairs[i];
+    const pair2 = metaPairs[i + 1];
+    kit.drawText(label1, marginX, { size: 8, bold: true, color: COLORS.grey });
+    if (pair2) kit.drawText(pair2[0], marginX + metaColWidth, { size: 8, bold: true, color: COLORS.grey });
+    kit.moveDown(12);
+    kit.drawText(value1, marginX, { size: 10 });
+    if (pair2) kit.drawText(pair2[1], marginX + metaColWidth, { size: 10 });
+    kit.moveDown(16);
+  }
 
-  kit.drawText("Reference No.", metaLeftX, { size: 8, bold: true, color: COLORS.grey });
-  kit.drawText("Status", metaRightX, { size: 8, bold: true, color: COLORS.grey });
-  kit.moveDown(12);
-  kit.drawText(invoice.referenceNo || "-", metaLeftX, { size: 10 });
-  kit.drawText(invoice.status || "-", metaRightX, { size: 10 });
-  kit.moveDown(20);
-
-  // Customer block
-  kit.drawRect({ x: marginX, w: contentWidth, h: 2, color: COLORS.lightGrey, yPos: kit.getY() + 6 });
-  kit.drawText("Bill To", marginX, { size: 8, bold: true, color: COLORS.grey });
+  // Party block
+  kit.drawText(partyRoleLabel, marginX, { size: 8, bold: true, color: COLORS.grey });
   kit.moveDown(13);
-  kit.drawText(customer?.name || invoice.customerName || "-", marginX, { size: 11, bold: true });
+  kit.drawText(party?.name || doc.partyName || "-", marginX, { size: 11, bold: true });
   kit.moveDown(13);
-  if (customer) {
-    const addressParts = [customer.address1, customer.address2, customer.address3].filter(Boolean);
+  if (party) {
+    const addressParts = [party.address1, party.address2, party.address3].filter(Boolean);
     for (const part of addressParts) {
       kit.drawText(part, marginX, { size: 9, color: COLORS.grey });
       kit.moveDown(12);
     }
-    if (customer.tin) {
-      kit.drawText(`TIN: ${customer.tin}`, marginX, { size: 9, color: COLORS.grey });
+    if (party.tin) {
+      kit.drawText(`TIN: ${party.tin}`, marginX, { size: 9, color: COLORS.grey });
       kit.moveDown(12);
     }
-    const contact = customer.telephone || customer.mobile || customer.email;
+    const contact = party.telephone || party.mobile || party.email;
     if (contact) {
       kit.drawText(contact, marginX, { size: 9, color: COLORS.grey });
       kit.moveDown(12);
@@ -133,22 +152,27 @@ export async function buildInvoicePdf({ invoice, lines, entriesSummary, customer
   kit.ensureRoom(90);
   const totalsLabelX = marginX + contentWidth - 160;
   kit.drawRight("Total Amount", totalsLabelX + 90, { size: 9.5, color: COLORS.grey });
-  kit.drawRight(`P ${formatMoney(invoice.totalDebit)}`, marginX + contentWidth, { size: 9.5, bold: true });
+  kit.drawRight(`P ${formatMoney(doc.totalDebit)}`, marginX + contentWidth, { size: 9.5, bold: true });
   kit.moveDown(14);
-  kit.drawRight("Paid", totalsLabelX + 90, { size: 9.5, color: COLORS.grey });
-  kit.drawRight(`P ${formatMoney(invoice.paidAmount)}`, marginX + contentWidth, { size: 9.5 });
-  kit.moveDown(14);
-  kit.drawLine({ x1: totalsLabelX, x2: marginX + contentWidth, color: COLORS.dark });
-  kit.moveDown(4);
-  kit.drawRight("Balance Due", totalsLabelX + 90, { size: 10.5, bold: true });
-  kit.drawRight(`P ${formatMoney(invoice.balanceAmount)}`, marginX + contentWidth, { size: 10.5, bold: true });
-  kit.moveDown(24);
 
-  if (invoice.remarks) {
+  if (doc.paidAmount !== undefined) {
+    kit.drawRight("Paid", totalsLabelX + 90, { size: 9.5, color: COLORS.grey });
+    kit.drawRight(`P ${formatMoney(doc.paidAmount)}`, marginX + contentWidth, { size: 9.5 });
+    kit.moveDown(14);
+    kit.drawLine({ x1: totalsLabelX, x2: marginX + contentWidth, color: COLORS.dark });
+    kit.moveDown(4);
+    kit.drawRight("Balance Due", totalsLabelX + 90, { size: 10.5, bold: true });
+    kit.drawRight(`P ${formatMoney(doc.balanceAmount)}`, marginX + contentWidth, { size: 10.5, bold: true });
+    kit.moveDown(24);
+  } else {
+    kit.moveDown(10);
+  }
+
+  if (doc.remarks) {
     kit.ensureRoom(30);
     kit.drawText("Remarks", marginX, { size: 8, bold: true, color: COLORS.grey });
     kit.moveDown(12);
-    kit.drawText(invoice.remarks, marginX, { size: 9 });
+    kit.drawText(doc.remarks, marginX, { size: 9 });
     kit.moveDown(20);
   }
 
@@ -185,7 +209,7 @@ export async function buildInvoicePdf({ invoice, lines, entriesSummary, customer
   });
   kit.moveDown(50);
 
-  const watermark = STATUS_WATERMARKS[String(invoice.status || "").toUpperCase()];
+  const watermark = STATUS_WATERMARKS[String(doc.status || "").toUpperCase()];
   const generatedAt = new Date().toLocaleString("en-PH", { hour12: false });
 
   return kit.finish({ generatedBy, generatedAt, watermark });

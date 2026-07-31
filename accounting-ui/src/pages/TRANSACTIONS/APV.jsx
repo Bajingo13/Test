@@ -8,6 +8,7 @@ export default function APV() {
       code="APV"
       partyLabel="Supplier"
       partyType="SUPPLIER"
+      printModuleType="apv"
       defaultDescription="Expense or asset purchase on account"
       defaultLines={[
         {

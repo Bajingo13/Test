@@ -9,6 +9,7 @@ export default function OR() {
       partyLabel="Customer"
       partyType="CUSTOMER"
       showCheckNo={true}
+      printModuleType="or"
       defaultDescription="Collection from customer"
       defaultLines={[
         {

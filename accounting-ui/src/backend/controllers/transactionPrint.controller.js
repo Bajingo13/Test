@@ -5,51 +5,53 @@ const DataService = require("../services/transactionPrintDataService");
 const PRINT_ACTIONS = { preview: "PRINT_PREVIEW", print: "PRINT_DOCUMENT", export_pdf: "PRINT_EXPORT_PDF" };
 const LIST_ACTIONS = { preview: "PRINT_LIST_PREVIEW", print: "PRINT_LIST", export_pdf: "PRINT_LIST_EXPORT_PDF" };
 
-exports.getInvoiceDocument = async (req, res) => {
+exports.getDocument = async (req, res) => {
   try {
-    const { id } = req.params;
+    const { transactionType, id } = req.params;
     const mode = req.query.mode === "with_entries" ? "with_entries" : "without_entries";
     const intent = PRINT_ACTIONS[req.query.intent] ? req.query.intent : "preview";
+    const moduleKey = DataService.MODULE_CONFIG[transactionType]?.moduleKey || transactionType;
 
-    const result = await DataService.getInvoiceDocument(id, { withEntries: mode === "with_entries" });
+    const result = await DataService.getTransactionDocument(transactionType, id, { withEntries: mode === "with_entries" });
 
     await logAudit(pool, {
-      module: "TRANSACTIONS.INVOICE",
-      entityType: "INVOICE",
+      module: moduleKey,
+      entityType: transactionType.toUpperCase(),
       entityId: Number(id),
       action: PRINT_ACTIONS[intent],
-      description: `Invoice #${result.invoice.voucherNo} print (mode=${mode}, intent=${intent})`,
+      description: `${transactionType.toUpperCase()} #${result.doc.voucherNo} print (mode=${mode}, intent=${intent})`,
       user: req.user,
       ...requestMeta(req),
     });
 
     res.json(result);
   } catch (err) {
-    console.error("PRINT INVOICE DOCUMENT ERROR:", err);
-    res.status(err.statusCode || 500).json({ message: err.message || "Failed to load invoice print data" });
+    console.error("PRINT DOCUMENT ERROR:", err);
+    res.status(err.statusCode || 500).json({ message: err.message || "Failed to load print data" });
   }
 };
 
-exports.getInvoiceList = async (req, res) => {
+exports.getList = async (req, res) => {
   try {
-    const { from, to, customerId, grouping } = req.body || {};
-    const safeGrouping = ["number", "date", "customer"].includes(grouping) ? grouping : "number";
+    const { transactionType } = req.params;
+    const { from, to, grouping } = req.body || {};
     const intent = LIST_ACTIONS[req.body?.intent] ? req.body.intent : "preview";
+    const moduleKey = DataService.MODULE_CONFIG[transactionType]?.moduleKey || transactionType;
 
-    const result = await DataService.getInvoiceList({ from, to, customerId, grouping: safeGrouping });
+    const result = await DataService.getTransactionList(transactionType, { from, to, grouping });
 
     await logAudit(pool, {
-      module: "TRANSACTIONS.INVOICE",
-      entityType: "INVOICE_LIST",
+      module: moduleKey,
+      entityType: `${transactionType.toUpperCase()}_LIST`,
       action: LIST_ACTIONS[intent],
-      description: `Invoice list print (grouping=${safeGrouping}, from=${from || ""}, to=${to || ""}, customerId=${customerId || ""}, records=${result.count})`,
+      description: `${transactionType.toUpperCase()} list print (grouping=${grouping}, from=${from || ""}, to=${to || ""}, records=${result.count})`,
       user: req.user,
       ...requestMeta(req),
     });
 
     res.json(result);
   } catch (err) {
-    console.error("PRINT INVOICE LIST ERROR:", err);
-    res.status(err.statusCode || 500).json({ message: err.message || "Failed to load invoice list print data" });
+    console.error("PRINT LIST ERROR:", err);
+    res.status(err.statusCode || 500).json({ message: err.message || "Failed to load print list data" });
   }
 };
