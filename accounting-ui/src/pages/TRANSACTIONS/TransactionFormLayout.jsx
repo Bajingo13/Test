@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import PartyQuickAddModal from "../../components/PartyQuickAddModal";
 import TransactionPrintOptionsModal from "../../components/TransactionPrintOptionsModal";
+import RecurringTemplateModal from "../../components/RecurringTemplateModal";
 import "./TransactionFormLayout.css";
 
 function getCurrentUser() {
@@ -62,6 +63,7 @@ export default function TransactionFormLayout({
   defaultLines = [createLine(), createLine()],
   partyType = null,
   printModuleType = null,
+  recurringModuleType = null,
 }) {
   const [searchParams] = useSearchParams();
 
@@ -69,6 +71,7 @@ export default function TransactionFormLayout({
   const [transactions, setTransactions] = useState([]);
   const [selectedTransaction, setSelectedTransaction] = useState(null);
   const [showPrintOptionsModal, setShowPrintOptionsModal] = useState(false);
+  const [showRecurringModal, setShowRecurringModal] = useState(false);
 
   const [accountOptions, setAccountOptions] = useState([]);
   const [partyOptions, setPartyOptions] = useState([]);
@@ -1515,6 +1518,16 @@ if (code === "OR") {
                   </div>
                 )}
 
+                {recurringModuleType && selectedTransaction?.id && (
+                  <button
+                    type="button"
+                    className="transaction-secondary-button"
+                    onClick={() => setShowRecurringModal(true)}
+                  >
+                    🔁 Make Recurring
+                  </button>
+                )}
+
                 <button
                   className="transaction-secondary-button"
                   onClick={handleBackToList}
@@ -2396,6 +2409,16 @@ if (code === "OR") {
                 </div>
               )}
 
+              {recurringModuleType && selectedTransaction?.id && (
+                <button
+                  type="button"
+                  className="transaction-secondary-button"
+                  onClick={() => setShowRecurringModal(true)}
+                >
+                  🔁 Make Recurring
+                </button>
+              )}
+
               <button
                 onClick={() => handleSave("Draft")}
                 className="transaction-secondary-button"
@@ -2421,6 +2444,16 @@ if (code === "OR") {
             onClose={() => setShowPrintOptionsModal(false)}
             transactionType={printModuleType}
             transactionId={selectedTransaction?.id}
+            currentUser={getCurrentUser()}
+          />
+        )}
+
+        {recurringModuleType && selectedTransaction?.id && (
+          <RecurringTemplateModal
+            open={showRecurringModal}
+            onClose={() => setShowRecurringModal(false)}
+            transactionType={recurringModuleType}
+            transactionId={selectedTransaction.id}
             currentUser={getCurrentUser()}
           />
         )}

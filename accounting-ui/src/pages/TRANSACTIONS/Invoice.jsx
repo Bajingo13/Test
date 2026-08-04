@@ -9,6 +9,7 @@ export default function Invoice() {
       partyLabel="Customer"
       partyType="CUSTOMER"
       printModuleType="invoice"
+      recurringModuleType="invoice"
       defaultDescription="Sales invoice on account"
       defaultLines={[
         {
