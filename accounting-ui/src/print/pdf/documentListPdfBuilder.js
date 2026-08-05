@@ -1,4 +1,4 @@
-import { createPdfKit, COLORS, formatMoney } from "./pdfKit";
+import { createPdfKit, COLORS, formatMoney, COPY_BADGE_HEIGHT } from "./pdfKit";
 import { DEFAULT_COPY_TYPE, MAX_COPIES } from "../copyTypes";
 
 // Shared list/summary PDF builder for every module's "Print List by ..."
@@ -26,7 +26,6 @@ export async function buildDocumentListPdf({
 
   for (let copyIndex = 0; copyIndex < copyCount; copyIndex++) {
     if (copyIndex > 0) kit.forcePageBreak();
-    kit.drawCopyBadge(copyType);
     drawOneCopy();
   }
 
@@ -34,8 +33,16 @@ export async function buildDocumentListPdf({
   return kit.finish({ generatedBy, generatedAt });
 
   // One full copy of the list - called copyCount times above, each
-  // starting on its own fresh page via forcePageBreak()/drawCopyBadge().
+  // starting on its own fresh page via forcePageBreak().
   function drawOneCopy() {
+    // Reserve clearance below the copy badge before any title text starts,
+    // rather than letting both start at the same Y - guards against a long
+    // company/report name reaching far enough right to meet the badge
+    // (same coordination issue fixed in documentPdfBuilder.js's header).
+    const headerTopY = kit.getY();
+    kit.drawCopyBadge(copyType, { topY: headerTopY });
+    kit.setY(headerTopY - COPY_BADGE_HEIGHT - 6);
+
     kit.drawText(company?.name || "AstreaBlue Accounting System", marginX, { bold: true, size: 13 });
     kit.moveDown(16);
     kit.drawText(title, marginX, { size: 11, bold: true, color: COLORS.accent });

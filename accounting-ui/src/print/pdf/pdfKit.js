@@ -8,6 +8,11 @@ import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
 export const A4 = { width: 595.28, height: 841.89 };
 
+// Deterministic box height for drawCopyBadge (9pt text + 5pt padding top
+// and bottom) - exported so callers can reserve clearance for it without
+// a magic number, instead of guessing how tall the badge box is.
+export const COPY_BADGE_HEIGHT = 19;
+
 export const COLORS = {
   dark: rgb(0.06, 0.09, 0.16),
   grey: rgb(0.42, 0.45, 0.5),
@@ -65,11 +70,15 @@ export async function createPdfKit({ pageSize = A4, marginX = 40, marginTop = 40
     forcePageBreak: () => {
       addPage();
     },
-    // Small bordered badge fixed near the top-right of the CURRENT page,
-    // independent of the content cursor (y) - used to stamp which copy
-    // (Original/Duplicate/Customer Copy/...) a document is. Call once at
-    // the start of each copy, after any forcePageBreak().
-    drawCopyBadge: (text) => {
+    // Small bordered badge in the top-right of the CURRENT page, used to
+    // stamp which copy (Original/Duplicate/Customer Copy/...) a document
+    // is. `topY` anchors the TOP of the badge box - callers that also
+    // draw a title/voucher-number block in the top-right corner must pass
+    // the SAME anchor those use (see COPY_BADGE_HEIGHT below) so the two
+    // never land in the same vertical band. Defaults to a page-relative
+    // position for callers that don't need to coordinate it with anything
+    // else in the top-right corner.
+    drawCopyBadge: (text, { topY = pageSize.height - 24 } = {}) => {
       if (!text) return;
       const size = 9;
       const padX = 10;
@@ -78,7 +87,6 @@ export async function createPdfKit({ pageSize = A4, marginX = 40, marginTop = 40
       const w = boldFont.widthOfTextAtSize(label, size) + padX * 2;
       const h = size + padY * 2;
       const x = pageSize.width - marginX - w;
-      const topY = pageSize.height - 24;
       page.drawRectangle({
         x,
         y: topY - h,
