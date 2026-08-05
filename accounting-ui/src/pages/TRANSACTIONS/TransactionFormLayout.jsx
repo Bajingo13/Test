@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import PartyQuickAddModal from "../../components/PartyQuickAddModal";
 import TransactionPrintOptionsModal from "../../components/TransactionPrintOptionsModal";
 import RecurringTemplateModal from "../../components/RecurringTemplateModal";
+import { computeEwtTaxableBase, computeEwtAmount } from "../../utils/ewtCalculations";
 import "./TransactionFormLayout.css";
 
 function getCurrentUser() {
@@ -92,6 +93,10 @@ export default function TransactionFormLayout({
   const [ewtCodes, setEwtCodes] = useState([]);
   const [atcCode, setAtcCode] = useState("");
   const [taxWithheldAmount, setTaxWithheldAmount] = useState("");
+  // Tracks whether the user has typed over the auto-suggested EWT amount, so
+  // the live recompute below (when lines/VAT change) doesn't clobber a
+  // deliberate manual override.
+  const [taxWithheldTouched, setTaxWithheldTouched] = useState(false);
   const [payeeTin, setPayeeTin] = useState("");
 
   const [vatAccountId, setVatAccountId] = useState("");
@@ -133,7 +138,7 @@ export default function TransactionFormLayout({
     loadParties();
     loadTransactions();
 
-    if (code === "APV") {
+    if (["APV", "CV", "PO", "INV", "OR"].includes(code)) {
       loadEwtCodes();
     }
 
@@ -591,24 +596,64 @@ if (code === "OR") {
 
   const selectedEwt = ewtCodes.find((e) => e.atcCode === atcCode);
 
+  // EWT must be computed on the VAT-exclusive amount, never on VAT itself.
+  // This form has no VAT-inclusive entry mode - the user enters the
+  // exclusive base into the VAT helper below, which posts VAT as its own
+  // line, so the exclusive base is simply the transaction total minus
+  // whatever was posted to the VAT account. See utils/ewtCalculations.js.
+  const ewtTaxableBase = useMemo(
+    () => computeEwtTaxableBase({ grossAmount: totals.totalCredit, lines, vatAccountId }),
+    [totals.totalCredit, lines, vatAccountId]
+  );
+
+  const suggestedEwtAmount = useMemo(
+    () =>
+      selectedEwt
+        ? computeEwtAmount({ taxableBase: ewtTaxableBase, ewtRate: selectedEwt.rate })
+        : 0,
+    [ewtTaxableBase, selectedEwt]
+  );
+
   function handleAtcCodeChange(value) {
     setAtcCode(value);
+    setTaxWithheldTouched(false);
 
     const ewt = ewtCodes.find((e) => e.atcCode === value);
     if (ewt) {
-      const suggested = (totals.totalCredit * Number(ewt.rate || 0)) / 100;
-      setTaxWithheldAmount(suggested ? suggested.toFixed(2) : "");
+      const base = computeEwtTaxableBase({ grossAmount: totals.totalCredit, lines, vatAccountId });
+      const suggested = computeEwtAmount({ taxableBase: base, ewtRate: ewt.rate });
+      setTaxWithheldAmount(suggested ? String(suggested) : "");
     } else {
       setTaxWithheldAmount("");
     }
   }
 
+  // Keeps the suggested amount in sync as lines/VAT change while an ATC
+  // code is already selected - but never overwrites a value the user (or a
+  // loaded historical record) has already set.
+  useEffect(() => {
+    if (!atcCode || taxWithheldTouched) return;
+    setTaxWithheldAmount(suggestedEwtAmount ? String(suggestedEwtAmount) : "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [suggestedEwtAmount, atcCode]);
+
   const vatType =
     code === "INV" || code === "OR"
       ? "Output VAT"
-      : code === "APV" || code === "CV"
+      : code === "APV" || code === "CV" || code === "PO"
       ? "Input VAT"
       : null;
+
+  // EWT direction differs by module: APV/CV/PO are outbound - the company
+  // is the withholding agent, computes and remits EWT, and issues Form 2307
+  // to the payee (hence the Payee TIN field). INV/OR are inbound - the
+  // customer is the withholding agent; EWT here just records what they
+  // already withheld from what they owe (evidenced by a 2307 they issue to
+  // us), so there's no "payee" to collect a TIN for - see or_headers'
+  // existing "Creditable Withholding Tax" line convention.
+  const ewtOutbound = code === "APV" || code === "CV" || code === "PO";
+  const ewtInbound = code === "INV" || code === "OR";
+  const ewtEligible = ewtOutbound || ewtInbound;
 
   const vatAmount =
     (Number(vatTaxableAmount || 0) * Number(vatRate || 0)) / 100;
@@ -706,6 +751,7 @@ setSourcePoNo("");
 
 setAtcCode("");
 setTaxWithheldAmount("");
+setTaxWithheldTouched(false);
 setPayeeTin("");
 
 setVatTaxableAmount("");
@@ -878,9 +924,13 @@ if (code === "APV" && data.sourcePoId) {
   setSourcePoNo("");
 }
 
-if (code === "APV") {
+if (ewtEligible) {
   setAtcCode(data.atcCode || "");
   setTaxWithheldAmount(data.taxWithheldAmount || "");
+  // Loaded from a stored record - treat as user-set so the live-recompute
+  // effect doesn't overwrite a saved (possibly historical/manually-adjusted)
+  // amount just because the transaction was opened for viewing/editing.
+  setTaxWithheldTouched(Boolean(data.atcCode));
   setPayeeTin(data.payeeTin || "");
 }
 
@@ -929,8 +979,8 @@ if (code === "OR" || code === "CV") {
       partyId: selectedParty ? selectedParty.id : null,
     }));
 
-    if (code === "APV") {
-      setPayeeTin(selectedParty?.tin || "");
+    if (ewtEligible) {
+      if (ewtOutbound) setPayeeTin(selectedParty?.tin || "");
 
       if (selectedParty?.atcCode && ewtCodes.some((e) => e.atcCode === selectedParty.atcCode)) {
         handleAtcCodeChange(selectedParty.atcCode);
@@ -1296,11 +1346,11 @@ if (code === "OR" || code === "CV") {
 
         sourcePoId: code === "APV" ? sourcePoId : null,
 
-        atcCode: code === "APV" ? atcCode || null : null,
-        taxType: code === "APV" ? selectedEwt?.taxType || null : null,
-        taxRate: code === "APV" ? selectedEwt?.rate || null : null,
-        taxWithheldAmount: code === "APV" ? Number(taxWithheldAmount) || null : null,
-        payeeTin: code === "APV" ? payeeTin || null : null,
+        atcCode: ewtEligible ? atcCode || null : null,
+        taxType: ewtEligible ? selectedEwt?.taxType || null : null,
+        taxRate: ewtEligible ? selectedEwt?.rate || null : null,
+        taxWithheldAmount: ewtEligible ? Number(taxWithheldAmount) || null : null,
+        payeeTin: ewtOutbound ? payeeTin || null : null,
 
         invoiceType: code === "INV" ? invoiceType : null,
         recurrenceFrequency: code === "INV" && invoiceType === "Recurring" ? recurrenceFrequency : null,
@@ -1754,13 +1804,18 @@ if (code === "OR") {
               </div>
             )}
 
-            {code === "APV" && (
+            {ewtEligible && (
               <div className="transaction-card">
                 <div className="transaction-section-header">
                   <div>
-                    <h2 className="transaction-section-title">Withholding Tax</h2>
+                    <h2 className="transaction-section-title">
+                      {ewtOutbound ? "Withholding Tax" : "Tax Withheld by Customer"}
+                    </h2>
                     <p className="transaction-section-subtext">
-                      Optional &mdash; only fill in if tax was withheld from this supplier payment.
+                      {ewtOutbound
+                        ? "Optional — only fill in if tax was withheld from this payment."
+                        : "Optional — only fill in if the customer withheld tax from this amount (per the Form 2307 they issue you)."}
+                      {" "}For VATable transactions, EWT is computed on the amount exclusive of VAT.
                     </p>
                   </div>
                 </div>
@@ -1794,29 +1849,56 @@ if (code === "OR") {
                   </div>
 
                   <div className="transaction-field">
-                    <label className="transaction-label">Tax Withheld Amount</label>
+                    <label
+                      className="transaction-label"
+                      title="For VATable transactions, EWT is computed on the amount exclusive of VAT."
+                    >
+                      EWT Base (VAT-exclusive)
+                    </label>
+                    <input
+                      type="text"
+                      value={atcCode ? formatMoney(ewtTaxableBase) : ""}
+                      readOnly
+                      placeholder="Select an ATC code"
+                      className="transaction-input transaction-input-readonly"
+                      title="Gross amount minus VAT posted on this transaction."
+                    />
+                  </div>
+
+                  <div className="transaction-field">
+                    <label
+                      className="transaction-label"
+                      title="For VATable transactions, EWT is computed on the amount exclusive of VAT."
+                    >
+                      Tax Withheld Amount
+                    </label>
                     <input
                       type="number"
                       min="0"
                       step="0.01"
                       value={taxWithheldAmount}
-                      onChange={(e) => setTaxWithheldAmount(e.target.value)}
+                      onChange={(e) => {
+                        setTaxWithheldAmount(e.target.value);
+                        setTaxWithheldTouched(true);
+                      }}
                       disabled={!atcCode}
                       placeholder="0.00"
                       className="transaction-input"
                     />
                   </div>
 
-                  <div className="transaction-field">
-                    <label className="transaction-label">Payee TIN</label>
-                    <input
-                      type="text"
-                      value={payeeTin}
-                      onChange={(e) => setPayeeTin(e.target.value)}
-                      placeholder="000-000-000-000"
-                      className="transaction-input"
-                    />
-                  </div>
+                  {ewtOutbound && (
+                    <div className="transaction-field">
+                      <label className="transaction-label">Payee TIN</label>
+                      <input
+                        type="text"
+                        value={payeeTin}
+                        onChange={(e) => setPayeeTin(e.target.value)}
+                        placeholder="000-000-000-000"
+                        className="transaction-input"
+                      />
+                    </div>
+                  )}
                 </div>
               </div>
             )}

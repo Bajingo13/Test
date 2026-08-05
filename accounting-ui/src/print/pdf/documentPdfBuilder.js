@@ -6,14 +6,18 @@ const STATUS_WATERMARKS = { DRAFT: "DRAFT", CANCELLED: "CANCELLED", VOID: "VOID"
 // Presentation-only lookup (labels), separate from MODULE_CONFIG on the
 // backend (which is about tables/columns) - the backend never has to know
 // how a module's document is titled or what its party role is called.
+// ewtDirection mirrors TransactionFormLayout.jsx's ewtOutbound/ewtInbound:
+// "outbound" = we're the withholding agent (APV/CV/PO, has a payee TIN),
+// "inbound" = the customer withheld from us (INV/OR, no payee TIN - see
+// ewt_phase2_migration.sql for why those tables have no payee_tin column).
 const MODULE_META = {
-  invoice: { documentLabel: "INVOICE", partyRoleLabel: "Bill To" },
-  or: { documentLabel: "OFFICIAL RECEIPT", partyRoleLabel: "Received From" },
-  apv: { documentLabel: "AP VOUCHER", partyRoleLabel: "Pay To" },
-  cv: { documentLabel: "CHECK VOUCHER", partyRoleLabel: "Payee" },
+  invoice: { documentLabel: "INVOICE", partyRoleLabel: "Bill To", ewtDirection: "inbound" },
+  or: { documentLabel: "OFFICIAL RECEIPT", partyRoleLabel: "Received From", ewtDirection: "inbound" },
+  apv: { documentLabel: "AP VOUCHER", partyRoleLabel: "Pay To", ewtDirection: "outbound" },
+  cv: { documentLabel: "CHECK VOUCHER", partyRoleLabel: "Payee", ewtDirection: "outbound" },
   // JV has no party role at all - see partyRoleLabel: null handling below.
-  jv: { documentLabel: "JOURNAL VOUCHER", partyRoleLabel: null },
-  po: { documentLabel: "PURCHASE ORDER", partyRoleLabel: "Supplier" },
+  jv: { documentLabel: "JOURNAL VOUCHER", partyRoleLabel: null, ewtDirection: null },
+  po: { documentLabel: "PURCHASE ORDER", partyRoleLabel: "Supplier", ewtDirection: "outbound" },
 };
 
 // Builds one transaction document PDF - "without entries" (customer/
@@ -40,7 +44,8 @@ export async function buildDocumentPdf({
   copyType = DEFAULT_COPY_TYPE,
   copies = 1,
 }) {
-  const { documentLabel, partyRoleLabel } = MODULE_META[transactionType] || { documentLabel: "TRANSACTION", partyRoleLabel: "Party" };
+  const { documentLabel, partyRoleLabel, ewtDirection } =
+    MODULE_META[transactionType] || { documentLabel: "TRANSACTION", partyRoleLabel: "Party", ewtDirection: null };
   const withEntries = mode === "with_entries";
   const kit = await createPdfKit();
   const { marginX, pageWidth } = kit;
@@ -263,6 +268,53 @@ export async function buildDocumentPdf({
       kit.moveDown(12);
       drawWrappedBlock(doc.remarks, marginX, { size: 9, lineHeight: 12 });
       kit.moveDown(10);
+    }
+
+    // ---- Withholding tax - printed straight from the stored, backend-
+    // validated columns (taxableBase/taxWithheldAmount), never recomputed
+    // here. Only shown when an ATC code was actually recorded on save. VAT
+    // amount is derived as gross - taxableBase for display only (both are
+    // already-stored numbers, not a re-derivation of the tax itself). ----
+    if (ewtDirection && doc.atcCode) {
+      kit.ensureRoom(90);
+      kit.drawLine({ x1: marginX, x2: rightEdge, thickness: 1, color: COLORS.accent });
+      kit.moveDown(18);
+      kit.drawText(
+        ewtDirection === "outbound" ? "Withholding Tax" : "Tax Withheld by Customer",
+        marginX,
+        { size: 10, bold: true }
+      );
+      kit.moveDown(18);
+
+      const gross = Number(doc.totalDebit) || 0;
+      const taxableBase = doc.taxableBase != null ? Number(doc.taxableBase) : gross;
+      const vatAmount = Math.max(gross - taxableBase, 0);
+      const ewtAmount = Number(doc.taxWithheldAmount) || 0;
+      const netLabel = ewtDirection === "outbound" ? "Net Payable" : "Net Receivable";
+
+      const wtColX = [marginX, marginX + contentWidth * 0.34, marginX + contentWidth * 0.67];
+      const wtRow = (labels, values, opts = {}) => {
+        labels.forEach((label, idx) => kit.drawText(label, wtColX[idx], { size: 8, color: COLORS.grey }));
+        kit.moveDown(12);
+        const rowY = kit.getY();
+        values.forEach((value, idx) => kit.drawText(value, wtColX[idx], { size: 9.5, y: rowY, ...opts }));
+        kit.moveDown(16);
+      };
+
+      wtRow(
+        ["VAT-Exclusive Base", "VAT Amount", "EWT Code / Rate"],
+        [`P ${formatMoney(taxableBase)}`, `P ${formatMoney(vatAmount)}`, `${doc.atcCode} (${formatMoney(doc.taxRate)}%)`]
+      );
+      wtRow(
+        ["EWT Amount", netLabel],
+        [`P ${formatMoney(ewtAmount)}`, `P ${formatMoney(gross - ewtAmount)}`],
+        { bold: true }
+      );
+      if (doc.payeeTin) {
+        kit.drawText(`Payee TIN: ${doc.payeeTin}`, marginX, { size: 8, color: COLORS.grey });
+        kit.moveDown(12);
+      }
+      kit.moveDown(6);
     }
 
     // ---- Accounting entries summary - evenly spaced 3-column layout ----

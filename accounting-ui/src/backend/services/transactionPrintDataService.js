@@ -24,6 +24,7 @@ const MODULE_CONFIG = {
     hasPaidBalance: true,
     hasCheck: false,
     hasPaymentMethod: false,
+    hasEwt: true,
   },
   or: {
     moduleKey: "TRANSACTIONS.OR",
@@ -37,6 +38,7 @@ const MODULE_CONFIG = {
     hasPaidBalance: false,
     hasCheck: true,
     hasPaymentMethod: true,
+    hasEwt: true,
   },
   apv: {
     moduleKey: "TRANSACTIONS.APV",
@@ -50,6 +52,8 @@ const MODULE_CONFIG = {
     hasPaidBalance: true,
     hasCheck: false,
     hasPaymentMethod: false,
+    hasEwt: true,
+    hasPayeeTin: true,
   },
   cv: {
     moduleKey: "TRANSACTIONS.CV",
@@ -63,6 +67,8 @@ const MODULE_CONFIG = {
     hasPaidBalance: false,
     hasCheck: true,
     hasPaymentMethod: true,
+    hasEwt: true,
+    hasPayeeTin: true,
   },
   // JV has no party at all (it's a pure double-entry accounting document,
   // not a customer/supplier-facing one) - prepared_for is a free-text
@@ -91,6 +97,8 @@ const MODULE_CONFIG = {
     hasPaidBalance: false,
     hasCheck: false,
     hasPaymentMethod: false,
+    hasEwt: true,
+    hasPayeeTin: true,
   },
 };
 
@@ -152,6 +160,18 @@ async function getTransactionDocument(transactionType, id, { withEntries }) {
   }
   if (cfg.hasCheck) metaCols.push("check_no AS checkNo", "DATE_FORMAT(check_date, '%Y-%m-%d') AS checkDate");
   if (cfg.hasPaymentMethod) metaCols.push("payment_method AS paymentMethod", "bank_account_id AS bankAccountId");
+  if (cfg.hasEwt) {
+    // Printed straight from the stored, backend-validated columns - never
+    // recomputed here, so the printout always matches what was saved.
+    metaCols.push(
+      "atc_code AS atcCode",
+      "tax_type AS taxType",
+      "tax_rate AS taxRate",
+      "tax_withheld_amount AS taxWithheldAmount",
+      "taxable_base AS taxableBase"
+    );
+  }
+  if (cfg.hasPayeeTin) metaCols.push("payee_tin AS payeeTin");
   if (cfg.extraCols) metaCols.push(...cfg.extraCols);
 
   const [headers] = await pool.execute(

@@ -29,6 +29,7 @@ const COAImportService = require("./services/COAImportService");
 const GenLibImportService = require("./services/GenLibImportService");
 const GLBeginningBalanceService = require("./services/GLBeginningBalanceService");
 const TrialBalanceDifferenceService = require("./services/trialBalanceDifferenceService");
+const { computeEwtTaxableBase, computeEwtAmount } = require("./services/ewtCalculationService");
 
 console.log("ENV FILE:", require("path").resolve(".env"));
 console.log("JWT_SECRET loaded:", Boolean(process.env.JWT_SECRET));
@@ -949,6 +950,11 @@ app.get("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACTION
         status,
         invoice_type AS invoiceType,
         recurrence_frequency AS recurrenceFrequency,
+        atc_code AS atcCode,
+        tax_type AS taxType,
+        tax_rate AS taxRate,
+        tax_withheld_amount AS taxWithheldAmount,
+        taxable_base AS taxableBase,
         created_at AS createdAt,
         updated_at AS updatedAt
       FROM invoice_headers
@@ -1025,11 +1031,22 @@ app.post("/api/invoices", authenticateToken, authorizePermission("TRANSACTIONS.I
       invoiceType,
       recurrenceFrequency,
       lines,
+      atcCode,
+      taxWithheldAmount,
     } = req.body;
 
     await conn.beginTransaction();
 
     const total = Number(totalDebit || 0);
+
+    const ewt = await resolveTaxWithholding(conn, {
+      moduleLabel: "Invoice",
+      atcCode,
+      lines,
+      totalCredit: total,
+      clientTaxWithheldAmount: taxWithheldAmount,
+      vatKeyword: "output vat",
+    });
 
     const [result] = await conn.execute(
       `INSERT INTO invoice_headers (
@@ -1048,8 +1065,13 @@ app.post("/api/invoices", authenticateToken, authorizePermission("TRANSACTIONS.I
         payment_status,
         status,
         invoice_type,
-        recurrence_frequency
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        recurrence_frequency,
+        atc_code,
+        tax_type,
+        tax_rate,
+        tax_withheld_amount,
+        taxable_base
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         voucherNo,
         customerId || null,
@@ -1067,6 +1089,11 @@ app.post("/api/invoices", authenticateToken, authorizePermission("TRANSACTIONS.I
         status || "DRAFT",
         invoiceType === "Recurring" ? "Recurring" : "Standard",
         invoiceType === "Recurring" ? recurrenceFrequency || "Monthly" : null,
+        ewt.atcCode,
+        ewt.taxType,
+        ewt.taxRate,
+        ewt.taxWithheldAmount,
+        ewt.taxableBase,
       ]
     );
 
@@ -1141,9 +1168,20 @@ app.put("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACTION
       invoiceType,
       recurrenceFrequency,
       lines,
+      atcCode,
+      taxWithheldAmount,
     } = req.body;
 
     await conn.beginTransaction();
+
+    const ewt = await resolveTaxWithholding(conn, {
+      moduleLabel: "Invoice",
+      atcCode,
+      lines,
+      totalCredit: Number(totalDebit || 0),
+      clientTaxWithheldAmount: taxWithheldAmount,
+      vatKeyword: "output vat",
+    });
 
     await conn.execute(
       `UPDATE invoice_headers SET
@@ -1159,7 +1197,12 @@ app.put("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACTION
         total_credit = ?,
         status = ?,
         invoice_type = ?,
-        recurrence_frequency = ?
+        recurrence_frequency = ?,
+        atc_code = ?,
+        tax_type = ?,
+        tax_rate = ?,
+        tax_withheld_amount = ?,
+        taxable_base = ?
       WHERE id = ?`,
       [
         voucherNo,
@@ -1175,6 +1218,11 @@ app.put("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACTION
         status || "DRAFT",
         invoiceType === "Recurring" ? "Recurring" : "Standard",
         invoiceType === "Recurring" ? recurrenceFrequency || "Monthly" : null,
+        ewt.atcCode,
+        ewt.taxType,
+        ewt.taxRate,
+        ewt.taxWithheldAmount,
+        ewt.taxableBase,
         id,
       ]
     );
@@ -1318,10 +1366,21 @@ app.post("/api/or", authenticateToken, authorizePermission("TRANSACTIONS.OR", "C
       checkDate,
       lines = [],
       invoiceApplications = [],
+      atcCode,
+      taxWithheldAmount,
     } = req.body;
 
     const finalCustomerId = customerId ?? req.body.partyId ?? null;
     const finalCustomerName = customerName || req.body.partyName || "";
+
+    const ewt = await resolveTaxWithholding(conn, {
+      moduleLabel: "OR",
+      atcCode,
+      lines,
+      totalCredit: Number(totalDebit) || 0,
+      clientTaxWithheldAmount: taxWithheldAmount,
+      vatKeyword: "output vat",
+    });
 
     const [result] = await conn.execute(
       `INSERT INTO or_headers(
@@ -1338,9 +1397,14 @@ app.post("/api/or", authenticateToken, authorizePermission("TRANSACTIONS.OR", "C
         payment_method,
         bank_account_id,
         check_no,
-        check_date
+        check_date,
+        atc_code,
+        tax_type,
+        tax_rate,
+        tax_withheld_amount,
+        taxable_base
       )
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         voucherNo || "",
         finalCustomerId,
@@ -1356,6 +1420,11 @@ app.post("/api/or", authenticateToken, authorizePermission("TRANSACTIONS.OR", "C
         bankAccountId || null,
         paymentMethod === "Check" ? checkNo || "" : "",
         paymentMethod === "Check" ? checkDate || null : null,
+        ewt.atcCode,
+        ewt.taxType,
+        ewt.taxRate,
+        ewt.taxWithheldAmount,
+        ewt.taxableBase,
       ]
     );
 
@@ -1468,7 +1537,12 @@ app.get("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
         payment_method AS paymentMethod,
         bank_account_id AS bankAccountId,
         check_no AS checkNo,
-        DATE_FORMAT(check_date, '%Y-%m-%d') AS checkDate
+        DATE_FORMAT(check_date, '%Y-%m-%d') AS checkDate,
+        atc_code AS atcCode,
+        tax_type AS taxType,
+        tax_rate AS taxRate,
+        tax_withheld_amount AS taxWithheldAmount,
+        taxable_base AS taxableBase
       FROM or_headers
       WHERE id = ?`,
       [id]
@@ -1546,6 +1620,8 @@ app.put("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
       checkDate,
       lines = [],
       invoiceApplications = [],
+      atcCode,
+      taxWithheldAmount,
     } = req.body;
 
     await conn.beginTransaction();
@@ -1636,6 +1712,15 @@ app.put("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
      * STEP 5:
      * Update the OR header.
      */
+    const ewt = await resolveTaxWithholding(conn, {
+      moduleLabel: "OR",
+      atcCode,
+      lines,
+      totalCredit: Number(totalDebit) || 0,
+      clientTaxWithheldAmount: taxWithheldAmount,
+      vatKeyword: "output vat",
+    });
+
     await conn.execute(
       `UPDATE or_headers SET
          voucher_no = ?,
@@ -1651,7 +1736,12 @@ app.put("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
          payment_method = ?,
          bank_account_id = ?,
          check_no = ?,
-         check_date = ?
+         check_date = ?,
+         atc_code = ?,
+         tax_type = ?,
+         tax_rate = ?,
+         tax_withheld_amount = ?,
+         taxable_base = ?
        WHERE id = ?`,
       [
         voucherNo || "",
@@ -1668,6 +1758,11 @@ app.put("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
         bankAccountId || null,
         paymentMethod === "Check" ? checkNo || "" : "",
         paymentMethod === "Check" ? checkDate || null : null,
+        ewt.atcCode,
+        ewt.taxType,
+        ewt.taxRate,
+        ewt.taxWithheldAmount,
+        ewt.taxableBase,
         id,
       ]
     );
@@ -1989,6 +2084,7 @@ app.get("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV
         tax_type AS taxType,
         tax_rate AS taxRate,
         tax_withheld_amount AS taxWithheldAmount,
+        taxable_base AS taxableBase,
         payee_tin AS payeeTin,
         created_at AS createdAt,
         updated_at AS updatedAt
@@ -2047,6 +2143,62 @@ app.get("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV
   }
 });
 
+// The backend is the final authority on withholding tax figures - it never
+// trusts the client-submitted atcCode's rate/type or the client-submitted
+// taxWithheldAmount. It looks up the ATC code's authoritative rate/type
+// from ewt_library, independently derives the VAT-exclusive taxable base
+// from the submitted journal lines (see ewtCalculationService), and only
+// keeps the client's amount if it agrees with the backend recalculation
+// within a one-centavo rounding tolerance - otherwise it silently corrects
+// to the backend-computed value (rather than rejecting the save) and logs
+// the discrepancy for follow-up.
+//
+// vatKeyword follows the same direction used to auto-detect the VAT account
+// on the frontend: "output vat" for INV/OR (we're the seller charging VAT),
+// "input vat" for APV/CV/PO (we're the buyer paying VAT).
+async function resolveTaxWithholding(conn, { moduleLabel, atcCode, lines, totalCredit, clientTaxWithheldAmount, vatKeyword }) {
+  if (!atcCode) {
+    return { atcCode: null, taxType: null, taxRate: null, taxableBase: null, taxWithheldAmount: null };
+  }
+
+  const [ewtRows] = await conn.execute(
+    "SELECT atc_code AS atcCode, tax_type AS taxType, rate FROM ewt_library WHERE atc_code = ? LIMIT 1",
+    [atcCode]
+  );
+  if (!ewtRows.length) {
+    // Unknown/stale ATC code - don't invent a rate; store no withholding.
+    return { atcCode: null, taxType: null, taxRate: null, taxableBase: null, taxWithheldAmount: null };
+  }
+
+  const { taxType, rate } = ewtRows[0];
+  const taxableBase = computeEwtTaxableBase({ grossAmount: totalCredit, lines, vatKeyword });
+  const backendAmount = computeEwtAmount({ taxableBase, ewtRate: rate });
+
+  const clientAmount = Number(clientTaxWithheldAmount) || 0;
+  const finalAmount =
+    Math.abs(clientAmount - backendAmount) <= 0.01 ? clientAmount : backendAmount;
+
+  if (Math.abs(clientAmount - backendAmount) > 0.01) {
+    console.warn(
+      `${moduleLabel} EWT mismatch for ATC ${atcCode}: client sent ${clientAmount}, backend computed ${backendAmount} ` +
+      `(base ${taxableBase} x ${rate}%). Using backend-computed value.`
+    );
+  }
+
+  return { atcCode, taxType, taxRate: rate, taxableBase, taxWithheldAmount: finalAmount };
+}
+
+async function resolveApvTaxWithholding(conn, { atcCode, lines, totalCredit, clientTaxWithheldAmount }) {
+  return resolveTaxWithholding(conn, {
+    moduleLabel: "APV",
+    atcCode,
+    lines,
+    totalCredit,
+    clientTaxWithheldAmount,
+    vatKeyword: "input vat",
+  });
+}
+
 app.post("/api/apv", authenticateToken, authorizePermission("TRANSACTIONS.APV", "CREATE"), async (req, res) => {
   const conn = await pool.getConnection();
 
@@ -2066,8 +2218,6 @@ app.post("/api/apv", authenticateToken, authorizePermission("TRANSACTIONS.APV", 
       lines,
       sourcePoId,
       atcCode,
-      taxType,
-      taxRate,
       taxWithheldAmount,
       payeeTin,
     } = req.body;
@@ -2075,6 +2225,13 @@ app.post("/api/apv", authenticateToken, authorizePermission("TRANSACTIONS.APV", 
     await conn.beginTransaction();
 
     const total = Number(totalCredit || 0);
+
+    const ewt = await resolveApvTaxWithholding(conn, {
+      atcCode,
+      lines,
+      totalCredit: total,
+      clientTaxWithheldAmount: taxWithheldAmount,
+    });
 
     const [result] = await conn.execute(
       `INSERT INTO apv_headers (
@@ -2097,8 +2254,9 @@ app.post("/api/apv", authenticateToken, authorizePermission("TRANSACTIONS.APV", 
         tax_type,
         tax_rate,
         tax_withheld_amount,
+        taxable_base,
         payee_tin
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         voucherNo,
         supplierId || null,
@@ -2115,10 +2273,11 @@ app.post("/api/apv", authenticateToken, authorizePermission("TRANSACTIONS.APV", 
         "Unpaid",
         status || "DRAFT",
         sourcePoId || null,
-        atcCode || null,
-        taxType || null,
-        taxRate || null,
-        taxWithheldAmount || null,
+        ewt.atcCode,
+        ewt.taxType,
+        ewt.taxRate,
+        ewt.taxWithheldAmount,
+        ewt.taxableBase,
         payeeTin || null,
       ]
     );
@@ -2200,13 +2359,22 @@ app.put("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV
       status,
       lines,
       atcCode,
-      taxType,
-      taxRate,
       taxWithheldAmount,
       payeeTin,
     } = req.body;
 
     await conn.beginTransaction();
+
+    // Recomputed on every explicit edit, same as on create - this is an
+    // "edit where allowed" per the corrected-logic policy, not a background
+    // bulk correction of historical rows (that's the separate, read-only
+    // Phase 4 audit). A transaction nobody opens/re-saves is never touched.
+    const ewt = await resolveApvTaxWithholding(conn, {
+      atcCode,
+      lines,
+      totalCredit: Number(totalCredit || 0),
+      clientTaxWithheldAmount: taxWithheldAmount,
+    });
 
     await conn.execute(
       `UPDATE apv_headers SET
@@ -2225,6 +2393,7 @@ app.put("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV
         tax_type = ?,
         tax_rate = ?,
         tax_withheld_amount = ?,
+        taxable_base = ?,
         payee_tin = ?
       WHERE id = ?`,
       [
@@ -2239,10 +2408,11 @@ app.put("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV
         totalDebit || 0,
         totalCredit || 0,
         status || "DRAFT",
-        atcCode || null,
-        taxType || null,
-        taxRate || null,
-        taxWithheldAmount || null,
+        ewt.atcCode,
+        ewt.taxType,
+        ewt.taxRate,
+        ewt.taxWithheldAmount,
+        ewt.taxableBase,
         payeeTin || null,
         id,
       ]
@@ -2421,6 +2591,12 @@ app.get("/api/purchase-orders/:id", authenticateToken, authorizePermission("TRAN
         total_debit AS totalDebit,
         total_credit AS totalCredit,
         status,
+        atc_code AS atcCode,
+        tax_type AS taxType,
+        tax_rate AS taxRate,
+        tax_withheld_amount AS taxWithheldAmount,
+        taxable_base AS taxableBase,
+        payee_tin AS payeeTin,
         created_at AS createdAt,
         updated_at AS updatedAt
       FROM purchase_order_headers
@@ -2476,9 +2652,21 @@ app.post("/api/purchase-orders", authenticateToken, authorizePermission("TRANSAC
       totalCredit,
       status,
       lines,
+      atcCode,
+      taxWithheldAmount,
+      payeeTin,
     } = req.body;
 
     await conn.beginTransaction();
+
+    const ewt = await resolveTaxWithholding(conn, {
+      moduleLabel: "PO",
+      atcCode,
+      lines,
+      totalCredit: Number(totalCredit || 0),
+      clientTaxWithheldAmount: taxWithheldAmount,
+      vatKeyword: "input vat",
+    });
 
     const [result] = await conn.execute(
       `INSERT INTO purchase_order_headers (
@@ -2491,8 +2679,14 @@ app.post("/api/purchase-orders", authenticateToken, authorizePermission("TRANSAC
         remarks,
         total_debit,
         total_credit,
-        status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        status,
+        atc_code,
+        tax_type,
+        tax_rate,
+        tax_withheld_amount,
+        taxable_base,
+        payee_tin
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         voucherNo,
         supplierId || null,
@@ -2504,6 +2698,12 @@ app.post("/api/purchase-orders", authenticateToken, authorizePermission("TRANSAC
         totalDebit || 0,
         totalCredit || 0,
         status === "Draft" ? "Draft" : "Open",
+        ewt.atcCode,
+        ewt.taxType,
+        ewt.taxRate,
+        ewt.taxWithheldAmount,
+        ewt.taxableBase,
+        payeeTin || null,
       ]
     );
 
@@ -2575,9 +2775,21 @@ app.put("/api/purchase-orders/:id", authenticateToken, authorizePermission("TRAN
       totalCredit,
       status,
       lines,
+      atcCode,
+      taxWithheldAmount,
+      payeeTin,
     } = req.body;
 
     await conn.beginTransaction();
+
+    const ewt = await resolveTaxWithholding(conn, {
+      moduleLabel: "PO",
+      atcCode,
+      lines,
+      totalCredit: Number(totalCredit || 0),
+      clientTaxWithheldAmount: taxWithheldAmount,
+      vatKeyword: "input vat",
+    });
 
     await conn.execute(
       `UPDATE purchase_order_headers SET
@@ -2590,7 +2802,13 @@ app.put("/api/purchase-orders/:id", authenticateToken, authorizePermission("TRAN
         remarks = ?,
         total_debit = ?,
         total_credit = ?,
-        status = ?
+        status = ?,
+        atc_code = ?,
+        tax_type = ?,
+        tax_rate = ?,
+        tax_withheld_amount = ?,
+        taxable_base = ?,
+        payee_tin = ?
       WHERE id = ?`,
       [
         voucherNo,
@@ -2603,6 +2821,12 @@ app.put("/api/purchase-orders/:id", authenticateToken, authorizePermission("TRAN
         totalDebit || 0,
         totalCredit || 0,
         status || "Open",
+        ewt.atcCode,
+        ewt.taxType,
+        ewt.taxRate,
+        ewt.taxWithheldAmount,
+        ewt.taxableBase,
+        payeeTin || null,
         id,
       ]
     );
@@ -3449,10 +3673,22 @@ app.post("/api/cv", authenticateToken, authorizePermission("TRANSACTIONS.CV", "C
       checkDate,
       lines = [],
       apvApplications = [],
+      atcCode,
+      taxWithheldAmount,
+      payeeTin,
     } = req.body;
 
     const finalPayeeId = payeeId ?? req.body.supplierId ?? null;
     const finalPayeeName = payeeName || req.body.supplierName || "";
+
+    const ewt = await resolveTaxWithholding(conn, {
+      moduleLabel: "CV",
+      atcCode,
+      lines,
+      totalCredit: Number(totalCredit) || 0,
+      clientTaxWithheldAmount: taxWithheldAmount,
+      vatKeyword: "input vat",
+    });
 
     const [result] = await conn.execute(
       `INSERT INTO cv_headers(
@@ -3468,9 +3704,15 @@ app.post("/api/cv", authenticateToken, authorizePermission("TRANSACTIONS.CV", "C
         status,
         payment_method,
         bank_account_id,
-        check_date
+        check_date,
+        atc_code,
+        tax_type,
+        tax_rate,
+        tax_withheld_amount,
+        taxable_base,
+        payee_tin
       )
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         voucherNo || "",
         finalPayeeId,
@@ -3485,6 +3727,12 @@ app.post("/api/cv", authenticateToken, authorizePermission("TRANSACTIONS.CV", "C
         paymentMethod === "Cash" ? "Cash" : "Check",
         bankAccountId || null,
         paymentMethod !== "Cash" ? checkDate || null : null,
+        ewt.atcCode,
+        ewt.taxType,
+        ewt.taxRate,
+        ewt.taxWithheldAmount,
+        ewt.taxableBase,
+        payeeTin || null,
       ]
     );
 
@@ -3596,7 +3844,13 @@ app.get("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
         status,
         payment_method AS paymentMethod,
         bank_account_id AS bankAccountId,
-        DATE_FORMAT(check_date, '%Y-%m-%d') AS checkDate
+        DATE_FORMAT(check_date, '%Y-%m-%d') AS checkDate,
+        atc_code AS atcCode,
+        tax_type AS taxType,
+        tax_rate AS taxRate,
+        tax_withheld_amount AS taxWithheldAmount,
+        taxable_base AS taxableBase,
+        payee_tin AS payeeTin
       FROM cv_headers
       WHERE id = ?`,
       [id]
@@ -3673,6 +3927,9 @@ app.put("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
       checkDate,
       lines = [],
       apvApplications = [],
+      atcCode,
+      taxWithheldAmount,
+      payeeTin,
     } = req.body;
 
     const finalPayeeId = payeeId ?? req.body.supplierId ?? null;
@@ -3727,6 +3984,15 @@ app.put("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
       }
     }
 
+    const ewt = await resolveTaxWithholding(conn, {
+      moduleLabel: "CV",
+      atcCode,
+      lines,
+      totalCredit: Number(totalCredit) || 0,
+      clientTaxWithheldAmount: taxWithheldAmount,
+      vatKeyword: "input vat",
+    });
+
     await conn.execute(
       `UPDATE cv_headers SET
          voucher_no = ?,
@@ -3741,7 +4007,13 @@ app.put("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
          status = ?,
          payment_method = ?,
          bank_account_id = ?,
-         check_date = ?
+         check_date = ?,
+         atc_code = ?,
+         tax_type = ?,
+         tax_rate = ?,
+         tax_withheld_amount = ?,
+         taxable_base = ?,
+         payee_tin = ?
        WHERE id = ?`,
       [
         voucherNo || "",
@@ -3757,6 +4029,12 @@ app.put("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
         paymentMethod === "Cash" ? "Cash" : "Check",
         bankAccountId || null,
         paymentMethod !== "Cash" ? checkDate || null : null,
+        ewt.atcCode,
+        ewt.taxType,
+        ewt.taxRate,
+        ewt.taxWithheldAmount,
+        ewt.taxableBase,
+        payeeTin || null,
         id,
       ]
     );
@@ -6064,24 +6342,52 @@ app.get("/api/reports/alphalist", authenticateToken, authorizePermission("REPORT
       return res.status(400).json({ message: "month (YYYY-MM) is required" });
     }
 
+    // Sources tax actually withheld/remitted by us as the withholding agent:
+    // APV and CV (the two modules where a real payment happened). Purchase
+    // Order deliberately excluded even though it supports EWT recording
+    // (Phase 2) - a PO is a pre-payment commitment, not a remittance event,
+    // and a PO commonly converts into an APV (source_po_id), so including
+    // both would double-count the same withholding. Invoice/OR excluded for
+    // a different reason: EWT there is the CUSTOMER's withholding, not
+    // ours, so it never belongs on a report of taxes we remitted.
     const [rows] = await pool.execute(
       `
       SELECT
-        supplier_name AS payeeName,
-        COALESCE(payee_tin, '') AS tin,
-        atc_code AS atcCode,
-        tax_rate AS taxRate,
-        COUNT(*) AS transactionCount,
-        SUM(total_credit) AS grossAmount,
-        SUM(tax_withheld_amount) AS taxWithheld
-      FROM apv_headers
-      WHERE tax_type = ?
-        AND DATE_FORMAT(transaction_date, '%Y-%m') = ?
-        AND tax_withheld_amount > 0
-      GROUP BY supplier_name, payee_tin, atc_code, tax_rate
+        payeeName, tin, atcCode, taxRate,
+        SUM(transactionCount) AS transactionCount,
+        SUM(grossAmount) AS grossAmount,
+        SUM(taxWithheld) AS taxWithheld
+      FROM (
+        SELECT
+          supplier_name AS payeeName,
+          COALESCE(payee_tin, '') AS tin,
+          atc_code AS atcCode,
+          tax_rate AS taxRate,
+          COUNT(*) AS transactionCount,
+          SUM(total_credit) AS grossAmount,
+          SUM(tax_withheld_amount) AS taxWithheld
+        FROM apv_headers
+        WHERE tax_type = ? AND DATE_FORMAT(transaction_date, '%Y-%m') = ? AND tax_withheld_amount > 0
+        GROUP BY supplier_name, payee_tin, atc_code, tax_rate
+
+        UNION ALL
+
+        SELECT
+          payee_name AS payeeName,
+          COALESCE(payee_tin, '') AS tin,
+          atc_code AS atcCode,
+          tax_rate AS taxRate,
+          COUNT(*) AS transactionCount,
+          SUM(total_credit) AS grossAmount,
+          SUM(tax_withheld_amount) AS taxWithheld
+        FROM cv_headers
+        WHERE tax_type = ? AND DATE_FORMAT(transaction_date, '%Y-%m') = ? AND tax_withheld_amount > 0
+        GROUP BY payee_name, payee_tin, atc_code, tax_rate
+      ) combined
+      GROUP BY payeeName, tin, atcCode, taxRate
       ORDER BY payeeName ASC
       `,
-      [taxType, month]
+      [taxType, month, taxType, month]
     );
 
     res.json(rows);
@@ -6162,25 +6468,54 @@ app.get("/api/reports/2307", authenticateToken, authorizePermission("REPORTS.BIR
     );
     const payor = payorRows[0] || { payorName: "", payorTin: "", payorAddress: "", payorZip: "" };
 
+    // Same APV+CV scope as the alphalist report above (real remittance
+    // events only - PO excluded to avoid double-counting against the APV it
+    // converts into; Invoice/OR excluded because that EWT is the
+    // customer's, not ours). CV's party column is payee_id, but it
+    // references the same general_libraries row as APV's supplier_id.
     const [lines] = await pool.execute(
       `
       SELECT
-        atc_code AS atcCode,
-        SUM(CASE WHEN MONTH(transaction_date) = ? THEN total_credit ELSE 0 END) AS month1Amount,
-        SUM(CASE WHEN MONTH(transaction_date) = ? THEN total_credit ELSE 0 END) AS month2Amount,
-        SUM(CASE WHEN MONTH(transaction_date) = ? THEN total_credit ELSE 0 END) AS month3Amount,
-        SUM(total_credit) AS totalAmount,
-        SUM(tax_withheld_amount) AS totalTaxWithheld
-      FROM apv_headers
-      WHERE supplier_id = ?
-        AND tax_type = 'EWT'
-        AND tax_withheld_amount > 0
-        AND YEAR(transaction_date) = ?
-        AND QUARTER(transaction_date) = ?
-      GROUP BY atc_code
-      ORDER BY atc_code ASC
+        atcCode,
+        SUM(month1Amount) AS month1Amount,
+        SUM(month2Amount) AS month2Amount,
+        SUM(month3Amount) AS month3Amount,
+        SUM(totalAmount) AS totalAmount,
+        SUM(totalTaxWithheld) AS totalTaxWithheld
+      FROM (
+        SELECT
+          atc_code AS atcCode,
+          SUM(CASE WHEN MONTH(transaction_date) = ? THEN total_credit ELSE 0 END) AS month1Amount,
+          SUM(CASE WHEN MONTH(transaction_date) = ? THEN total_credit ELSE 0 END) AS month2Amount,
+          SUM(CASE WHEN MONTH(transaction_date) = ? THEN total_credit ELSE 0 END) AS month3Amount,
+          SUM(total_credit) AS totalAmount,
+          SUM(tax_withheld_amount) AS totalTaxWithheld
+        FROM apv_headers
+        WHERE supplier_id = ? AND tax_type = 'EWT' AND tax_withheld_amount > 0
+          AND YEAR(transaction_date) = ? AND QUARTER(transaction_date) = ?
+        GROUP BY atc_code
+
+        UNION ALL
+
+        SELECT
+          atc_code AS atcCode,
+          SUM(CASE WHEN MONTH(transaction_date) = ? THEN total_credit ELSE 0 END) AS month1Amount,
+          SUM(CASE WHEN MONTH(transaction_date) = ? THEN total_credit ELSE 0 END) AS month2Amount,
+          SUM(CASE WHEN MONTH(transaction_date) = ? THEN total_credit ELSE 0 END) AS month3Amount,
+          SUM(total_credit) AS totalAmount,
+          SUM(tax_withheld_amount) AS totalTaxWithheld
+        FROM cv_headers
+        WHERE payee_id = ? AND tax_type = 'EWT' AND tax_withheld_amount > 0
+          AND YEAR(transaction_date) = ? AND QUARTER(transaction_date) = ?
+        GROUP BY atc_code
+      ) combined
+      GROUP BY atcCode
+      ORDER BY atcCode ASC
       `,
-      [firstMonth, secondMonth, thirdMonth, supplierId, year, q]
+      [
+        firstMonth, secondMonth, thirdMonth, supplierId, year, q,
+        firstMonth, secondMonth, thirdMonth, supplierId, year, q,
+      ]
     );
 
     res.json({
@@ -6212,6 +6547,75 @@ app.get("/api/reports/2307", authenticateToken, authorizePermission("REPORTS.BIR
   } catch (err) {
     console.error("2307 REPORT ERROR:", err.message);
     res.status(500).json({ message: "Failed to generate 2307 report", error: err.message });
+  }
+});
+
+// ===================== EWT HISTORICAL AUDIT (Phase 4) =====================
+// Read-only. Re-derives what taxable_base/tax_withheld_amount SHOULD be for
+// every stored EWT record from its current lines, using the exact same
+// resolveTaxWithholding formula the save path now enforces, and flags any
+// row whose stored values disagree beyond the one-centavo tolerance -
+// almost always a record saved before this fix (the old gross-based bug)
+// or with taxable_base still NULL (saved before that column existed).
+// Nothing is written back; this is a review tool, not a migration.
+const EWT_AUDIT_MODULES = [
+  { module: "apv", headerTable: "apv_headers", lineTable: "apv_lines", lineIdCol: "apv_id", grossCol: "total_credit", vatKeyword: "input vat" },
+  { module: "cv", headerTable: "cv_headers", lineTable: "cv_lines", lineIdCol: "cv_id", grossCol: "total_credit", vatKeyword: "input vat" },
+  { module: "po", headerTable: "purchase_order_headers", lineTable: "purchase_order_lines", lineIdCol: "po_id", grossCol: "total_credit", vatKeyword: "input vat" },
+  { module: "invoice", headerTable: "invoice_headers", lineTable: "invoice_lines", lineIdCol: "invoice_id", grossCol: "total_debit", vatKeyword: "output vat" },
+  { module: "or", headerTable: "or_headers", lineTable: "or_lines", lineIdCol: "or_id", grossCol: "total_debit", vatKeyword: "output vat" },
+];
+
+app.get("/api/reports/ewt-audit", authenticateToken, authorizePermission("REPORTS.BIR_COMPLIANCE", "VIEW"), async (req, res) => {
+  try {
+    const flagged = [];
+    let totalChecked = 0;
+
+    for (const cfg of EWT_AUDIT_MODULES) {
+      const [rows] = await pool.execute(
+        `SELECT id, voucher_no AS voucherNo, ${cfg.grossCol} AS grossAmount, atc_code AS atcCode,
+                tax_rate AS taxRate, tax_withheld_amount AS taxWithheldAmount, taxable_base AS taxableBase
+         FROM ${cfg.headerTable}
+         WHERE atc_code IS NOT NULL`
+      );
+
+      for (const row of rows) {
+        totalChecked++;
+        const [lineRows] = await pool.execute(
+          `SELECT account_title AS accountTitle, debit, credit FROM ${cfg.lineTable} WHERE ${cfg.lineIdCol} = ?`,
+          [row.id]
+        );
+
+        const computedBase = computeEwtTaxableBase({ grossAmount: row.grossAmount, lines: lineRows, vatKeyword: cfg.vatKeyword });
+        const computedAmount = computeEwtAmount({ taxableBase: computedBase, ewtRate: row.taxRate });
+        const storedAmount = Number(row.taxWithheldAmount) || 0;
+        const storedBase = row.taxableBase != null ? Number(row.taxableBase) : null;
+
+        const amountMismatch = Math.abs(storedAmount - computedAmount) > 0.01;
+        const baseMismatch = storedBase === null || Math.abs(storedBase - computedBase) > 0.01;
+
+        if (amountMismatch || baseMismatch) {
+          flagged.push({
+            module: cfg.module,
+            id: row.id,
+            voucherNo: row.voucherNo,
+            atcCode: row.atcCode,
+            taxRate: row.taxRate,
+            grossAmount: Number(row.grossAmount),
+            storedTaxableBase: storedBase,
+            computedTaxableBase: computedBase,
+            storedTaxWithheldAmount: storedAmount,
+            computedTaxWithheldAmount: computedAmount,
+            reason: !storedBase ? "taxable_base not recorded (pre-dates audit column)" : "stored amount does not match recomputed amount",
+          });
+        }
+      }
+    }
+
+    res.json({ generatedAt: new Date().toISOString(), totalChecked, flaggedCount: flagged.length, flagged });
+  } catch (err) {
+    console.error("EWT AUDIT REPORT ERROR:", err.message);
+    res.status(500).json({ message: "Failed to generate EWT audit report", error: err.message });
   }
 });
 
