@@ -1,6 +1,7 @@
 const pool = require("../db");
 const { logAudit, requestMeta } = require("../lib/audit");
 const DataService = require("../services/transactionPrintDataService");
+const CurrencyService = require("../services/currencyService");
 
 const PRINT_ACTIONS = { preview: "PRINT_PREVIEW", print: "PRINT_DOCUMENT", export_pdf: "PRINT_EXPORT_PDF" };
 const LIST_ACTIONS = { preview: "PRINT_LIST_PREVIEW", print: "PRINT_LIST", export_pdf: "PRINT_LIST_EXPORT_PDF" };
@@ -22,8 +23,9 @@ exports.getDocument = async (req, res) => {
     const copyType = req.query.copyType || "Original";
     const copies = sanitizeCopies(req.query.copies);
     const moduleKey = DataService.MODULE_CONFIG[transactionType]?.moduleKey || transactionType;
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
-    const result = await DataService.getTransactionDocument(transactionType, id, { withEntries: mode === "with_entries" });
+    const result = await DataService.getTransactionDocument(transactionType, id, { withEntries: mode === "with_entries", companyId });
 
     await logAudit(pool, {
       module: moduleKey,
@@ -49,8 +51,9 @@ exports.getList = async (req, res) => {
     const intent = LIST_ACTIONS[req.body?.intent] ? req.body.intent : "preview";
     const copies = sanitizeCopies(req.body?.copies);
     const moduleKey = DataService.MODULE_CONFIG[transactionType]?.moduleKey || transactionType;
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.body?.companyId);
 
-    const result = await DataService.getTransactionList(transactionType, { from, to, grouping });
+    const result = await DataService.getTransactionList(transactionType, { from, to, grouping, companyId });
 
     await logAudit(pool, {
       module: moduleKey,

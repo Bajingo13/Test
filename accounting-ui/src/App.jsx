@@ -14,6 +14,7 @@ import UserSettings from "./pages/ADMIN/UserSettings";
 import RolePermissionMatrix from "./pages/ADMIN/RolePermissionMatrix";
 import AccessRestrictions from "./pages/ADMIN/AccessRestrictions";
 import PermissionTemplateManager from "./pages/ADMIN/PermissionTemplateManager";
+import AccountingPeriodLocking from "./pages/ADMIN/AccountingPeriodLocking";
 
 // FILE SETUP
 import Industry from "./pages/FILESETUP/Industry";
@@ -32,6 +33,7 @@ import EWTLibrary from "./pages/FILESETUP/EWTLibrary";
 import FixedAssetSetup from "./pages/FILESETUP/FixedAssetSetup";
 import PrepaidAccountSetup from "./pages/FILESETUP/PrepaidAccountSetup";
 import CompanyProfile from "./pages/FILESETUP/CompanyProfile";
+import CurrencySetup from "./pages/FILESETUP/CurrencySetup";
 
 
 // TRANSACTIONS
@@ -61,6 +63,10 @@ import BankReconDashboard from "./pages/REPORTS/BankReconDashboard.jsx";
 import ComparativeIncomeStatement from "./pages/REPORTS/ComparativeIncomeStatement.jsx";
 import ARAgingReport from "./pages/REPORTS/ARAging.jsx";
 import APAgingReport from "./pages/REPORTS/APAging.jsx";
+import ARAgingSummaryReport from "./pages/REPORTS/ARAgingSummary.jsx";
+import APAgingSummaryReport from "./pages/REPORTS/APAgingSummary.jsx";
+import RecurringTransactions from "./pages/TRANSACTIONS/RecurringTransactions.jsx";
+import FxRevaluation from "./pages/REPORTS/FxRevaluation.jsx";
 import InputVAT from "./pages/REPORTS/InputVAT.jsx";
 import OutputVAT from "./pages/REPORTS/OutputVAT.jsx";
 import SubsidiaryLedger from "./pages/REPORTS/SubsidiaryLedger.jsx";
@@ -123,6 +129,7 @@ function AppLayout() {
           <Route path="/admin/roles-permissions" element={<RolePermissionMatrix />} />
           <Route path="/admin/access-restrictions" element={<AccessRestrictions />} />
           <Route path="/admin/permission-templates" element={<PermissionTemplateManager />} />
+          <Route path="/admin/accounting-period-locking" element={<AccountingPeriodLocking />} />
           <Route path="/dashboard" element={<Dashboard />} />
 
           <Route path="/coa" element={<COA />} />
@@ -142,8 +149,11 @@ function AppLayout() {
           <Route path="/fixed-asset-setup" element={<FixedAssetSetup />} />
           <Route path="/prepaid-account-setup" element={<PrepaidAccountSetup />} />
           <Route path="/company-profile" element={<CompanyProfile />} />
+          <Route path="/currency-file-setup" element={<CurrencySetup />} />
 
           <Route path="/transactions/invoice" element={<Invoice />} />
+          <Route path="/transactions/recurring" element={<RecurringTransactions />} />
+          <Route path="/reports/fx-revaluation" element={<FxRevaluation />} />
           <Route path="/transactions/cv" element={<CV />} />
           <Route path="/transactions/jv" element={<JV />} />
           <Route path="/transactions/or" element={<OR />} />
@@ -169,6 +179,8 @@ function AppLayout() {
           <Route path="/reports/income-statement" element={<IncomeStatement />} />
           <Route path="/reports/ar-aging" element={<ARAgingReport />} />
           <Route path="/reports/ap-aging" element={<APAgingReport />} />
+          <Route path="/reports/ar-aging-summary" element={<ARAgingSummaryReport />} />
+          <Route path="/reports/ap-aging-summary" element={<APAgingSummaryReport />} />
           <Route path="/reports/input-vat-report" element={<InputVAT />} />
           <Route path="/reports/output-vat-report" element={<OutputVAT />} />
           <Route path="/reports/subsidiary-ledger" element={<SubsidiaryLedger />} />

@@ -4,7 +4,10 @@ import PartyQuickAddModal from "../../components/PartyQuickAddModal";
 import TransactionPrintOptionsModal from "../../components/TransactionPrintOptionsModal";
 import RecurringTemplateModal from "../../components/RecurringTemplateModal";
 import { computeEwtTaxableBase, computeEwtAmount } from "../../utils/ewtCalculations";
+import usePermissions from "../../hooks/usePermissions";
 import "./TransactionFormLayout.css";
+
+const CURRENCY_MODULE_KEY = "FILESETUP.CURRENCY_SETUP";
 
 function getCurrentUser() {
   try {
@@ -55,6 +58,15 @@ function formatMoney(value) {
   });
 }
 
+// Checkpoint 3FX: for the application modal's "estimated FX" preview only
+// (informational, section 14) - never posted from here. The backend
+// independently recalculates everything at save time (section 29) via
+// transactionCurrencyService.buildApplication, so this never needs to be
+// more precise than a display estimate.
+function roundTo2(value) {
+  return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+}
+
 export default function TransactionFormLayout({
   title,
   code,
@@ -67,6 +79,23 @@ export default function TransactionFormLayout({
   recurringModuleType = null,
 }) {
   const [searchParams] = useSearchParams();
+  const { can: canCurrency } = usePermissions();
+
+  // Checkpoint 3A only - Invoice and APV. Every other module keeps
+  // operating exactly as before; TransactionFormLayout is shared, but the
+  // currency selector/rate card only render for these two codes until a
+  // later checkpoint extends this gate.
+  // Checkpoint 3B extends the same currency card/rate-card UI to OR/CV
+  // (payment documents) - identical mechanics, just applied to the
+  // payment's own currency instead of the source document's.
+  // Checkpoint 3C extends it to JV (posts to GL, same as Invoice/APV) and
+  // PO (does not post to GL - currency is stored for reference/printing
+  // only, see server.js's PO handlers). JE/Debit-Credit Memo/Petty Cash are
+  // NOT included: investigation confirmed none of them have any backend
+  // route or table today, so there is nothing existing to extend currency
+  // onto without inventing a new module outright.
+  const CURRENCY_ELIGIBLE =
+    code === "INV" || code === "APV" || code === "OR" || code === "CV" || code === "JV" || code === "PO";
 
   const [mode, setMode] = useState("list");
   const [transactions, setTransactions] = useState([]);
@@ -85,6 +114,17 @@ export default function TransactionFormLayout({
   const [unpaidInvoices, setUnpaidInvoices] = useState([]);
   const [showInvoiceModal, setShowInvoiceModal] = useState(false);
 
+  // Posting after applySelectedApvsToLines()/applySelectedInvoicesToLines()
+  // must wait for THAT state update to actually land in `lines` before
+  // handleSave("Posted") reads it - a setTimeout after the setLines() call
+  // does NOT do this: the timeout closure still captures the pre-update
+  // `lines` from the render the click happened on (a stale-closure bug),
+  // so the auto-filled AR/AP line's amount never reached the save and
+  // "Each line must have either debit or credit" fired every time. A flag
+  // consumed by a useEffect keyed on `lines` guarantees the save only runs
+  // after the state update has actually been committed and re-rendered.
+  const [pendingAutoPost, setPendingAutoPost] = useState(false);
+
   const [openPos, setOpenPos] = useState([]);
   const [showPoModal, setShowPoModal] = useState(false);
   const [sourcePoId, setSourcePoId] = useState(null);
@@ -102,6 +142,25 @@ export default function TransactionFormLayout({
   const [vatAccountId, setVatAccountId] = useState("");
   const [vatTaxableAmount, setVatTaxableAmount] = useState("");
   const [vatRate, setVatRate] = useState("12");
+
+  // Multi-currency (Checkpoint 3A) - selectedCurrencyId defaults to the
+  // company base currency once loaded. currencySnapshot mirrors what the
+  // backend's transaction_currency_snapshots row will look like; for an
+  // EXISTING transaction it is loaded verbatim from the stored snapshot
+  // (never re-resolved just from opening it - section 8/36), and only
+  // changes here when the user explicitly clicks Refresh or submits an
+  // override.
+  const [currencyOptions, setCurrencyOptions] = useState([]);
+  const [baseCurrency, setBaseCurrency] = useState(null);
+  const [selectedCurrencyId, setSelectedCurrencyId] = useState("");
+  const [currencySnapshot, setCurrencySnapshot] = useState(null);
+  const [rateResolving, setRateResolving] = useState(false);
+  const [rateError, setRateError] = useState("");
+  const [pendingRateAction, setPendingRateAction] = useState(null); // "refresh" | "override" | null
+  const [refreshPreview, setRefreshPreview] = useState(null);
+  const [showOverrideForm, setShowOverrideForm] = useState(false);
+  const [overrideRateValue, setOverrideRateValue] = useState("");
+  const [overrideReason, setOverrideReason] = useState("");
 
   const [invoiceType, setInvoiceType] = useState("Standard");
   const [recurrenceFrequency, setRecurrenceFrequency] = useState("Monthly");
@@ -140,6 +199,10 @@ export default function TransactionFormLayout({
 
     if (["APV", "CV", "PO", "INV", "OR"].includes(code)) {
       loadEwtCodes();
+    }
+
+    if (CURRENCY_ELIGIBLE) {
+      loadCurrencies();
     }
 
     if (code === "OR" || code === "CV") {
@@ -189,6 +252,115 @@ export default function TransactionFormLayout({
       console.error("LOAD EWT LIBRARY ERROR:", err);
       setEwtCodes([]);
     }
+  }
+
+  async function loadCurrencies() {
+    try {
+      const res = await fetch(`${API_BASE}/api/currencies`, { headers: authHeaders() });
+      const data = await res.json();
+      if (!res.ok) {
+        handleAuthError(res.status);
+        return;
+      }
+      const active = Array.isArray(data) ? data.filter((c) => c.isActive) : [];
+      setCurrencyOptions(active);
+      const base = active.find((c) => c.isBaseCurrency) || null;
+      setBaseCurrency(base);
+      setSelectedCurrencyId((prev) => prev || (base ? String(base.id) : ""));
+    } catch (err) {
+      console.error("LOAD CURRENCIES ERROR:", err);
+    }
+  }
+
+  // Read-only lookup (Phase 2's resolver via the resolve-only endpoint) -
+  // never persists anything itself. Used both for the initial rate-card
+  // display when a foreign currency is picked, and for a Refresh preview.
+  async function resolveRateFor(currencyId) {
+    setRateResolving(true);
+    setRateError("");
+    try {
+      const res = await fetch(`${API_BASE}/api/exchange-rates/resolve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({ currencyId, transactionDate: form.date }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setRateError(data.message || "Failed to resolve exchange rate.");
+        return null;
+      }
+      if (data.rate == null) {
+        setRateError(data.errorMessage || `No approved exchange rate is available for this currency on ${form.date}.`);
+        return null;
+      }
+      return {
+        exchangeRate: data.rate,
+        rateSource: data.provider,
+        rateBasis: data.rateBasis,
+        rateDate: data.effectiveDate,
+        rateStatus: data.status,
+        rateRetrievedAt: data.retrievalTimestamp,
+        rateIngestionMethod: data.derivationMethod ? "DERIVED" : "API",
+        rateLocked: false,
+      };
+    } catch (err) {
+      console.error("RESOLVE RATE ERROR:", err);
+      setRateError("Unable to connect to server.");
+      return null;
+    } finally {
+      setRateResolving(false);
+    }
+  }
+
+  async function handleCurrencyChange(currencyId) {
+    setSelectedCurrencyId(currencyId);
+    setPendingRateAction(null);
+    setShowOverrideForm(false);
+    setRefreshPreview(null);
+    setRateError("");
+
+    const currency = currencyOptions.find((c) => String(c.id) === String(currencyId));
+    if (!currency || currency.isBaseCurrency) {
+      setCurrencySnapshot(null);
+      return;
+    }
+    const resolved = await resolveRateFor(currencyId);
+    if (resolved) setCurrencySnapshot(resolved);
+  }
+
+  // Shows old-vs-new for confirmation (section 8) rather than silently
+  // replacing the draft's rate - only applied to currencySnapshot once the
+  // user explicitly confirms via confirmRefresh().
+  async function handleRefreshRateClick() {
+    const fresh = await resolveRateFor(selectedCurrencyId);
+    if (!fresh) return;
+    if (currencySnapshot && Math.abs(fresh.exchangeRate - currencySnapshot.exchangeRate) < 0.0000001) {
+      setRateError("The resolved rate is unchanged - no refresh needed.");
+      return;
+    }
+    setRefreshPreview(fresh);
+  }
+
+  function confirmRefresh() {
+    setCurrencySnapshot(refreshPreview);
+    setPendingRateAction("refresh");
+    setRefreshPreview(null);
+  }
+
+  function submitOverride() {
+    const rate = Number(overrideRateValue);
+    if (!rate || !Number.isFinite(rate) || rate <= 0) {
+      setRateError("Override exchange rate must be greater than zero.");
+      return;
+    }
+    if (!overrideReason.trim()) {
+      setRateError("A reason is required to override the exchange rate.");
+      return;
+    }
+    setRateError("");
+    setCurrencySnapshot((prev) => ({ ...(prev || {}), exchangeRate: rate }));
+    setPendingRateAction("override");
+    setShowOverrideForm(false);
   }
 
   async function loadBankAccounts() {
@@ -306,10 +478,17 @@ export default function TransactionFormLayout({
             referenceNo: item.referenceNo || item.voucherNo,
             date: item.transactionDate,
             party: item.supplierName,
-            amount: item.totalCredit || item.totalDebit,
+            // totalDebit/totalCredit are base-currency GL values (section
+            // 14) - the LIST display shows the transaction's own foreign
+            // total (from its currency snapshot) with its own symbol when
+            // one exists, matching section 35's "USD Invoice: $1,000" -
+            // never the base amount mislabeled with a foreign symbol.
+            amount: item.foreignTotal ?? (item.totalCredit || item.totalDebit),
             paidAmount: item.paidAmount || 0,
             balanceAmount: item.balanceAmount ?? item.totalCredit ?? item.totalDebit,
             status: item.paymentStatus || item.status,
+            currencySymbol: item.currencySymbol || null,
+            currencyCode: item.currencyCode || null,
             form: {
               date: item.transactionDate,
               referenceNo: item.referenceNo || item.voucherNo,
@@ -331,12 +510,15 @@ export default function TransactionFormLayout({
       referenceNo: item.referenceNo || item.voucherNo,
       date: item.transactionDate,
       party: item.customerName,
-      amount: item.totalDebit || item.totalCredit,
+      // See the APV mapping above for why foreignTotal takes priority.
+      amount: item.foreignTotal ?? (item.totalDebit || item.totalCredit),
       paidAmount: item.paidAmount || 0,
       balanceAmount:
         item.balanceAmount ?? item.totalDebit ?? item.totalCredit,
       status: item.paymentStatus || item.status,
       invoiceType: item.invoiceType || "Standard",
+      currencySymbol: item.currencySymbol || null,
+      currencyCode: item.currencyCode || null,
       form: {
         date: item.transactionDate,
         referenceNo: item.referenceNo || item.voucherNo,
@@ -358,8 +540,10 @@ if (code === "OR") {
       referenceNo: item.referenceNo || item.voucherNo,
       date: item.transactionDate,
       party: item.customerName,
-      amount: item.totalDebit || item.totalCredit,
+      amount: item.foreignTotal ?? (item.totalDebit || item.totalCredit),
       status: item.status,
+      currencySymbol: item.currencySymbol || null,
+      currencyCode: item.currencyCode || null,
       form: {
         date: item.transactionDate,
         referenceNo: item.referenceNo || item.voucherNo,
@@ -381,8 +565,10 @@ if (code === "OR") {
             referenceNo: item.referenceNo || item.voucherNo,
             date: item.transactionDate,
             party: item.payeeName,
-            amount: item.totalCredit || item.totalDebit,
+            amount: item.foreignTotal ?? (item.totalCredit || item.totalDebit),
             status: item.status,
+            currencySymbol: item.currencySymbol || null,
+            currencyCode: item.currencyCode || null,
             form: {
               date: item.transactionDate,
               referenceNo: item.referenceNo || item.voucherNo,
@@ -404,8 +590,10 @@ if (code === "OR") {
             referenceNo: item.referenceNo || item.voucherNo,
             date: item.transactionDate,
             party: item.supplierName,
-            amount: item.totalCredit || item.totalDebit,
+            amount: item.foreignTotal ?? (item.totalCredit || item.totalDebit),
             status: item.status,
+            currencySymbol: item.currencySymbol || null,
+            currencyCode: item.currencyCode || null,
             form: {
               date: item.transactionDate,
               referenceNo: item.referenceNo || item.voucherNo,
@@ -427,8 +615,10 @@ if (code === "OR") {
             referenceNo: item.referenceNo || item.voucherNo,
             date: item.transactionDate,
             party: item.preparedFor,
-            amount: item.totalDebit || item.totalCredit,
+            amount: item.foreignTotal ?? (item.totalDebit || item.totalCredit),
             status: item.status,
+            currencySymbol: item.currencySymbol || null,
+            currencyCode: item.currencyCode || null,
             form: {
               date: item.transactionDate,
               referenceNo: item.referenceNo || item.voucherNo,
@@ -569,14 +759,28 @@ if (code === "OR") {
           particulars: line.particulars || "",
           genRef: line.genRef || "",
           genName: line.genName || "",
-          debit: line.debit || "",
-          credit: line.credit || "",
+          // Carries the PO's own foreign-currency line amount forward when
+          // one exists, not its base-converted debit/credit - otherwise the
+          // new APV would treat the PO's base equivalent as if it were the
+          // foreign amount and convert it a second time.
+          debit: (line.foreignDebit ?? line.debit) || "",
+          credit: (line.foreignCredit ?? line.credit) || "",
         }))
       );
 
       setSourcePoId(po.id);
       setSourcePoNo(po.voucherNo || "");
       setShowPoModal(false);
+
+      // Section 14: carry the PO's currency selection forward, but let the
+      // APV independently resolve its OWN transaction-date rate rather than
+      // inheriting the PO's historical rate - handleCurrencyChange() always
+      // re-resolves via resolveRateFor(), it never copies data.currency's
+      // rate verbatim. A base-currency PO needs no action; selectedCurrencyId
+      // already defaults to the base currency.
+      if (data.currency && data.currency.currencyId !== data.currency.baseCurrencyId) {
+        handleCurrencyChange(String(data.currency.currencyId));
+      }
     } catch (err) {
       console.error("SELECT PURCHASE ORDER ERROR:", err);
       alert("Unable to load Purchase Order details.");
@@ -754,6 +958,13 @@ setTaxWithheldAmount("");
 setTaxWithheldTouched(false);
 setPayeeTin("");
 
+setSelectedCurrencyId(baseCurrency ? String(baseCurrency.id) : "");
+setCurrencySnapshot(null);
+setPendingRateAction(null);
+setRefreshPreview(null);
+setShowOverrideForm(false);
+setRateError("");
+
 setVatTaxableAmount("");
 setVatRate("12");
 
@@ -892,8 +1103,15 @@ setError("");
             particulars: line.particulars || "",
             genRef: line.genRef || "",
             genName: line.genName || "",
-            debit: line.debit || "",
-            credit: line.credit || "",
+            // debit/credit store the BASE-currency GL amount (Checkpoint
+            // 3A) - the editable form must show the transaction's own
+            // foreign amount instead, or re-saving would resubmit the
+            // already-converted base figure and get converted AGAIN.
+            // foreignDebit/foreignCredit are undefined for modules with no
+            // currency columns (OR/CV/JV/PO), so this falls back to
+            // debit/credit unchanged for them.
+            debit: (line.foreignDebit ?? line.debit) || "",
+            credit: (line.foreignCredit ?? line.credit) || "",
           }))
         );
 
@@ -932,6 +1150,39 @@ if (ewtEligible) {
   // amount just because the transaction was opened for viewing/editing.
   setTaxWithheldTouched(Boolean(data.atcCode));
   setPayeeTin(data.payeeTin || "");
+}
+
+if (CURRENCY_ELIGIBLE) {
+  setPendingRateAction(null);
+  setRefreshPreview(null);
+  setShowOverrideForm(false);
+  setRateError("");
+  if (data.currency) {
+    // Section 7/36: the STORED snapshot is loaded verbatim - never
+    // re-resolved just because the transaction was opened.
+    setSelectedCurrencyId(String(data.currency.currencyId));
+    setCurrencySnapshot({
+      exchangeRate: data.currency.exchangeRate,
+      rateSource: data.currency.rateSource,
+      rateBasis: data.currency.rateBasis,
+      rateDate: data.currency.rateDate,
+      rateStatus: data.currency.rateStatus,
+      rateRetrievedAt: data.currency.rateRetrievedAt,
+      rateIngestionMethod: data.currency.rateIngestionMethod,
+      rateLocked: data.currency.rateLocked,
+      overrideRate: data.currency.overrideRate,
+      overrideReason: data.currency.overrideReason,
+      systemRate: data.currency.systemRate,
+    });
+  } else if (data.currencyId) {
+    setSelectedCurrencyId(String(data.currencyId));
+    setCurrencySnapshot(null);
+  } else {
+    // Predates multi-currency (section 37) - implicitly the base
+    // currency, never guessed as anything else.
+    setSelectedCurrencyId(baseCurrency ? String(baseCurrency.id) : "");
+    setCurrencySnapshot(null);
+  }
 }
 
 if (code === "INV") {
@@ -1093,13 +1344,79 @@ if (code === "OR" || code === "CV") {
   return "";
 }
 
+  // Checkpoint 3B section 6: the OR/CV's OWN resolved currency must match
+  // the source document's currency before an application is even
+  // selectable - never silently convert, never let the backend be the
+  // first place this gets caught.
+  function sourceCurrencyMismatch(sourceDoc) {
+    const paymentCode =
+      currencyOptions.find((c) => String(c.id) === String(selectedCurrencyId))?.currencyCode ||
+      baseCurrency?.currencyCode;
+    const sourceCode = sourceDoc.currencyCode || baseCurrency?.currencyCode;
+    return !!paymentCode && !!sourceCode && paymentCode !== sourceCode;
+  }
+
+  // Section 15: summarizes every selected application with a non-zero
+  // estimated FX difference and asks for one explicit confirmation before
+  // posting - returns true to proceed. Same-rate-only selections (the
+  // ordinary case) skip this entirely and return true immediately, so
+  // normal same-currency-same-rate posting is completely unaffected.
+  function confirmFxSettlement(applications, perspective) {
+    const paymentRate = Number(currencySnapshot?.exchangeRate);
+    if (!paymentRate) return true;
+
+    const mismatched = applications
+      .map((item) => {
+        const sourceRate = Number(item.sourceExchangeRate);
+        if (!sourceRate || Math.abs(sourceRate - paymentRate) < 0.000001) return null;
+        const amount = Number(item.amount || 0);
+        const diff = roundTo2(amount * (paymentRate - sourceRate));
+        if (diff === 0) return null;
+        const isGain = perspective === "PAYABLE" ? diff < 0 : diff > 0;
+        return { voucherNo: item.voucherNo, amount, sourceRate, isGain, magnitude: Math.abs(diff) };
+      })
+      .filter(Boolean);
+
+    if (!mismatched.length) return true;
+
+    const lines = mismatched.map(
+      (m) =>
+        `${m.voucherNo}: ${baseCurrency?.currencySymbol || ""} ${formatMoney(m.magnitude)} ${m.isGain ? "Gain" : "Loss"} ` +
+        `(source rate ${m.sourceRate.toFixed(6)} vs payment rate ${paymentRate.toFixed(6)})`
+    );
+    const totalGain = mismatched.filter((m) => m.isGain).reduce((s, m) => s + m.magnitude, 0);
+    const totalLoss = mismatched.filter((m) => !m.isGain).reduce((s, m) => s + m.magnitude, 0);
+
+    return window.confirm(
+      "You are about to post a foreign-currency settlement at a different rate than the source document(s):\n\n" +
+      lines.join("\n") +
+      `\n\nTotal Realized Gain: ${baseCurrency?.currencySymbol || ""} ${formatMoney(totalGain)}` +
+      `\nTotal Realized Loss: ${baseCurrency?.currencySymbol || ""} ${formatMoney(totalLoss)}` +
+      "\n\nProceed?"
+    );
+  }
+
   function toggleApvApplication(apv) {
+    if (sourceCurrencyMismatch(apv)) return;
     setApvApplications((prev) => {
       const exists = prev.find((item) => Number(item.sourceId || item.apvId || item.id) === Number(apv.id));
 
       if (exists) {
         return prev.filter((item) => Number(item.sourceId || item.apvId || item.id) !== Number(apv.id));
       }
+
+      // For a foreign-currency APV, the balance the payment must respect
+      // is the FOREIGN balance (section 7/9) - the base balance_amount is
+      // a different currency's figure and would silently overstate what's
+      // actually still owed in the APV's own currency.
+      const isForeign = !!apv.currencyCode;
+      const balance = isForeign
+        ? Number(apv.foreignBalanceAmount ?? apv.foreignOriginalAmount ?? 0)
+        : Number(apv.balanceAmount || apv.totalAmount || 0);
+      const original = isForeign ? Number(apv.foreignOriginalAmount ?? 0) : Number(apv.totalAmount || 0);
+      const paid = isForeign
+        ? Number(apv.foreignOriginalAmount ?? 0) - Number(apv.foreignBalanceAmount ?? apv.foreignOriginalAmount ?? 0)
+        : Number(apv.paidAmount || 0);
 
       return [
         ...prev,
@@ -1109,10 +1426,13 @@ if (code === "OR" || code === "CV") {
           apvId: apv.id,
           voucherNo: apv.voucherNo,
           supplierName: apv.supplierName,
-          totalAmount: Number(apv.totalAmount || 0),
-          paidAmount: Number(apv.paidAmount || 0),
-          balanceAmount: Number(apv.balanceAmount || apv.totalAmount || 0),
-          amount: Number(apv.balanceAmount || apv.totalAmount || 0),
+          currencyCode: apv.currencyCode || null,
+          currencySymbol: apv.currencySymbol || null,
+          sourceExchangeRate: apv.sourceExchangeRate ?? null,
+          totalAmount: original,
+          paidAmount: paid,
+          balanceAmount: balance,
+          amount: balance,
           applicationDate: form.date,
         },
       ];
@@ -1164,6 +1484,7 @@ if (code === "OR" || code === "CV") {
   }
 
   function toggleInvoiceApplication(invoice) {
+    if (sourceCurrencyMismatch(invoice)) return;
     setInvoiceApplications((prev) => {
       const exists = prev.find(
         (item) =>
@@ -1177,6 +1498,17 @@ if (code === "OR" || code === "CV") {
         );
       }
 
+      // See toggleApvApplication for why a foreign-currency Invoice uses
+      // its FOREIGN balance here instead of balance_amount (base).
+      const isForeign = !!invoice.currencyCode;
+      const balance = isForeign
+        ? Number(invoice.foreignBalanceAmount ?? invoice.foreignOriginalAmount ?? 0)
+        : Number(invoice.balanceAmount || invoice.totalAmount || 0);
+      const original = isForeign ? Number(invoice.foreignOriginalAmount ?? 0) : Number(invoice.totalAmount || 0);
+      const paid = isForeign
+        ? Number(invoice.foreignOriginalAmount ?? 0) - Number(invoice.foreignBalanceAmount ?? invoice.foreignOriginalAmount ?? 0)
+        : Number(invoice.paidAmount || 0);
+
       return [
         ...prev,
         {
@@ -1185,12 +1517,13 @@ if (code === "OR" || code === "CV") {
           invoiceId: invoice.id,
           voucherNo: invoice.voucherNo,
           customerName: invoice.customerName,
-          totalAmount: Number(invoice.totalAmount || 0),
-          paidAmount: Number(invoice.paidAmount || 0),
-          balanceAmount: Number(
-            invoice.balanceAmount || invoice.totalAmount || 0
-          ),
-          amount: Number(invoice.balanceAmount || invoice.totalAmount || 0),
+          currencyCode: invoice.currencyCode || null,
+          currencySymbol: invoice.currencySymbol || null,
+          sourceExchangeRate: invoice.sourceExchangeRate ?? null,
+          totalAmount: original,
+          paidAmount: paid,
+          balanceAmount: balance,
+          amount: balance,
           applicationDate: form.date,
         },
       ];
@@ -1249,6 +1582,18 @@ if (code === "OR" || code === "CV") {
 
     setShowInvoiceModal(false);
   }
+
+  // Fires only after applySelectedApvsToLines()/applySelectedInvoicesToLines()'s
+  // setLines() has actually been committed and this component re-rendered
+  // with the auto-filled AR/AP line - see the pendingAutoPost declaration
+  // above for why a setTimeout could not guarantee that ordering.
+  useEffect(() => {
+    if (pendingAutoPost) {
+      setPendingAutoPost(false);
+      handleSave("Posted");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingAutoPost, lines]);
 
   async function handlePostTransactionClick() {
   const hasAPorARLine = lines.some((line) =>
@@ -1359,6 +1704,24 @@ if (code === "OR" || code === "CV") {
         bankAccountId: code === "OR" || code === "CV" ? bankAccountId || null : null,
         checkNo: (code === "OR" || code === "CV") && paymentMethod === "Check" ? checkNumber : null,
         checkDate: (code === "OR" || code === "CV") && paymentMethod === "Check" ? checkDate : null,
+
+        // Multi-currency (Checkpoint 3A) - the backend independently
+        // resolves/validates this (never trusts exchangeRate at face
+        // value except for an explicit, permissioned override) per
+        // transactionCurrencyService.resolveTransactionCurrency.
+        currency: CURRENCY_ELIGIBLE && selectedCurrencyId ? {
+          currencyId: selectedCurrencyId,
+          exchangeRate: currencySnapshot?.exchangeRate ?? 1,
+          rateDate: currencySnapshot?.rateDate || form.date,
+          rateSource: currencySnapshot?.rateSource,
+          rateBasis: currencySnapshot?.rateBasis,
+          rateStatus: currencySnapshot?.rateStatus,
+          rateRetrievedAt: currencySnapshot?.rateRetrievedAt,
+          rateIngestionMethod: currencySnapshot?.rateIngestionMethod,
+          isOverride: pendingRateAction === "override",
+          overrideReason: pendingRateAction === "override" ? overrideReason : undefined,
+          isRefresh: pendingRateAction === "refresh",
+        } : undefined,
       };
 
       const endpoint =
@@ -1482,7 +1845,8 @@ if (code === "OR") {
                           <td>{transaction.date}</td>
                           <td>{transaction.party}</td>
                           <td className="text-right">
-                            ₱ {formatMoney(transaction.amount)}
+                            {transaction.currencySymbol || baseCurrency?.currencySymbol || "₱"}{" "}
+                            {formatMoney(transaction.amount)}
                           </td>
                           <td>
                             <span
@@ -1691,6 +2055,125 @@ if (code === "OR") {
                 />
               </div>
             </div>
+
+            {CURRENCY_ELIGIBLE && (
+              <div className="transaction-card">
+                <div className="transaction-section-header">
+                  <div>
+                    <h2 className="transaction-section-title">Currency</h2>
+                    <p className="transaction-section-subtext">
+                      {currencySnapshot?.rateLocked
+                        ? "This transaction is posted - its exchange rate is locked and cannot be changed."
+                        : "Select the currency this transaction is denominated in. Defaults to the company base currency."}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="transaction-grid">
+                  <div className="transaction-field">
+                    <label className="transaction-label">Transaction Currency</label>
+                    <select
+                      value={selectedCurrencyId}
+                      onChange={(e) => handleCurrencyChange(e.target.value)}
+                      disabled={currencySnapshot?.rateLocked}
+                      className="transaction-input"
+                    >
+                      {currencyOptions.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.currencySymbol} {c.currencyCode} — {c.currencyName}{c.isBaseCurrency ? " (Base)" : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                {rateError && <p className="transaction-rate-error">{rateError}</p>}
+
+                {String(selectedCurrencyId) !== String(baseCurrency?.id || "") && (
+                  <div className="transaction-rate-card">
+                    {rateResolving ? (
+                      <p>Resolving exchange rate…</p>
+                    ) : currencySnapshot ? (
+                      <>
+                        <div className="transaction-rate-headline">
+                          1 {currencyOptions.find((c) => String(c.id) === String(selectedCurrencyId))?.currencyCode} ={" "}
+                          {Number(currencySnapshot.exchangeRate).toFixed(6)} {baseCurrency?.currencyCode}
+                        </div>
+                        <div className="transaction-rate-meta">
+                          <span>Source: <strong>{currencySnapshot.rateSource || "—"}</strong></span>
+                          {currencySnapshot.rateBasis && <span>Basis: <strong>{currencySnapshot.rateBasis}</strong></span>}
+                          <span>Effective: <strong>{currencySnapshot.rateDate || "—"}</strong></span>
+                          <span>Status: <strong>{currencySnapshot.rateStatus || "—"}</strong></span>
+                          {currencySnapshot.rateLocked && <span className="transaction-rate-locked">🔒 Locked (Posted)</span>}
+                          {pendingRateAction === "override" && <span className="transaction-rate-override-badge">Manual Override</span>}
+                        </div>
+
+                        {!currencySnapshot.rateLocked && (
+                          <div className="transaction-rate-actions">
+                            <button type="button" className="transaction-secondary-button" onClick={handleRefreshRateClick} disabled={rateResolving}>
+                              Refresh Rate
+                            </button>
+                            {canCurrency(CURRENCY_MODULE_KEY, "OVERRIDE_RATE") && (
+                              <button type="button" className="transaction-secondary-button" onClick={() => setShowOverrideForm((v) => !v)}>
+                                Manual Override
+                              </button>
+                            )}
+                          </div>
+                        )}
+
+                        {refreshPreview && (
+                          <div className="transaction-rate-refresh-preview">
+                            <p>
+                              Previous Rate: <strong>{Number(currencySnapshot.exchangeRate).toFixed(6)}</strong> (as of {currencySnapshot.rateDate}) →{" "}
+                              New Rate: <strong>{Number(refreshPreview.exchangeRate).toFixed(6)}</strong> (as of {refreshPreview.rateDate}, {refreshPreview.rateSource})
+                            </p>
+                            <div className="transaction-rate-actions">
+                              <button type="button" className="transaction-secondary-button" onClick={() => setRefreshPreview(null)}>Cancel</button>
+                              <button type="button" className="transaction-primary-button" onClick={confirmRefresh}>Use New Rate</button>
+                            </div>
+                          </div>
+                        )}
+
+                        {showOverrideForm && (
+                          <div className="transaction-rate-override-form">
+                            <div className="transaction-grid">
+                              <div className="transaction-field">
+                                <label className="transaction-label">Override Rate</label>
+                                <input
+                                  type="number"
+                                  step="0.0000000001"
+                                  min="0"
+                                  value={overrideRateValue}
+                                  onChange={(e) => setOverrideRateValue(e.target.value)}
+                                  placeholder={String(currencySnapshot.exchangeRate)}
+                                  className="transaction-input"
+                                />
+                              </div>
+                              <div className="transaction-field">
+                                <label className="transaction-label">Reason (required)</label>
+                                <input
+                                  type="text"
+                                  value={overrideReason}
+                                  onChange={(e) => setOverrideReason(e.target.value)}
+                                  placeholder="e.g. Bank settlement rate used"
+                                  className="transaction-input"
+                                />
+                              </div>
+                            </div>
+                            <div className="transaction-rate-actions">
+                              <button type="button" className="transaction-secondary-button" onClick={() => setShowOverrideForm(false)}>Cancel</button>
+                              <button type="button" className="transaction-primary-button" onClick={submitOverride}>Apply Override</button>
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <p>No exchange rate available yet.</p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
 
             {code === "INV" && (
               <div className="transaction-card">
@@ -2176,7 +2659,8 @@ if (code === "OR") {
                           <th>Apply</th>
                           <th>APV No.</th>
                           <th>Supplier</th>
-                          <th className="text-right">Amount</th>
+                          <th>Source Rate</th>
+                          <th className="text-right">Original</th>
                           <th className="text-right">Paid</th>
                           <th className="text-right">Balance</th>
                           <th className="text-right">Amount to Pay</th>
@@ -2186,7 +2670,7 @@ if (code === "OR") {
                       <tbody>
                         {unpaidApvs.length === 0 ? (
   <tr>
-    <td colSpan="7" className="no-apv-message">
+    <td colSpan="8" className="no-apv-message">
       No Payables Have Been Setup
     </td>
   </tr>
@@ -2195,6 +2679,23 @@ if (code === "OR") {
                             const selected = apvApplications.find(
                               (item) => Number(item.sourceId || item.apvId) === Number(apv.id)
                             );
+                            const isForeign = !!apv.currencyCode;
+                            const symbol = apv.currencySymbol || baseCurrency?.currencySymbol || "₱";
+                            const displayOriginal = isForeign ? apv.foreignOriginalAmount : apv.totalAmount;
+                            const displayBalance = isForeign
+                              ? apv.foreignBalanceAmount ?? apv.foreignOriginalAmount
+                              : apv.balanceAmount;
+                            const displayPaid = isForeign
+                              ? Number(apv.foreignOriginalAmount ?? 0) - Number(displayBalance ?? 0)
+                              : apv.paidAmount;
+                            const mismatch = sourceCurrencyMismatch(apv);
+                            // Checkpoint 3FX section 14: estimate only (never posted from here -
+                            // the backend independently recalculates everything at save time).
+                            const paymentRate = isForeign ? Number(currencySnapshot?.exchangeRate) || null : null;
+                            const estimatedFx =
+                              isForeign && selected && paymentRate
+                                ? roundTo2(Number(selected.amount || 0) * (paymentRate - Number(apv.sourceExchangeRate)))
+                                : null;
 
                             return (
                               <tr key={apv.id}>
@@ -2202,27 +2703,46 @@ if (code === "OR") {
                                   <input
                                     type="checkbox"
                                     checked={Boolean(selected)}
+                                    disabled={mismatch}
                                     onChange={() => toggleApvApplication(apv)}
                                   />
                                 </td>
                                 <td>{apv.voucherNo}</td>
                                 <td>{apv.supplierName}</td>
-                                <td className="text-right">₱ {formatMoney(apv.totalAmount)}</td>
-                                <td className="text-right">₱ {formatMoney(apv.paidAmount)}</td>
-                                <td className="text-right">₱ {formatMoney(apv.balanceAmount)}</td>
+                                <td>{isForeign ? Number(apv.sourceExchangeRate).toFixed(6) : "—"}</td>
+                                <td className="text-right">{symbol} {formatMoney(displayOriginal)}</td>
+                                <td className="text-right">{symbol} {formatMoney(displayPaid)}</td>
+                                <td className="text-right">{symbol} {formatMoney(displayBalance)}</td>
                                 <td>
-                                  <input
-                                    type="number"
-                                    min="0"
-                                    max={apv.balanceAmount}
-                                    step="0.01"
-                                    disabled={!selected}
-                                    value={selected?.amount || ""}
-                                    onChange={(e) =>
-                                      updateApvApplicationAmount(apv.id, e.target.value)
-                                    }
-                                    className="apv-payment-input"
-                                  />
+                                  {mismatch ? (
+                                    <span className="transaction-rate-error" style={{ fontSize: "0.75rem" }}>
+                                      This payment currency differs from the source document currency. Cross-currency settlement is not enabled.
+                                    </span>
+                                  ) : (
+                                    <>
+                                      <input
+                                        type="number"
+                                        min="0"
+                                        max={displayBalance}
+                                        step="0.01"
+                                        disabled={!selected}
+                                        value={selected?.amount || ""}
+                                        onChange={(e) =>
+                                          updateApvApplicationAmount(apv.id, e.target.value)
+                                        }
+                                        className="apv-payment-input"
+                                      />
+                                      {estimatedFx !== null && estimatedFx !== 0 && (
+                                        <div className="transaction-rate-meta" style={{ fontSize: "0.72rem", marginTop: 2 }}>
+                                          {/* PAYABLE: paymentRate > sourceRate means paying MORE base than owed -> a LOSS */}
+                                          Payment Rate {paymentRate.toFixed(6)} · Historical{" "}
+                                          {baseCurrency?.currencySymbol} {formatMoney(Number(selected.amount) * Number(apv.sourceExchangeRate))} ·{" "}
+                                          Est. {estimatedFx > 0 ? "FX Loss" : "FX Gain"}{" "}
+                                          {baseCurrency?.currencySymbol} {formatMoney(Math.abs(estimatedFx))}
+                                        </div>
+                                      )}
+                                    </>
+                                  )}
                                 </td>
                               </tr>
                             );
@@ -2234,7 +2754,7 @@ if (code === "OR") {
 
                   <div className="apv-modal-footer">
                     <div className="apv-modal-total">
-                      Total Applied: ₱ {formatMoney(
+                      Total Applied: {currencyOptions.find((c) => String(c.id) === String(selectedCurrencyId))?.currencySymbol || baseCurrency?.currencySymbol || "₱"} {formatMoney(
                         apvApplications.reduce(
                           (sum, item) => sum + Number(item.amount || 0),
                           0
@@ -2258,8 +2778,13 @@ if (code === "OR") {
       return;
     }
 
+    // Section 15: a clear confirmation summary before posting any
+    // different-rate (non-zero FX) settlement - never required for a
+    // same-rate application, matching current UX for the ordinary case.
+    if (!confirmFxSettlement(apvApplications, "PAYABLE")) return;
+
     applySelectedApvsToLines();
-    setTimeout(() => handleSave("Posted"), 100);
+    setPendingAutoPost(true);
   }}
 >
   Done
@@ -2295,7 +2820,8 @@ if (code === "OR") {
                           <th>Apply</th>
                           <th>Invoice No.</th>
                           <th>Customer</th>
-                          <th className="text-right">Amount</th>
+                          <th>Source Rate</th>
+                          <th className="text-right">Original</th>
                           <th className="text-right">Paid</th>
                           <th className="text-right">Balance</th>
                           <th className="text-right">Amount to Receive</th>
@@ -2305,7 +2831,7 @@ if (code === "OR") {
                       <tbody>
                         {unpaidInvoices.length === 0 ? (
   <tr>
-    <td colSpan="7" className="no-apv-message">
+    <td colSpan="8" className="no-apv-message">
       No Outstanding Invoices
     </td>
   </tr>
@@ -2314,6 +2840,23 @@ if (code === "OR") {
                             const selected = invoiceApplications.find(
                               (item) => Number(item.sourceId || item.invoiceId) === Number(invoice.id)
                             );
+                            const isForeign = !!invoice.currencyCode;
+                            const symbol = invoice.currencySymbol || baseCurrency?.currencySymbol || "₱";
+                            const displayOriginal = isForeign ? invoice.foreignOriginalAmount : invoice.totalAmount;
+                            const displayBalance = isForeign
+                              ? invoice.foreignBalanceAmount ?? invoice.foreignOriginalAmount
+                              : invoice.balanceAmount;
+                            const displayPaid = isForeign
+                              ? Number(invoice.foreignOriginalAmount ?? 0) - Number(displayBalance ?? 0)
+                              : invoice.paidAmount;
+                            const mismatch = sourceCurrencyMismatch(invoice);
+                            // RECEIVABLE: paymentRate > sourceRate means MORE base was received than
+                            // recorded -> a GAIN (opposite sign convention from the payable/CV modal).
+                            const paymentRate = isForeign ? Number(currencySnapshot?.exchangeRate) || null : null;
+                            const estimatedFx =
+                              isForeign && selected && paymentRate
+                                ? roundTo2(Number(selected.amount || 0) * (paymentRate - Number(invoice.sourceExchangeRate)))
+                                : null;
 
                             return (
                               <tr key={invoice.id}>
@@ -2321,27 +2864,45 @@ if (code === "OR") {
                                   <input
                                     type="checkbox"
                                     checked={Boolean(selected)}
+                                    disabled={mismatch}
                                     onChange={() => toggleInvoiceApplication(invoice)}
                                   />
                                 </td>
                                 <td>{invoice.voucherNo}</td>
                                 <td>{invoice.customerName}</td>
-                                <td className="text-right">₱ {formatMoney(invoice.totalAmount)}</td>
-                                <td className="text-right">₱ {formatMoney(invoice.paidAmount)}</td>
-                                <td className="text-right">₱ {formatMoney(invoice.balanceAmount)}</td>
+                                <td>{isForeign ? Number(invoice.sourceExchangeRate).toFixed(6) : "—"}</td>
+                                <td className="text-right">{symbol} {formatMoney(displayOriginal)}</td>
+                                <td className="text-right">{symbol} {formatMoney(displayPaid)}</td>
+                                <td className="text-right">{symbol} {formatMoney(displayBalance)}</td>
                                 <td>
-                                  <input
-                                    type="number"
-                                    min="0"
-                                    max={invoice.balanceAmount}
-                                    step="0.01"
-                                    disabled={!selected}
-                                    value={selected?.amount || ""}
-                                    onChange={(e) =>
-                                      updateInvoiceApplicationAmount(invoice.id, e.target.value)
-                                    }
-                                    className="apv-payment-input"
-                                  />
+                                  {mismatch ? (
+                                    <span className="transaction-rate-error" style={{ fontSize: "0.75rem" }}>
+                                      This payment currency differs from the source document currency. Cross-currency settlement is not enabled.
+                                    </span>
+                                  ) : (
+                                    <>
+                                      <input
+                                        type="number"
+                                        min="0"
+                                        max={displayBalance}
+                                        step="0.01"
+                                        disabled={!selected}
+                                        value={selected?.amount || ""}
+                                        onChange={(e) =>
+                                          updateInvoiceApplicationAmount(invoice.id, e.target.value)
+                                        }
+                                        className="apv-payment-input"
+                                      />
+                                      {estimatedFx !== null && estimatedFx !== 0 && (
+                                        <div className="transaction-rate-meta" style={{ fontSize: "0.72rem", marginTop: 2 }}>
+                                          Payment Rate {paymentRate.toFixed(6)} · Historical{" "}
+                                          {baseCurrency?.currencySymbol} {formatMoney(Number(selected.amount) * Number(invoice.sourceExchangeRate))} ·{" "}
+                                          Est. {estimatedFx > 0 ? "FX Gain" : "FX Loss"}{" "}
+                                          {baseCurrency?.currencySymbol} {formatMoney(Math.abs(estimatedFx))}
+                                        </div>
+                                      )}
+                                    </>
+                                  )}
                                 </td>
                               </tr>
                             );
@@ -2353,7 +2914,7 @@ if (code === "OR") {
 
                   <div className="apv-modal-footer">
                     <div className="apv-modal-total">
-                      Total Applied: ₱ {formatMoney(
+                      Total Applied: {currencyOptions.find((c) => String(c.id) === String(selectedCurrencyId))?.currencySymbol || baseCurrency?.currencySymbol || "₱"} {formatMoney(
                         invoiceApplications.reduce(
                           (sum, item) => sum + Number(item.amount || 0),
                           0
@@ -2377,8 +2938,10 @@ if (code === "OR") {
       return;
     }
 
+    if (!confirmFxSettlement(invoiceApplications, "RECEIVABLE")) return;
+
     applySelectedInvoicesToLines();
-    setTimeout(() => handleSave("Posted"), 100);
+    setPendingAutoPost(true);
   }}
 >
   Done

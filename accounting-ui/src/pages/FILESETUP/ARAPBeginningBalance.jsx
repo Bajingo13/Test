@@ -38,6 +38,14 @@ function emptyLine(balanceType) {
     balanceAmount: "",
     scheduleDate: "",
     scheduleAmount: "",
+    // Checkpoint 3D: each AR/AP beginning balance line is its own document
+    // and may carry its own currency - currencyId defaults to the base
+    // currency once loaded, so a PHP-only user never has to think about
+    // this (section 13).
+    currencyId: "",
+    isManualRate: false,
+    exchangeRate: "",
+    rateDate: "",
   };
 }
 
@@ -63,13 +71,33 @@ export default function ARAPBeginningBalance({ balanceType }) {
 
   const [form, setForm] = useState(emptyLine(balanceType));
   const [showImportModal, setShowImportModal] = useState(false);
+  const [currencyOptions, setCurrencyOptions] = useState([]);
+  const [baseCurrency, setBaseCurrency] = useState(null);
 
   useEffect(() => {
     loadParties();
     loadAccounts();
     loadBalances();
+    loadCurrencies();
     setForm(emptyLine(balanceType));
   }, [balanceType]);
+
+  async function loadCurrencies() {
+    try {
+      const res = await fetch(`${API_BASE}/api/currencies`, { headers: authHeaders() });
+      const data = await res.json();
+      if (!res.ok) return;
+      const active = Array.isArray(data) ? data.filter((c) => c.isActive) : [];
+      setCurrencyOptions(active);
+      const base = active.find((c) => c.isBaseCurrency) || null;
+      setBaseCurrency(base);
+      setForm((prev) => ({ ...prev, currencyId: prev.currencyId || (base ? String(base.id) : "") }));
+    } catch (err) {
+      console.error("LOAD CURRENCIES ERROR:", err);
+    }
+  }
+
+  const isForeignForm = form.currencyId && baseCurrency && String(form.currencyId) !== String(baseCurrency.id);
 
   async function loadParties() {
     try {
@@ -208,11 +236,13 @@ export default function ARAPBeginningBalance({ balanceType }) {
 
   function resetForm() {
     setSelectedId(null);
-    setForm(emptyLine(balanceType));
+    setForm({ ...emptyLine(balanceType), currencyId: baseCurrency ? String(baseCurrency.id) : "" });
   }
 
   function editRow(row) {
     setSelectedId(row.id);
+
+    const rowIsForeign = row.currencyId && baseCurrency && String(row.currencyId) !== String(baseCurrency.id);
 
     setForm({
       id: row.id,
@@ -225,11 +255,18 @@ export default function ARAPBeginningBalance({ balanceType }) {
       particulars: row.particulars || "",
       referenceNo: row.referenceNo || "",
       dueDate: row.dueDate || "",
-      debit: row.debit || "",
-      credit: row.credit || "",
+      // Foreign lines: the editable amount is the ORIGINAL foreign amount,
+      // not the base debit/credit - re-saving must not re-convert an
+      // already-converted base figure a second time.
+      debit: rowIsForeign ? (isAR ? row.foreignOriginalAmount : "") : row.debit || "",
+      credit: rowIsForeign ? (isAR ? "" : row.foreignOriginalAmount) : row.credit || "",
       balanceAmount: row.balanceAmount || "",
       scheduleDate: row.scheduleDate || row.dueDate || "",
       scheduleAmount: row.scheduleAmount || row.balanceAmount || "",
+      currencyId: row.currencyId ? String(row.currencyId) : (baseCurrency ? String(baseCurrency.id) : ""),
+      isManualRate: rowIsForeign,
+      exchangeRate: rowIsForeign ? row.currency?.exchangeRate || "" : "",
+      rateDate: row.currency?.rateDate || "",
     });
   }
 
@@ -245,6 +282,10 @@ export default function ARAPBeginningBalance({ balanceType }) {
       return alert(`${isAR ? "Debit" : "Credit"} amount is required.`);
     }
 
+    if (isForeignForm && (!form.exchangeRate || Number(form.exchangeRate) <= 0)) {
+      return alert("Opening Exchange Rate is required for a foreign currency entry.");
+    }
+
     const payload = {
       balanceType,
       ...header,
@@ -255,6 +296,7 @@ export default function ARAPBeginningBalance({ balanceType }) {
         balanceAmount: amount,
         scheduleDate: form.scheduleDate || form.dueDate,
         scheduleAmount: Number(form.scheduleAmount || amount),
+        isManualRate: isForeignForm,
       },
     };
 
@@ -417,7 +459,9 @@ export default function ARAPBeginningBalance({ balanceType }) {
                 <th>Gen Name</th>
                 <th>Reference No.</th>
                 <th>Due Date</th>
+                <th>Currency</th>
                 <th>{isAR ? "Debit" : "Credit"}</th>
+                {isForeignForm && <th>Opening Rate</th>}
                 <th>Schedule Date</th>
               </tr>
             </thead>
@@ -491,6 +535,19 @@ export default function ARAPBeginningBalance({ balanceType }) {
                 </td>
 
                 <td>
+                  <select
+                    value={form.currencyId}
+                    onChange={(e) => setForm({ ...form, currencyId: e.target.value })}
+                  >
+                    {currencyOptions.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.currencySymbol} {c.currencyCode}{c.isBaseCurrency ? " (Base)" : ""}
+                      </option>
+                    ))}
+                  </select>
+                </td>
+
+                <td>
                   <input
                     type="number"
                     min="0"
@@ -509,6 +566,19 @@ export default function ARAPBeginningBalance({ balanceType }) {
                     className="arap-amount-input"
                   />
                 </td>
+
+                {isForeignForm && (
+                  <td>
+                    <input
+                      type="number"
+                      step="0.000001"
+                      value={form.exchangeRate}
+                      onChange={(e) => setForm({ ...form, exchangeRate: e.target.value })}
+                      placeholder="e.g. 57.00"
+                      className="arap-amount-input"
+                    />
+                  </td>
+                )}
 
                 <td>
                   <input
@@ -564,6 +634,7 @@ export default function ARAPBeginningBalance({ balanceType }) {
                 <th>Account</th>
                 <th>Reference</th>
                 <th>Due Date</th>
+                <th>Currency</th>
                 <th>Debit</th>
                 <th>Credit</th>
                 <th>Balance</th>
@@ -575,38 +646,50 @@ export default function ARAPBeginningBalance({ balanceType }) {
             <tbody>
               {filteredRows.length === 0 ? (
                 <tr>
-                  <td colSpan="9" className="arap-empty">
+                  <td colSpan="10" className="arap-empty">
                     {rows.length === 0
                       ? `No ${title} records yet.`
                       : "No records match your search/filter."}
                   </td>
                 </tr>
               ) : (
-                filteredRows.map((row) => (
-                  <tr key={row.id}>
-                    <td>{row.partyName}</td>
-                    <td>
-                      {row.accountCode} - {row.accountTitle}
-                    </td>
-                    <td>{row.referenceNo}</td>
-                    <td>{row.dueDate}</td>
-                    <td className="amount">₱ {formatMoney(row.debit)}</td>
-                    <td className="amount">₱ {formatMoney(row.credit)}</td>
-                    <td className="amount">
-                      ₱ {formatMoney(row.balanceAmount)}
-                    </td>
-                    <td>{row.status}</td>
-                    <td>
-                      <button onClick={() => editRow(row)}>Edit</button>
-                      <button
-                        onClick={() => removeBalance(row.id)}
-                        className="danger"
-                      >
-                        Remove
-                      </button>
-                    </td>
-                  </tr>
-                ))
+                filteredRows.map((row) => {
+                  const rowIsForeign = row.currencyId && baseCurrency && String(row.currencyId) !== String(baseCurrency.id);
+                  return (
+                    <tr key={row.id}>
+                      <td>{row.partyName}</td>
+                      <td>
+                        {row.accountCode} - {row.accountTitle}
+                      </td>
+                      <td>{row.referenceNo}</td>
+                      <td>{row.dueDate}</td>
+                      <td>{row.currencyCode || baseCurrency?.currencyCode || "PHP"}</td>
+                      <td className="amount">
+                        {rowIsForeign
+                          ? `${row.currencyCode} ${formatMoney(isAR ? row.foreignOriginalAmount - (row.foreignPaidAmount || 0) : 0)}`
+                          : `₱ ${formatMoney(row.debit)}`}
+                      </td>
+                      <td className="amount">
+                        {rowIsForeign
+                          ? `${row.currencyCode} ${formatMoney(!isAR ? row.foreignOriginalAmount - (row.foreignPaidAmount || 0) : 0)}`
+                          : `₱ ${formatMoney(row.credit)}`}
+                      </td>
+                      <td className="amount">
+                        ₱ {formatMoney(row.balanceAmount)}
+                      </td>
+                      <td>{row.status}</td>
+                      <td>
+                        <button onClick={() => editRow(row)}>Edit</button>
+                        <button
+                          onClick={() => removeBalance(row.id)}
+                          className="danger"
+                        >
+                          Remove
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
 

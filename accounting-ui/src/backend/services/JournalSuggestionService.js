@@ -1,5 +1,7 @@
 const { logAudit } = require("../lib/audit");
 const { HttpError } = require("../lib/httpError");
+const CurrencyService = require("./currencyService");
+const AccountingPeriodService = require("./accountingPeriodService");
 
 // Only APPROVED adjustments (with an account already picked) can post, and
 // only once - the adjustment moves straight to POSTED, never back to
@@ -62,14 +64,23 @@ async function postAdjustmentAsJV(conn, adjustmentId, user) {
   const amount = Number(adj.amount);
   const userId = user?.id || null;
   const voucherNo = `JV-BR-${adj.session_id}-${adj.id}`;
+  const companyId = await CurrencyService.resolveCompanyIdForWrite(user, null);
+
+  // Checkpoint 5 section 25: locked on the generated JV's own date (the
+  // bank statement line's txn_date) - viewing/reconciling historical
+  // statements stays unaffected, only this posting action is gated.
+  await AccountingPeriodService.assertPeriodOpen({
+    companyId, transactionDate: adj.txnDate, operation: "POST", user,
+  }, conn);
 
   const [jvResult] = await conn.execute(
     `INSERT INTO jv_headers(
-      voucher_no, transaction_date, reference_no, prepared_for, description,
+      company_id, voucher_no, transaction_date, reference_no, prepared_for, description,
       total_debit, total_credit, status, source_module, source_reference_id,
       created_by, posted_by, posted_at
-    ) VALUES (?,?,?,?,?,?,?, 'Posted', 'BANK_RECON', ?, ?, ?, NOW())`,
+    ) VALUES (?,?,?,?,?,?,?,?, 'Posted', 'BANK_RECON', ?, ?, ?, NOW())`,
     [
+      companyId,
       voucherNo,
       adj.txnDate,
       adj.lineReferenceNo || adj.lineCheckNo || "",

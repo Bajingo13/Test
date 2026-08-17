@@ -1,5 +1,6 @@
 const pool = require("../db");
 const { HttpError } = require("../lib/httpError");
+const TransactionCurrencyService = require("./transactionCurrencyService");
 
 // Shared and configurable printing framework (Phase 1 = invoice, Phase 2
 // adds or/apv/cv) - one query builder driven by this table/column config
@@ -25,6 +26,8 @@ const MODULE_CONFIG = {
     hasCheck: false,
     hasPaymentMethod: false,
     hasEwt: true,
+    hasCurrency: true,
+    currencyTxnType: "INV",
   },
   or: {
     moduleKey: "TRANSACTIONS.OR",
@@ -39,6 +42,8 @@ const MODULE_CONFIG = {
     hasCheck: true,
     hasPaymentMethod: true,
     hasEwt: true,
+    hasCurrency: true,
+    currencyTxnType: "OR",
   },
   apv: {
     moduleKey: "TRANSACTIONS.APV",
@@ -54,6 +59,8 @@ const MODULE_CONFIG = {
     hasPaymentMethod: false,
     hasEwt: true,
     hasPayeeTin: true,
+    hasCurrency: true,
+    currencyTxnType: "APV",
   },
   cv: {
     moduleKey: "TRANSACTIONS.CV",
@@ -69,6 +76,8 @@ const MODULE_CONFIG = {
     hasPaymentMethod: true,
     hasEwt: true,
     hasPayeeTin: true,
+    hasCurrency: true,
+    currencyTxnType: "CV",
   },
   // JV has no party at all (it's a pure double-entry accounting document,
   // not a customer/supplier-facing one) - prepared_for is a free-text
@@ -83,6 +92,8 @@ const MODULE_CONFIG = {
     hasPaidBalance: false,
     hasCheck: false,
     hasPaymentMethod: false,
+    hasCurrency: true,
+    currencyTxnType: "JV",
     extraCols: ["prepared_for AS preparedFor"],
   },
   po: {
@@ -99,6 +110,8 @@ const MODULE_CONFIG = {
     hasPaymentMethod: false,
     hasEwt: true,
     hasPayeeTin: true,
+    hasCurrency: true,
+    currencyTxnType: "PO",
   },
 };
 
@@ -115,17 +128,29 @@ async function getCompanyProfile() {
   return rows[0] || { name: "", tin: "", address: "", zip: "" };
 }
 
-function mapLines(lineRows, withEntries) {
+// When the transaction was saved in a foreign currency, `without_entries`
+// (customer/supplier-facing) copies show the amount the party actually
+// agreed to - the stored foreign_debit/foreign_credit - not the converted
+// base-currency debit/credit those columns hold for GL purposes. The
+// `with_entries` (internal accounting) copy always shows debit/credit
+// as-is, since that IS the base-currency ledger.
+function mapLines(lineRows, withEntries, useForeignAmount) {
   return lineRows.map((l) => {
-    const amount = Number(l.debit) > 0 ? Number(l.debit) : Number(l.credit);
+    const debit = Number(l.debit) || 0;
+    const credit = Number(l.credit) || 0;
+    const foreignDebit = useForeignAmount ? Number(l.foreignDebit) || 0 : debit;
+    const foreignCredit = useForeignAmount ? Number(l.foreignCredit) || 0 : credit;
+    const amount = useForeignAmount
+      ? (foreignDebit > 0 ? foreignDebit : foreignCredit)
+      : (debit > 0 ? debit : credit);
     if (withEntries) {
       return {
         particulars: l.particulars,
         amount,
         accountCode: l.accountCode,
         accountTitle: l.accountTitle,
-        debit: Number(l.debit) || 0,
-        credit: Number(l.credit) || 0,
+        debit,
+        credit,
         genRef: l.genRef,
         genName: l.genName,
       };
@@ -140,7 +165,7 @@ function buildEntriesSummary(lineRows) {
   return { totalDebit, totalCredit, balanced: Math.abs(totalDebit - totalCredit) < 0.01 };
 }
 
-async function getTransactionDocument(transactionType, id, { withEntries }) {
+async function getTransactionDocument(transactionType, id, { withEntries, companyId }) {
   const cfg = getModuleConfig(transactionType);
 
   const metaCols = ["id", "voucher_no AS voucherNo"];
@@ -175,25 +200,59 @@ async function getTransactionDocument(transactionType, id, { withEntries }) {
   if (cfg.extraCols) metaCols.push(...cfg.extraCols);
 
   const [headers] = await pool.execute(
-    `SELECT ${metaCols.join(", ")} FROM ${cfg.headerTable} WHERE id = ?`,
-    [id]
+    `SELECT ${metaCols.join(", ")} FROM ${cfg.headerTable} WHERE id = ? AND company_id = ?`,
+    [id, companyId]
   );
   if (headers.length === 0) {
     throw new HttpError(404, "Transaction not found");
   }
   const doc = headers[0];
 
+  const lineCols = ["account_code AS accountCode", "account_title AS accountTitle", "particulars", "debit", "credit", "gen_ref AS genRef", "gen_name AS genName"];
+  if (cfg.hasCurrency) lineCols.push("foreign_debit AS foreignDebit", "foreign_credit AS foreignCredit");
+
   const [lineRows] = await pool.execute(
-    `SELECT account_code AS accountCode, account_title AS accountTitle, particulars,
-      debit, credit, gen_ref AS genRef, gen_name AS genName
+    `SELECT ${lineCols.join(", ")}
     FROM ${cfg.lineTable}
     WHERE ${cfg.lineIdCol} = ?
     ORDER BY id ASC`,
     [id]
   );
 
-  const lines = mapLines(lineRows, withEntries);
+  // Read-only: prints whatever rate/currency was already stored on save
+  // (section 33/34) - never calls the resolver or recomputes a rate here.
+  let currencySnapshot = null;
+  if (cfg.hasCurrency) {
+    const snapshot = await TransactionCurrencyService.getSnapshot(cfg.currencyTxnType, id);
+    if (snapshot && snapshot.currencyId !== snapshot.baseCurrencyId) {
+      const [symRows] = await pool.execute(
+        "SELECT id, currency_symbol AS symbol FROM currencies WHERE id IN (?, ?)",
+        [snapshot.currencyId, snapshot.baseCurrencyId]
+      );
+      const symbolById = new Map(symRows.map((r) => [r.id, r.symbol]));
+      currencySnapshot = {
+        ...snapshot,
+        currencySymbol: symbolById.get(snapshot.currencyId) || snapshot.currencyCode,
+        baseCurrencySymbol: symbolById.get(snapshot.baseCurrencyId) || "P",
+      };
+    }
+  }
+
+  // Checkpoint 3FX (section 27): the realized FX gain/loss line
+  // (server.js's paymentApplicationService.applyForeignSettlementToLines)
+  // is a base-currency-only internal adjustment - it has no
+  // foreign_debit/foreign_credit (nothing was ever charged to the
+  // customer/supplier in their own currency for it), so showing it on the
+  // customer-facing "without entries" copy would print a stray ₱0.00 line.
+  // The accounting copy still sees it like any other line, unchanged.
+  const FX_LINE_PARTICULARS = ["Realized Foreign Exchange Gain", "Realized Foreign Exchange Loss"];
+  const printableLineRows = withEntries
+    ? lineRows
+    : lineRows.filter((l) => !FX_LINE_PARTICULARS.includes(l.particulars));
+
+  const lines = mapLines(printableLineRows, withEntries, !!currencySnapshot);
   const entriesSummary = withEntries ? buildEntriesSummary(lineRows) : null;
+  doc.currency = currencySnapshot;
 
   let party = null;
   if (cfg.hasParty && doc.partyId) {
@@ -244,7 +303,7 @@ const GROUP_KEY_FIELD = {
   status: { key: "status", label: "status", fallbackLabel: "(No Status)" },
 };
 
-async function getTransactionList(transactionType, { from, to, grouping }) {
+async function getTransactionList(transactionType, { from, to, grouping, companyId }) {
   const cfg = getModuleConfig(transactionType);
 
   const cols = ["id", "voucher_no AS voucherNo"];
@@ -261,8 +320,8 @@ async function getTransactionList(transactionType, { from, to, grouping }) {
   if (cfg.hasPaymentMethod) cols.push("payment_method AS paymentMethod", "bank_account_id AS bankAccountId");
   if (cfg.extraCols) cols.push(...cfg.extraCols);
 
-  const params = [];
-  let where = "WHERE 1=1";
+  const params = [companyId];
+  let where = "WHERE company_id = ?";
   if (from) {
     where += " AND transaction_date >= ?";
     params.push(from);

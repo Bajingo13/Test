@@ -162,19 +162,20 @@ async function parseAndValidateRows(buffer, filename) {
   return { headers, mapping, ready, skipped, warnings };
 }
 
-async function insertGenLibRows(rows) {
+async function insertGenLibRows(rows, companyId) {
   let imported = 0;
 
   for (const item of rows) {
     await pool.execute(
       `INSERT INTO general_libraries (
-        code, party_type, name, status, start_date,
+        company_id, code, party_type, name, status, start_date,
         address1, address2, address3, attention, position,
         telephone, fax, mobile, tin, email,
         atc_code, ewt_code, category, branch_code, rdo_code,
         notes, is_prospective, is_client
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
+        companyId,
         item.code,
         item.type,
         item.name,

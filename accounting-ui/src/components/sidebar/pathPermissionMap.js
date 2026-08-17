@@ -19,8 +19,11 @@ const PATH_PERMISSIONS = {
   "/fixed-asset-setup": ["FILESETUP.FIXED_ASSETS", "VIEW"],
   "/prepaid-account-setup": ["FILESETUP.PREPAID_ACCOUNTS", "VIEW"],
   "/company-profile": ["FILESETUP.COMPANY_SETUP", "VIEW"],
+  "/currency-file-setup": ["FILESETUP.CURRENCY_SETUP", "VIEW"],
 
   "/transactions/invoice": ["TRANSACTIONS.INVOICE", "VIEW"],
+  "/transactions/recurring": ["RECURRING.TRANSACTIONS", "VIEW"],
+  "/reports/fx-revaluation": ["FX_REVALUATION", "VIEW"],
   "/transactions/quotation": ["TRANSACTIONS.QUOTATION", "VIEW"],
   "/transactions/or": ["TRANSACTIONS.OR", "VIEW"],
   "/transactions/cv": ["TRANSACTIONS.CV", "VIEW"],
@@ -40,6 +43,8 @@ const PATH_PERMISSIONS = {
   "/reports/ai-reconciliation": ["REPORTS.AI_RECONCILIATION", "VIEW"],
   "/reports/ar-aging": ["REPORTS.AR", "VIEW"],
   "/reports/ap-aging": ["REPORTS.AP", "VIEW"],
+  "/reports/ar-aging-summary": ["REPORTS.AR", "VIEW"],
+  "/reports/ap-aging-summary": ["REPORTS.AP", "VIEW"],
   "/reports/subsidiary-ledger": ["LEDGER.SUBSIDIARY_LEDGER", "VIEW"],
   "/reports/fixed-asset-register": ["REPORTS.FIXED_ASSETS", "VIEW"],
   "/reports/prepayment-lapsing": ["REPORTS.FINANCIAL", "VIEW"],
@@ -56,6 +61,7 @@ const PATH_PERMISSIONS = {
   "/admin/roles-permissions": ["ADMIN.ROLES_PERMISSIONS", "VIEW"],
   "/admin/access-restrictions": ["ADMIN.ACCESS_RESTRICTIONS", "VIEW"],
   "/admin/permission-templates": ["ADMIN.ROLES_PERMISSIONS", "VIEW"],
+  "/admin/accounting-period-locking": ["ACCOUNTING_PERIODS", "VIEW"],
 };
 
 export function pathAllowed(path, can) {

@@ -7,6 +7,15 @@ const ctrl = require("../controllers/recurringTransactions.controller");
 const MODULE_KEY = "RECURRING.TRANSACTIONS";
 const requirePerm = (action) => authorizePermission(MODULE_KEY, action);
 
+// Checkpoint 3F: stateless external-trigger alternative to the in-process
+// node-cron (jobs/recurringSchedulerJob.js) - a Railway Cron Job can POST
+// here on a schedule instead, once RECURRING_INPROCESS_CRON_ENABLED=false
+// disables the in-process timer. Gated by a shared secret header, not
+// user JWT, since a cron job has no interactive user; disabled entirely
+// (404) unless RECURRING_CRON_SECRET is actually configured, so it never
+// exists as an unauthenticated surface by accident.
+router.post("/run-due", ctrl.runDue);
+
 router.post("/from-transaction/:moduleType/:id", authenticateToken, requirePerm("CREATE"), ctrl.createFromTransaction);
 router.post("/preview-schedule", authenticateToken, requirePerm("CREATE"), ctrl.previewSchedule);
 router.post("/", authenticateToken, requirePerm("CREATE"), ctrl.create);

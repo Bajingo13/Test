@@ -2,6 +2,7 @@ const pool = require("../db");
 const { logAudit } = require("../lib/audit");
 const TrialBalanceDifferenceService = require("./trialBalanceDifferenceService");
 const ValidationService = require("./trialBalanceValidationService");
+const CurrencyService = require("./currencyService");
 
 // The 3 header/line modules Trial Balance actually unions (see
 // trialBalanceDifferenceService.js) that carry their own total_debit/
@@ -713,7 +714,7 @@ async function findRecentRunningRun({ userId, from, to, tolerance }) {
   return rows[0]?.id || null;
 }
 
-async function runCheck({ from, to, tolerance, user }) {
+async function runCheck({ from, to, tolerance, user, companyId }) {
   const tol = tolerance ?? "0";
   const userId = user?.id || null;
 
@@ -722,7 +723,7 @@ async function runCheck({ from, to, tolerance, user }) {
     return getRun(existingRunId);
   }
 
-  const totals = await TrialBalanceDifferenceService.getTrialBalanceTotals({ from, to });
+  const totals = await TrialBalanceDifferenceService.getTrialBalanceTotals({ from, to, companyId });
   const balance = ValidationService.evaluateBalance({ difference: totals.difference, tolerance: tol });
 
   const [runResult] = await pool.execute(
@@ -899,12 +900,14 @@ async function createAdjustmentDraft(findingId, { debitAccountCode, creditAccoun
 
     const voucherNo = `TBADJ-${finding.id}-${Date.now()}`;
     const today = new Date().toISOString().slice(0, 10);
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(user, null);
 
     const [headerResult] = await conn.execute(
       `INSERT INTO jv_headers
-        (voucher_no, transaction_date, reference_no, prepared_for, description, remarks, total_debit, total_credit, status, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Draft', ?)`,
+        (company_id, voucher_no, transaction_date, reference_no, prepared_for, description, remarks, total_debit, total_credit, status, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Draft', ?)`,
       [
+        companyId,
         voucherNo,
         today,
         finding.transaction_number || "",

@@ -1,0 +1,242 @@
+.apl-page {
+  padding: 28px;
+  background: var(--bg-page);
+  min-height: 100vh;
+  color: var(--text-primary);
+}
+
+.apl-page h1 {
+  margin: 0 0 8px;
+  font-size: 26px;
+  font-weight: 800;
+}
+
+.apl-intro {
+  color: var(--text-secondary);
+  font-size: 14px;
+  margin-bottom: 20px;
+  max-width: 760px;
+}
+
+.apl-card {
+  background: var(--bg-surface);
+  border-radius: 14px;
+  padding: 22px;
+  box-shadow: 0 4px 16px rgba(var(--shadow-rgb), 0.06);
+  margin-bottom: 20px;
+}
+
+.apl-toolbar {
+  display: flex;
+  gap: 16px;
+  align-items: end;
+  flex-wrap: wrap;
+}
+
+.apl-muted {
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.apl-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.apl-field-wide {
+  width: 100%;
+  margin: 14px 0;
+}
+
+.apl-field label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.apl-field select,
+.apl-field textarea {
+  border: 1px solid var(--border-color-strong);
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.apl-field select {
+  height: 40px;
+}
+
+.apl-btn-primary {
+  height: 42px;
+  padding: 0 18px;
+  border-radius: 10px;
+  border: 1px solid var(--dark-btn-bg);
+  background: var(--dark-btn-bg);
+  color: var(--dark-btn-text);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.apl-btn-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.apl-btn-secondary {
+  height: 42px;
+  padding: 0 18px;
+  border-radius: 10px;
+  border: 1px solid var(--border-color-strong);
+  background: transparent;
+  color: var(--text-primary);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.apl-error-banner {
+  background: var(--danger-bg);
+  color: var(--danger-text);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+
+.apl-table-wrap {
+  overflow-x: auto;
+}
+
+.apl-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.apl-table th {
+  text-align: left;
+  padding: 8px 10px;
+  font-size: 11px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  border-bottom: 2px solid var(--border-color);
+}
+
+.apl-table td {
+  padding: 10px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.apl-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.apl-badge {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.apl-badge-open {
+  background: var(--success-bg);
+  color: var(--success-text);
+}
+
+.apl-badge-soft_closed {
+  background: var(--warning-bg, #fff4d6);
+  color: var(--warning-text, #92650a);
+}
+
+.apl-badge-closed {
+  background: var(--danger-bg);
+  color: var(--danger-text);
+}
+
+.apl-link-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-link, #2563eb);
+  font-weight: 700;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+}
+
+.apl-link-danger {
+  color: var(--danger-text);
+}
+
+.apl-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.apl-modal {
+  background: var(--bg-surface);
+  border-radius: 14px;
+  padding: 24px;
+  width: min(560px, 92vw);
+  max-height: 85vh;
+  overflow-y: auto;
+  box-shadow: 0 12px 40px rgba(var(--shadow-rgb), 0.25);
+}
+
+.apl-modal h2 {
+  margin: 0 0 12px;
+  font-size: 18px;
+}
+
+.apl-modal-warning {
+  font-size: 13px;
+  color: var(--text-secondary);
+  background: var(--warning-bg, #fff4d6);
+  border-radius: 10px;
+  padding: 10px 14px;
+  margin-bottom: 14px;
+}
+
+.apl-checklist {
+  margin-bottom: 10px;
+}
+
+.apl-checklist-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 0;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.apl-warning-list {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--warning-text, #92650a);
+}
+
+.apl-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+@media (max-width: 700px) {
+  .apl-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}

@@ -20,7 +20,7 @@ function buildTransactionUnionSql(dateFilterSql) {
       COALESCE(l.particulars, h.description, '') AS particulars,
       COALESCE(l.debit, 0) AS debit, COALESCE(l.credit, 0) AS credit, 1 AS sort_order
     FROM apv_lines l JOIN apv_headers h ON h.id = l.apv_id
-    WHERE h.transaction_date ${dateFilterSql}
+    WHERE h.transaction_date ${dateFilterSql} AND h.company_id = ?
 
     UNION ALL
 
@@ -29,7 +29,7 @@ function buildTransactionUnionSql(dateFilterSql) {
       COALESCE(l.particulars, h.description, '') AS particulars,
       COALESCE(l.debit, 0) AS debit, COALESCE(l.credit, 0) AS credit, 2 AS sort_order
     FROM cv_lines l JOIN cv_headers h ON h.id = l.cv_id
-    WHERE h.transaction_date ${dateFilterSql}
+    WHERE h.transaction_date ${dateFilterSql} AND h.company_id = ?
 
     UNION ALL
 
@@ -38,7 +38,7 @@ function buildTransactionUnionSql(dateFilterSql) {
       COALESCE(l.particulars, h.description, '') AS particulars,
       COALESCE(l.debit, 0) AS debit, COALESCE(l.credit, 0) AS credit, 3 AS sort_order
     FROM jv_lines l JOIN jv_headers h ON h.id = l.jv_id
-    WHERE h.transaction_date ${dateFilterSql}
+    WHERE h.transaction_date ${dateFilterSql} AND h.company_id = ?
 
     UNION ALL
 
@@ -47,7 +47,7 @@ function buildTransactionUnionSql(dateFilterSql) {
       COALESCE(l.particulars, h.description, '') AS particulars,
       COALESCE(l.debit, 0) AS debit, COALESCE(l.credit, 0) AS credit, 4 AS sort_order
     FROM invoice_lines l JOIN invoice_headers h ON h.id = l.invoice_id
-    WHERE h.transaction_date ${dateFilterSql}
+    WHERE h.transaction_date ${dateFilterSql} AND h.company_id = ?
 
     UNION ALL
 
@@ -56,7 +56,7 @@ function buildTransactionUnionSql(dateFilterSql) {
       COALESCE(l.particulars, h.description, '') AS particulars,
       COALESCE(l.debit, 0) AS debit, COALESCE(l.credit, 0) AS credit, 5 AS sort_order
     FROM or_lines l JOIN or_headers h ON h.id = l.or_id
-    WHERE h.transaction_date ${dateFilterSql}
+    WHERE h.transaction_date ${dateFilterSql} AND h.company_id = ?
 
     UNION ALL
 
@@ -65,7 +65,7 @@ function buildTransactionUnionSql(dateFilterSql) {
       COALESCE(l.party_name, '') AS particulars,
       COALESCE(l.debit, 0) AS debit, COALESCE(l.credit, 0) AS credit, 0 AS sort_order
     FROM arap_beginning_balance_lines l JOIN arap_beginning_balance_headers h ON h.id = l.header_id
-    WHERE h.balance_date ${dateFilterSql}
+    WHERE h.balance_date ${dateFilterSql} AND h.company_id = ?
 
     UNION ALL
 
@@ -74,7 +74,7 @@ function buildTransactionUnionSql(dateFilterSql) {
       COALESCE(h.title, '') AS particulars,
       COALESCE(l.othrdebit, 0) AS debit, COALESCE(l.othrcredit, 0) AS credit, 0 AS sort_order
     FROM gl_beginning_balance_lines l JOIN gl_beginning_balance_headers h ON h.id = l.header_id
-    WHERE h.balance_date ${dateFilterSql}
+    WHERE h.balance_date ${dateFilterSql} AND h.company_id = ?
   `;
 }
 
@@ -84,9 +84,9 @@ function accountCodeFilterSql(accountCodes) {
 }
 
 // Detail rows for a period, one running balance per account_code.
-async function getLedgerRows({ from, to, accountCodes }) {
+async function getLedgerRows({ from, to, accountCodes, companyId }) {
   const unionSql = buildTransactionUnionSql("BETWEEN ? AND ?");
-  const unionParams = Array(7).fill([from, to]).flat();
+  const unionParams = Array(7).fill([from, to, companyId]).flat();
   const filterSql = accountCodeFilterSql(accountCodes);
 
   const [rows] = await pool.execute(
@@ -119,9 +119,9 @@ async function getLedgerRows({ from, to, accountCodes }) {
 }
 
 // Opening balance per account_code for everything dated before `before`.
-async function getBeginningBalances({ before, accountCodes }) {
+async function getBeginningBalances({ before, accountCodes, companyId }) {
   const unionSql = buildTransactionUnionSql("< ?");
-  const unionParams = Array(7).fill([before]).flat();
+  const unionParams = Array(7).fill([before, companyId]).flat();
   const filterSql = accountCodeFilterSql(accountCodes);
 
   const [rows] = await pool.execute(

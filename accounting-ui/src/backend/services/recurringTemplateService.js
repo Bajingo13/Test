@@ -18,21 +18,21 @@ const SOURCE_MODULE_CONFIG = {
   },
 };
 
-async function createTemplateFromTransaction(moduleType, transactionId, userId) {
+async function createTemplateFromTransaction(moduleType, transactionId, userId, companyId) {
   const cfg = SOURCE_MODULE_CONFIG[moduleType];
   if (!cfg) throw new HttpError(400, `Recurring templates from an existing transaction aren't supported yet for: ${moduleType}`);
 
   const [headers] = await pool.execute(
-    `SELECT ${cfg.partyIdCol} AS partyId, ${cfg.partyNameCol} AS partyName, description
-     FROM ${cfg.headerTable} WHERE id = ?`,
-    [transactionId]
+    `SELECT ${cfg.partyIdCol} AS partyId, ${cfg.partyNameCol} AS partyName, description, currency_id AS currencyId
+     FROM ${cfg.headerTable} WHERE id = ? AND company_id = ?`,
+    [transactionId, companyId]
   );
   if (headers.length === 0) throw new HttpError(404, "Source transaction not found.");
   const header = headers[0];
 
   const [lineRows] = await pool.execute(
     `SELECT account_id AS accountId, account_code AS accountCode, account_title AS accountTitle,
-      particulars, debit, credit, gen_ref AS genRef, gen_name AS genName
+      particulars, debit, credit, foreign_debit AS foreignDebit, foreign_credit AS foreignCredit, gen_ref AS genRef, gen_name AS genName
      FROM ${cfg.lineTable} WHERE ${cfg.lineIdCol} = ? ORDER BY id ASC`,
     [transactionId]
   );
@@ -42,21 +42,71 @@ async function createTemplateFromTransaction(moduleType, transactionId, userId) 
     partyId: header.partyId,
     partyName: header.partyName,
     descriptionTemplate: header.description || "",
+    // So the "Make Recurring" modal can default its currency picker to
+    // whatever the source transaction actually used, instead of always
+    // defaulting to base currency and relying on the user to remember to
+    // change it.
+    sourceCurrencyId: header.currencyId || null,
     lines: lineRows.map((l) => ({
       accountId: l.accountId,
       accountCode: l.accountCode,
       accountTitle: l.accountTitle,
       particularsTemplate: l.particulars,
-      debit: Number(l.debit) || 0,
-      credit: Number(l.credit) || 0,
+      // Template lines are defined to hold TRANSACTION-CURRENCY amounts
+      // (recurringGenerationService.computeLineAmounts's own doc comment:
+      // "templates store business amounts in foreign currency, not
+      // pre-converted base") - generation multiplies this by the resolved
+      // rate to get base. If the source transaction was itself foreign-
+      // denominated, foreign_debit/foreign_credit ARE that amount; only a
+      // base-currency source has them NULL (the established convention),
+      // in which case debit/credit (already base) is correct as-is.
+      debit: l.foreignDebit != null ? Number(l.foreignDebit) : (Number(l.debit) || 0),
+      credit: l.foreignCredit != null ? Number(l.foreignCredit) : (Number(l.credit) || 0),
       genRef: l.genRef,
       genName: l.genName,
     })),
   };
 }
 
-async function createTemplate(input, userId) {
-  const { moduleType, templateName, partyId, partyName, descriptionTemplate, currency, amountMode, amountConfig, dueDateRule, lines, schedule } = input;
+const RATE_POLICIES = ["RESOLVE_ON_GENERATION", "FIXED_RATE", "MANUAL_REVIEW"];
+
+// Checkpoint 3D: currencyId/ratePolicy/fixedRate validation. Kept here
+// (not in recurringValidationService.js) since it needs a DB lookup
+// (currency existence/active), unlike that file's pure checks.
+async function validateCurrencyPolicy({ currencyId, ratePolicy, fixedRate, companyId }) {
+  const policy = ratePolicy || "RESOLVE_ON_GENERATION";
+  if (!RATE_POLICIES.includes(policy)) {
+    throw new HttpError(400, `rate_policy must be one of: ${RATE_POLICIES.join(", ")}.`);
+  }
+  if (!currencyId) return { currencyId: null, ratePolicy: policy, fixedRate: null };
+
+  const [rows] = await pool.execute(
+    "SELECT id, is_active AS isActive, is_base_currency AS isBaseCurrency, company_id AS companyId FROM currencies WHERE id = ?",
+    [currencyId]
+  );
+  if (!rows.length) throw new HttpError(400, "Selected currency does not exist.");
+  if (companyId && rows[0].companyId !== Number(companyId)) {
+    throw new HttpError(400, "Selected currency does not belong to this company.");
+  }
+  if (!rows[0].isActive) throw new HttpError(400, "Selected currency is not active.");
+
+  // Base currency: rate is always 1, policy/fixedRate are meaningless -
+  // store as if unset (section 4/22).
+  if (rows[0].isBaseCurrency) return { currencyId, ratePolicy: "RESOLVE_ON_GENERATION", fixedRate: null };
+
+  if (policy === "FIXED_RATE") {
+    const rate = Number(fixedRate);
+    if (!Number.isFinite(rate) || rate <= 0) {
+      throw new HttpError(400, "A Fixed Rate policy requires a fixed rate greater than zero.");
+    }
+    return { currencyId, ratePolicy: policy, fixedRate: rate };
+  }
+
+  return { currencyId, ratePolicy: policy, fixedRate: null };
+}
+
+async function createTemplate(input, userId, companyId = null) {
+  const { moduleType, templateName, partyId, partyName, descriptionTemplate, currency, currencyId, ratePolicy, fixedRate, amountMode, amountConfig, dueDateRule, lines, schedule } = input;
 
   ValidationService.validateTemplateInput({
     moduleType,
@@ -66,19 +116,26 @@ async function createTemplate(input, userId) {
     schedule,
   });
 
+  const currencyPolicy = await validateCurrencyPolicy({ currencyId, ratePolicy, fixedRate, companyId });
+
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
 
+    // Checkpoint 3D: company_id is stored at creation time (previously
+    // always NULL - nothing ever set it) so recurringGenerationService can
+    // resolve the CORRECT company's currency/rate at generation time
+    // instead of guessing "the first company in the table".
     const [templateResult] = await conn.execute(
       `INSERT INTO recurring_transaction_templates
-        (module_type, template_name, party_id, party_name, description_template, currency, amount_mode, amount_config, due_date_rule, status, created_by, updated_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?)`,
+        (module_type, template_name, party_id, party_name, description_template, currency, amount_mode, amount_config, due_date_rule, status, created_by, updated_by, currency_id, rate_policy, fixed_rate, company_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?, ?, ?, ?)`,
       [
         moduleType, templateName, partyId || null, partyName || null, descriptionTemplate || null,
         currency || "PHP", amountMode || "FIXED", JSON.stringify(amountConfig || {}),
         JSON.stringify(dueDateRule || { mode: "SAME_AS_TRANSACTION_DATE" }),
         userId, userId,
+        currencyPolicy.currencyId, currencyPolicy.ratePolicy, currencyPolicy.fixedRate, companyId,
       ]
     );
     const templateId = templateResult.insertId;
@@ -175,8 +232,8 @@ function parseScheduleRow(row) {
   };
 }
 
-async function getTemplateById(id) {
-  const [templates] = await pool.execute("SELECT * FROM recurring_transaction_templates WHERE id = ?", [id]);
+async function getTemplateById(id, companyId) {
+  const [templates] = await pool.execute("SELECT * FROM recurring_transaction_templates WHERE id = ? AND company_id = ?", [id, companyId]);
   if (templates.length === 0) throw new HttpError(404, "Recurring template not found.");
   const template = templates[0];
   template.amount_config = parseJsonColumn(template.amount_config, {});
@@ -196,9 +253,9 @@ async function getTemplateById(id) {
   return { template, lines, schedule };
 }
 
-async function listTemplates({ moduleType, status } = {}) {
-  const params = [];
-  let where = "WHERE 1=1";
+async function listTemplates({ moduleType, status, companyId } = {}) {
+  const params = [companyId];
+  let where = "WHERE t.company_id = ?";
   if (moduleType) {
     where += " AND t.module_type = ?";
     params.push(moduleType);
@@ -208,15 +265,28 @@ async function listTemplates({ moduleType, status } = {}) {
     params.push(status);
   }
 
+  // Checkpoint 3F: the list/management UI needs currency + rate policy
+  // (section 4) and a needs-attention signal (section 39's summary cards)
+  // without a second round-trip per row - a correlated subquery for each
+  // schedule's MOST RECENT occurrence status/reason is cheap at this
+  // table's scale (one row per template, not per line item) and avoids an
+  // N+1 pattern of fetching history separately for every template.
   const [rows] = await pool.execute(
     `SELECT
       t.id, t.module_type, t.template_name, t.party_name, t.status,
+      t.currency_id, cur.currency_code AS currencyCode, t.rate_policy, t.fixed_rate,
       t.created_by, t.created_at,
       s.id AS scheduleId, s.frequency, s.start_date, s.end_date,
       s.next_run_date, s.last_run_date, s.generated_count, s.max_occurrences,
-      s.is_active, s.is_paused
+      s.is_active, s.is_paused,
+      lo.status AS latestOccurrenceStatus, lo.reason AS latestOccurrenceReason
     FROM recurring_transaction_templates t
     LEFT JOIN recurring_transaction_schedules s ON s.template_id = t.id
+    LEFT JOIN currencies cur ON cur.id = t.currency_id
+    LEFT JOIN recurring_transaction_occurrences lo ON lo.id = (
+      SELECT id FROM recurring_transaction_occurrences
+      WHERE schedule_id = s.id ORDER BY id DESC LIMIT 1
+    )
     ${where}
     ORDER BY t.id DESC`,
     params
@@ -247,6 +317,71 @@ async function setPaused(scheduleId, paused, userId) {
     [paused ? 1 : 0, scheduleId]
   );
   if (result.affectedRows === 0) throw new HttpError(404, "Recurring schedule not found.");
+}
+
+// Checkpoint 3F, section 31: resuming a template whose next_run_date fell
+// in the past while it was paused must NOT silently generate every missed
+// occurrence, and must not silently skip them either - the user decides.
+// - No catchUpPolicy + overdue -> resolve() returns a decision request
+//   instead of resuming, with an approximate count of missed occurrences.
+// - catchUpPolicy: 'SKIP_TO_NEXT' -> record each missed date as a SKIPPED
+//   occurrence (audit-visible, same as the existing manual Skip action)
+//   and fast-forward next_run_date to the first date on/after today.
+// - catchUpPolicy: 'GENERATE_MISSED' (or not overdue at all) -> resume
+//   as-is; the scheduler/Generate Now will then generate the missed
+//   occurrences one at a time on subsequent ticks, each with its own
+//   correct historical rate for that occurrence's own date - this is the
+//   existing processSchedule/processDueSchedules behavior, now reached
+//   only via an explicit, informed choice rather than as a silent default.
+async function resumeSchedule(scheduleId, { catchUpPolicy, userId } = {}) {
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const schedule = await getScheduleForUpdate(conn, scheduleId);
+    const today = DateService.toISODate(DateService.toDT(new Date()));
+    const isOverdue = !!schedule.next_run_date && schedule.next_run_date < today;
+
+    if (isOverdue && !catchUpPolicy) {
+      let missedCount = 0;
+      let cursor = schedule.next_run_date;
+      while (cursor && cursor < today && missedCount < 60) {
+        missedCount++;
+        cursor = DateService.computeNextRunDate(schedule, cursor);
+      }
+      await conn.rollback();
+      return { requiresCatchUpDecision: true, nextRunDate: schedule.next_run_date, missedCount };
+    }
+
+    if (isOverdue && catchUpPolicy === "SKIP_TO_NEXT") {
+      const [templateRows] = await conn.execute("SELECT module_type FROM recurring_transaction_templates WHERE id = ?", [schedule.template_id]);
+      const moduleType = templateRows[0]?.module_type || null;
+
+      let cursor = schedule.next_run_date;
+      let guard = 0;
+      while (cursor && cursor < today && guard < 60) {
+        await conn.execute(
+          `INSERT IGNORE INTO recurring_transaction_occurrences
+            (schedule_id, occurrence_date, generated_module_type, trigger_type, status, reason, generated_by)
+           VALUES (?, ?, ?, 'MANUAL', 'SKIPPED', 'Skipped via resume catch-up (SKIP_TO_NEXT)', ?)`,
+          [scheduleId, cursor, moduleType, userId]
+        );
+        cursor = DateService.computeNextRunDate(schedule, cursor);
+        guard++;
+      }
+      await conn.execute("UPDATE recurring_transaction_schedules SET next_run_date = ?, is_paused = 0 WHERE id = ?", [cursor, scheduleId]);
+      await conn.commit();
+      return { resumed: true, catchUpPolicy: "SKIP_TO_NEXT", newNextRunDate: cursor };
+    }
+
+    await conn.execute("UPDATE recurring_transaction_schedules SET is_paused = 0 WHERE id = ?", [scheduleId]);
+    await conn.commit();
+    return { resumed: true, catchUpPolicy: isOverdue ? "GENERATE_MISSED" : null };
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
+  }
 }
 
 async function stopSchedule(scheduleId, userId) {
@@ -302,12 +437,43 @@ async function recordSkip(scheduleId, occurrenceDate, { reason, userId }) {
   }
 }
 
+// Checkpoint 3F, section 27/28: History must show the GENERATED
+// transaction's own stored document number/currency/rate/totals - never
+// re-resolve a current rate for a past occurrence. voucher_no/currency
+// come straight from invoice_headers + transaction_currency_snapshots (the
+// same snapshot row generation itself wrote with lockNow:false), joined
+// read-only here - nothing is recalculated. Only 'invoice' has a
+// generation target today (see GENERATION_MODULE_CONFIG in
+// recurringGenerationService.js), so the join is invoice-specific; a
+// future module type would add its own LEFT JOIN branch here the same way
+// GENERATION_MODULE_CONFIG gains a new key, not a rewritten query shape.
 async function getHistory(scheduleId) {
   const [rows] = await pool.execute(
-    "SELECT * FROM recurring_transaction_occurrences WHERE schedule_id = ? ORDER BY id DESC",
+    `SELECT
+      o.*,
+      inv.voucher_no AS documentNumber,
+      inv.status AS documentStatus,
+      snap.currency_code AS currencyCode,
+      snap.exchange_rate AS exchangeRate,
+      snap.rate_date AS rateEffectiveDate,
+      snap.rate_source AS rateSource,
+      snap.foreign_total AS foreignTotal,
+      snap.base_total AS baseTotal
+    FROM recurring_transaction_occurrences o
+    LEFT JOIN invoice_headers inv ON o.generated_module_type = 'invoice' AND inv.id = o.generated_transaction_id
+    LEFT JOIN transaction_currency_snapshots snap ON snap.transaction_type = 'INV' AND snap.transaction_id = o.generated_transaction_id
+    WHERE o.schedule_id = ?
+    ORDER BY o.id DESC`,
     [scheduleId]
   );
-  return rows.map((r) => ({ ...r, occurrence_date: normalizeDate(r.occurrence_date) }));
+  return rows.map((r) => ({
+    ...r,
+    occurrence_date: normalizeDate(r.occurrence_date),
+    rateEffectiveDate: r.rateEffectiveDate ? normalizeDate(r.rateEffectiveDate) : null,
+    exchangeRate: r.exchangeRate == null ? null : Number(r.exchangeRate),
+    foreignTotal: r.foreignTotal == null ? null : Number(r.foreignTotal),
+    baseTotal: r.baseTotal == null ? null : Number(r.baseTotal),
+  }));
 }
 
 module.exports = {
@@ -317,6 +483,7 @@ module.exports = {
   listTemplates,
   getScheduleForUpdate,
   setPaused,
+  resumeSchedule,
   stopSchedule,
   recordSkip,
   getHistory,

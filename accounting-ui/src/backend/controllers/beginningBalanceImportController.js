@@ -1,5 +1,6 @@
 const TemplateService = require("../services/beginningBalanceTemplateService");
 const ImportService = require("../services/beginningBalanceImportService");
+const CurrencyService = require("../services/currencyService");
 
 const SUPPORTED_MODULES = ["gl", "ar", "ap"];
 
@@ -18,7 +19,8 @@ exports.getTemplate = async (req, res) => {
 
   try {
     const format = req.query.format === "csv" ? "csv" : "xlsx";
-    const output = await TemplateService.buildTemplate(module, format);
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+    const output = await TemplateService.buildTemplate(module, format, companyId);
     const filenameBase = `${module.toUpperCase()}_Beginning_Balance_Template`;
 
     if (format === "csv") {
@@ -81,7 +83,7 @@ exports.commitImport = async (req, res) => {
     res.json(result);
   } catch (err) {
     console.error("BEGINNING BALANCE COMMIT ERROR:", err);
-    res.status(err.statusCode || 500).json({ message: err.message || "Failed to commit import" });
+    res.status(err.statusCode || 500).json({ message: err.message || "Failed to commit import", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   }
 };
 

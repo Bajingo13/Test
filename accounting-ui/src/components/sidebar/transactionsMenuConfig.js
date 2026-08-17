@@ -10,6 +10,7 @@ import {
   ShoppingCart,
   PiggyBank,
   FileWarning,
+  Repeat,
 } from "lucide-react";
 
 export const TRANSACTIONS_MENU = [
@@ -21,6 +22,7 @@ export const TRANSACTIONS_MENU = [
       { id: "quotation", label: "Quotation", icon: FileSignature, path: "/transactions/quotation" },
     ],
   },
+  { id: "recurring-transactions", label: "Recurring Transactions", icon: Repeat, path: "/transactions/recurring" },
   { id: "official-receipts", label: "Official Receipts", icon: Receipt, path: "/transactions/or" },
   { id: "check-voucher", label: "Check Voucher", icon: FileCheck2, path: "/transactions/cv" },
   { id: "journal-voucher", label: "Journal Voucher", icon: BookOpenCheck, path: "/transactions/jv" },

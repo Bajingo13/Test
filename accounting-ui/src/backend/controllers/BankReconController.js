@@ -1700,7 +1700,7 @@ exports.postAdjustment = async (req, res) => {
     await conn.rollback();
 
     if (err instanceof HttpError) {
-      return res.status(err.statusCode).json({ message: err.message });
+      return res.status(err.statusCode).json({ message: err.message, ...(err.code ? { code: err.code } : {}) });
     }
 
     console.error("POST ADJUSTMENT ERROR:", err);

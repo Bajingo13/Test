@@ -9,10 +9,10 @@ const pool = require("../db");
 // trialBalanceCheckerService surfaces that gap as its own informational
 // finding instead of silently changing what Trial Balance counts.
 function buildTrialBalanceUnionSql(dateFilterSql) {
-  const apvFilter = dateFilterSql ? `WHERE h.transaction_date ${dateFilterSql}` : "";
-  const cvFilter = dateFilterSql ? `WHERE h.transaction_date ${dateFilterSql}` : "";
-  const arapFilter = dateFilterSql ? `WHERE h.balance_date ${dateFilterSql}` : "";
-  const jvFilter = dateFilterSql ? `WHERE h.transaction_date ${dateFilterSql}` : "";
+  const apvFilter = dateFilterSql ? `WHERE h.transaction_date ${dateFilterSql} AND h.company_id = ?` : "WHERE h.company_id = ?";
+  const cvFilter = dateFilterSql ? `WHERE h.transaction_date ${dateFilterSql} AND h.company_id = ?` : "WHERE h.company_id = ?";
+  const arapFilter = dateFilterSql ? `WHERE h.balance_date ${dateFilterSql} AND h.company_id = ?` : "WHERE h.company_id = ?";
+  const jvFilter = dateFilterSql ? `WHERE h.transaction_date ${dateFilterSql} AND h.company_id = ?` : "WHERE h.company_id = ?";
 
   return `
     SELECT l.account_code, l.account_title AS account_name,
@@ -43,14 +43,14 @@ function buildTrialBalanceUnionSql(dateFilterSql) {
   `;
 }
 
-function buildDateParams(from, to) {
-  if (!from || !to) return { dateFilterSql: "", params: [] };
-  return { dateFilterSql: "BETWEEN ? AND ?", params: [from, to, from, to, from, to, from, to] };
+function buildDateParams(from, to, companyId) {
+  if (!from || !to) return { dateFilterSql: "", params: Array(4).fill(companyId) };
+  return { dateFilterSql: "BETWEEN ? AND ?", params: Array(4).fill([from, to, companyId]).flat() };
 }
 
 // Same per-account rows GET /api/reports/trial-balance has always returned.
-async function getTrialBalanceRows({ from, to }) {
-  const { dateFilterSql, params } = buildDateParams(from, to);
+async function getTrialBalanceRows({ from, to, companyId }) {
+  const { dateFilterSql, params } = buildDateParams(from, to, companyId);
   const unionSql = buildTrialBalanceUnionSql(dateFilterSql);
 
   const [rows] = await pool.execute(
@@ -85,8 +85,8 @@ async function getTrialBalanceRows({ from, to }) {
 // NETTED debit/credit values the report table renders (not a raw
 // pre-netting sum - those are not the same number). Computed entirely in
 // SQL/DECIMAL so the balanced/unbalanced decision never touches a JS float.
-async function getTrialBalanceTotals({ from, to }) {
-  const { dateFilterSql, params } = buildDateParams(from, to);
+async function getTrialBalanceTotals({ from, to, companyId }) {
+  const { dateFilterSql, params } = buildDateParams(from, to, companyId);
   const unionSql = buildTrialBalanceUnionSql(dateFilterSql);
 
   const [rows] = await pool.execute(

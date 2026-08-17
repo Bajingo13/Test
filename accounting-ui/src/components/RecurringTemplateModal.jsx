@@ -98,7 +98,20 @@ export default function RecurringTemplateModal({ open, onClose, transactionType,
   const [escalationDate, setEscalationDate] = useState("");
   const [escalationPercent, setEscalationPercent] = useState(5);
 
+  // Checkpoint 3D: template currency + rate policy (section 21-26). A
+  // recurring template stores WHICH currency and HOW to resolve its rate -
+  // it never permanently locks today's market rate (unless the policy is
+  // explicitly Fixed Rate).
+  const [currencyOptions, setCurrencyOptions] = useState([]);
+  const [baseCurrency, setBaseCurrency] = useState(null);
+  const [currencyId, setCurrencyId] = useState("");
+  const [ratePolicy, setRatePolicy] = useState("RESOLVE_ON_GENERATION");
+  const [fixedRate, setFixedRate] = useState("");
+  const isForeignTemplate = currencyId && baseCurrency && String(currencyId) !== String(baseCurrency.id);
+
   const [previewDates, setPreviewDates] = useState([]);
+  const [currentRatePreview, setCurrentRatePreview] = useState(null);
+  const [rateResolving, setRateResolving] = useState(false);
 
   // Keep the day-of-month / weekday / annual-month-day fields in sync with
   // whatever start date the user picks, so "Monthly, same day" defaults to
@@ -123,14 +136,29 @@ export default function RecurringTemplateModal({ open, onClose, transactionType,
     setPreviewDates([]);
     (async () => {
       try {
-        const res = await fetch(`${API_URL}/api/recurring-transactions/from-transaction/${transactionType}/${transactionId}`, {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json", ...authHeaders() },
-        });
-        const data = await handleResponse(res);
+        const [bootstrapRes, currenciesRes] = await Promise.all([
+          fetch(`${API_URL}/api/recurring-transactions/from-transaction/${transactionType}/${transactionId}`, {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json", ...authHeaders() },
+          }),
+          fetch(`${API_URL}/api/currencies`, { headers: authHeaders() }),
+        ]);
+        const data = await handleResponse(bootstrapRes);
         setBootstrap(data);
         setTemplateName(`${data.partyName || "Recurring"} - ${transactionType.toUpperCase()}`);
+
+        const currencyData = await currenciesRes.json().catch(() => []);
+        const active = Array.isArray(currencyData) ? currencyData.filter((c) => c.isActive) : [];
+        setCurrencyOptions(active);
+        const base = active.find((c) => c.isBaseCurrency) || null;
+        setBaseCurrency(base);
+        // Default to whatever currency the SOURCE transaction actually
+        // used (falls back to base currency for a base-currency source,
+        // or if that currency is no longer active) - the user can still
+        // change it before saving.
+        const sourceStillActive = data.sourceCurrencyId && active.some((c) => String(c.id) === String(data.sourceCurrencyId));
+        setCurrencyId(sourceStillActive ? String(data.sourceCurrencyId) : (base ? String(base.id) : ""));
       } catch (err) {
         setError(err.message || "Failed to load this transaction's data.");
       } finally {
@@ -218,8 +246,35 @@ export default function RecurringTemplateModal({ open, onClose, transactionType,
     }
   }
 
+  // Section 36: read-only "current available rate" for display - never
+  // persisted, never used to generate anything. Only meaningful for
+  // RESOLVE_ON_GENERATION, since FIXED_RATE already shows its own fixed
+  // number and MANUAL_REVIEW deliberately shows none until approved.
+  async function resolveCurrentRate() {
+    if (!isForeignTemplate) return;
+    setRateResolving(true);
+    setCurrentRatePreview(null);
+    try {
+      const res = await fetch(`${API_URL}/api/exchange-rates/resolve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({ currencyId, transactionDate: startDate }),
+      });
+      const data = await handleResponse(res);
+      setCurrentRatePreview(data.rate != null ? { rate: data.rate, effectiveDate: data.effectiveDate } : null);
+    } catch (err) {
+      setError(err.message || "Failed to resolve the current rate.");
+    } finally {
+      setRateResolving(false);
+    }
+  }
+
   async function handleSave() {
     if (!bootstrap) return;
+    if (isForeignTemplate && ratePolicy === "FIXED_RATE" && (!fixedRate || Number(fixedRate) <= 0)) {
+      setError("A Fixed Rate policy requires a fixed rate greater than zero.");
+      return;
+    }
     setBusy(true);
     setError(null);
     setSuccess(null);
@@ -235,7 +290,10 @@ export default function RecurringTemplateModal({ open, onClose, transactionType,
           partyName: bootstrap.partyName,
           descriptionTemplate: bootstrap.descriptionTemplate,
           lines: bootstrap.lines,
-          currency: "PHP",
+          currency: currencyOptions.find((c) => String(c.id) === String(currencyId))?.currencyCode || "PHP",
+          currencyId: isForeignTemplate ? currencyId : null,
+          ratePolicy: isForeignTemplate ? ratePolicy : "RESOLVE_ON_GENERATION",
+          fixedRate: isForeignTemplate && ratePolicy === "FIXED_RATE" ? Number(fixedRate) : null,
           amountMode,
           amountConfig: buildAmountConfig(),
           dueDateRule: buildDueDateRule(),
@@ -272,6 +330,58 @@ export default function RecurringTemplateModal({ open, onClose, transactionType,
                   <label>Template Name</label>
                   <input type="text" value={templateName} onChange={(e) => setTemplateName(e.target.value)} />
                 </div>
+
+                <div className="rtm-field">
+                  <label>Currency</label>
+                  <select
+                    value={currencyId}
+                    onChange={(e) => { setCurrencyId(e.target.value); setCurrentRatePreview(null); }}
+                  >
+                    {currencyOptions.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.currencySymbol} {c.currencyCode} — {c.currencyName}{c.isBaseCurrency ? " (Base)" : ""}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {isForeignTemplate && (
+                  <>
+                    <div className="rtm-field">
+                      <label>Rate Policy</label>
+                      <select value={ratePolicy} onChange={(e) => { setRatePolicy(e.target.value); setCurrentRatePreview(null); }}>
+                        <option value="RESOLVE_ON_GENERATION">Resolve on generation (recommended)</option>
+                        <option value="FIXED_RATE">Fixed rate</option>
+                        <option value="MANUAL_REVIEW">Manual review required</option>
+                      </select>
+                      <p className="rtm-hint">
+                        {ratePolicy === "RESOLVE_ON_GENERATION" && "Each occurrence resolves its own rate on its own generation date - never copies today's rate forward."}
+                        {ratePolicy === "FIXED_RATE" && "Every occurrence uses the fixed rate below until you edit the template. Already-generated occurrences are never changed."}
+                        {ratePolicy === "MANUAL_REVIEW" && "Occurrences are held (RATE_REVIEW_REQUIRED) until a rate is explicitly approved - nothing generates automatically."}
+                      </p>
+                    </div>
+
+                    {ratePolicy === "FIXED_RATE" && (
+                      <div className="rtm-field">
+                        <label>Fixed Rate</label>
+                        <input type="number" step="0.000001" min="0" value={fixedRate} onChange={(e) => setFixedRate(e.target.value)} placeholder="e.g. 57.50" />
+                      </div>
+                    )}
+
+                    {ratePolicy === "RESOLVE_ON_GENERATION" && (
+                      <div className="rtm-field">
+                        <button type="button" className="rtm-btn-secondary" onClick={resolveCurrentRate} disabled={rateResolving}>
+                          {rateResolving ? "Checking..." : "Check Current Available Rate"}
+                        </button>
+                        {currentRatePreview && (
+                          <p className="rtm-hint">
+                            Current rate: {currentRatePreview.rate} (as of {currentRatePreview.effectiveDate}). Preview only — rate may change before generation.
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </>
+                )}
 
                 <div className="rtm-field-row">
                   <div className="rtm-field">

@@ -4,6 +4,10 @@ const { logAudit } = require("../lib/audit");
 const { extractRowsFromXlsx, parseCsvRows } = require("./StatementImportService");
 const ValidationService = require("./beginningBalanceValidationService");
 const GLBeginningBalanceService = require("./GLBeginningBalanceService");
+const CurrencyService = require("./currencyService");
+const TransactionCurrencyService = require("./transactionCurrencyService");
+const BeginningBalanceCurrencyService = require("./beginningBalanceCurrencyService");
+const AccountingPeriodService = require("./accountingPeriodService");
 
 const TEMPLATE_VERSION = "1.0";
 
@@ -11,8 +15,11 @@ const GL_FIELD_ALIASES = {
   accountCode: ["account code", "acct code", "code"],
   accountTitle: ["account title", "account name", "title"],
   balanceDate: ["beginning balance date", "balance date", "date"],
-  debit: ["debit"],
-  credit: ["credit"],
+  currencyCode: ["currency code", "currency"],
+  debit: ["debit", "foreign debit"],
+  credit: ["credit", "foreign credit"],
+  openingRate: ["opening exchange rate", "opening rate", "exchange rate"],
+  rateDate: ["rate date"],
   referenceNo: ["reference number", "reference no", "reference"],
   description: ["description", "particulars"],
   department: ["department", "dept"],
@@ -31,10 +38,13 @@ const PARTY_FIELD_ALIASES = {
   balanceDate: ["beginning balance date", "balance date"],
   documentDate: ["document date", "doc date"],
   dueDate: ["due date"],
+  currencyCode: ["currency code", "currency"],
+  originalAmount: ["original foreign amount", "original amount", "amount"],
+  paidAmount: ["foreign paid amount", "paid amount"],
+  balanceAmount: ["foreign balance amount", "balance amount"],
+  openingRate: ["opening exchange rate", "opening rate", "exchange rate"],
+  rateDate: ["rate date"],
   referenceNo: ["reference number", "reference no", "reference"],
-  originalAmount: ["original amount", "amount"],
-  paidAmount: ["paid amount"],
-  balanceAmount: ["balance amount"],
 };
 
 function normalizeHeaderKey(header) {
@@ -72,13 +82,35 @@ function rowValuesToObject(rowValues, mapping) {
   return obj;
 }
 
-async function buildGLContext() {
+// Shared by GL and AR/AP contexts - a currencies lookup plus the company's
+// base currency, so validateCurrency() can check existence/active status
+// and "must be 1 for base currency" without any DB access of its own.
+async function buildCurrencyContext(companyId) {
+  const [currencies] = await pool.execute(
+    "SELECT id, currency_code AS currencyCode, is_active AS isActive, is_base_currency AS isBaseCurrency FROM currencies WHERE company_id = ?",
+    [companyId]
+  );
+  const currenciesByCode = new Map();
+  let baseCurrencyCode = "PHP";
+  let baseCurrencyId = null;
+  for (const c of currencies) {
+    currenciesByCode.set(ValidationService.normalizeCode(c.currencyCode), { ...c, isActive: !!c.isActive });
+    if (c.isBaseCurrency) {
+      baseCurrencyCode = c.currencyCode;
+      baseCurrencyId = c.id;
+    }
+  }
+  return { currenciesByCode, baseCurrencyCode, baseCurrencyId };
+}
+
+async function buildGLContext(companyId) {
   const [accounts] = await pool.execute("SELECT id, code, title FROM chart_of_accounts");
   const accountsByCode = new Map();
   for (const a of accounts) {
     accountsByCode.set(ValidationService.normalizeCode(a.code), a);
   }
-  return { accountsByCode };
+  const currencyContext = await buildCurrencyContext(companyId);
+  return { accountsByCode, ...currencyContext };
 }
 
 // AR/AP context: parties from general_libraries (by party_type), accounts
@@ -86,10 +118,10 @@ async function buildGLContext() {
 // the same flags already used elsewhere in this app (coa_validations),
 // more precise than the manual entry page's "title contains receivable/
 // payable" heuristic, which is left untouched for the manual page itself.
-async function buildPartyContext(partyType, coaValidationFlag) {
+async function buildPartyContext(partyType, coaValidationFlag, companyId) {
   const [parties] = await pool.execute(
-    "SELECT id, code, name FROM general_libraries WHERE party_type = ?",
-    [partyType]
+    "SELECT id, code, name FROM general_libraries WHERE party_type = ? AND company_id = ?",
+    [partyType, companyId]
   );
   const partiesByCode = new Map();
   for (const p of parties) {
@@ -108,7 +140,8 @@ async function buildPartyContext(partyType, coaValidationFlag) {
     accountsByCode.set(ValidationService.normalizeCode(a.code), a);
   }
 
-  return { partiesByCode, accountsByCode };
+  const currencyContext = await buildCurrencyContext(companyId);
+  return { partiesByCode, accountsByCode, ...currencyContext };
 }
 
 // Detects rows that would collide with an EXISTING (already-committed) DB
@@ -164,36 +197,39 @@ const MODULE_CONFIG = {
     duplicateInFileMessage: "This Account Code and Date combination appears more than once in the uploaded file.",
     findExistingDuplicates: findExistingGLDuplicates,
     hasBalanceCheck: true,
+    foreignTotalFields: ["debit", "credit"],
   },
   ar: {
     fieldAliases: PARTY_FIELD_ALIASES,
     requiredColumns: ["partyCode", "accountCode", "balanceDate", "dueDate", "originalAmount"],
     validate: ValidationService.validateARRow,
-    buildContext: () => buildPartyContext("CUSTOMER", "AR CODE"),
+    buildContext: (companyId) => buildPartyContext("CUSTOMER", "AR CODE", companyId),
     duplicateKeyFn: (r) => (r.documentNumber ? r.documentNumber.toLowerCase() : null),
     duplicateLabel: "Document Number",
     duplicateExistingMessage: "An AR beginning balance with this Document Number already exists in the system.",
     duplicateInFileMessage: "This Document Number appears more than once in the uploaded file.",
     findExistingDuplicates: (rows) => findExistingARAPDuplicates(rows, "AR"),
     hasBalanceCheck: false,
+    foreignTotalFields: ["originalAmount"],
   },
   ap: {
     fieldAliases: PARTY_FIELD_ALIASES,
     requiredColumns: ["partyCode", "accountCode", "balanceDate", "dueDate", "originalAmount"],
     validate: ValidationService.validateAPRow,
-    buildContext: () => buildPartyContext("SUPPLIER", "AP CODE"),
+    buildContext: (companyId) => buildPartyContext("SUPPLIER", "AP CODE", companyId),
     duplicateKeyFn: (r) => (r.documentNumber ? r.documentNumber.toLowerCase() : null),
     duplicateLabel: "Document Number",
     duplicateExistingMessage: "An AP beginning balance with this Document Number already exists in the system.",
     duplicateInFileMessage: "This Document Number appears more than once in the uploaded file.",
     findExistingDuplicates: (rows) => findExistingARAPDuplicates(rows, "AP"),
     hasBalanceCheck: false,
+    foreignTotalFields: ["originalAmount"],
   },
 };
 
-async function validateAndScoreRows(module, dataRows, mapping) {
+async function validateAndScoreRows(module, dataRows, mapping, companyId) {
   const cfg = MODULE_CONFIG[module];
-  const context = await cfg.buildContext();
+  const context = await cfg.buildContext(companyId);
 
   const parsedRows = dataRows.map((rowValues) => rowValuesToObject(rowValues, mapping));
 
@@ -236,11 +272,13 @@ async function validateAndScoreRows(module, dataRows, mapping) {
   });
 }
 
-async function previewImport({ module, buffer, filename, duplicateMode, user }) {
+async function previewImport({ module, buffer, filename, duplicateMode, user, companyId: requestedCompanyId }) {
   const cfg = MODULE_CONFIG[module];
   if (!cfg) {
     throw Object.assign(new Error(`Unsupported module "${module}"`), { statusCode: 400 });
   }
+
+  const companyId = await CurrencyService.resolveCompanyIdForWrite(user, requestedCompanyId);
 
   const { headers, dataRows } = await extractRows(buffer, filename);
 
@@ -258,12 +296,16 @@ async function previewImport({ module, buffer, filename, duplicateMode, user }) 
     );
   }
 
-  const scoredRows = await validateAndScoreRows(module, dataRows, mapping);
+  const scoredRows = await validateAndScoreRows(module, dataRows, mapping, companyId);
 
   const validRows = scoredRows.filter((r) => r.status === "VALID" || r.status === "WARNING");
   const balanceSummary = cfg.hasBalanceCheck
     ? ValidationService.validateGLBatchBalance(validRows.map((r) => r.resolved))
     : null;
+  const foreignTotalsByCurrency = ValidationService.summarizeForeignTotalsByCurrency(
+    validRows.map((r) => r.resolved),
+    cfg.foreignTotalFields
+  );
 
   const summary = {
     totalRows: scoredRows.length,
@@ -272,6 +314,7 @@ async function previewImport({ module, buffer, filename, duplicateMode, user }) 
     invalidRows: scoredRows.filter((r) => r.status === "INVALID").length,
     duplicateRows: scoredRows.filter((r) => r.status === "DUPLICATE").length,
     ...(balanceSummary || {}),
+    foreignTotalsByCurrency,
   };
 
   const conn = await pool.getConnection();
@@ -345,31 +388,49 @@ async function previewImport({ module, buffer, filename, duplicateMode, user }) 
 // handler uses, plus a matching arap_payment_schedules row (schedule dates
 // beginning balances need one to appear consistently with manually-entered
 // ones in reports/aging that join through it).
-async function findOrCreateARAPHeader(conn, { balanceType, balanceDate }) {
+async function findOrCreateARAPHeader(conn, { balanceType, balanceDate, companyId }) {
   const [existing] = await conn.execute(
-    `SELECT id FROM arap_beginning_balance_headers WHERE balance_type = ? AND balance_date = ? LIMIT 1`,
-    [balanceType, balanceDate]
+    `SELECT id FROM arap_beginning_balance_headers WHERE balance_type = ? AND balance_date = ? AND company_id = ? LIMIT 1`,
+    [balanceType, balanceDate, companyId]
   );
 
   if (existing.length > 0) return existing[0].id;
 
   const [result] = await conn.execute(
-    `INSERT INTO arap_beginning_balance_headers (balance_type, balance_date, currency_code, currency_name, remarks, status)
-     VALUES (?, ?, 'PHP', 'PHILIPPINE PESO', ?, 'Posted')`,
-    [balanceType, balanceDate, `Imported ${new Date().toISOString().slice(0, 10)}`]
+    `INSERT INTO arap_beginning_balance_headers (company_id, balance_type, balance_date, currency_code, currency_name, remarks, status)
+     VALUES (?, ?, ?, 'PHP', 'PHILIPPINE PESO', ?, 'Posted')`,
+    [companyId, balanceType, balanceDate, `Imported ${new Date().toISOString().slice(0, 10)}`]
   );
 
   return result.insertId;
 }
 
-async function insertARAPLine(conn, headerId, row, isAR) {
-  const amount = row.originalAmount - row.paidAmount;
+async function insertARAPLine(conn, headerId, row, isAR, { user, companyId, txnType }) {
+  // debit/credit store the NET remaining amount (original - paid), matching
+  // this import path's existing convention (unchanged from pre-3D) - the
+  // NEW foreign_original/paid/balance columns separately preserve the true
+  // original foreign amount for future OR/CV settlement and realized FX.
+  const netAmount = row.originalAmount - row.paidAmount;
+
+  const currencyResult = await BeginningBalanceCurrencyService.resolveLineCurrency({
+    user,
+    companyId,
+    transactionType: txnType,
+    transactionId: null,
+    currencyPayload: row.currencyId ? { currencyId: row.currencyId, isManualRate: true, exchangeRate: row.openingRate, rateDate: row.rateDate, overrideReason: "Beginning balance import" } : null,
+    rateDate: row.rateDate || row.balanceDate,
+  });
+  const rate = Number(currencyResult.rateInfo.exchangeRate) || 1;
+  const baseNet = TransactionCurrencyService.roundMoney(netAmount * rate);
+  const baseOriginal = TransactionCurrencyService.roundMoney(row.originalAmount * rate);
+  const basePaid = TransactionCurrencyService.roundMoney((row.paidAmount || 0) * rate);
 
   const [lineResult] = await conn.execute(
     `INSERT INTO arap_beginning_balance_lines
       (header_id, party_id, party_code, party_name, account_id, account_code, account_title,
-       reference_no, invoice_no, document_date, due_date, debit, credit, balance_amount, paid_amount, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       reference_no, invoice_no, document_date, due_date, debit, credit, balance_amount, paid_amount, status,
+       currency_id, foreign_original_amount, foreign_paid_amount, foreign_balance_amount)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       headerId,
       row.partyId,
@@ -382,34 +443,57 @@ async function insertARAPLine(conn, headerId, row, isAR) {
       row.documentNumber,
       row.documentDate,
       row.dueDate,
-      isAR ? amount : 0,
-      isAR ? 0 : amount,
-      row.balanceAmount,
-      row.paidAmount || 0,
+      isAR ? baseNet : 0,
+      isAR ? 0 : baseNet,
+      baseNet,
+      basePaid,
       row.paidAmount > 0 ? "Partially Paid" : "Unpaid",
+      currencyResult.currencyId,
+      baseOriginal,
+      basePaid,
+      baseNet,
     ]
   );
+
+  const lineId = lineResult.insertId;
+
+  await TransactionCurrencyService.saveSnapshot(conn, {
+    companyId,
+    transactionType: txnType,
+    transactionId: lineId,
+    currencyId: currencyResult.currencyId,
+    currencyCode: currencyResult.currencyCode,
+    baseCurrencyId: currencyResult.baseCurrency.id,
+    baseCurrencyCode: currencyResult.baseCurrency.currencyCode,
+    rateInfo: currencyResult.rateInfo,
+    foreignTotals: { foreignSubtotal: 0, foreignTax: 0, foreignEwt: 0, foreignTotal: row.originalAmount },
+    baseTotals: { baseSubtotal: 0, baseTax: 0, baseEwt: 0, baseTotal: baseOriginal },
+    userId: user.id,
+    lockNow: true,
+  });
 
   await conn.execute(
     `INSERT INTO arap_payment_schedules
       (beginning_balance_line_id, schedule_date, amount, paid_amount, balance_amount, status)
      VALUES (?, ?, ?, ?, ?, ?)`,
     [
-      lineResult.insertId,
+      lineId,
       row.dueDate,
-      row.balanceAmount,
+      baseNet,
       0,
-      row.balanceAmount,
+      baseNet,
       "Unpaid",
     ]
   );
 }
 
-async function commitImport({ module, batchId, user }) {
+async function commitImport({ module, batchId, user, companyId: requestedCompanyId }) {
   const cfg = MODULE_CONFIG[module];
   if (!cfg) {
     throw Object.assign(new Error(`Unsupported module "${module}"`), { statusCode: 400 });
   }
+
+  const companyId = await CurrencyService.resolveCompanyIdForWrite(user, requestedCompanyId);
 
   const [batchRows] = await pool.execute("SELECT * FROM import_batches WHERE id = ?", [batchId]);
   const batch = batchRows[0];
@@ -433,8 +517,9 @@ async function commitImport({ module, batchId, user }) {
   );
 
   // Re-validate against FRESH context - do not trust preview's stored
-  // status, since master data (accounts/parties) may have changed since.
-  const context = await cfg.buildContext();
+  // status, since master data (accounts/parties/currencies) may have
+  // changed since.
+  const context = await cfg.buildContext(companyId);
 
   const revalidated = storedRows.map((stored) => {
     const raw = stored.raw_data; // mysql2 already parses JSON columns
@@ -495,6 +580,17 @@ async function commitImport({ module, batchId, user }) {
   try {
     await conn.beginTransaction();
 
+    // Checkpoint 5 section 26: validate EVERY distinct row date against
+    // period lock before inserting anything - one closed-period row blocks
+    // the whole batch atomically, same as an ordinary validation error
+    // above never silently drops just that row.
+    const distinctDates = [...new Set(toInsert.map((r) => r.resolved.balanceDate))];
+    for (const dateKey of distinctDates) {
+      await AccountingPeriodService.assertPeriodOpen({
+        companyId, transactionDate: dateKey, operation: "IMPORT", user,
+      }, conn);
+    }
+
     if (module === "gl") {
       const headerCache = new Map();
 
@@ -504,37 +600,48 @@ async function commitImport({ module, batchId, user }) {
           const headerId = await GLBeginningBalanceService.findOrCreateHeader(conn, {
             balanceDate: dateKey,
             title: `Imported ${new Date().toISOString().slice(0, 10)}`,
+            companyId,
           });
           headerCache.set(dateKey, headerId);
         }
 
-        await GLBeginningBalanceService.insertLine(conn, headerCache.get(dateKey), {
-          accountId: row.resolved.accountId,
-          accountCode: row.resolved.accountCode,
-          accountTitle: row.resolved.accountTitle,
-          projectCode: row.resolved.project,
-          deptCode: row.resolved.department,
-          debit: row.resolved.debit,
-          credit: row.resolved.credit,
-          referenceNo: row.resolved.referenceNo,
-          remarks: row.resolved.remarks,
-        });
+        await GLBeginningBalanceService.insertLine(
+          conn,
+          headerCache.get(dateKey),
+          {
+            accountId: row.resolved.accountId,
+            accountCode: row.resolved.accountCode,
+            accountTitle: row.resolved.accountTitle,
+            projectCode: row.resolved.project,
+            deptCode: row.resolved.department,
+            debit: row.resolved.debit,
+            credit: row.resolved.credit,
+            referenceNo: row.resolved.referenceNo,
+            remarks: row.resolved.remarks,
+            currencyId: row.resolved.currencyId,
+            isManualRate: !row.resolved.isBase,
+            exchangeRate: row.resolved.openingRate,
+            rateDate: row.resolved.rateDate,
+          },
+          { user, companyId, balanceDate: dateKey }
+        );
 
         imported++;
       }
     } else {
       const balanceType = module.toUpperCase();
       const isAR = module === "ar";
+      const txnType = isAR ? "AR_BEGINNING" : "AP_BEGINNING";
       const headerCache = new Map();
 
       for (const row of toInsert) {
         const dateKey = row.resolved.balanceDate;
         if (!headerCache.has(dateKey)) {
-          const headerId = await findOrCreateARAPHeader(conn, { balanceType, balanceDate: dateKey });
+          const headerId = await findOrCreateARAPHeader(conn, { balanceType, balanceDate: dateKey, companyId });
           headerCache.set(dateKey, headerId);
         }
 
-        await insertARAPLine(conn, headerCache.get(dateKey), row.resolved, isAR);
+        await insertARAPLine(conn, headerCache.get(dateKey), row.resolved, isAR, { user, companyId, txnType });
         imported++;
       }
     }

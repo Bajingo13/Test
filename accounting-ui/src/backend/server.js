@@ -28,8 +28,13 @@ const { templateImportUpload, handleUpload } = require("./lib/uploadMiddleware")
 const COAImportService = require("./services/COAImportService");
 const GenLibImportService = require("./services/GenLibImportService");
 const GLBeginningBalanceService = require("./services/GLBeginningBalanceService");
+const BeginningBalanceCurrencyService = require("./services/beginningBalanceCurrencyService");
 const TrialBalanceDifferenceService = require("./services/trialBalanceDifferenceService");
 const { computeEwtTaxableBase, computeEwtAmount } = require("./services/ewtCalculationService");
+const CurrencyService = require("./services/currencyService");
+const TransactionCurrencyService = require("./services/transactionCurrencyService");
+const AgingReportService = require("./services/agingReportService");
+const AccountingPeriodService = require("./services/accountingPeriodService");
 
 console.log("ENV FILE:", require("path").resolve(".env"));
 console.log("JWT_SECRET loaded:", Boolean(process.env.JWT_SECRET));
@@ -52,96 +57,56 @@ app.get("/health", (req, res) => {
 });
 
 
-async function updateInvoicePaymentStatus(conn, invoiceId) {
-  const [invoiceRows] = await conn.execute(
-    `SELECT 
-       total_debit AS totalDebit,
-       total_credit AS totalCredit
-     FROM invoice_headers
-     WHERE id = ?`,
-    [invoiceId]
-  );
+// Checkpoint 3B: payment-status recompute + payment-application logic
+// lives in paymentApplicationService.js (extracted so it's directly
+// unit-testable against the real DB) - destructured here so every
+// existing call site below keeps calling these by the same bare names.
+const {
+  updateInvoicePaymentStatus,
+  updateApvPaymentStatus,
+  applyInvoicePayment,
+  applyApvPayment,
+  applyForeignSettlementToLines,
+} = require("./services/paymentApplicationService");
 
-  if (invoiceRows.length === 0) return;
+// Checkpoint 3FX (section 26): one audit entry per OR/CV that actually
+// realized an FX difference, written on the SAME `conn` as the rest of
+// the post so it only survives if the whole atomic transaction commits -
+// an audit record for a rolled-back post would be worse than none.
+// Per-application detail (source rate/payment rate/source base/payment
+// base/FX account) is already fully reconstructable from
+// transaction_applications itself (section 9), so this entry summarizes
+// rather than repeats it.
+async function logFxSettlementAudit(conn, { req, moduleKey, appliedType, appliedId, applications, fxResult }) {
+  if (!fxResult || (fxResult.totalGainAmount === 0 && fxResult.totalLossAmount === 0)) return;
 
-  const totalAmount = Math.max(
-    Number(invoiceRows[0].totalDebit || 0),
-    Number(invoiceRows[0].totalCredit || 0)
-  );
-
-  const [paymentRows] = await conn.execute(
-    `SELECT COALESCE(SUM(amount), 0) AS paidAmount
-     FROM transaction_applications
-     WHERE source_type = 'INV'
-       AND source_id = ?`,
-    [invoiceId]
-  );
-
-  const paidAmount = Number(paymentRows[0].paidAmount || 0);
-  const balanceAmount = Math.max(totalAmount - paidAmount, 0);
-
-  let paymentStatus = "Unpaid";
-
-  if (paidAmount > 0 && paidAmount < totalAmount) {
-    paymentStatus = "Partially Paid";
-  } else if (paidAmount >= totalAmount && totalAmount > 0) {
-    paymentStatus = "Paid";
-  }
-
-  await conn.execute(
-    `UPDATE invoice_headers
-     SET paid_amount = ?,
-         balance_amount = ?,
-         payment_status = ?
-     WHERE id = ?`,
-    [paidAmount, balanceAmount, paymentStatus, invoiceId]
-  );
-}
-
-async function updateApvPaymentStatus(conn, apvId) {
-  const [apvRows] = await conn.execute(
-    `SELECT 
-       total_debit AS totalDebit,
-       total_credit AS totalCredit
-     FROM apv_headers
-     WHERE id = ?`,
-    [apvId]
-  );
-
-  if (apvRows.length === 0) return;
-
-  const totalAmount = Math.max(
-    Number(apvRows[0].totalDebit || 0),
-    Number(apvRows[0].totalCredit || 0)
-  );
-
-  const [paymentRows] = await conn.execute(
-    `SELECT COALESCE(SUM(amount), 0) AS paidAmount
-     FROM transaction_applications
-     WHERE source_type = 'APV'
-       AND source_id = ?`,
-    [apvId]
-  );
-
-  const paidAmount = Number(paymentRows[0].paidAmount || 0);
-  const balanceAmount = Math.max(totalAmount - paidAmount, 0);
-
-  let paymentStatus = "Unpaid";
-
-  if (paidAmount > 0 && paidAmount < totalAmount) {
-    paymentStatus = "Partially Paid";
-  } else if (paidAmount >= totalAmount && totalAmount > 0) {
-    paymentStatus = "Paid";
-  }
-
-  await conn.execute(
-    `UPDATE apv_headers
-     SET paid_amount = ?,
-         balance_amount = ?,
-         payment_status = ?
-     WHERE id = ?`,
-    [paidAmount, balanceAmount, paymentStatus, apvId]
-  );
+  const withFx = applications.filter((a) => a && a.fxDifference !== 0);
+  await logAudit(conn, {
+    module: moduleKey,
+    entityType: appliedType,
+    entityId: appliedId,
+    action: "FOREIGN_SETTLEMENT_POSTED",
+    description:
+      `${appliedType} #${appliedId} posted a realized foreign-exchange settlement: ` +
+      `Gain ${fxResult.totalGainAmount.toFixed(2)}, Loss ${fxResult.totalLossAmount.toFixed(2)}`,
+    afterData: {
+      totalGainAmount: fxResult.totalGainAmount,
+      totalLossAmount: fxResult.totalLossAmount,
+      applications: withFx.map((a) => ({
+        sourceType: a.sourceCurrencyCode ? "INV/APV" : null,
+        foreignAmountApplied: a.foreignAmountApplied,
+        sourceExchangeRate: a.sourceExchangeRate,
+        paymentExchangeRate: a.paymentExchangeRate,
+        sourceBaseAmount: a.sourceBaseAmount,
+        paymentBaseAmount: a.paymentBaseAmount,
+        fxDifference: a.fxDifference,
+        fxDirection: a.fxDirection,
+        fxAccountCode: a.fxAccount?.accountCode || null,
+      })),
+    },
+    user: req.user,
+    ...requestMeta(req),
+  });
 }
 
 // ===================== LOGIN =====================
@@ -271,6 +236,7 @@ app.post("/api/login", loginRateLimiter, async (req, res) => {
 
 app.get("/api/genlib", authenticateToken, authorizePermission("FILESETUP.GENLIB", "VIEW"), async (req, res) => {
   try {
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
     const [rows] = await pool.execute(`
       SELECT
         id,
@@ -298,8 +264,9 @@ app.get("/api/genlib", authenticateToken, authorizePermission("FILESETUP.GENLIB"
         is_prospective AS isProspective,
         is_client AS isClient
       FROM general_libraries
+      WHERE company_id = ?
       ORDER BY id DESC
-    `);
+    `, [companyId]);
 
     const records = rows.map((row) => ({
       ...row,
@@ -317,16 +284,18 @@ app.get("/api/genlib", authenticateToken, authorizePermission("FILESETUP.GENLIB"
 app.post("/api/genlib", authenticateToken, authorizePermission("FILESETUP.GENLIB", "CREATE"), async (req, res) => {
   try {
     const item = req.body;
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, item.companyId);
 
     const [result] = await pool.execute(
       `INSERT INTO general_libraries (
-        code, party_type, name, status, start_date,
+        company_id, code, party_type, name, status, start_date,
         address1, address2, address3, attention, position,
         telephone, fax, mobile, tin, email,
         atc_code, ewt_code, category, branch_code, rdo_code,
         notes, is_prospective, is_client
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
+        companyId,
         item.code,
         item.type,
         item.name,
@@ -373,6 +342,12 @@ app.put("/api/genlib/:id", authenticateToken, authorizePermission("FILESETUP.GEN
   try {
     const { id } = req.params;
     const item = req.body;
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, item.companyId);
+
+    const [ownerRows] = await pool.execute("SELECT company_id FROM general_libraries WHERE id = ?", [id]);
+    if (!ownerRows.length || ownerRows[0].company_id !== companyId) {
+      return res.status(404).json({ message: "Record not found" });
+    }
 
     await pool.execute(
       `UPDATE general_libraries SET
@@ -399,7 +374,7 @@ app.put("/api/genlib/:id", authenticateToken, authorizePermission("FILESETUP.GEN
         notes = ?,
         is_prospective = ?,
         is_client = ?
-      WHERE id = ?`,
+      WHERE id = ? AND company_id = ?`,
       [
         item.code,
         item.type,
@@ -425,6 +400,7 @@ app.put("/api/genlib/:id", authenticateToken, authorizePermission("FILESETUP.GEN
         item.isProspective ? 1 : 0,
         item.isClient ? 1 : 0,
         id,
+        companyId,
       ]
     );
 
@@ -441,8 +417,14 @@ app.put("/api/genlib/:id", authenticateToken, authorizePermission("FILESETUP.GEN
 app.delete("/api/genlib/:id", authenticateToken, authorizePermission("FILESETUP.GENLIB", "DELETE"), async (req, res) => {
   try {
     const { id } = req.params;
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId || req.body?.companyId);
 
-    await pool.execute("DELETE FROM general_libraries WHERE id = ?", [id]);
+    const [ownerRows] = await pool.execute("SELECT company_id FROM general_libraries WHERE id = ?", [id]);
+    if (!ownerRows.length || ownerRows[0].company_id !== companyId) {
+      return res.status(404).json({ message: "Record not found" });
+    }
+
+    await pool.execute("DELETE FROM general_libraries WHERE id = ? AND company_id = ?", [id, companyId]);
 
     res.json({
       success: true,
@@ -540,7 +522,8 @@ app.post(
         });
       }
 
-      const imported = await GenLibImportService.insertGenLibRows(ready);
+      const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.body?.companyId);
+      const imported = await GenLibImportService.insertGenLibRows(ready, companyId);
 
       res.json({ success: true, imported, skipped, warnings });
     } catch (err) {
@@ -831,9 +814,10 @@ app.post(
 
 app.get("/api/invoices", authenticateToken, authorizePermission("TRANSACTIONS.INVOICE", "VIEW"), async (req, res) => {
   try {
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
     const [rows] = await pool.execute(`
       SELECT
-        id,
+        invoice_headers.id AS id,
         voucher_no AS voucherNo,
         customer_id AS customerId,
         customer_name AS customerName,
@@ -850,50 +834,71 @@ app.get("/api/invoices", authenticateToken, authorizePermission("TRANSACTIONS.IN
         status,
         invoice_type AS invoiceType,
         recurrence_frequency AS recurrenceFrequency,
-        created_at AS createdAt,
-        updated_at AS updatedAt
+        invoice_headers.currency_id AS currencyId,
+        cur.currency_code AS currencyCode,
+        cur.currency_symbol AS currencySymbol,
+        snap.foreign_total AS foreignTotal,
+        invoice_headers.created_at AS createdAt,
+        invoice_headers.updated_at AS updatedAt
       FROM invoice_headers
-      ORDER BY id DESC
-    `);
+      LEFT JOIN currencies cur ON cur.id = invoice_headers.currency_id
+      LEFT JOIN transaction_currency_snapshots snap ON snap.transaction_type = 'INV' AND snap.transaction_id = invoice_headers.id
+      WHERE invoice_headers.company_id = ?
+      ORDER BY invoice_headers.id DESC
+    `, [companyId]);
 
     res.json(rows);
   } catch (err) {
     console.error("GET INVOICE ERROR:", err);
-    res.status(500).json({ message: "Failed to load invoice records" });
+    res.status(err.statusCode || 500).json({ message: err.statusCode ? err.message : "Failed to load invoice records" });
   }
 });
 
 app.get("/api/invoices/unpaid", authenticateToken, authorizePermission("TRANSACTIONS.INVOICE", "VIEW"), async (req, res) => {
   try {
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
     const { customerId, customerName } = req.query;
 
-    const params = [];
+    const params = [companyId];
     let customerFilterInv = "";
     let customerFilterBb = "";
 
     if (customerId) {
       customerFilterInv = " AND customer_id = ? ";
       customerFilterBb = " AND l.party_id = ? ";
-      params.push(customerId, customerId);
+      params.push(customerId);
     } else if (customerName) {
       customerFilterInv = " AND TRIM(LOWER(customer_name)) = TRIM(LOWER(?)) ";
       customerFilterBb = " AND TRIM(LOWER(l.party_name)) = TRIM(LOWER(?)) ";
-      params.push(customerName, customerName);
+      params.push(customerName);
     }
+    params.push(companyId);
+    if (customerId) params.push(customerId);
+    else if (customerName) params.push(customerName);
 
     const [rows] = await pool.execute(
       `
       SELECT
-        id,
+        invoice_headers.id AS id,
         'INV' AS sourceType,
         voucher_no AS voucherNo,
         customer_id AS customerId,
         customer_name AS customerName,
         total_debit AS totalAmount,
         COALESCE(paid_amount, 0) AS paidAmount,
-        COALESCE(balance_amount, total_debit, 0) AS balanceAmount
+        COALESCE(balance_amount, total_debit, 0) AS balanceAmount,
+        invoice_headers.currency_id AS currencyId,
+        cur.currency_code AS currencyCode,
+        cur.currency_symbol AS currencySymbol,
+        snap.exchange_rate AS sourceExchangeRate,
+        snap.foreign_total AS foreignOriginalAmount,
+        invoice_headers.foreign_paid_amount AS foreignPaidAmount,
+        invoice_headers.foreign_balance_amount AS foreignBalanceAmount
       FROM invoice_headers
-      WHERE COALESCE(balance_amount, total_debit, 0) > 0
+      LEFT JOIN currencies cur ON cur.id = invoice_headers.currency_id
+      LEFT JOIN transaction_currency_snapshots snap ON snap.transaction_type = 'INV' AND snap.transaction_id = invoice_headers.id
+      WHERE invoice_headers.company_id = ?
+        AND COALESCE(balance_amount, total_debit, 0) > 0
         AND COALESCE(payment_status, 'Unpaid') != 'Paid'
         ${customerFilterInv}
 
@@ -907,10 +912,20 @@ app.get("/api/invoices/unpaid", authenticateToken, authorizePermission("TRANSACT
         l.party_name AS customerName,
         l.debit AS totalAmount,
         COALESCE(l.paid_amount, 0) AS paidAmount,
-        COALESCE(l.balance_amount, l.debit, 0) AS balanceAmount
+        COALESCE(l.balance_amount, l.debit, 0) AS balanceAmount,
+        l.currency_id AS currencyId,
+        bbcur.currency_code AS currencyCode,
+        bbcur.currency_symbol AS currencySymbol,
+        bbsnap.exchange_rate AS sourceExchangeRate,
+        l.foreign_original_amount AS foreignOriginalAmount,
+        l.foreign_paid_amount AS foreignPaidAmount,
+        l.foreign_balance_amount AS foreignBalanceAmount
       FROM arap_beginning_balance_lines l
       JOIN arap_beginning_balance_headers h ON h.id = l.header_id
+      LEFT JOIN currencies bbcur ON bbcur.id = l.currency_id
+      LEFT JOIN transaction_currency_snapshots bbsnap ON bbsnap.transaction_type = 'AR_BEGINNING' AND bbsnap.transaction_id = l.id
       WHERE h.balance_type = 'AR'
+        AND h.company_id = ?
         AND COALESCE(l.balance_amount, l.debit, 0) > 0
         AND COALESCE(l.status, 'Unpaid') != 'Paid'
         ${customerFilterBb}
@@ -930,6 +945,7 @@ app.get("/api/invoices/unpaid", authenticateToken, authorizePermission("TRANSACT
 app.get("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACTIONS.INVOICE", "VIEW"), async (req, res) => {
   try {
     const { id } = req.params;
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
     const [headers] = await pool.execute(
       `SELECT
@@ -955,11 +971,12 @@ app.get("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACTION
         tax_rate AS taxRate,
         tax_withheld_amount AS taxWithheldAmount,
         taxable_base AS taxableBase,
+        currency_id AS currencyId,
         created_at AS createdAt,
         updated_at AS updatedAt
       FROM invoice_headers
-      WHERE id = ?`,
-      [id]
+      WHERE id = ? AND company_id = ?`,
+      [id, companyId]
     );
 
     if (headers.length === 0) {
@@ -977,7 +994,9 @@ app.get("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACTION
         debit,
         credit,
         gen_ref AS genRef,
-        gen_name AS genName
+        gen_name AS genName,
+        foreign_debit AS foreignDebit,
+        foreign_credit AS foreignCredit
       FROM invoice_lines
       WHERE invoice_id = ?
       ORDER BY id ASC`,
@@ -1001,14 +1020,17 @@ app.get("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACTION
       [id]
     );
 
+    const currencySnapshot = await TransactionCurrencyService.getSnapshot("INV", id);
+
     res.json({
       ...headers[0],
       lines,
       applications,
+      currency: currencySnapshot,
     });
   } catch (err) {
     console.error("GET INVOICE DETAILS ERROR:", err);
-    res.status(500).json({ message: "Failed to load invoice details" });
+    res.status(err.statusCode || 500).json({ message: err.statusCode ? err.message : "Failed to load invoice details" });
   }
 });
 
@@ -1033,12 +1055,16 @@ app.post("/api/invoices", authenticateToken, authorizePermission("TRANSACTIONS.I
       lines,
       atcCode,
       taxWithheldAmount,
+      currency,
     } = req.body;
 
     await conn.beginTransaction();
 
-    const total = Number(totalDebit || 0);
+    const total = Number(totalDebit || 0); // gross in the TRANSACTION currency
+    const finalStatus = status || "DRAFT";
 
+    // EWT stays completely unchanged - still operates on the raw
+    // transaction-currency lines/gross, exactly as the EWT phase built it.
     const ewt = await resolveTaxWithholding(conn, {
       moduleLabel: "Invoice",
       atcCode,
@@ -1048,8 +1074,19 @@ app.post("/api/invoices", authenticateToken, authorizePermission("TRANSACTIONS.I
       vatKeyword: "output vat",
     });
 
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
+    await AccountingPeriodService.assertPeriodOpen({
+      companyId, transactionDate, operation: "CREATE", user: req.user,
+    }, conn);
+    const currencyResult = await TransactionCurrencyService.resolveTransactionCurrency({
+      user: req.user, companyId, transactionType: "INV", transactionId: null, currencyPayload: currency,
+      lines, grossAmount: total, vatKeyword: "output vat", taxWithheldAmount: ewt.taxWithheldAmount,
+      isPosting: String(finalStatus).toUpperCase() === "POSTED",
+    });
+
     const [result] = await conn.execute(
       `INSERT INTO invoice_headers (
+        company_id,
         voucher_no,
         customer_id,
         customer_name,
@@ -1070,9 +1107,11 @@ app.post("/api/invoices", authenticateToken, authorizePermission("TRANSACTIONS.I
         tax_type,
         tax_rate,
         tax_withheld_amount,
-        taxable_base
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        taxable_base,
+        currency_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
+        companyId,
         voucherNo,
         customerId || null,
         customerName || "",
@@ -1081,25 +1120,29 @@ app.post("/api/invoices", authenticateToken, authorizePermission("TRANSACTIONS.I
         referenceNo || "",
         description || "",
         remarks || "",
-        total,
-        totalCredit || 0,
+        currencyResult.baseTotalDebit,
+        currencyResult.baseTotalCredit,
         0,
-        total,
+        currencyResult.baseTotalDebit,
         "Unpaid",
-        status || "DRAFT",
+        finalStatus,
         invoiceType === "Recurring" ? "Recurring" : "Standard",
         invoiceType === "Recurring" ? recurrenceFrequency || "Monthly" : null,
         ewt.atcCode,
         ewt.taxType,
         ewt.taxRate,
-        ewt.taxWithheldAmount,
-        ewt.taxableBase,
+        // Stored EWT figures are BASE-currency (BIR remittance/Form 2307
+        // reports assume PHP) - the snapshot table below separately keeps
+        // the transaction-currency (foreign) EWT for display/audit.
+        ewt.atcCode ? currencyResult.baseTotals.baseEwt : null,
+        ewt.atcCode ? currencyResult.baseTotals.baseSubtotal : null,
+        currencyResult.currencyId,
       ]
     );
 
     const invoiceId = result.insertId;
 
-    for (const line of lines || []) {
+    for (const line of currencyResult.lines) {
       await conn.execute(
         `INSERT INTO invoice_lines (
           invoice_id,
@@ -1110,21 +1153,33 @@ app.post("/api/invoices", authenticateToken, authorizePermission("TRANSACTIONS.I
           debit,
           credit,
           gen_ref,
-          gen_name
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          gen_name,
+          foreign_debit,
+          foreign_credit
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           invoiceId,
           line.accountId || null,
           line.accountCode || "",
           line.accountTitle || "",
           line.particulars || "",
-          Number(line.debit) || 0,
-          Number(line.credit) || 0,
+          line.baseDebit,
+          line.baseCredit,
           line.genRef || "",
           line.genName || "",
+          line.foreignDebit,
+          line.foreignCredit,
         ]
       );
     }
+
+    await TransactionCurrencyService.saveSnapshot(conn, {
+      companyId, transactionType: "INV", transactionId: invoiceId,
+      currencyId: currencyResult.currencyId, currencyCode: currencyResult.currencyCode,
+      baseCurrencyId: currencyResult.baseCurrencyId, baseCurrencyCode: currencyResult.baseCurrencyCode,
+      rateInfo: currencyResult.rateInfo, foreignTotals: currencyResult.foreignTotals, baseTotals: currencyResult.baseTotals,
+      userId: req.user.id, lockNow: String(finalStatus).toUpperCase() === "POSTED",
+    });
 
     await conn.commit();
 
@@ -1141,7 +1196,7 @@ app.post("/api/invoices", authenticateToken, authorizePermission("TRANSACTIONS.I
       return res.status(400).json({ message: "Invoice number already exists" });
     }
 
-    res.status(500).json({ message: "Failed to save invoice" });
+    res.status(err.statusCode || 500).json({ message: err.message || "Failed to save invoice", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   } finally {
     conn.release();
   }
@@ -1170,17 +1225,41 @@ app.put("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACTION
       lines,
       atcCode,
       taxWithheldAmount,
+      currency,
     } = req.body;
 
     await conn.beginTransaction();
+
+    const finalStatus = status || "DRAFT";
+    const foreignGross = Number(totalDebit || 0);
 
     const ewt = await resolveTaxWithholding(conn, {
       moduleLabel: "Invoice",
       atcCode,
       lines,
-      totalCredit: Number(totalDebit || 0),
+      totalCredit: foreignGross,
       clientTaxWithheldAmount: taxWithheldAmount,
       vatKeyword: "output vat",
+    });
+
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
+    const [ownerRows] = await conn.execute("SELECT company_id, transaction_date FROM invoice_headers WHERE id = ?", [id]);
+    if (!ownerRows.length || ownerRows[0].company_id !== companyId) {
+      await conn.rollback();
+      return res.status(404).json({ message: "Invoice not found" });
+    }
+    // Both the period being edited out of and the period being moved into
+    // must be open (Checkpoint 5 section 13 - date movement is validated
+    // at both ends, not just the destination).
+    const existingDateISO = AccountingPeriodService.toDateOnly(ownerRows[0].transaction_date);
+    await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate: existingDateISO, operation: "EDIT", user: req.user }, conn);
+    if (transactionDate && transactionDate !== existingDateISO) {
+      await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate, operation: "EDIT", user: req.user }, conn);
+    }
+    const currencyResult = await TransactionCurrencyService.resolveTransactionCurrency({
+      user: req.user, companyId, transactionType: "INV", transactionId: Number(id), currencyPayload: currency,
+      lines, grossAmount: foreignGross, vatKeyword: "output vat", taxWithheldAmount: ewt.taxWithheldAmount,
+      isPosting: String(finalStatus).toUpperCase() === "POSTED",
     });
 
     await conn.execute(
@@ -1202,8 +1281,9 @@ app.put("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACTION
         tax_type = ?,
         tax_rate = ?,
         tax_withheld_amount = ?,
-        taxable_base = ?
-      WHERE id = ?`,
+        taxable_base = ?,
+        currency_id = ?
+      WHERE id = ? AND company_id = ?`,
       [
         voucherNo,
         customerId || null,
@@ -1213,23 +1293,25 @@ app.put("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACTION
         referenceNo || "",
         description || "",
         remarks || "",
-        totalDebit || 0,
-        totalCredit || 0,
-        status || "DRAFT",
+        currencyResult.baseTotalDebit,
+        currencyResult.baseTotalCredit,
+        finalStatus,
         invoiceType === "Recurring" ? "Recurring" : "Standard",
         invoiceType === "Recurring" ? recurrenceFrequency || "Monthly" : null,
         ewt.atcCode,
         ewt.taxType,
         ewt.taxRate,
-        ewt.taxWithheldAmount,
-        ewt.taxableBase,
+        ewt.atcCode ? currencyResult.baseTotals.baseEwt : null,
+        ewt.atcCode ? currencyResult.baseTotals.baseSubtotal : null,
+        currencyResult.currencyId,
         id,
+        companyId,
       ]
     );
 
     await conn.execute("DELETE FROM invoice_lines WHERE invoice_id = ?", [id]);
 
-    for (const line of lines || []) {
+    for (const line of currencyResult.lines) {
       await conn.execute(
         `INSERT INTO invoice_lines (
           invoice_id,
@@ -1240,21 +1322,33 @@ app.put("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACTION
           debit,
           credit,
           gen_ref,
-          gen_name
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          gen_name,
+          foreign_debit,
+          foreign_credit
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           id,
           line.accountId || null,
           line.accountCode || "",
           line.accountTitle || "",
           line.particulars || "",
-          Number(line.debit) || 0,
-          Number(line.credit) || 0,
+          line.baseDebit,
+          line.baseCredit,
           line.genRef || "",
           line.genName || "",
+          line.foreignDebit,
+          line.foreignCredit,
         ]
       );
     }
+
+    await TransactionCurrencyService.saveSnapshot(conn, {
+      companyId, transactionType: "INV", transactionId: Number(id),
+      currencyId: currencyResult.currencyId, currencyCode: currencyResult.currencyCode,
+      baseCurrencyId: currencyResult.baseCurrencyId, baseCurrencyCode: currencyResult.baseCurrencyCode,
+      rateInfo: currencyResult.rateInfo, foreignTotals: currencyResult.foreignTotals, baseTotals: currencyResult.baseTotals,
+      userId: req.user.id, lockNow: String(finalStatus).toUpperCase() === "POSTED",
+    });
 
     await updateInvoicePaymentStatus(conn, id);
 
@@ -1272,7 +1366,7 @@ app.put("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACTION
       return res.status(400).json({ message: "Invoice number already exists" });
     }
 
-    res.status(500).json({ message: "Failed to update invoice" });
+    res.status(err.statusCode || 500).json({ message: err.message || "Failed to update invoice", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   } finally {
     conn.release();
   }
@@ -1283,8 +1377,17 @@ app.delete("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACT
 
   try {
     const { id } = req.params;
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId || req.body?.companyId);
 
     await conn.beginTransaction();
+
+    const [ownerRows] = await conn.execute("SELECT company_id, transaction_date FROM invoice_headers WHERE id = ?", [id]);
+    if (!ownerRows.length || ownerRows[0].company_id !== companyId) {
+      await conn.rollback();
+      return res.status(404).json({ message: "Invoice not found" });
+    }
+    const delDateISO = AccountingPeriodService.toDateOnly(ownerRows[0].transaction_date);
+    await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate: delDateISO, operation: "DELETE", user: req.user }, conn);
 
     await conn.execute(
       `DELETE FROM transaction_applications
@@ -1293,7 +1396,7 @@ app.delete("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACT
       [id]
     );
 
-    await conn.execute("DELETE FROM invoice_headers WHERE id = ?", [id]);
+    await conn.execute("DELETE FROM invoice_headers WHERE id = ? AND company_id = ?", [id, companyId]);
 
     await conn.commit();
 
@@ -1304,7 +1407,7 @@ app.delete("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACT
   } catch (err) {
     await conn.rollback();
     console.error("DELETE INVOICE ERROR:", err);
-    res.status(500).json({ message: "Failed to delete invoice" });
+    res.status(err.statusCode || 500).json({ message: err.statusCode ? err.message : "Failed to delete invoice", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   } finally {
     conn.release();
   }
@@ -1315,9 +1418,10 @@ app.delete("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACT
 
 app.get("/api/or", authenticateToken, authorizePermission("TRANSACTIONS.OR", "VIEW"), async (req, res) => {
   try {
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
     const [rows] = await pool.execute(`
       SELECT
-        id,
+        or_headers.id AS id,
         voucher_no AS voucherNo,
         customer_id AS customerId,
         customer_name AS customerName,
@@ -1331,10 +1435,17 @@ app.get("/api/or", authenticateToken, authorizePermission("TRANSACTIONS.OR", "VI
         payment_method AS paymentMethod,
         bank_account_id AS bankAccountId,
         check_no AS checkNo,
-        DATE_FORMAT(check_date, '%Y-%m-%d') AS checkDate
+        DATE_FORMAT(check_date, '%Y-%m-%d') AS checkDate,
+        or_headers.currency_id AS currencyId,
+        cur.currency_code AS currencyCode,
+        cur.currency_symbol AS currencySymbol,
+        snap.foreign_total AS foreignTotal
       FROM or_headers
-      ORDER BY id DESC
-    `);
+      LEFT JOIN currencies cur ON cur.id = or_headers.currency_id
+      LEFT JOIN transaction_currency_snapshots snap ON snap.transaction_type = 'OR' AND snap.transaction_id = or_headers.id
+      WHERE or_headers.company_id = ?
+      ORDER BY or_headers.id DESC
+    `, [companyId]);
 
     res.json(rows);
   } catch (err) {
@@ -1368,10 +1479,13 @@ app.post("/api/or", authenticateToken, authorizePermission("TRANSACTIONS.OR", "C
       invoiceApplications = [],
       atcCode,
       taxWithheldAmount,
+      currency,
     } = req.body;
 
     const finalCustomerId = customerId ?? req.body.partyId ?? null;
     const finalCustomerName = customerName || req.body.partyName || "";
+    const finalStatus = status || "Draft";
+    const isPosting = String(finalStatus).toUpperCase() === "POSTED";
 
     const ewt = await resolveTaxWithholding(conn, {
       moduleLabel: "OR",
@@ -1382,8 +1496,21 @@ app.post("/api/or", authenticateToken, authorizePermission("TRANSACTIONS.OR", "C
       vatKeyword: "output vat",
     });
 
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
+    // Locked on the OR's OWN accounting date only - an OR settling an
+    // older closed-period Invoice is normal and must remain allowed (the
+    // accounting effect happens in the OR's period, not the Invoice's -
+    // Checkpoint 5 section 16/17).
+    await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate, operation: "CREATE", user: req.user }, conn);
+    const currencyResult = await TransactionCurrencyService.resolveTransactionCurrency({
+      user: req.user, companyId, transactionType: "OR", transactionId: null, currencyPayload: currency,
+      lines, grossAmount: Number(totalDebit) || 0, vatKeyword: "output vat", taxWithheldAmount: ewt.taxWithheldAmount,
+      isPosting,
+    });
+
     const [result] = await conn.execute(
       `INSERT INTO or_headers(
+        company_id,
         voucher_no,
         customer_id,
         customer_name,
@@ -1402,10 +1529,12 @@ app.post("/api/or", authenticateToken, authorizePermission("TRANSACTIONS.OR", "C
         tax_type,
         tax_rate,
         tax_withheld_amount,
-        taxable_base
+        taxable_base,
+        currency_id
       )
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
+        companyId,
         voucherNo || "",
         finalCustomerId,
         finalCustomerName,
@@ -1413,9 +1542,9 @@ app.post("/api/or", authenticateToken, authorizePermission("TRANSACTIONS.OR", "C
         referenceNo || "",
         receiptNo || "",
         description || "",
-        Number(totalDebit) || 0,
-        Number(totalCredit) || 0,
-        status || "Draft",
+        currencyResult.baseTotalDebit,
+        currencyResult.baseTotalCredit,
+        finalStatus,
         paymentMethod === "Check" ? "Check" : "Cash",
         bankAccountId || null,
         paymentMethod === "Check" ? checkNo || "" : "",
@@ -1423,14 +1552,15 @@ app.post("/api/or", authenticateToken, authorizePermission("TRANSACTIONS.OR", "C
         ewt.atcCode,
         ewt.taxType,
         ewt.taxRate,
-        ewt.taxWithheldAmount,
-        ewt.taxableBase,
+        ewt.atcCode ? currencyResult.baseTotals.baseEwt : null,
+        ewt.atcCode ? currencyResult.baseTotals.baseSubtotal : null,
+        currencyResult.currencyId,
       ]
     );
 
     const orId = result.insertId;
 
-    for (const line of lines) {
+    for (const line of currencyResult.lines) {
       await conn.execute(
         `INSERT INTO or_lines(
           or_id,
@@ -1441,9 +1571,11 @@ app.post("/api/or", authenticateToken, authorizePermission("TRANSACTIONS.OR", "C
           gen_ref,
           gen_name,
           debit,
-          credit
+          credit,
+          foreign_debit,
+          foreign_credit
         )
-        VALUES(?,?,?,?,?,?,?,?,?)`,
+        VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
         [
           orId,
           line.accountId ?? null,
@@ -1452,50 +1584,50 @@ app.post("/api/or", authenticateToken, authorizePermission("TRANSACTIONS.OR", "C
           line.particulars || "",
           line.genRef || "",
           line.genName || "",
-          Number(line.debit) || 0,
-          Number(line.credit) || 0,
+          line.baseDebit,
+          line.baseCredit,
+          line.foreignDebit,
+          line.foreignCredit,
         ]
       );
     }
 
+    const orApplications = [];
     for (const appItem of invoiceApplications) {
-      const sourceId = appItem.sourceId ?? appItem.invoiceId ?? null;
-      const paymentAmount = Number(appItem.amount || 0);
-
-      if (!sourceId || paymentAmount <= 0) continue;
-
-      await conn.execute(
-        `INSERT INTO transaction_applications
-         (source_type, source_id, applied_type, applied_id, amount, application_date)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [
-          appItem.sourceType === "AR_BEGINNING" ? "AR_BEGINNING" : "INV",
-          sourceId,
-          "OR",
-          orId,
-          paymentAmount,
-          appItem.applicationDate || transactionDate || null,
-        ]
+      orApplications.push(
+        await applyInvoicePayment(conn, {
+          appItem,
+          appliedType: "OR",
+          appliedId: orId,
+          paymentCurrencyCode: currencyResult.currencyCode,
+          paymentExchangeRate: currencyResult.rateInfo.exchangeRate,
+          baseCurrencyCode: currencyResult.baseCurrencyCode,
+          fallbackDate: transactionDate,
+          isPosting,
+          companyId,
+        })
       );
-
-      if (appItem.sourceType === "AR_BEGINNING") {
-        await conn.execute(
-          `
-          UPDATE arap_beginning_balance_lines
-          SET paid_amount = COALESCE(paid_amount, 0) + ?,
-              balance_amount = GREATEST(COALESCE(balance_amount, debit, 0) - ?, 0),
-              status = CASE
-                WHEN GREATEST(COALESCE(balance_amount, debit, 0) - ?, 0) <= 0 THEN 'Paid'
-                ELSE 'Partially Paid'
-              END
-          WHERE id = ?
-          `,
-          [paymentAmount, paymentAmount, paymentAmount, sourceId]
-        );
-      } else {
-        await updateInvoicePaymentStatus(conn, sourceId);
-      }
     }
+    // Checkpoint 3FX: corrects the auto-filled AR line to each invoice's
+    // own historical rate and adds the realized FX gain/loss line(s)
+    // needed to keep this OR balanced - a complete no-op when every
+    // application settled at its source's own rate (fxDifference all 0).
+    const orFxResult = await applyForeignSettlementToLines(conn, {
+      headerTable: "or_headers", lineTable: "or_lines", lineIdCol: "or_id",
+      transactionId: orId, applications: orApplications, perspective: "RECEIVABLE",
+    });
+    await logFxSettlementAudit(conn, {
+      req, moduleKey: "TRANSACTIONS.OR", appliedType: "OR", appliedId: orId,
+      applications: orApplications, fxResult: orFxResult,
+    });
+
+    await TransactionCurrencyService.saveSnapshot(conn, {
+      companyId, transactionType: "OR", transactionId: orId,
+      currencyId: currencyResult.currencyId, currencyCode: currencyResult.currencyCode,
+      baseCurrencyId: currencyResult.baseCurrencyId, baseCurrencyCode: currencyResult.baseCurrencyCode,
+      rateInfo: currencyResult.rateInfo, foreignTotals: currencyResult.foreignTotals, baseTotals: currencyResult.baseTotals,
+      userId: req.user.id, lockNow: isPosting,
+    });
 
     await conn.commit();
 
@@ -1508,8 +1640,9 @@ app.post("/api/or", authenticateToken, authorizePermission("TRANSACTIONS.OR", "C
     await conn.rollback();
     console.error("CREATE OR ERROR:", err);
 
-    res.status(500).json({
-      message: "Failed to save OR",
+    res.status(err.statusCode || 500).json({
+      message: err.message || "Failed to save OR",
+      ...(err.statusCode && err.code ? { code: err.code } : {}),
     });
   } finally {
     conn.release();
@@ -1519,6 +1652,7 @@ app.post("/api/or", authenticateToken, authorizePermission("TRANSACTIONS.OR", "C
 app.get("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR", "VIEW"), async (req, res) => {
   try {
     const { id } = req.params;
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
     const [headers] = await pool.execute(
       `SELECT
@@ -1542,10 +1676,11 @@ app.get("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
         tax_type AS taxType,
         tax_rate AS taxRate,
         tax_withheld_amount AS taxWithheldAmount,
-        taxable_base AS taxableBase
+        taxable_base AS taxableBase,
+        currency_id AS currencyId
       FROM or_headers
-      WHERE id = ?`,
-      [id]
+      WHERE id = ? AND company_id = ?`,
+      [id, companyId]
     );
 
     if (headers.length === 0) {
@@ -1563,7 +1698,9 @@ app.get("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
         debit,
         credit,
         gen_ref AS genRef,
-        gen_name AS genName
+        gen_name AS genName,
+        foreign_debit AS foreignDebit,
+        foreign_credit AS foreignCredit
       FROM or_lines
       WHERE or_id = ?
       ORDER BY id ASC`,
@@ -1578,7 +1715,16 @@ app.get("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
         applied_type AS appliedType,
         applied_id AS appliedId,
         amount,
-        DATE_FORMAT(application_date, '%Y-%m-%d') AS applicationDate
+        DATE_FORMAT(application_date, '%Y-%m-%d') AS applicationDate,
+        source_currency_code AS sourceCurrencyCode,
+        payment_currency_code AS paymentCurrencyCode,
+        foreign_amount_applied AS foreignAmountApplied,
+        source_exchange_rate AS sourceExchangeRate,
+        payment_exchange_rate AS paymentExchangeRate,
+        source_base_amount AS sourceBaseAmount,
+        payment_base_amount AS paymentBaseAmount,
+        fx_difference AS fxDifference,
+        fx_direction AS fxDirection
       FROM transaction_applications
       WHERE applied_type = 'OR'
         AND applied_id = ?
@@ -1586,10 +1732,13 @@ app.get("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
       [id]
     );
 
+    const currencySnapshot = await TransactionCurrencyService.getSnapshot("OR", id);
+
     res.json({
       ...headers[0],
       lines,
       applications,
+      currency: currencySnapshot,
     });
   } catch (err) {
     console.error("GET OR DETAILS ERROR:", err);
@@ -1622,9 +1771,26 @@ app.put("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
       invoiceApplications = [],
       atcCode,
       taxWithheldAmount,
+      currency,
     } = req.body;
 
+    const finalStatus = status || "Draft";
+    const isPosting = String(finalStatus).toUpperCase() === "POSTED";
+
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
+
     await conn.beginTransaction();
+
+    const [ownerRows] = await conn.execute("SELECT company_id, transaction_date FROM or_headers WHERE id = ?", [id]);
+    if (!ownerRows.length || ownerRows[0].company_id !== companyId) {
+      await conn.rollback();
+      return res.status(404).json({ message: "OR not found" });
+    }
+    const existingDateISO = AccountingPeriodService.toDateOnly(ownerRows[0].transaction_date);
+    await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate: existingDateISO, operation: "EDIT", user: req.user }, conn);
+    if (transactionDate && transactionDate !== existingDateISO) {
+      await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate, operation: "EDIT", user: req.user }, conn);
+    }
 
     /*
      * STEP 1:
@@ -1694,6 +1860,23 @@ app.put("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
             oldItem.sourceId,
           ]
         );
+
+        // Checkpoint 3D: recompute foreign paid/balance from source of
+        // truth (the transaction_applications rows already deleted in STEP
+        // 2) rather than reverse-arithmetic on the foreign side - same
+        // "recompute, don't decrement" pattern updateInvoicePaymentStatus
+        // already uses. No-op for a base-currency beginning balance (no
+        // snapshot -> hasForeignCurrency: false).
+        const foreignState = await TransactionCurrencyService.getForeignPaymentState(conn, {
+          transactionType: "AR_BEGINNING",
+          transactionId: oldItem.sourceId,
+        });
+        if (foreignState.hasForeignCurrency) {
+          await conn.execute(
+            `UPDATE arap_beginning_balance_lines SET foreign_paid_amount = ?, foreign_balance_amount = ? WHERE id = ?`,
+            [foreignState.foreignPaidAmount, foreignState.foreignBalanceAmount, oldItem.sourceId]
+          );
+        }
       }
     }
 
@@ -1721,6 +1904,12 @@ app.put("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
       vatKeyword: "output vat",
     });
 
+    const currencyResult = await TransactionCurrencyService.resolveTransactionCurrency({
+      user: req.user, companyId, transactionType: "OR", transactionId: Number(id), currencyPayload: currency,
+      lines, grossAmount: Number(totalDebit) || 0, vatKeyword: "output vat", taxWithheldAmount: ewt.taxWithheldAmount,
+      isPosting,
+    });
+
     await conn.execute(
       `UPDATE or_headers SET
          voucher_no = ?,
@@ -1741,8 +1930,9 @@ app.put("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
          tax_type = ?,
          tax_rate = ?,
          tax_withheld_amount = ?,
-         taxable_base = ?
-       WHERE id = ?`,
+         taxable_base = ?,
+         currency_id = ?
+       WHERE id = ? AND company_id = ?`,
       [
         voucherNo || "",
         customerId || null,
@@ -1751,9 +1941,9 @@ app.put("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
         referenceNo || "",
         receiptNo || "",
         description || "",
-        Number(totalDebit) || 0,
-        Number(totalCredit) || 0,
-        status || "Draft",
+        currencyResult.baseTotalDebit,
+        currencyResult.baseTotalCredit,
+        finalStatus,
         paymentMethod === "Check" ? "Check" : "Cash",
         bankAccountId || null,
         paymentMethod === "Check" ? checkNo || "" : "",
@@ -1761,9 +1951,11 @@ app.put("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
         ewt.atcCode,
         ewt.taxType,
         ewt.taxRate,
-        ewt.taxWithheldAmount,
-        ewt.taxableBase,
+        ewt.atcCode ? currencyResult.baseTotals.baseEwt : null,
+        ewt.atcCode ? currencyResult.baseTotals.baseSubtotal : null,
+        currencyResult.currencyId,
         id,
+        companyId,
       ]
     );
 
@@ -1777,7 +1969,7 @@ app.put("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
       [id]
     );
 
-    for (const line of lines) {
+    for (const line of currencyResult.lines) {
       await conn.execute(
         `INSERT INTO or_lines (
            or_id,
@@ -1788,8 +1980,10 @@ app.put("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
            gen_ref,
            gen_name,
            debit,
-           credit
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           credit,
+           foreign_debit,
+           foreign_credit
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           id,
           line.accountId || null,
@@ -1798,8 +1992,10 @@ app.put("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
           line.particulars || "",
           line.genRef || "",
           line.genName || "",
-          Number(line.debit) || 0,
-          Number(line.credit) || 0,
+          line.baseDebit,
+          line.baseCredit,
+          line.foreignDebit,
+          line.foreignCredit,
         ]
       );
     }
@@ -1808,132 +2004,38 @@ app.put("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
      * STEP 7:
      * Save the edited invoice applications.
      */
+    const orApplications = [];
     for (const appItem of invoiceApplications) {
-      const sourceId =
-        appItem.sourceId ??
-        appItem.invoiceId ??
-        null;
-
-      const paymentAmount = Number(appItem.amount || 0);
-
-      if (!sourceId || paymentAmount <= 0) {
-        continue;
-      }
-
-      const sourceType =
-        appItem.sourceType === "AR_BEGINNING"
-          ? "AR_BEGINNING"
-          : "INV";
-
-      /*
-       * Validate that the new payment does not exceed
-       * the current outstanding balance.
-       */
-      if (sourceType === "INV") {
-        const [invoiceRows] = await conn.execute(
-          `SELECT
-             COALESCE(balance_amount, total_debit, 0) AS balanceAmount
-           FROM invoice_headers
-           WHERE id = ?`,
-          [sourceId]
-        );
-
-        if (invoiceRows.length === 0) {
-          throw new Error(`Invoice ${sourceId} was not found.`);
-        }
-
-        const currentBalance = Number(
-          invoiceRows[0].balanceAmount || 0
-        );
-
-        if (paymentAmount > currentBalance) {
-          throw new Error(
-            `Payment amount cannot exceed invoice balance of ${currentBalance.toFixed(
-              2
-            )}.`
-          );
-        }
-      }
-
-      if (sourceType === "AR_BEGINNING") {
-        const [beginningRows] = await conn.execute(
-          `SELECT
-             COALESCE(balance_amount, debit, 0) AS balanceAmount
-           FROM arap_beginning_balance_lines
-           WHERE id = ?`,
-          [sourceId]
-        );
-
-        if (beginningRows.length === 0) {
-          throw new Error(
-            `AR beginning balance ${sourceId} was not found.`
-          );
-        }
-
-        const currentBalance = Number(
-          beginningRows[0].balanceAmount || 0
-        );
-
-        if (paymentAmount > currentBalance) {
-          throw new Error(
-            `Payment amount cannot exceed AR beginning balance of ${currentBalance.toFixed(
-              2
-            )}.`
-          );
-        }
-      }
-
-      await conn.execute(
-        `INSERT INTO transaction_applications (
-           source_type,
-           source_id,
-           applied_type,
-           applied_id,
-           amount,
-           application_date
-         ) VALUES (?, ?, ?, ?, ?, ?)`,
-        [
-          sourceType,
-          sourceId,
-          "OR",
-          id,
-          paymentAmount,
-          appItem.applicationDate ||
-            transactionDate ||
-            new Date().toISOString().slice(0, 10),
-        ]
+      orApplications.push(
+        await applyInvoicePayment(conn, {
+          appItem,
+          appliedType: "OR",
+          appliedId: Number(id),
+          paymentCurrencyCode: currencyResult.currencyCode,
+          paymentExchangeRate: currencyResult.rateInfo.exchangeRate,
+          baseCurrencyCode: currencyResult.baseCurrencyCode,
+          fallbackDate: transactionDate,
+          isPosting,
+          companyId,
+        })
       );
-
-      if (sourceType === "AR_BEGINNING") {
-        await conn.execute(
-          `
-          UPDATE arap_beginning_balance_lines
-          SET paid_amount = COALESCE(paid_amount, 0) + ?,
-              balance_amount = GREATEST(
-                COALESCE(balance_amount, debit, 0) - ?,
-                0
-              ),
-              status = CASE
-                WHEN GREATEST(
-                  COALESCE(balance_amount, debit, 0) - ?,
-                  0
-                ) <= 0
-                  THEN 'Paid'
-                ELSE 'Partially Paid'
-              END
-          WHERE id = ?
-          `,
-          [
-            paymentAmount,
-            paymentAmount,
-            paymentAmount,
-            sourceId,
-          ]
-        );
-      } else {
-        await updateInvoicePaymentStatus(conn, sourceId);
-      }
     }
+    const orFxResult = await applyForeignSettlementToLines(conn, {
+      headerTable: "or_headers", lineTable: "or_lines", lineIdCol: "or_id",
+      transactionId: Number(id), applications: orApplications, perspective: "RECEIVABLE",
+    });
+    await logFxSettlementAudit(conn, {
+      req, moduleKey: "TRANSACTIONS.OR", appliedType: "OR", appliedId: Number(id),
+      applications: orApplications, fxResult: orFxResult,
+    });
+
+    await TransactionCurrencyService.saveSnapshot(conn, {
+      companyId, transactionType: "OR", transactionId: Number(id),
+      currencyId: currencyResult.currencyId, currencyCode: currencyResult.currencyCode,
+      baseCurrencyId: currencyResult.baseCurrencyId, baseCurrencyCode: currencyResult.baseCurrencyCode,
+      rateInfo: currencyResult.rateInfo, foreignTotals: currencyResult.foreignTotals, baseTotals: currencyResult.baseTotals,
+      userId: req.user.id, lockNow: isPosting,
+    });
 
     await conn.commit();
 
@@ -1952,8 +2054,9 @@ app.put("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
       });
     }
 
-    res.status(500).json({
+    res.status(err.statusCode || 500).json({
       message: err.message || "Failed to update Official Receipt",
+      ...(err.statusCode && err.code ? { code: err.code } : {}),
     });
   } finally {
     conn.release();
@@ -1964,9 +2067,10 @@ app.put("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
 
 app.get("/api/apv", authenticateToken, authorizePermission("TRANSACTIONS.APV", "VIEW"), async (req, res) => {
   try {
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
     const [rows] = await pool.execute(`
       SELECT
-        id,
+        apv_headers.id AS id,
         voucher_no AS voucherNo,
         supplier_id AS supplierId,
         supplier_name AS supplierName,
@@ -1981,11 +2085,18 @@ app.get("/api/apv", authenticateToken, authorizePermission("TRANSACTIONS.APV", "
         balance_amount AS balanceAmount,
         payment_status AS paymentStatus,
         status,
-        created_at AS createdAt,
-        updated_at AS updatedAt
+        apv_headers.currency_id AS currencyId,
+        cur.currency_code AS currencyCode,
+        cur.currency_symbol AS currencySymbol,
+        snap.foreign_total AS foreignTotal,
+        apv_headers.created_at AS createdAt,
+        apv_headers.updated_at AS updatedAt
       FROM apv_headers
-      ORDER BY id DESC
-    `);
+      LEFT JOIN currencies cur ON cur.id = apv_headers.currency_id
+      LEFT JOIN transaction_currency_snapshots snap ON snap.transaction_type = 'APV' AND snap.transaction_id = apv_headers.id
+      WHERE apv_headers.company_id = ?
+      ORDER BY apv_headers.id DESC
+    `, [companyId]);
 
     res.json(rows);
   } catch (err) {
@@ -1996,35 +2107,49 @@ app.get("/api/apv", authenticateToken, authorizePermission("TRANSACTIONS.APV", "
 
 app.get("/api/apv/unpaid", authenticateToken, authorizePermission("TRANSACTIONS.APV", "VIEW"), async (req, res) => {
   try {
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
     const { supplierId, supplierName } = req.query;
 
-    const params = [];
+    const params = [companyId];
     let supplierFilterApv = "";
     let supplierFilterBb = "";
 
     if (supplierId) {
       supplierFilterApv = " AND supplier_id = ? ";
       supplierFilterBb = " AND l.party_id = ? ";
-      params.push(supplierId, supplierId);
+      params.push(supplierId);
     } else if (supplierName) {
       supplierFilterApv = " AND TRIM(LOWER(supplier_name)) = TRIM(LOWER(?)) ";
       supplierFilterBb = " AND TRIM(LOWER(l.party_name)) = TRIM(LOWER(?)) ";
-      params.push(supplierName, supplierName);
+      params.push(supplierName);
     }
+    params.push(companyId);
+    if (supplierId) params.push(supplierId);
+    else if (supplierName) params.push(supplierName);
 
     const [rows] = await pool.execute(
       `
       SELECT
-        id,
+        apv_headers.id AS id,
         'APV' AS sourceType,
         voucher_no AS voucherNo,
         supplier_id AS supplierId,
         supplier_name AS supplierName,
         total_credit AS totalAmount,
         COALESCE(paid_amount, 0) AS paidAmount,
-        COALESCE(balance_amount, total_credit, 0) AS balanceAmount
+        COALESCE(balance_amount, total_credit, 0) AS balanceAmount,
+        apv_headers.currency_id AS currencyId,
+        cur.currency_code AS currencyCode,
+        cur.currency_symbol AS currencySymbol,
+        snap.exchange_rate AS sourceExchangeRate,
+        snap.foreign_total AS foreignOriginalAmount,
+        apv_headers.foreign_paid_amount AS foreignPaidAmount,
+        apv_headers.foreign_balance_amount AS foreignBalanceAmount
       FROM apv_headers
-      WHERE COALESCE(balance_amount, total_credit, 0) > 0
+      LEFT JOIN currencies cur ON cur.id = apv_headers.currency_id
+      LEFT JOIN transaction_currency_snapshots snap ON snap.transaction_type = 'APV' AND snap.transaction_id = apv_headers.id
+      WHERE apv_headers.company_id = ?
+        AND COALESCE(balance_amount, total_credit, 0) > 0
         AND COALESCE(payment_status, 'Unpaid') != 'Paid'
         ${supplierFilterApv}
 
@@ -2038,10 +2163,20 @@ app.get("/api/apv/unpaid", authenticateToken, authorizePermission("TRANSACTIONS.
         l.party_name AS supplierName,
         l.credit AS totalAmount,
         COALESCE(l.paid_amount, 0) AS paidAmount,
-        COALESCE(l.balance_amount, l.credit, 0) AS balanceAmount
+        COALESCE(l.balance_amount, l.credit, 0) AS balanceAmount,
+        l.currency_id AS currencyId,
+        bbcur.currency_code AS currencyCode,
+        bbcur.currency_symbol AS currencySymbol,
+        bbsnap.exchange_rate AS sourceExchangeRate,
+        l.foreign_original_amount AS foreignOriginalAmount,
+        l.foreign_paid_amount AS foreignPaidAmount,
+        l.foreign_balance_amount AS foreignBalanceAmount
       FROM arap_beginning_balance_lines l
       JOIN arap_beginning_balance_headers h ON h.id = l.header_id
+      LEFT JOIN currencies bbcur ON bbcur.id = l.currency_id
+      LEFT JOIN transaction_currency_snapshots bbsnap ON bbsnap.transaction_type = 'AP_BEGINNING' AND bbsnap.transaction_id = l.id
       WHERE h.balance_type = 'AP'
+        AND h.company_id = ?
         AND COALESCE(l.balance_amount, l.credit, 0) > 0
         AND COALESCE(l.status, 'Unpaid') != 'Paid'
         ${supplierFilterBb}
@@ -2061,6 +2196,7 @@ app.get("/api/apv/unpaid", authenticateToken, authorizePermission("TRANSACTIONS.
 app.get("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV", "VIEW"), async (req, res) => {
   try {
     const { id } = req.params;
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
     const [headers] = await pool.execute(
       `SELECT
@@ -2086,11 +2222,12 @@ app.get("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV
         tax_withheld_amount AS taxWithheldAmount,
         taxable_base AS taxableBase,
         payee_tin AS payeeTin,
+        currency_id AS currencyId,
         created_at AS createdAt,
         updated_at AS updatedAt
       FROM apv_headers
-      WHERE id = ?`,
-      [id]
+      WHERE id = ? AND company_id = ?`,
+      [id, companyId]
     );
 
     if (headers.length === 0) {
@@ -2108,7 +2245,9 @@ app.get("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV
         debit,
         credit,
         gen_ref AS genRef,
-        gen_name AS genName
+        gen_name AS genName,
+        foreign_debit AS foreignDebit,
+        foreign_credit AS foreignCredit
       FROM apv_lines
       WHERE apv_id = ?
       ORDER BY id ASC`,
@@ -2132,10 +2271,13 @@ app.get("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV
       [id]
     );
 
+    const currencySnapshot = await TransactionCurrencyService.getSnapshot("APV", id);
+
     res.json({
       ...headers[0],
       lines,
       applications,
+      currency: currencySnapshot,
     });
   } catch (err) {
     console.error("GET APV DETAILS ERROR:", err);
@@ -2220,21 +2362,32 @@ app.post("/api/apv", authenticateToken, authorizePermission("TRANSACTIONS.APV", 
       atcCode,
       taxWithheldAmount,
       payeeTin,
+      currency,
     } = req.body;
 
     await conn.beginTransaction();
 
-    const total = Number(totalCredit || 0);
+    const finalStatus = status || "DRAFT";
+    const foreignGross = Number(totalCredit || 0);
 
     const ewt = await resolveApvTaxWithholding(conn, {
       atcCode,
       lines,
-      totalCredit: total,
+      totalCredit: foreignGross,
       clientTaxWithheldAmount: taxWithheldAmount,
+    });
+
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
+    await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate, operation: "CREATE", user: req.user }, conn);
+    const currencyResult = await TransactionCurrencyService.resolveTransactionCurrency({
+      user: req.user, companyId, transactionType: "APV", transactionId: null, currencyPayload: currency,
+      lines, grossAmount: foreignGross, vatKeyword: "input vat", taxWithheldAmount: ewt.taxWithheldAmount,
+      isPosting: String(finalStatus).toUpperCase() === "POSTED",
     });
 
     const [result] = await conn.execute(
       `INSERT INTO apv_headers (
+        company_id,
         voucher_no,
         supplier_id,
         supplier_name,
@@ -2255,9 +2408,11 @@ app.post("/api/apv", authenticateToken, authorizePermission("TRANSACTIONS.APV", 
         tax_rate,
         tax_withheld_amount,
         taxable_base,
-        payee_tin
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        payee_tin,
+        currency_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
+        companyId,
         voucherNo,
         supplierId || null,
         supplierName || "",
@@ -2266,19 +2421,20 @@ app.post("/api/apv", authenticateToken, authorizePermission("TRANSACTIONS.APV", 
         referenceNo || "",
         description || "",
         remarks || "",
-        totalDebit || 0,
-        total,
+        currencyResult.baseTotalDebit,
+        currencyResult.baseTotalCredit,
         0,
-        total,
+        currencyResult.baseTotalCredit,
         "Unpaid",
-        status || "DRAFT",
+        finalStatus,
         sourcePoId || null,
         ewt.atcCode,
         ewt.taxType,
         ewt.taxRate,
-        ewt.taxWithheldAmount,
-        ewt.taxableBase,
+        ewt.atcCode ? currencyResult.baseTotals.baseEwt : null,
+        ewt.atcCode ? currencyResult.baseTotals.baseSubtotal : null,
         payeeTin || null,
+        currencyResult.currencyId,
       ]
     );
 
@@ -2291,7 +2447,7 @@ app.post("/api/apv", authenticateToken, authorizePermission("TRANSACTIONS.APV", 
       );
     }
 
-    for (const line of lines || []) {
+    for (const line of currencyResult.lines) {
       await conn.execute(
         `INSERT INTO apv_lines (
           apv_id,
@@ -2302,21 +2458,33 @@ app.post("/api/apv", authenticateToken, authorizePermission("TRANSACTIONS.APV", 
           debit,
           credit,
           gen_ref,
-          gen_name
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          gen_name,
+          foreign_debit,
+          foreign_credit
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           apvId,
           line.accountId || null,
           line.accountCode || "",
           line.accountTitle || "",
           line.particulars || "",
-          Number(line.debit) || 0,
-          Number(line.credit) || 0,
+          line.baseDebit,
+          line.baseCredit,
           line.genRef || "",
           line.genName || "",
+          line.foreignDebit,
+          line.foreignCredit,
         ]
       );
     }
+
+    await TransactionCurrencyService.saveSnapshot(conn, {
+      companyId, transactionType: "APV", transactionId: apvId,
+      currencyId: currencyResult.currencyId, currencyCode: currencyResult.currencyCode,
+      baseCurrencyId: currencyResult.baseCurrencyId, baseCurrencyCode: currencyResult.baseCurrencyCode,
+      rateInfo: currencyResult.rateInfo, foreignTotals: currencyResult.foreignTotals, baseTotals: currencyResult.baseTotals,
+      userId: req.user.id, lockNow: String(finalStatus).toUpperCase() === "POSTED",
+    });
 
     await conn.commit();
 
@@ -2333,7 +2501,7 @@ app.post("/api/apv", authenticateToken, authorizePermission("TRANSACTIONS.APV", 
       return res.status(400).json({ message: "APV voucher number already exists" });
     }
 
-    res.status(500).json({ message: "Failed to save APV" });
+    res.status(err.statusCode || 500).json({ message: err.message || "Failed to save APV", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   } finally {
     conn.release();
   }
@@ -2361,9 +2529,13 @@ app.put("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV
       atcCode,
       taxWithheldAmount,
       payeeTin,
+      currency,
     } = req.body;
 
     await conn.beginTransaction();
+
+    const finalStatus = status || "DRAFT";
+    const foreignGross = Number(totalCredit || 0);
 
     // Recomputed on every explicit edit, same as on create - this is an
     // "edit where allowed" per the corrected-logic policy, not a background
@@ -2372,8 +2544,25 @@ app.put("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV
     const ewt = await resolveApvTaxWithholding(conn, {
       atcCode,
       lines,
-      totalCredit: Number(totalCredit || 0),
+      totalCredit: foreignGross,
       clientTaxWithheldAmount: taxWithheldAmount,
+    });
+
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
+    const [ownerRows] = await conn.execute("SELECT company_id, transaction_date FROM apv_headers WHERE id = ?", [id]);
+    if (!ownerRows.length || ownerRows[0].company_id !== companyId) {
+      await conn.rollback();
+      return res.status(404).json({ message: "APV not found" });
+    }
+    const existingDateISO = AccountingPeriodService.toDateOnly(ownerRows[0].transaction_date);
+    await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate: existingDateISO, operation: "EDIT", user: req.user }, conn);
+    if (transactionDate && transactionDate !== existingDateISO) {
+      await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate, operation: "EDIT", user: req.user }, conn);
+    }
+    const currencyResult = await TransactionCurrencyService.resolveTransactionCurrency({
+      user: req.user, companyId, transactionType: "APV", transactionId: Number(id), currencyPayload: currency,
+      lines, grossAmount: foreignGross, vatKeyword: "input vat", taxWithheldAmount: ewt.taxWithheldAmount,
+      isPosting: String(finalStatus).toUpperCase() === "POSTED",
     });
 
     await conn.execute(
@@ -2394,8 +2583,9 @@ app.put("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV
         tax_rate = ?,
         tax_withheld_amount = ?,
         taxable_base = ?,
-        payee_tin = ?
-      WHERE id = ?`,
+        payee_tin = ?,
+        currency_id = ?
+      WHERE id = ? AND company_id = ?`,
       [
         voucherNo,
         supplierId || null,
@@ -2405,22 +2595,24 @@ app.put("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV
         referenceNo || "",
         description || "",
         remarks || "",
-        totalDebit || 0,
-        totalCredit || 0,
-        status || "DRAFT",
+        currencyResult.baseTotalDebit,
+        currencyResult.baseTotalCredit,
+        finalStatus,
         ewt.atcCode,
         ewt.taxType,
         ewt.taxRate,
-        ewt.taxWithheldAmount,
-        ewt.taxableBase,
+        ewt.atcCode ? currencyResult.baseTotals.baseEwt : null,
+        ewt.atcCode ? currencyResult.baseTotals.baseSubtotal : null,
         payeeTin || null,
+        currencyResult.currencyId,
         id,
+        companyId,
       ]
     );
 
     await conn.execute("DELETE FROM apv_lines WHERE apv_id = ?", [id]);
 
-    for (const line of lines || []) {
+    for (const line of currencyResult.lines) {
       await conn.execute(
         `INSERT INTO apv_lines (
           apv_id,
@@ -2431,21 +2623,33 @@ app.put("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV
           debit,
           credit,
           gen_ref,
-          gen_name
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          gen_name,
+          foreign_debit,
+          foreign_credit
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           id,
           line.accountId || null,
           line.accountCode || "",
           line.accountTitle || "",
           line.particulars || "",
-          Number(line.debit) || 0,
-          Number(line.credit) || 0,
+          line.baseDebit,
+          line.baseCredit,
           line.genRef || "",
           line.genName || "",
+          line.foreignDebit,
+          line.foreignCredit,
         ]
       );
     }
+
+    await TransactionCurrencyService.saveSnapshot(conn, {
+      companyId, transactionType: "APV", transactionId: Number(id),
+      currencyId: currencyResult.currencyId, currencyCode: currencyResult.currencyCode,
+      baseCurrencyId: currencyResult.baseCurrencyId, baseCurrencyCode: currencyResult.baseCurrencyCode,
+      rateInfo: currencyResult.rateInfo, foreignTotals: currencyResult.foreignTotals, baseTotals: currencyResult.baseTotals,
+      userId: req.user.id, lockNow: String(finalStatus).toUpperCase() === "POSTED",
+    });
 
     await updateApvPaymentStatus(conn, id);
 
@@ -2463,7 +2667,7 @@ app.put("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV
       return res.status(400).json({ message: "APV voucher number already exists" });
     }
 
-    res.status(500).json({ message: "Failed to update APV" });
+    res.status(err.statusCode || 500).json({ message: err.message || "Failed to update APV", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   } finally {
     conn.release();
   }
@@ -2474,8 +2678,17 @@ app.delete("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.
 
   try {
     const { id } = req.params;
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId || req.body?.companyId);
 
     await conn.beginTransaction();
+
+    const [ownerRows] = await conn.execute("SELECT company_id, transaction_date FROM apv_headers WHERE id = ?", [id]);
+    if (!ownerRows.length || ownerRows[0].company_id !== companyId) {
+      await conn.rollback();
+      return res.status(404).json({ message: "APV not found" });
+    }
+    const delDateISO = AccountingPeriodService.toDateOnly(ownerRows[0].transaction_date);
+    await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate: delDateISO, operation: "DELETE", user: req.user }, conn);
 
     await conn.execute(
       `DELETE FROM transaction_applications
@@ -2484,7 +2697,7 @@ app.delete("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.
       [id]
     );
 
-    await conn.execute("DELETE FROM apv_headers WHERE id = ?", [id]);
+    await conn.execute("DELETE FROM apv_headers WHERE id = ? AND company_id = ?", [id, companyId]);
 
     await conn.commit();
 
@@ -2495,7 +2708,7 @@ app.delete("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.
   } catch (err) {
     await conn.rollback();
     console.error("DELETE APV ERROR:", err);
-    res.status(500).json({ message: "Failed to delete APV" });
+    res.status(err.statusCode || 500).json({ message: err.statusCode ? err.message : "Failed to delete APV", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   } finally {
     conn.release();
   }
@@ -2505,9 +2718,10 @@ app.delete("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.
 
 app.get("/api/purchase-orders", authenticateToken, authorizePermission("TRANSACTIONS.PURCHASE_ORDER", "VIEW"), async (req, res) => {
   try {
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
     const [rows] = await pool.execute(`
       SELECT
-        id,
+        purchase_order_headers.id AS id,
         voucher_no AS voucherNo,
         supplier_id AS supplierId,
         supplier_name AS supplierName,
@@ -2518,11 +2732,18 @@ app.get("/api/purchase-orders", authenticateToken, authorizePermission("TRANSACT
         total_debit AS totalDebit,
         total_credit AS totalCredit,
         status,
-        created_at AS createdAt,
-        updated_at AS updatedAt
+        purchase_order_headers.currency_id AS currencyId,
+        cur.currency_code AS currencyCode,
+        cur.currency_symbol AS currencySymbol,
+        snap.foreign_total AS foreignTotal,
+        purchase_order_headers.created_at AS createdAt,
+        purchase_order_headers.updated_at AS updatedAt
       FROM purchase_order_headers
-      ORDER BY id DESC
-    `);
+      LEFT JOIN currencies cur ON cur.id = purchase_order_headers.currency_id
+      LEFT JOIN transaction_currency_snapshots snap ON snap.transaction_type = 'PO' AND snap.transaction_id = purchase_order_headers.id
+      WHERE purchase_order_headers.company_id = ?
+      ORDER BY purchase_order_headers.id DESC
+    `, [companyId]);
 
     res.json(rows);
   } catch (err) {
@@ -2533,9 +2754,10 @@ app.get("/api/purchase-orders", authenticateToken, authorizePermission("TRANSACT
 
 app.get("/api/purchase-orders/open", authenticateToken, authorizePermission("TRANSACTIONS.PURCHASE_ORDER", "VIEW"), async (req, res) => {
   try {
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
     const { supplierId, supplierName } = req.query;
 
-    const params = [];
+    const params = [companyId];
     let filter = "";
 
     if (supplierId) {
@@ -2561,6 +2783,7 @@ app.get("/api/purchase-orders/open", authenticateToken, authorizePermission("TRA
         status
       FROM purchase_order_headers
       WHERE status = 'Open'
+        AND company_id = ?
         ${filter}
       ORDER BY id DESC
       `,
@@ -2577,6 +2800,7 @@ app.get("/api/purchase-orders/open", authenticateToken, authorizePermission("TRA
 app.get("/api/purchase-orders/:id", authenticateToken, authorizePermission("TRANSACTIONS.PURCHASE_ORDER", "VIEW"), async (req, res) => {
   try {
     const { id } = req.params;
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
     const [headers] = await pool.execute(
       `SELECT
@@ -2597,11 +2821,12 @@ app.get("/api/purchase-orders/:id", authenticateToken, authorizePermission("TRAN
         tax_withheld_amount AS taxWithheldAmount,
         taxable_base AS taxableBase,
         payee_tin AS payeeTin,
+        currency_id AS currencyId,
         created_at AS createdAt,
         updated_at AS updatedAt
       FROM purchase_order_headers
-      WHERE id = ?`,
-      [id]
+      WHERE id = ? AND company_id = ?`,
+      [id, companyId]
     );
 
     if (headers.length === 0) {
@@ -2619,16 +2844,21 @@ app.get("/api/purchase-orders/:id", authenticateToken, authorizePermission("TRAN
         debit,
         credit,
         gen_ref AS genRef,
-        gen_name AS genName
+        gen_name AS genName,
+        foreign_debit AS foreignDebit,
+        foreign_credit AS foreignCredit
       FROM purchase_order_lines
       WHERE po_id = ?
       ORDER BY id ASC`,
       [id]
     );
 
+    const currencySnapshot = await TransactionCurrencyService.getSnapshot("PO", id);
+
     res.json({
       ...headers[0],
       lines,
+      currency: currencySnapshot,
     });
   } catch (err) {
     console.error("GET PURCHASE ORDER DETAILS ERROR:", err);
@@ -2648,28 +2878,48 @@ app.post("/api/purchase-orders", authenticateToken, authorizePermission("TRANSAC
       referenceNo,
       description,
       remarks,
-      totalDebit,
       totalCredit,
       status,
       lines,
       atcCode,
       taxWithheldAmount,
       payeeTin,
+      currency,
     } = req.body;
 
-    await conn.beginTransaction();
+    const finalStatus = status === "Draft" ? "Draft" : "Open";
+    // PO never posts to GL (confirmed non-GL - absent from every ledger/
+    // trial-balance union). Its own commitment boundary is Draft -> Open,
+    // the PO equivalent of Invoice/APV's Draft -> Posted, so the currency
+    // locks there instead of on a "Posted" status that PO doesn't have.
+    const isPosting = finalStatus === "Open";
+    const foreignGross = Number(totalCredit || 0);
 
     const ewt = await resolveTaxWithholding(conn, {
       moduleLabel: "PO",
       atcCode,
       lines,
-      totalCredit: Number(totalCredit || 0),
+      totalCredit: foreignGross,
       clientTaxWithheldAmount: taxWithheldAmount,
       vatKeyword: "input vat",
     });
 
+    await conn.beginTransaction();
+
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
+    // PO never affects the ledger (see above), so this is a backdating/
+    // audit-trail consistency control rather than a ledger-protection one
+    // (Checkpoint 5 section 24 - documented decision, not an oversight).
+    await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate, operation: "CREATE", user: req.user }, conn);
+    const currencyResult = await TransactionCurrencyService.resolveTransactionCurrency({
+      user: req.user, companyId, transactionType: "PO", transactionId: null, currencyPayload: currency,
+      lines, grossAmount: foreignGross, vatKeyword: "input vat", taxWithheldAmount: ewt.taxWithheldAmount,
+      isPosting,
+    });
+
     const [result] = await conn.execute(
       `INSERT INTO purchase_order_headers (
+        company_id,
         voucher_no,
         supplier_id,
         supplier_name,
@@ -2685,9 +2935,11 @@ app.post("/api/purchase-orders", authenticateToken, authorizePermission("TRANSAC
         tax_rate,
         tax_withheld_amount,
         taxable_base,
-        payee_tin
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        payee_tin,
+        currency_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
+        companyId,
         voucherNo,
         supplierId || null,
         supplierName || "",
@@ -2695,21 +2947,22 @@ app.post("/api/purchase-orders", authenticateToken, authorizePermission("TRANSAC
         referenceNo || "",
         description || "",
         remarks || "",
-        totalDebit || 0,
-        totalCredit || 0,
-        status === "Draft" ? "Draft" : "Open",
+        currencyResult.baseTotalDebit,
+        currencyResult.baseTotalCredit,
+        finalStatus,
         ewt.atcCode,
         ewt.taxType,
         ewt.taxRate,
-        ewt.taxWithheldAmount,
-        ewt.taxableBase,
+        ewt.atcCode ? currencyResult.baseTotals.baseEwt : null,
+        ewt.atcCode ? currencyResult.baseTotals.baseSubtotal : null,
         payeeTin || null,
+        currencyResult.currencyId,
       ]
     );
 
     const poId = result.insertId;
 
-    for (const line of lines || []) {
+    for (const line of currencyResult.lines) {
       await conn.execute(
         `INSERT INTO purchase_order_lines (
           po_id,
@@ -2720,21 +2973,33 @@ app.post("/api/purchase-orders", authenticateToken, authorizePermission("TRANSAC
           debit,
           credit,
           gen_ref,
-          gen_name
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          gen_name,
+          foreign_debit,
+          foreign_credit
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           poId,
           line.accountId || null,
           line.accountCode || "",
           line.accountTitle || "",
           line.particulars || "",
-          Number(line.debit) || 0,
-          Number(line.credit) || 0,
+          line.baseDebit,
+          line.baseCredit,
           line.genRef || "",
           line.genName || "",
+          line.foreignDebit,
+          line.foreignCredit,
         ]
       );
     }
+
+    await TransactionCurrencyService.saveSnapshot(conn, {
+      companyId, transactionType: "PO", transactionId: poId,
+      currencyId: currencyResult.currencyId, currencyCode: currencyResult.currencyCode,
+      baseCurrencyId: currencyResult.baseCurrencyId, baseCurrencyCode: currencyResult.baseCurrencyCode,
+      rateInfo: currencyResult.rateInfo, foreignTotals: currencyResult.foreignTotals, baseTotals: currencyResult.baseTotals,
+      userId: req.user.id, lockNow: isPosting,
+    });
 
     await conn.commit();
 
@@ -2751,7 +3016,7 @@ app.post("/api/purchase-orders", authenticateToken, authorizePermission("TRANSAC
       return res.status(400).json({ message: "Purchase Order number already exists" });
     }
 
-    res.status(500).json({ message: "Failed to save Purchase Order" });
+    res.status(err.statusCode || 500).json({ message: err.message || "Failed to save Purchase Order", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   } finally {
     conn.release();
   }
@@ -2771,24 +3036,47 @@ app.put("/api/purchase-orders/:id", authenticateToken, authorizePermission("TRAN
       referenceNo,
       description,
       remarks,
-      totalDebit,
       totalCredit,
       status,
       lines,
       atcCode,
       taxWithheldAmount,
       payeeTin,
+      currency,
     } = req.body;
 
-    await conn.beginTransaction();
+    const finalStatus = status || "Open";
+    const isPosting = finalStatus !== "Draft";
+    const foreignGross = Number(totalCredit || 0);
 
     const ewt = await resolveTaxWithholding(conn, {
       moduleLabel: "PO",
       atcCode,
       lines,
-      totalCredit: Number(totalCredit || 0),
+      totalCredit: foreignGross,
       clientTaxWithheldAmount: taxWithheldAmount,
       vatKeyword: "input vat",
+    });
+
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
+
+    await conn.beginTransaction();
+
+    const [ownerRows] = await conn.execute("SELECT company_id, transaction_date FROM purchase_order_headers WHERE id = ?", [id]);
+    if (!ownerRows.length || ownerRows[0].company_id !== companyId) {
+      await conn.rollback();
+      return res.status(404).json({ message: "Purchase Order not found" });
+    }
+    const existingDateISO = AccountingPeriodService.toDateOnly(ownerRows[0].transaction_date);
+    await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate: existingDateISO, operation: "EDIT", user: req.user }, conn);
+    if (transactionDate && transactionDate !== existingDateISO) {
+      await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate, operation: "EDIT", user: req.user }, conn);
+    }
+
+    const currencyResult = await TransactionCurrencyService.resolveTransactionCurrency({
+      user: req.user, companyId, transactionType: "PO", transactionId: Number(id), currencyPayload: currency,
+      lines, grossAmount: foreignGross, vatKeyword: "input vat", taxWithheldAmount: ewt.taxWithheldAmount,
+      isPosting,
     });
 
     await conn.execute(
@@ -2808,8 +3096,9 @@ app.put("/api/purchase-orders/:id", authenticateToken, authorizePermission("TRAN
         tax_rate = ?,
         tax_withheld_amount = ?,
         taxable_base = ?,
-        payee_tin = ?
-      WHERE id = ?`,
+        payee_tin = ?,
+        currency_id = ?
+      WHERE id = ? AND company_id = ?`,
       [
         voucherNo,
         supplierId || null,
@@ -2818,22 +3107,24 @@ app.put("/api/purchase-orders/:id", authenticateToken, authorizePermission("TRAN
         referenceNo || "",
         description || "",
         remarks || "",
-        totalDebit || 0,
-        totalCredit || 0,
-        status || "Open",
+        currencyResult.baseTotalDebit,
+        currencyResult.baseTotalCredit,
+        finalStatus,
         ewt.atcCode,
         ewt.taxType,
         ewt.taxRate,
-        ewt.taxWithheldAmount,
-        ewt.taxableBase,
+        ewt.atcCode ? currencyResult.baseTotals.baseEwt : null,
+        ewt.atcCode ? currencyResult.baseTotals.baseSubtotal : null,
         payeeTin || null,
+        currencyResult.currencyId,
         id,
+        companyId,
       ]
     );
 
     await conn.execute("DELETE FROM purchase_order_lines WHERE po_id = ?", [id]);
 
-    for (const line of lines || []) {
+    for (const line of currencyResult.lines) {
       await conn.execute(
         `INSERT INTO purchase_order_lines (
           po_id,
@@ -2844,21 +3135,33 @@ app.put("/api/purchase-orders/:id", authenticateToken, authorizePermission("TRAN
           debit,
           credit,
           gen_ref,
-          gen_name
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          gen_name,
+          foreign_debit,
+          foreign_credit
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           id,
           line.accountId || null,
           line.accountCode || "",
           line.accountTitle || "",
           line.particulars || "",
-          Number(line.debit) || 0,
-          Number(line.credit) || 0,
+          line.baseDebit,
+          line.baseCredit,
           line.genRef || "",
           line.genName || "",
+          line.foreignDebit,
+          line.foreignCredit,
         ]
       );
     }
+
+    await TransactionCurrencyService.saveSnapshot(conn, {
+      companyId, transactionType: "PO", transactionId: Number(id),
+      currencyId: currencyResult.currencyId, currencyCode: currencyResult.currencyCode,
+      baseCurrencyId: currencyResult.baseCurrencyId, baseCurrencyCode: currencyResult.baseCurrencyCode,
+      rateInfo: currencyResult.rateInfo, foreignTotals: currencyResult.foreignTotals, baseTotals: currencyResult.baseTotals,
+      userId: req.user.id, lockNow: isPosting,
+    });
 
     await conn.commit();
 
@@ -2869,7 +3172,7 @@ app.put("/api/purchase-orders/:id", authenticateToken, authorizePermission("TRAN
   } catch (err) {
     await conn.rollback();
     console.error("UPDATE PURCHASE ORDER ERROR:", err);
-    res.status(500).json({ message: "Failed to update Purchase Order" });
+    res.status(err.statusCode || 500).json({ message: err.message || "Failed to update Purchase Order", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   } finally {
     conn.release();
   }
@@ -2878,8 +3181,16 @@ app.put("/api/purchase-orders/:id", authenticateToken, authorizePermission("TRAN
 app.delete("/api/purchase-orders/:id", authenticateToken, authorizePermission("TRANSACTIONS.PURCHASE_ORDER", "DELETE"), async (req, res) => {
   try {
     const { id } = req.params;
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId || req.body?.companyId);
 
-    await pool.execute("DELETE FROM purchase_order_headers WHERE id = ?", [id]);
+    const [ownerRows] = await pool.execute("SELECT company_id, transaction_date FROM purchase_order_headers WHERE id = ?", [id]);
+    if (!ownerRows.length || ownerRows[0].company_id !== companyId) {
+      return res.status(404).json({ message: "Purchase Order not found" });
+    }
+    const delDateISO = AccountingPeriodService.toDateOnly(ownerRows[0].transaction_date);
+    await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate: delDateISO, operation: "DELETE", user: req.user });
+
+    await pool.execute("DELETE FROM purchase_order_headers WHERE id = ? AND company_id = ?", [id, companyId]);
 
     res.json({
       success: true,
@@ -2887,7 +3198,7 @@ app.delete("/api/purchase-orders/:id", authenticateToken, authorizePermission("T
     });
   } catch (err) {
     console.error("DELETE PURCHASE ORDER ERROR:", err);
-    res.status(500).json({ message: "Failed to delete Purchase Order" });
+    res.status(err.statusCode || 500).json({ message: err.statusCode ? err.message : "Failed to delete Purchase Order", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   }
 });
 
@@ -3240,6 +3551,7 @@ app.post("/api/quotations/:id/convert-to-invoice", authenticateToken, authorizeP
 
   try {
     const { id } = req.params;
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.body?.companyId);
 
     await conn.beginTransaction();
 
@@ -3339,6 +3651,7 @@ app.post("/api/quotations/:id/convert-to-invoice", authenticateToken, authorizeP
 
     const [result] = await conn.execute(
       `INSERT INTO invoice_headers (
+        company_id,
         voucher_no,
         customer_id,
         customer_name,
@@ -3351,8 +3664,9 @@ app.post("/api/quotations/:id/convert-to-invoice", authenticateToken, authorizeP
         payment_status,
         status,
         source_quotation_id
-      ) VALUES (?, ?, ?, CURDATE(), ?, ?, ?, ?, ?, 'Unpaid', 'Draft', ?)`,
+      ) VALUES (?, ?, ?, ?, CURDATE(), ?, ?, ?, ?, ?, 'Unpaid', 'Draft', ?)`,
       [
+        companyId,
         voucherNo,
         quotation.customer_id || null,
         quotation.customer_name,
@@ -3476,14 +3790,20 @@ app.get("/api/posting/pending", authenticateToken, authorizePermission("POSTING"
   }
 });
 
+// transactionType is only set for modules wired to the currency snapshot
+// table (Invoice, APV, OR, CV as of Checkpoint 3B) - bulk-posting a module
+// without one is unaffected, exactly as before. isPaymentDoc marks OR/CV
+// specifically, since only they can carry a rate-mismatched application
+// (section 23/24) that must block this bulk path exactly like the
+// per-transaction Save/Post path already does.
 const AR_POST_TARGETS = [
-  { table: "invoice_headers", status: "Posted" },
-  { table: "or_headers", status: "Posted" },
+  { table: "invoice_headers", status: "Posted", transactionType: "INV" },
+  { table: "or_headers", status: "Posted", transactionType: "OR", isPaymentDoc: true },
 ];
 
 const AP_POST_TARGETS = [
-  { table: "apv_headers", status: "Posted" },
-  { table: "cv_headers", status: "Posted" },
+  { table: "apv_headers", status: "Posted", transactionType: "APV" },
+  { table: "cv_headers", status: "Posted", transactionType: "CV", isPaymentDoc: true },
   { table: "purchase_order_headers", status: "Open" },
 ];
 
@@ -3492,6 +3812,7 @@ app.post("/api/posting/post", authenticateToken, authorizePermission("POSTING", 
 
   try {
     const { scope } = req.body;
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.body.companyId);
 
     const targets =
       scope === "ar"
@@ -3503,27 +3824,93 @@ app.post("/api/posting/post", authenticateToken, authorizePermission("POSTING", 
     await conn.beginTransaction();
 
     let postedCount = 0;
+    let blockedCount = 0;
+    let periodBlockedCount = 0;
 
     for (const target of targets) {
-      const [result] = await conn.execute(
-        `UPDATE ${target.table} SET status = ? WHERE UPPER(status) = 'DRAFT'`,
-        [target.status]
+      // Rate locking (section 10) needs to know WHICH rows are about to
+      // transition, which a bare UPDATE...WHERE doesn't report - captured
+      // before the update so exactly those transactions' snapshots (not
+      // every unlocked snapshot of this type) get locked. Also carries
+      // transaction_date now (Checkpoint 5 section 27) so closed-period
+      // drafts can be excluded from the batch the same way FX-mismatched
+      // rows already are below - bulk posting must never become a bypass
+      // for the per-transaction period check.
+      let draftRows = [];
+      const [rawDraftRows] = await conn.execute(
+        `SELECT id, transaction_date AS transactionDate FROM ${target.table} WHERE UPPER(status) = 'DRAFT' AND company_id = ?`,
+        [companyId]
       );
+      draftRows = rawDraftRows;
+      let draftIds = draftRows.map((r) => r.id);
+
+      const distinctDates = [...new Set(draftRows.map((r) => AccountingPeriodService.toDateOnly(r.transactionDate)))];
+      const openDates = new Set();
+      for (const dateStr of distinctDates) {
+        try {
+          await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate: dateStr, operation: "BULK_POST", user: req.user }, conn);
+          openDates.add(dateStr);
+        } catch (periodErr) {
+          if (!(periodErr.statusCode === 409 && periodErr.code && periodErr.code.startsWith("ACCOUNTING_PERIOD"))) throw periodErr;
+        }
+      }
+      const periodBlockedIds = draftRows
+        .filter((r) => !openDates.has(AccountingPeriodService.toDateOnly(r.transactionDate)))
+        .map((r) => r.id);
+      periodBlockedCount += periodBlockedIds.length;
+      draftIds = draftIds.filter((id) => !periodBlockedIds.includes(id));
+
+      // Section 23/24: a Draft OR/CV may carry a payment application saved
+      // at a different rate than its source document (allowed to save,
+      // never allowed to post - the per-transaction Save/Post path already
+      // enforces this; bulk posting must not become a bypass for it).
+      // Those specific rows are excluded from this bulk transition and
+      // reported back rather than silently posted unbalanced.
+      let blockedIds = [];
+      if (target.isPaymentDoc && draftIds.length) {
+        const [mismatchRows] = await conn.query(
+          `SELECT DISTINCT applied_id AS id FROM transaction_applications
+           WHERE applied_type = ? AND applied_id IN (?) AND ABS(COALESCE(fx_difference, 0)) > 0.01`,
+          [target.transactionType, draftIds]
+        );
+        blockedIds = mismatchRows.map((r) => r.id);
+        draftIds = draftIds.filter((did) => !blockedIds.includes(did));
+        blockedCount += blockedIds.length;
+      }
+
+      const [result] = draftIds.length
+        ? await conn.query(`UPDATE ${target.table} SET status = ? WHERE id IN (?) AND company_id = ?`, [target.status, draftIds, companyId])
+        : [{ affectedRows: 0 }];
 
       postedCount += result.affectedRows;
+
+      if (target.transactionType && draftIds.length) {
+        await conn.query(
+          "UPDATE transaction_currency_snapshots SET rate_locked = 1 WHERE transaction_type = ? AND transaction_id IN (?)",
+          [target.transactionType, draftIds]
+        );
+      }
     }
 
     await conn.commit();
 
+    const notes = [];
+    if (blockedCount) notes.push(`${blockedCount} were skipped because their payment rate differs from their source document's rate (realized FX gain/loss accounting is not yet implemented) - post those individually to see the details.`);
+    if (periodBlockedCount) notes.push(`${periodBlockedCount} were skipped because their accounting period is closed.`);
+
     res.json({
       success: true,
-      message: `${postedCount} transaction(s) posted successfully`,
+      message: notes.length
+        ? `${postedCount} transaction(s) posted successfully. ${notes.join(" ")}`
+        : `${postedCount} transaction(s) posted successfully`,
       postedCount,
+      blockedCount,
+      periodBlockedCount,
     });
   } catch (err) {
     await conn.rollback();
     console.error("BULK POSTING ERROR:", err);
-    res.status(500).json({ message: "Failed to post transactions" });
+    res.status(err.statusCode || 500).json({ message: err.statusCode ? err.message : "Failed to post transactions", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   } finally {
     conn.release();
   }
@@ -3556,7 +3943,17 @@ app.post("/api/apply-payment", authenticateToken, authorizePermission("POSTING",
       });
     }
 
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.body.companyId);
+
     await conn.beginTransaction();
+
+    // Locked on the PAYMENT's date, not the source APV's - settling an
+    // older closed-period APV from a currently-open period is normal
+    // (Checkpoint 5 section 16/17).
+    await AccountingPeriodService.assertPeriodOpen({
+      companyId, transactionDate: applicationDate || new Date().toISOString().slice(0, 10),
+      operation: "POST", user: req.user,
+    }, conn);
 
     const [apvRows] = await conn.execute(
       `SELECT
@@ -3565,8 +3962,8 @@ app.post("/api/apply-payment", authenticateToken, authorizePermission("POSTING",
         COALESCE(paid_amount, 0) AS paidAmount,
         COALESCE(balance_amount, total_credit) AS balanceAmount
       FROM apv_headers
-      WHERE id = ?`,
-      [sourceId]
+      WHERE id = ? AND company_id = ?`,
+      [sourceId, companyId]
     );
 
     if (apvRows.length === 0) {
@@ -3614,7 +4011,7 @@ app.post("/api/apply-payment", authenticateToken, authorizePermission("POSTING",
   } catch (err) {
     await conn.rollback();
     console.error("APPLY PAYMENT ERROR:", err);
-    res.status(500).json({ message: "Failed to apply payment." });
+    res.status(err.statusCode || 500).json({ message: err.statusCode ? err.message : "Failed to apply payment.", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   } finally {
     conn.release();
   }
@@ -3624,9 +4021,10 @@ app.post("/api/apply-payment", authenticateToken, authorizePermission("POSTING",
 
 app.get("/api/cv", authenticateToken, authorizePermission("TRANSACTIONS.CV", "VIEW"), async (req, res) => {
   try {
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
     const [rows] = await pool.execute(`
       SELECT
-        id,
+        cv_headers.id AS id,
         voucher_no AS voucherNo,
         payee_id AS payeeId,
         payee_name AS payeeName,
@@ -3639,10 +4037,17 @@ app.get("/api/cv", authenticateToken, authorizePermission("TRANSACTIONS.CV", "VI
         status,
         payment_method AS paymentMethod,
         bank_account_id AS bankAccountId,
-        DATE_FORMAT(check_date, '%Y-%m-%d') AS checkDate
+        DATE_FORMAT(check_date, '%Y-%m-%d') AS checkDate,
+        cv_headers.currency_id AS currencyId,
+        cur.currency_code AS currencyCode,
+        cur.currency_symbol AS currencySymbol,
+        snap.foreign_total AS foreignTotal
       FROM cv_headers
-      ORDER BY id DESC
-    `);
+      LEFT JOIN currencies cur ON cur.id = cv_headers.currency_id
+      LEFT JOIN transaction_currency_snapshots snap ON snap.transaction_type = 'CV' AND snap.transaction_id = cv_headers.id
+      WHERE cv_headers.company_id = ?
+      ORDER BY cv_headers.id DESC
+    `, [companyId]);
 
     res.json(rows);
   } catch (err) {
@@ -3676,10 +4081,13 @@ app.post("/api/cv", authenticateToken, authorizePermission("TRANSACTIONS.CV", "C
       atcCode,
       taxWithheldAmount,
       payeeTin,
+      currency,
     } = req.body;
 
     const finalPayeeId = payeeId ?? req.body.supplierId ?? null;
     const finalPayeeName = payeeName || req.body.supplierName || "";
+    const finalStatus = status || "Draft";
+    const isPosting = String(finalStatus).toUpperCase() === "POSTED";
 
     const ewt = await resolveTaxWithholding(conn, {
       moduleLabel: "CV",
@@ -3690,8 +4098,17 @@ app.post("/api/cv", authenticateToken, authorizePermission("TRANSACTIONS.CV", "C
       vatKeyword: "input vat",
     });
 
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
+    await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate, operation: "CREATE", user: req.user }, conn);
+    const currencyResult = await TransactionCurrencyService.resolveTransactionCurrency({
+      user: req.user, companyId, transactionType: "CV", transactionId: null, currencyPayload: currency,
+      lines, grossAmount: Number(totalCredit) || 0, vatKeyword: "input vat", taxWithheldAmount: ewt.taxWithheldAmount,
+      isPosting,
+    });
+
     const [result] = await conn.execute(
       `INSERT INTO cv_headers(
+        company_id,
         voucher_no,
         payee_id,
         payee_name,
@@ -3710,10 +4127,12 @@ app.post("/api/cv", authenticateToken, authorizePermission("TRANSACTIONS.CV", "C
         tax_rate,
         tax_withheld_amount,
         taxable_base,
-        payee_tin
+        payee_tin,
+        currency_id
       )
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
+        companyId,
         voucherNo || "",
         finalPayeeId,
         finalPayeeName,
@@ -3721,24 +4140,25 @@ app.post("/api/cv", authenticateToken, authorizePermission("TRANSACTIONS.CV", "C
         referenceNo || "",
         checkNo || "",
         description || "",
-        Number(totalDebit) || 0,
-        Number(totalCredit) || 0,
-        status || "Draft",
+        currencyResult.baseTotalDebit,
+        currencyResult.baseTotalCredit,
+        finalStatus,
         paymentMethod === "Cash" ? "Cash" : "Check",
         bankAccountId || null,
         paymentMethod !== "Cash" ? checkDate || null : null,
         ewt.atcCode,
         ewt.taxType,
         ewt.taxRate,
-        ewt.taxWithheldAmount,
-        ewt.taxableBase,
+        ewt.atcCode ? currencyResult.baseTotals.baseEwt : null,
+        ewt.atcCode ? currencyResult.baseTotals.baseSubtotal : null,
         payeeTin || null,
+        currencyResult.currencyId,
       ]
     );
 
     const cvId = result.insertId;
 
-    for (const line of lines) {
+    for (const line of currencyResult.lines) {
       await conn.execute(
         `INSERT INTO cv_lines(
           cv_id,
@@ -3749,9 +4169,11 @@ app.post("/api/cv", authenticateToken, authorizePermission("TRANSACTIONS.CV", "C
           gen_ref,
           gen_name,
           debit,
-          credit
+          credit,
+          foreign_debit,
+          foreign_credit
         )
-        VALUES(?,?,?,?,?,?,?,?,?)`,
+        VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
         [
           cvId,
           line.accountId ?? null,
@@ -3760,50 +4182,46 @@ app.post("/api/cv", authenticateToken, authorizePermission("TRANSACTIONS.CV", "C
           line.particulars || "",
           line.genRef || "",
           line.genName || "",
-          Number(line.debit) || 0,
-          Number(line.credit) || 0,
+          line.baseDebit,
+          line.baseCredit,
+          line.foreignDebit,
+          line.foreignCredit,
         ]
       );
     }
 
+    const cvApplications = [];
     for (const appItem of apvApplications) {
-      const sourceId = appItem.sourceId ?? appItem.apvId ?? null;
-      const paymentAmount = Number(appItem.amount || 0);
-
-      if (!sourceId || paymentAmount <= 0) continue;
-
-      await conn.execute(
-        `INSERT INTO transaction_applications
-         (source_type, source_id, applied_type, applied_id, amount, application_date)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [
-          "APV",
-          sourceId,
-          "CV",
-          cvId,
-          paymentAmount,
-          appItem.applicationDate || transactionDate || null,
-        ]
+      cvApplications.push(
+        await applyApvPayment(conn, {
+          appItem,
+          appliedType: "CV",
+          appliedId: cvId,
+          paymentCurrencyCode: currencyResult.currencyCode,
+          paymentExchangeRate: currencyResult.rateInfo.exchangeRate,
+          baseCurrencyCode: currencyResult.baseCurrencyCode,
+          fallbackDate: transactionDate,
+          isPosting,
+          companyId,
+        })
       );
-
-      if (appItem.sourceType === "AP_BEGINNING") {
-  await conn.execute(
-    `
-    UPDATE arap_beginning_balance_lines
-    SET paid_amount = COALESCE(paid_amount, 0) + ?,
-        balance_amount = GREATEST(COALESCE(balance_amount, credit, 0) - ?, 0),
-        status = CASE
-          WHEN GREATEST(COALESCE(balance_amount, credit, 0) - ?, 0) <= 0 THEN 'Paid'
-          ELSE 'Partially Paid'
-        END
-    WHERE id = ?
-    `,
-    [paymentAmount, paymentAmount, paymentAmount, sourceId]
-  );
-} else {
-  await updateApvPaymentStatus(conn, sourceId);
-}
     }
+    const cvFxResult = await applyForeignSettlementToLines(conn, {
+      headerTable: "cv_headers", lineTable: "cv_lines", lineIdCol: "cv_id",
+      transactionId: cvId, applications: cvApplications, perspective: "PAYABLE",
+    });
+    await logFxSettlementAudit(conn, {
+      req, moduleKey: "TRANSACTIONS.CV", appliedType: "CV", appliedId: cvId,
+      applications: cvApplications, fxResult: cvFxResult,
+    });
+
+    await TransactionCurrencyService.saveSnapshot(conn, {
+      companyId, transactionType: "CV", transactionId: cvId,
+      currencyId: currencyResult.currencyId, currencyCode: currencyResult.currencyCode,
+      baseCurrencyId: currencyResult.baseCurrencyId, baseCurrencyCode: currencyResult.baseCurrencyCode,
+      rateInfo: currencyResult.rateInfo, foreignTotals: currencyResult.foreignTotals, baseTotals: currencyResult.baseTotals,
+      userId: req.user.id, lockNow: isPosting,
+    });
 
     await conn.commit();
 
@@ -3816,8 +4234,9 @@ app.post("/api/cv", authenticateToken, authorizePermission("TRANSACTIONS.CV", "C
     await conn.rollback();
     console.error("CREATE CV ERROR:", err);
 
-    res.status(500).json({
-      message: "Failed to save CV",
+    res.status(err.statusCode || 500).json({
+      message: err.message || "Failed to save CV",
+      ...(err.statusCode && err.code ? { code: err.code } : {}),
     });
   } finally {
     conn.release();
@@ -3827,6 +4246,7 @@ app.post("/api/cv", authenticateToken, authorizePermission("TRANSACTIONS.CV", "C
 app.get("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV", "VIEW"), async (req, res) => {
   try {
     const { id } = req.params;
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
     const [headers] = await pool.execute(
       `SELECT
@@ -3850,10 +4270,11 @@ app.get("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
         tax_rate AS taxRate,
         tax_withheld_amount AS taxWithheldAmount,
         taxable_base AS taxableBase,
-        payee_tin AS payeeTin
+        payee_tin AS payeeTin,
+        currency_id AS currencyId
       FROM cv_headers
-      WHERE id = ?`,
-      [id]
+      WHERE id = ? AND company_id = ?`,
+      [id, companyId]
     );
 
     if (headers.length === 0) {
@@ -3871,7 +4292,9 @@ app.get("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
         debit,
         credit,
         gen_ref AS genRef,
-        gen_name AS genName
+        gen_name AS genName,
+        foreign_debit AS foreignDebit,
+        foreign_credit AS foreignCredit
       FROM cv_lines
       WHERE cv_id = ?
       ORDER BY id ASC`,
@@ -3886,7 +4309,16 @@ app.get("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
         applied_type AS appliedType,
         applied_id AS appliedId,
         amount,
-        DATE_FORMAT(application_date, '%Y-%m-%d') AS applicationDate
+        DATE_FORMAT(application_date, '%Y-%m-%d') AS applicationDate,
+        source_currency_code AS sourceCurrencyCode,
+        payment_currency_code AS paymentCurrencyCode,
+        foreign_amount_applied AS foreignAmountApplied,
+        source_exchange_rate AS sourceExchangeRate,
+        payment_exchange_rate AS paymentExchangeRate,
+        source_base_amount AS sourceBaseAmount,
+        payment_base_amount AS paymentBaseAmount,
+        fx_difference AS fxDifference,
+        fx_direction AS fxDirection
       FROM transaction_applications
       WHERE applied_type = 'CV'
         AND applied_id = ?
@@ -3894,10 +4326,13 @@ app.get("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
       [id]
     );
 
+    const currencySnapshot = await TransactionCurrencyService.getSnapshot("CV", id);
+
     res.json({
       ...headers[0],
       lines,
       applications,
+      currency: currencySnapshot,
     });
   } catch (err) {
     console.error("GET CV DETAILS ERROR:", err);
@@ -3930,12 +4365,28 @@ app.put("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
       atcCode,
       taxWithheldAmount,
       payeeTin,
+      currency,
     } = req.body;
 
     const finalPayeeId = payeeId ?? req.body.supplierId ?? null;
     const finalPayeeName = payeeName || req.body.supplierName || "";
+    const finalStatus = status || "Draft";
+    const isPosting = String(finalStatus).toUpperCase() === "POSTED";
+
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
 
     await conn.beginTransaction();
+
+    const [ownerRows] = await conn.execute("SELECT company_id, transaction_date FROM cv_headers WHERE id = ?", [id]);
+    if (!ownerRows.length || ownerRows[0].company_id !== companyId) {
+      await conn.rollback();
+      return res.status(404).json({ message: "CV not found" });
+    }
+    const existingDateISO = AccountingPeriodService.toDateOnly(ownerRows[0].transaction_date);
+    await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate: existingDateISO, operation: "EDIT", user: req.user }, conn);
+    if (transactionDate && transactionDate !== existingDateISO) {
+      await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate, operation: "EDIT", user: req.user }, conn);
+    }
 
     // Reverse the payment effects of this CV's previous applications before
     // the edited ones are saved, mirroring the OR PUT handler's approach.
@@ -3975,6 +4426,17 @@ app.put("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
           `,
           [oldAmount, oldAmount, oldAmount, oldAmount, oldItem.sourceId]
         );
+
+        const foreignState = await TransactionCurrencyService.getForeignPaymentState(conn, {
+          transactionType: "AP_BEGINNING",
+          transactionId: oldItem.sourceId,
+        });
+        if (foreignState.hasForeignCurrency) {
+          await conn.execute(
+            `UPDATE arap_beginning_balance_lines SET foreign_paid_amount = ?, foreign_balance_amount = ? WHERE id = ?`,
+            [foreignState.foreignPaidAmount, foreignState.foreignBalanceAmount, oldItem.sourceId]
+          );
+        }
       }
     }
 
@@ -3991,6 +4453,12 @@ app.put("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
       totalCredit: Number(totalCredit) || 0,
       clientTaxWithheldAmount: taxWithheldAmount,
       vatKeyword: "input vat",
+    });
+
+    const currencyResult = await TransactionCurrencyService.resolveTransactionCurrency({
+      user: req.user, companyId, transactionType: "CV", transactionId: Number(id), currencyPayload: currency,
+      lines, grossAmount: Number(totalCredit) || 0, vatKeyword: "input vat", taxWithheldAmount: ewt.taxWithheldAmount,
+      isPosting,
     });
 
     await conn.execute(
@@ -4013,8 +4481,9 @@ app.put("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
          tax_rate = ?,
          tax_withheld_amount = ?,
          taxable_base = ?,
-         payee_tin = ?
-       WHERE id = ?`,
+         payee_tin = ?,
+         currency_id = ?
+       WHERE id = ? AND company_id = ?`,
       [
         voucherNo || "",
         finalPayeeId,
@@ -4023,25 +4492,27 @@ app.put("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
         referenceNo || "",
         checkNo || "",
         description || "",
-        Number(totalDebit) || 0,
-        Number(totalCredit) || 0,
-        status || "Draft",
+        currencyResult.baseTotalDebit,
+        currencyResult.baseTotalCredit,
+        finalStatus,
         paymentMethod === "Cash" ? "Cash" : "Check",
         bankAccountId || null,
         paymentMethod !== "Cash" ? checkDate || null : null,
         ewt.atcCode,
         ewt.taxType,
         ewt.taxRate,
-        ewt.taxWithheldAmount,
-        ewt.taxableBase,
+        ewt.atcCode ? currencyResult.baseTotals.baseEwt : null,
+        ewt.atcCode ? currencyResult.baseTotals.baseSubtotal : null,
         payeeTin || null,
+        currencyResult.currencyId,
         id,
+        companyId,
       ]
     );
 
     await conn.execute("DELETE FROM cv_lines WHERE cv_id = ?", [id]);
 
-    for (const line of lines) {
+    for (const line of currencyResult.lines) {
       await conn.execute(
         `INSERT INTO cv_lines(
           cv_id,
@@ -4052,9 +4523,11 @@ app.put("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
           gen_ref,
           gen_name,
           debit,
-          credit
+          credit,
+          foreign_debit,
+          foreign_credit
         )
-        VALUES(?,?,?,?,?,?,?,?,?)`,
+        VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
         [
           id,
           line.accountId ?? null,
@@ -4063,52 +4536,46 @@ app.put("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
           line.particulars || "",
           line.genRef || "",
           line.genName || "",
-          Number(line.debit) || 0,
-          Number(line.credit) || 0,
+          line.baseDebit,
+          line.baseCredit,
+          line.foreignDebit,
+          line.foreignCredit,
         ]
       );
     }
 
+    const cvApplications = [];
     for (const appItem of apvApplications) {
-      const sourceId = appItem.sourceId ?? appItem.apvId ?? null;
-      const paymentAmount = Number(appItem.amount || 0);
-
-      if (!sourceId || paymentAmount <= 0) continue;
-
-      const sourceType = appItem.sourceType === "AP_BEGINNING" ? "AP_BEGINNING" : "APV";
-
-      await conn.execute(
-        `INSERT INTO transaction_applications
-         (source_type, source_id, applied_type, applied_id, amount, application_date)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [
-          sourceType,
-          sourceId,
-          "CV",
-          id,
-          paymentAmount,
-          appItem.applicationDate || transactionDate || null,
-        ]
+      cvApplications.push(
+        await applyApvPayment(conn, {
+          appItem,
+          appliedType: "CV",
+          appliedId: Number(id),
+          paymentCurrencyCode: currencyResult.currencyCode,
+          paymentExchangeRate: currencyResult.rateInfo.exchangeRate,
+          baseCurrencyCode: currencyResult.baseCurrencyCode,
+          fallbackDate: transactionDate,
+          isPosting,
+          companyId,
+        })
       );
-
-      if (sourceType === "AP_BEGINNING") {
-        await conn.execute(
-          `
-          UPDATE arap_beginning_balance_lines
-          SET paid_amount = COALESCE(paid_amount, 0) + ?,
-              balance_amount = GREATEST(COALESCE(balance_amount, credit, 0) - ?, 0),
-              status = CASE
-                WHEN GREATEST(COALESCE(balance_amount, credit, 0) - ?, 0) <= 0 THEN 'Paid'
-                ELSE 'Partially Paid'
-              END
-          WHERE id = ?
-          `,
-          [paymentAmount, paymentAmount, paymentAmount, sourceId]
-        );
-      } else {
-        await updateApvPaymentStatus(conn, sourceId);
-      }
     }
+    const cvFxResult = await applyForeignSettlementToLines(conn, {
+      headerTable: "cv_headers", lineTable: "cv_lines", lineIdCol: "cv_id",
+      transactionId: Number(id), applications: cvApplications, perspective: "PAYABLE",
+    });
+    await logFxSettlementAudit(conn, {
+      req, moduleKey: "TRANSACTIONS.CV", appliedType: "CV", appliedId: Number(id),
+      applications: cvApplications, fxResult: cvFxResult,
+    });
+
+    await TransactionCurrencyService.saveSnapshot(conn, {
+      companyId, transactionType: "CV", transactionId: Number(id),
+      currencyId: currencyResult.currencyId, currencyCode: currencyResult.currencyCode,
+      baseCurrencyId: currencyResult.baseCurrencyId, baseCurrencyCode: currencyResult.baseCurrencyCode,
+      rateInfo: currencyResult.rateInfo, foreignTotals: currencyResult.foreignTotals, baseTotals: currencyResult.baseTotals,
+      userId: req.user.id, lockNow: isPosting,
+    });
 
     await conn.commit();
 
@@ -4124,7 +4591,7 @@ app.put("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
       return res.status(400).json({ message: "CV number already exists" });
     }
 
-    res.status(500).json({ message: err.message || "Failed to update CV" });
+    res.status(err.statusCode || 500).json({ message: err.message || "Failed to update CV", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   } finally {
     conn.release();
   }
@@ -4137,9 +4604,10 @@ app.put("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
 
 app.get("/api/jv", authenticateToken, authorizePermission("TRANSACTIONS.JV", "VIEW"), async (req, res) => {
   try {
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
     const [rows] = await pool.execute(`
       SELECT
-        id,
+        jv_headers.id AS id,
         voucher_no AS voucherNo,
         DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate,
         reference_no AS referenceNo,
@@ -4147,10 +4615,17 @@ app.get("/api/jv", authenticateToken, authorizePermission("TRANSACTIONS.JV", "VI
         description,
         total_debit AS totalDebit,
         total_credit AS totalCredit,
-        status
+        status,
+        jv_headers.currency_id AS currencyId,
+        cur.currency_code AS currencyCode,
+        cur.currency_symbol AS currencySymbol,
+        snap.foreign_total AS foreignTotal
       FROM jv_headers
-      ORDER BY id DESC
-    `);
+      LEFT JOIN currencies cur ON cur.id = jv_headers.currency_id
+      LEFT JOIN transaction_currency_snapshots snap ON snap.transaction_type = 'JV' AND snap.transaction_id = jv_headers.id
+      WHERE jv_headers.company_id = ?
+      ORDER BY jv_headers.id DESC
+    `, [companyId]);
 
     res.json(rows);
   } catch (err) {
@@ -4163,8 +4638,6 @@ app.post("/api/jv", authenticateToken, authorizePermission("TRANSACTIONS.JV", "C
   const conn = await pool.getConnection();
 
   try {
-    await conn.beginTransaction();
-
     const {
       voucherNo,
       supplierName,
@@ -4173,18 +4646,32 @@ app.post("/api/jv", authenticateToken, authorizePermission("TRANSACTIONS.JV", "C
       referenceNo,
       description,
       remarks,
-      totalDebit,
-      totalCredit,
       status,
       lines = [],
+      currency,
     } = req.body;
 
     const preparedFor = req.body.preparedFor || supplierName || customerName || "";
     const finalStatus = status || "Draft";
     const userId = req.user?.id || null;
+    const isPosting = finalStatus === "Posted";
+
+    // Backend authority (section 30/31): the gross total comes from summing
+    // the submitted lines, never the client-computed totalDebit/totalCredit.
+    const grossAmount = lines.reduce((sum, line) => sum + (Number(line.debit) || 0), 0);
+
+    await conn.beginTransaction();
+
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
+    await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate, operation: "CREATE", user: req.user }, conn);
+    const currencyResult = await TransactionCurrencyService.resolveTransactionCurrency({
+      user: req.user, companyId, transactionType: "JV", transactionId: null, currencyPayload: currency,
+      lines, grossAmount, vatKeyword: "vat", taxWithheldAmount: 0, isPosting,
+    });
 
     const [result] = await conn.execute(
       `INSERT INTO jv_headers(
+        company_id,
         voucher_no,
         transaction_date,
         reference_no,
@@ -4196,28 +4683,31 @@ app.post("/api/jv", authenticateToken, authorizePermission("TRANSACTIONS.JV", "C
         status,
         created_by,
         posted_by,
-        posted_at
+        posted_at,
+        currency_id
       )
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
+        companyId,
         voucherNo || "",
         transactionDate || null,
         referenceNo || "",
         preparedFor,
         description || "",
         remarks || "",
-        Number(totalDebit) || 0,
-        Number(totalCredit) || 0,
+        currencyResult.baseTotalDebit,
+        currencyResult.baseTotalCredit,
         finalStatus,
         userId,
-        finalStatus === "Posted" ? userId : null,
-        finalStatus === "Posted" ? new Date() : null,
+        isPosting ? userId : null,
+        isPosting ? new Date() : null,
+        currencyResult.currencyId,
       ]
     );
 
     const jvId = result.insertId;
 
-    for (const line of lines) {
+    for (const line of currencyResult.lines) {
       await conn.execute(
         `INSERT INTO jv_lines(
           jv_id,
@@ -4228,9 +4718,11 @@ app.post("/api/jv", authenticateToken, authorizePermission("TRANSACTIONS.JV", "C
           gen_ref,
           gen_name,
           debit,
-          credit
+          credit,
+          foreign_debit,
+          foreign_credit
         )
-        VALUES(?,?,?,?,?,?,?,?,?)`,
+        VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
         [
           jvId,
           line.accountId ?? null,
@@ -4239,22 +4731,36 @@ app.post("/api/jv", authenticateToken, authorizePermission("TRANSACTIONS.JV", "C
           line.particulars || "",
           line.genRef || "",
           line.genName || "",
-          Number(line.debit) || 0,
-          Number(line.credit) || 0,
+          line.baseDebit,
+          line.baseCredit,
+          line.foreignDebit,
+          line.foreignCredit,
         ]
       );
     }
+
+    await TransactionCurrencyService.saveSnapshot(conn, {
+      companyId, transactionType: "JV", transactionId: jvId,
+      currencyId: currencyResult.currencyId, currencyCode: currencyResult.currencyCode,
+      baseCurrencyId: currencyResult.baseCurrencyId, baseCurrencyCode: currencyResult.baseCurrencyCode,
+      rateInfo: currencyResult.rateInfo, foreignTotals: currencyResult.foreignTotals, baseTotals: currencyResult.baseTotals,
+      userId: req.user.id, lockNow: isPosting,
+    });
 
     await logAudit(conn, {
       module: "JV",
       entityType: "JV",
       entityId: jvId,
-      action: finalStatus === "Posted" ? "POST" : "CREATE",
+      action: isPosting ? "POST" : "CREATE",
       description:
-        finalStatus === "Posted"
+        isPosting
           ? `JV ${voucherNo} created and posted`
           : `JV ${voucherNo} created (${finalStatus})`,
-      afterData: { voucherNo, preparedFor, transactionDate, totalDebit, totalCredit, status: finalStatus },
+      afterData: {
+        voucherNo, preparedFor, transactionDate, status: finalStatus,
+        totalDebit: currencyResult.baseTotalDebit, totalCredit: currencyResult.baseTotalCredit,
+        currencyCode: currencyResult.currencyCode,
+      },
       user: req.user,
     });
 
@@ -4273,7 +4779,7 @@ app.post("/api/jv", authenticateToken, authorizePermission("TRANSACTIONS.JV", "C
       return res.status(400).json({ message: "JV number already exists" });
     }
 
-    res.status(500).json({ message: "Failed to save JV" });
+    res.status(err.statusCode || 500).json({ message: err.message || "Failed to save JV", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   } finally {
     conn.release();
   }
@@ -4282,6 +4788,7 @@ app.post("/api/jv", authenticateToken, authorizePermission("TRANSACTIONS.JV", "C
 app.get("/api/jv/:id", authenticateToken, authorizePermission("TRANSACTIONS.JV", "VIEW"), async (req, res) => {
   try {
     const { id } = req.params;
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
     const [headers] = await pool.execute(
       `SELECT
@@ -4294,10 +4801,11 @@ app.get("/api/jv/:id", authenticateToken, authorizePermission("TRANSACTIONS.JV",
         remarks,
         total_debit AS totalDebit,
         total_credit AS totalCredit,
-        status
+        status,
+        currency_id AS currencyId
       FROM jv_headers
-      WHERE id = ?`,
-      [id]
+      WHERE id = ? AND company_id = ?`,
+      [id, companyId]
     );
 
     if (headers.length === 0) {
@@ -4315,16 +4823,21 @@ app.get("/api/jv/:id", authenticateToken, authorizePermission("TRANSACTIONS.JV",
         debit,
         credit,
         gen_ref AS genRef,
-        gen_name AS genName
+        gen_name AS genName,
+        foreign_debit AS foreignDebit,
+        foreign_credit AS foreignCredit
       FROM jv_lines
       WHERE jv_id = ?
       ORDER BY id ASC`,
       [id]
     );
 
+    const currencySnapshot = await TransactionCurrencyService.getSnapshot("JV", id);
+
     res.json({
       ...headers[0],
       lines,
+      currency: currencySnapshot,
     });
   } catch (err) {
     console.error("GET JV DETAILS ERROR:", err);
@@ -4338,15 +4851,6 @@ app.put("/api/jv/:id", authenticateToken, authorizePermission("TRANSACTIONS.JV",
   try {
     const { id } = req.params;
 
-    const [existing] = await conn.execute(
-      "SELECT status, posted_by, posted_at FROM jv_headers WHERE id = ?",
-      [id]
-    );
-
-    if (existing.length === 0) {
-      return res.status(404).json({ message: "JV not found" });
-    }
-
     const {
       voucherNo,
       supplierName,
@@ -4355,25 +4859,49 @@ app.put("/api/jv/:id", authenticateToken, authorizePermission("TRANSACTIONS.JV",
       referenceNo,
       description,
       remarks,
-      totalDebit,
-      totalCredit,
       status,
       lines = [],
+      currency,
     } = req.body;
+
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
+
+    const [existing] = await conn.execute(
+      "SELECT status, posted_by, posted_at, company_id AS companyId, transaction_date AS transactionDate FROM jv_headers WHERE id = ?",
+      [id]
+    );
+
+    if (existing.length === 0 || existing[0].companyId !== companyId) {
+      return res.status(404).json({ message: "JV not found" });
+    }
 
     const preparedFor = req.body.preparedFor || supplierName || customerName || "";
     const finalStatus = status || "Draft";
     const userId = req.user?.id || null;
     const wasAlreadyPosted = existing[0].status === "Posted";
+    const isPosting = finalStatus === "Posted";
 
     // Preserve the original posted_by/posted_at if it was already Posted and stays
     // Posted through this edit - only set them fresh on the Draft->Posted transition.
     const nextPostedBy =
-      finalStatus === "Posted" ? (wasAlreadyPosted ? existing[0].posted_by : userId) : null;
+      isPosting ? (wasAlreadyPosted ? existing[0].posted_by : userId) : null;
     const nextPostedAt =
-      finalStatus === "Posted" ? (wasAlreadyPosted ? existing[0].posted_at : new Date()) : null;
+      isPosting ? (wasAlreadyPosted ? existing[0].posted_at : new Date()) : null;
+
+    const grossAmount = lines.reduce((sum, line) => sum + (Number(line.debit) || 0), 0);
 
     await conn.beginTransaction();
+
+    const existingDateISO = AccountingPeriodService.toDateOnly(existing[0].transactionDate);
+    await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate: existingDateISO, operation: "EDIT", user: req.user }, conn);
+    if (transactionDate && transactionDate !== existingDateISO) {
+      await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate, operation: "EDIT", user: req.user }, conn);
+    }
+
+    const currencyResult = await TransactionCurrencyService.resolveTransactionCurrency({
+      user: req.user, companyId, transactionType: "JV", transactionId: Number(id), currencyPayload: currency,
+      lines, grossAmount, vatKeyword: "vat", taxWithheldAmount: 0, isPosting,
+    });
 
     await conn.execute(
       `UPDATE jv_headers SET
@@ -4387,8 +4915,9 @@ app.put("/api/jv/:id", authenticateToken, authorizePermission("TRANSACTIONS.JV",
         total_credit = ?,
         status = ?,
         posted_by = ?,
-        posted_at = ?
-      WHERE id = ?`,
+        posted_at = ?,
+        currency_id = ?
+      WHERE id = ? AND company_id = ?`,
       [
         voucherNo || "",
         transactionDate || null,
@@ -4396,18 +4925,20 @@ app.put("/api/jv/:id", authenticateToken, authorizePermission("TRANSACTIONS.JV",
         preparedFor,
         description || "",
         remarks || "",
-        Number(totalDebit) || 0,
-        Number(totalCredit) || 0,
+        currencyResult.baseTotalDebit,
+        currencyResult.baseTotalCredit,
         finalStatus,
         nextPostedBy,
         nextPostedAt,
+        currencyResult.currencyId,
         id,
+        companyId,
       ]
     );
 
     await conn.execute("DELETE FROM jv_lines WHERE jv_id = ?", [id]);
 
-    for (const line of lines) {
+    for (const line of currencyResult.lines) {
       await conn.execute(
         `INSERT INTO jv_lines(
           jv_id,
@@ -4418,9 +4949,11 @@ app.put("/api/jv/:id", authenticateToken, authorizePermission("TRANSACTIONS.JV",
           gen_ref,
           gen_name,
           debit,
-          credit
+          credit,
+          foreign_debit,
+          foreign_credit
         )
-        VALUES(?,?,?,?,?,?,?,?,?)`,
+        VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
         [
           id,
           line.accountId ?? null,
@@ -4429,13 +4962,23 @@ app.put("/api/jv/:id", authenticateToken, authorizePermission("TRANSACTIONS.JV",
           line.particulars || "",
           line.genRef || "",
           line.genName || "",
-          Number(line.debit) || 0,
-          Number(line.credit) || 0,
+          line.baseDebit,
+          line.baseCredit,
+          line.foreignDebit,
+          line.foreignCredit,
         ]
       );
     }
 
-    const isPostingNow = finalStatus === "Posted" && !wasAlreadyPosted;
+    await TransactionCurrencyService.saveSnapshot(conn, {
+      companyId, transactionType: "JV", transactionId: Number(id),
+      currencyId: currencyResult.currencyId, currencyCode: currencyResult.currencyCode,
+      baseCurrencyId: currencyResult.baseCurrencyId, baseCurrencyCode: currencyResult.baseCurrencyCode,
+      rateInfo: currencyResult.rateInfo, foreignTotals: currencyResult.foreignTotals, baseTotals: currencyResult.baseTotals,
+      userId: req.user.id, lockNow: isPosting,
+    });
+
+    const isPostingNow = isPosting && !wasAlreadyPosted;
 
     await logAudit(conn, {
       module: "JV",
@@ -4446,7 +4989,11 @@ app.put("/api/jv/:id", authenticateToken, authorizePermission("TRANSACTIONS.JV",
         ? `JV ${voucherNo} posted`
         : `JV ${voucherNo} updated (${finalStatus})`,
       beforeData: existing[0],
-      afterData: { voucherNo, preparedFor, transactionDate, totalDebit, totalCredit, status: finalStatus },
+      afterData: {
+        voucherNo, preparedFor, transactionDate, status: finalStatus,
+        totalDebit: currencyResult.baseTotalDebit, totalCredit: currencyResult.baseTotalCredit,
+        currencyCode: currencyResult.currencyCode,
+      },
       user: req.user,
     });
 
@@ -4464,7 +5011,7 @@ app.put("/api/jv/:id", authenticateToken, authorizePermission("TRANSACTIONS.JV",
       return res.status(400).json({ message: "JV number already exists" });
     }
 
-    res.status(500).json({ message: "Failed to update JV" });
+    res.status(err.statusCode || 500).json({ message: err.message || "Failed to update JV", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   } finally {
     conn.release();
   }
@@ -4475,19 +5022,23 @@ app.delete("/api/jv/:id", authenticateToken, authorizePermission("TRANSACTIONS.J
 
   try {
     const { id } = req.params;
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId || req.body?.companyId);
 
     const [existing] = await conn.execute(
-      "SELECT voucher_no, status FROM jv_headers WHERE id = ?",
+      "SELECT voucher_no, status, company_id AS companyId, transaction_date AS transactionDate FROM jv_headers WHERE id = ?",
       [id]
     );
 
-    if (existing.length === 0) {
+    if (existing.length === 0 || existing[0].companyId !== companyId) {
       return res.status(404).json({ message: "JV not found" });
     }
 
     await conn.beginTransaction();
 
-    await conn.execute("DELETE FROM jv_headers WHERE id = ?", [id]);
+    const delDateISO = AccountingPeriodService.toDateOnly(existing[0].transactionDate);
+    await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate: delDateISO, operation: "DELETE", user: req.user }, conn);
+
+    await conn.execute("DELETE FROM jv_headers WHERE id = ? AND company_id = ?", [id, companyId]);
 
     await logAudit(conn, {
       module: "JV",
@@ -4508,7 +5059,7 @@ app.delete("/api/jv/:id", authenticateToken, authorizePermission("TRANSACTIONS.J
   } catch (err) {
     await conn.rollback();
     console.error("DELETE JV ERROR:", err);
-    res.status(500).json({ message: "Failed to delete JV" });
+    res.status(err.statusCode || 500).json({ message: err.statusCode ? err.message : "Failed to delete JV", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   } finally {
     conn.release();
   }
@@ -4591,6 +5142,10 @@ app.use("/api/access-restrictions", require("./routes/accessRestrictions.routes"
 app.use("/api/permission-templates", require("./routes/templates.routes"));
 app.use("/api/print", require("./routes/transactionPrint.routes"));
 app.use("/api/recurring-transactions", require("./routes/recurringTransactions.routes"));
+app.use("/api/fx-revaluation", require("./routes/fxRevaluation.routes"));
+app.use("/api/currencies", require("./routes/currency.routes"));
+app.use("/api/exchange-rates", require("./routes/exchangeRate.routes"));
+app.use("/api/accounting-periods", require("./routes/accountingPeriods.routes"));
 
 // ===================== ACCOUNT GROUP CODES API =====================
 
@@ -4696,6 +5251,7 @@ app.delete("/api/group-codes/:id", authenticateToken, authorizePermission("FILES
 app.get("/api/arap-beginning-balances/:type", authenticateToken, authorizePermission("FILESETUP.BEGINNING_BALANCES", "VIEW"), async (req, res) => {
   try {
     const { type } = req.params;
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
     const [rows] = await pool.execute(
       `
@@ -4718,17 +5274,36 @@ app.get("/api/arap-beginning-balances/:type", authenticateToken, authorizePermis
         l.balance_amount AS balanceAmount,
         l.paid_amount AS paidAmount,
         l.status,
+        l.currency_id AS currencyId,
+        l.foreign_original_amount AS foreignOriginalAmount,
+        l.foreign_paid_amount AS foreignPaidAmount,
+        l.foreign_balance_amount AS foreignBalanceAmount,
         DATE_FORMAT(s.schedule_date, '%Y-%m-%d') AS scheduleDate
       FROM arap_beginning_balance_lines l
       JOIN arap_beginning_balance_headers h ON h.id = l.header_id
       LEFT JOIN arap_payment_schedules s ON s.beginning_balance_line_id = l.id
-      WHERE h.balance_type = ?
+      WHERE h.balance_type = ? AND h.company_id = ?
       ORDER BY l.id DESC
       `,
-      [type]
+      [type, companyId]
     );
 
-    res.json(rows);
+    const linesWithCurrency = rows.filter((r) => r.currencyId);
+    const snapshotsByLineId = new Map();
+    if (linesWithCurrency.length) {
+      const txnType = type === "AR" ? "AR_BEGINNING" : "AP_BEGINNING";
+      for (const row of linesWithCurrency) {
+        const snap = await TransactionCurrencyService.getSnapshot(txnType, row.id);
+        if (snap) snapshotsByLineId.set(row.id, snap);
+      }
+    }
+
+    res.json(
+      rows.map((r) => ({
+        ...r,
+        currency: snapshotsByLineId.get(r.id) || null,
+      }))
+    );
   } catch (err) {
     console.error("GET ARAP BB ERROR:", err);
     res.status(500).json({ message: "Failed to load AR/AP beginning balances" });
@@ -4746,17 +5321,45 @@ app.post("/api/arap-beginning-balances", authenticateToken, authorizePermission(
       currencyName,
       remarks,
       line,
+      companyId: requestedCompanyId,
     } = req.body;
 
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, requestedCompanyId);
+    const txnType = balanceType === "AP" ? "AP_BEGINNING" : "AR_BEGINNING";
+
     await conn.beginTransaction();
+
+    // Beginning Balances always insert as immediately-effective ('Posted')
+    // - Checkpoint 5 section 21 blocks create/edit/delete/import once the
+    // relevant opening period is closed.
+    await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate: balanceDate, operation: "CREATE", user: req.user }, conn);
+
+    const currencyResult = await BeginningBalanceCurrencyService.resolveLineCurrency({
+      user: req.user,
+      companyId,
+      transactionType: txnType,
+      transactionId: null,
+      currencyPayload: line.currencyId
+        ? { currencyId: line.currencyId, isManualRate: line.isManualRate, exchangeRate: line.exchangeRate, rateDate: line.rateDate, overrideReason: line.overrideReason }
+        : null,
+      rateDate: line.rateDate || balanceDate,
+    });
+
+    const converted = BeginningBalanceCurrencyService.convertLineAmount({
+      debit: line.debit,
+      credit: line.credit,
+      exchangeRate: currencyResult.rateInfo.exchangeRate,
+    });
+    const foreignOriginal = converted.foreignDebit || converted.foreignCredit;
 
     const [headerResult] = await conn.execute(
       `
       INSERT INTO arap_beginning_balance_headers
-      (balance_type, balance_date, currency_code, currency_name, remarks, status)
-      VALUES (?, ?, ?, ?, ?, ?)
+      (company_id, balance_type, balance_date, currency_code, currency_name, remarks, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
       `,
       [
+        companyId,
         balanceType,
         balanceDate,
         currencyCode || "PHP",
@@ -4785,9 +5388,13 @@ app.post("/api/arap-beginning-balances", authenticateToken, authorizePermission(
         credit,
         balance_amount,
         paid_amount,
-        status
+        status,
+        currency_id,
+        foreign_original_amount,
+        foreign_paid_amount,
+        foreign_balance_amount
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
         headerId,
@@ -4799,15 +5406,34 @@ app.post("/api/arap-beginning-balances", authenticateToken, authorizePermission(
         line.accountTitle || "",
         line.referenceNo || "",
         line.dueDate || null,
-        Number(line.debit) || 0,
-        Number(line.credit) || 0,
-        Number(line.balanceAmount) || 0,
+        converted.baseDebit,
+        converted.baseCredit,
+        TransactionCurrencyService.roundMoney(converted.baseDebit || converted.baseCredit),
         0,
         "Unpaid",
+        currencyResult.currencyId,
+        foreignOriginal,
+        0,
+        foreignOriginal,
       ]
     );
 
     const lineId = lineResult.insertId;
+
+    await TransactionCurrencyService.saveSnapshot(conn, {
+      companyId,
+      transactionType: txnType,
+      transactionId: lineId,
+      currencyId: currencyResult.currencyId,
+      currencyCode: currencyResult.currencyCode,
+      baseCurrencyId: currencyResult.baseCurrency.id,
+      baseCurrencyCode: currencyResult.baseCurrency.currencyCode,
+      rateInfo: currencyResult.rateInfo,
+      foreignTotals: { foreignSubtotal: 0, foreignTax: 0, foreignEwt: 0, foreignTotal: foreignOriginal },
+      baseTotals: { baseSubtotal: 0, baseTax: 0, baseEwt: 0, baseTotal: TransactionCurrencyService.roundMoney(converted.baseDebit || converted.baseCredit) },
+      userId: req.user.id,
+      lockNow: true,
+    });
 
     await conn.execute(
       `
@@ -4838,7 +5464,7 @@ app.post("/api/arap-beginning-balances", authenticateToken, authorizePermission(
   } catch (err) {
     await conn.rollback();
     console.error("SAVE ARAP BB ERROR:", err);
-    res.status(500).json({ message: "Failed to save AR/AP beginning balance" });
+    res.status(err.statusCode || 500).json({ message: err.message || "Failed to save AR/AP beginning balance", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   } finally {
     conn.release();
   }
@@ -4848,9 +5474,50 @@ app.put("/api/arap-beginning-balances", authenticateToken, authorizePermission("
   const conn = await pool.getConnection();
 
   try {
-    const { line } = req.body;
+    const { line, companyId: requestedCompanyId } = req.body;
+
+    const [existingRows] = await conn.execute(
+      `SELECT l.id, l.foreign_paid_amount AS foreignPaidAmount, h.balance_type AS balanceType, h.balance_date AS balanceDate, h.company_id AS companyId
+       FROM arap_beginning_balance_lines l JOIN arap_beginning_balance_headers h ON h.id = l.header_id
+       WHERE l.id = ?`,
+      [line.id]
+    );
+    if (!existingRows.length) {
+      return res.status(404).json({ message: "Beginning balance line not found" });
+    }
+    const existing = existingRows[0];
+    const txnType = existing.balanceType === "AP" ? "AP_BEGINNING" : "AR_BEGINNING";
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, requestedCompanyId);
+    if (existing.companyId !== companyId) {
+      return res.status(404).json({ message: "Beginning balance line not found" });
+    }
 
     await conn.beginTransaction();
+
+    await AccountingPeriodService.assertPeriodOpen({
+      companyId, transactionDate: AccountingPeriodService.toDateOnly(existing.balanceDate),
+      operation: "EDIT", user: req.user,
+    }, conn);
+
+    const currencyResult = await BeginningBalanceCurrencyService.resolveLineCurrency({
+      user: req.user,
+      companyId,
+      transactionType: txnType,
+      transactionId: line.id,
+      currencyPayload: line.currencyId
+        ? { currencyId: line.currencyId, isManualRate: line.isManualRate, exchangeRate: line.exchangeRate, rateDate: line.rateDate, overrideReason: line.overrideReason }
+        : null,
+      rateDate: line.rateDate || (existing.balanceDate instanceof Date ? existing.balanceDate.toISOString().slice(0, 10) : existing.balanceDate),
+    });
+
+    const converted = BeginningBalanceCurrencyService.convertLineAmount({
+      debit: line.debit,
+      credit: line.credit,
+      exchangeRate: currencyResult.rateInfo.exchangeRate,
+    });
+    const foreignOriginal = converted.foreignDebit || converted.foreignCredit;
+    const existingForeignPaid = Number(existing.foreignPaidAmount) || 0;
+    const foreignBalance = TransactionCurrencyService.roundMoney(Math.max(foreignOriginal - existingForeignPaid, 0));
 
     await conn.execute(
       `
@@ -4865,7 +5532,10 @@ app.put("/api/arap-beginning-balances", authenticateToken, authorizePermission("
         due_date = ?,
         debit = ?,
         credit = ?,
-        balance_amount = ?
+        balance_amount = ?,
+        currency_id = ?,
+        foreign_original_amount = ?,
+        foreign_balance_amount = ?
       WHERE id = ?
       `,
       [
@@ -4877,12 +5547,30 @@ app.put("/api/arap-beginning-balances", authenticateToken, authorizePermission("
         line.accountTitle || "",
         line.referenceNo || "",
         line.dueDate || null,
-        Number(line.debit) || 0,
-        Number(line.credit) || 0,
+        converted.baseDebit,
+        converted.baseCredit,
         Number(line.balanceAmount) || 0,
+        currencyResult.currencyId,
+        foreignOriginal,
+        foreignBalance,
         line.id,
       ]
     );
+
+    await TransactionCurrencyService.saveSnapshot(conn, {
+      companyId,
+      transactionType: txnType,
+      transactionId: line.id,
+      currencyId: currencyResult.currencyId,
+      currencyCode: currencyResult.currencyCode,
+      baseCurrencyId: currencyResult.baseCurrency.id,
+      baseCurrencyCode: currencyResult.baseCurrency.currencyCode,
+      rateInfo: currencyResult.rateInfo,
+      foreignTotals: { foreignSubtotal: 0, foreignTax: 0, foreignEwt: 0, foreignTotal: foreignOriginal },
+      baseTotals: { baseSubtotal: 0, baseTax: 0, baseEwt: 0, baseTotal: TransactionCurrencyService.roundMoney(converted.baseDebit || converted.baseCredit) },
+      userId: req.user.id,
+      lockNow: true,
+    });
 
     await conn.execute(
       `
@@ -4906,7 +5594,7 @@ app.put("/api/arap-beginning-balances", authenticateToken, authorizePermission("
   } catch (err) {
     await conn.rollback();
     console.error("UPDATE ARAP BB ERROR:", err);
-    res.status(500).json({ message: "Failed to update AR/AP beginning balance" });
+    res.status(err.statusCode || 500).json({ message: err.message || "Failed to update AR/AP beginning balance", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   } finally {
     conn.release();
   }
@@ -4915,6 +5603,19 @@ app.put("/api/arap-beginning-balances", authenticateToken, authorizePermission("
 app.delete("/api/arap-beginning-balances/:id", authenticateToken, authorizePermission("FILESETUP.BEGINNING_BALANCES", "DELETE"), async (req, res) => {
   try {
     const { id } = req.params;
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId || req.body?.companyId);
+
+    const [ownerRows] = await pool.execute(
+      `SELECT h.company_id AS companyId, h.balance_date AS balanceDate FROM arap_beginning_balance_lines l JOIN arap_beginning_balance_headers h ON h.id = l.header_id WHERE l.id = ?`,
+      [id]
+    );
+    if (!ownerRows.length || ownerRows[0].companyId !== companyId) {
+      return res.status(404).json({ message: "Beginning balance line not found" });
+    }
+    await AccountingPeriodService.assertPeriodOpen({
+      companyId, transactionDate: AccountingPeriodService.toDateOnly(ownerRows[0].balanceDate),
+      operation: "DELETE", user: req.user,
+    });
 
     await pool.execute(
       `DELETE FROM arap_beginning_balance_lines WHERE id = ?`,
@@ -4924,7 +5625,7 @@ app.delete("/api/arap-beginning-balances/:id", authenticateToken, authorizePermi
     res.json({ success: true, message: "Beginning balance removed successfully" });
   } catch (err) {
     console.error("DELETE ARAP BB ERROR:", err);
-    res.status(500).json({ message: "Failed to remove beginning balance" });
+    res.status(err.statusCode || 500).json({ message: err.statusCode ? err.message : "Failed to remove beginning balance", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   }
 });
 
@@ -4934,7 +5635,8 @@ app.delete("/api/arap-beginning-balances/:id", authenticateToken, authorizePermi
 // calls into via GLBeginningBalanceService directly.
 app.get("/api/gl-beginning-balances", authenticateToken, authorizePermission("FILESETUP.BEGINNING_BALANCES", "VIEW"), async (req, res) => {
   try {
-    const data = await GLBeginningBalanceService.listGLBeginningBalances();
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+    const data = await GLBeginningBalanceService.listGLBeginningBalances(companyId);
     res.json(data);
   } catch (err) {
     console.error("LIST GL BB ERROR:", err);
@@ -4953,11 +5655,12 @@ app.post("/api/gl-beginning-balances", authenticateToken, authorizePermission("F
       return res.status(400).json({ message: "At least one line is required" });
     }
 
-    const { headerId } = await GLBeginningBalanceService.createGLBeginningBalance({ header, rows });
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, header.companyId);
+    const { headerId } = await GLBeginningBalanceService.createGLBeginningBalance({ header, rows, user: req.user, companyId });
     res.json({ success: true, message: "GL beginning balance saved successfully", headerId });
   } catch (err) {
     console.error("SAVE GL BB ERROR:", err);
-    res.status(500).json({ message: "Failed to save GL beginning balance" });
+    res.status(err.statusCode || 500).json({ message: err.message || "Failed to save GL beginning balance", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   }
 });
 
@@ -4967,7 +5670,8 @@ app.post("/api/gl-beginning-balances", authenticateToken, authorizePermission("F
 app.get("/api/reports/trial-balance", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
   try {
     const { from, to } = req.query;
-    const rows = await TrialBalanceDifferenceService.getTrialBalanceRows({ from, to });
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+    const rows = await TrialBalanceDifferenceService.getTrialBalanceRows({ from, to, companyId });
     res.json(rows);
   } catch (err) {
     console.error("TRIAL BALANCE REPORT ERROR:", err.message);
@@ -4988,18 +5692,28 @@ app.get("/api/reports/account-analysis", authenticateToken, authorizePermission(
       return res.status(400).json({ message: "Account code is required" });
     }
 
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
     const params = [
       accountCode,
       from,
       to,
+      companyId,
 
       accountCode,
       from,
       to,
+      companyId,
 
       accountCode,
       from,
       to,
+      companyId,
+
+      accountCode,
+      from,
+      to,
+      companyId,
     ];
 
     const [rows] = await pool.execute(
@@ -5034,6 +5748,7 @@ app.get("/api/reports/account-analysis", authenticateToken, authorizePermission(
         JOIN apv_headers h ON h.id = l.apv_id
         WHERE l.account_code = ?
           AND h.transaction_date BETWEEN ? AND ?
+          AND h.company_id = ?
 
         UNION ALL
 
@@ -5053,6 +5768,7 @@ app.get("/api/reports/account-analysis", authenticateToken, authorizePermission(
         JOIN cv_headers h ON h.id = l.cv_id
         WHERE l.account_code = ?
           AND h.transaction_date BETWEEN ? AND ?
+          AND h.company_id = ?
 
         UNION ALL
 
@@ -5072,6 +5788,27 @@ app.get("/api/reports/account-analysis", authenticateToken, authorizePermission(
         JOIN arap_beginning_balance_headers h ON h.id = l.header_id
         WHERE l.account_code = ?
           AND h.balance_date BETWEEN ? AND ?
+          AND h.company_id = ?
+
+        UNION ALL
+
+        SELECT
+          l.id,
+          DATE_FORMAT(h.transaction_date, '%Y-%m-%d') AS transaction_date,
+          'JV' AS source_type,
+          h.voucher_no AS reference_no,
+          h.id AS transaction_id,
+          l.account_code,
+          l.account_title,
+          COALESCE(l.particulars, h.description, '') AS particulars,
+          COALESCE(l.debit, 0) AS debit,
+          COALESCE(l.credit, 0) AS credit,
+          4 AS sort_order
+        FROM jv_lines l
+        JOIN jv_headers h ON h.id = l.jv_id
+        WHERE l.account_code = ?
+          AND h.transaction_date BETWEEN ? AND ?
+          AND h.company_id = ?
       ) aa
       ORDER BY transaction_date, sort_order, id
       `,
@@ -5100,11 +5837,12 @@ app.get("/api/reports/general-ledger", authenticateToken, authorizePermission("R
       return res.status(400).json({ message: "from and to dates are required" });
     }
 
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
     const accountCodes = accountCode ? [accountCode] : null;
 
     const [rows, beginningBalances] = await Promise.all([
-      LedgerReportService.getLedgerRows({ from, to, accountCodes }),
-      LedgerReportService.getBeginningBalances({ before: from, accountCodes }),
+      LedgerReportService.getLedgerRows({ from, to, accountCodes, companyId }),
+      LedgerReportService.getBeginningBalances({ before: from, accountCodes, companyId }),
     ]);
 
     res.json(
@@ -5135,6 +5873,8 @@ app.get("/api/reports/cash-flow-statement", authenticateToken, authorizePermissi
       return res.status(400).json({ message: "from and to dates are required" });
     }
 
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
     const [bankAccounts] = await pool.execute(
       `SELECT coa_code, account_name, bank_name FROM bank_codes WHERE status = 'ACTIVE' AND coa_code IS NOT NULL AND coa_code != ''`
     );
@@ -5146,8 +5886,8 @@ app.get("/api/reports/cash-flow-statement", authenticateToken, authorizePermissi
     }
 
     const [rows, beginningBalances] = await Promise.all([
-      LedgerReportService.getLedgerRows({ from, to, accountCodes }),
-      LedgerReportService.getBeginningBalances({ before: from, accountCodes }),
+      LedgerReportService.getLedgerRows({ from, to, accountCodes, companyId }),
+      LedgerReportService.getBeginningBalances({ before: from, accountCodes, companyId }),
     ]);
 
     const byAccount = new Map();
@@ -5448,6 +6188,7 @@ app.get("/api/reports/aging", authenticateToken, authorizePermission("REPORTS.FI
     const { type = "AP", asOf } = req.query;
     const reportType = String(type).toUpperCase();
     const reportDate = asOf || new Date().toISOString().split("T")[0];
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
     if (!["AP", "AR"].includes(reportType)) {
       return res.status(400).json({ message: "Invalid aging type. Use AP or AR." });
@@ -5473,8 +6214,9 @@ app.get("/api/reports/aging", authenticateToken, authorizePermission("REPORTS.FI
         FROM apv_headers
         WHERE COALESCE(balance_amount, total_credit, 0) > 0
           AND COALESCE(payment_status, 'Unpaid') != 'Paid'
+          AND company_id = ?
         `,
-        [reportDate]
+        [reportDate, companyId]
       );
 
       rows = rows.concat(apvRows);
@@ -5501,6 +6243,7 @@ app.get("/api/reports/aging", authenticateToken, authorizePermission("REPORTS.FI
       FROM arap_beginning_balance_lines l
       JOIN arap_beginning_balance_headers h ON h.id = l.header_id
       WHERE h.balance_type = ?
+        AND h.company_id = ?
         AND COALESCE(
           l.balance_amount,
           CASE WHEN h.balance_type = 'AR' THEN l.debit ELSE l.credit END,
@@ -5508,7 +6251,7 @@ app.get("/api/reports/aging", authenticateToken, authorizePermission("REPORTS.FI
         ) > 0
         AND COALESCE(l.status, 'Unpaid') != 'Paid'
       `,
-      [reportDate, reportType]
+      [reportDate, reportType, companyId]
     );
 
     rows = rows.concat(bbRows);
@@ -5540,63 +6283,20 @@ app.get("/api/reports/aging", authenticateToken, authorizePermission("REPORTS.FI
 // ====================== AP AGING REPORT ======================
 app.get("/api/reports/ap-aging", authenticateToken, authorizePermission("REPORTS.AP", "VIEW"), async (req, res) => {
   try {
-    const { asOf } = req.query;
+    const { asOf, currency, partyId, status } = req.query;
     const reportDate = asOf || new Date().toISOString().slice(0, 10);
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
-    const [rows] = await pool.execute(
-      `
-      SELECT
-        source_type,
-        id,
-        reference_no,
-        party_name,
-        transaction_date,
-        due_date,
-        total_amount,
-        paid_amount,
-        balance_amount,
-        days_past_due
-      FROM (
-        SELECT
-          'APV' AS source_type,
-          id,
-          voucher_no AS reference_no,
-          supplier_name AS party_name,
-          DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transaction_date,
-          DATE_FORMAT(due_date, '%Y-%m-%d') AS due_date,
-          total_credit AS total_amount,
-          COALESCE(paid_amount, 0) AS paid_amount,
-          COALESCE(balance_amount, total_credit, 0) AS balance_amount,
-          GREATEST(DATEDIFF(?, COALESCE(due_date, transaction_date)), 0) AS days_past_due
-        FROM apv_headers
-        WHERE COALESCE(balance_amount, total_credit, 0) > 0
-          AND COALESCE(payment_status, 'Unpaid') != 'Paid'
+    const rows = await AgingReportService.getAgingRows("AP", {
+      companyId,
+      asOfDate: reportDate,
+      currencyCode: currency,
+      partyId,
+      status,
+    });
+    const bucketTotals = AgingReportService.getBucketTotals(rows);
 
-        UNION ALL
-
-        SELECT
-          'AP BEGINNING' AS source_type,
-          l.id,
-          l.reference_no,
-          l.party_name,
-          DATE_FORMAT(h.balance_date, '%Y-%m-%d') AS transaction_date,
-          DATE_FORMAT(l.due_date, '%Y-%m-%d') AS due_date,
-          l.credit AS total_amount,
-          COALESCE(l.paid_amount, 0) AS paid_amount,
-          COALESCE(l.balance_amount, l.credit, 0) AS balance_amount,
-          GREATEST(DATEDIFF(?, COALESCE(l.due_date, h.balance_date)), 0) AS days_past_due
-        FROM arap_beginning_balance_lines l
-        JOIN arap_beginning_balance_headers h ON h.id = l.header_id
-        WHERE h.balance_type = 'AP'
-          AND COALESCE(l.balance_amount, l.credit, 0) > 0
-          AND COALESCE(l.status, 'Unpaid') != 'Paid'
-      ) aging
-      ORDER BY party_name ASC, due_date ASC
-      `,
-      [reportDate, reportDate]
-    );
-
-    res.json(rows);
+    res.json({ asOfDate: reportDate, rows, bucketTotals });
   } catch (err) {
     console.error("AP AGING REPORT ERROR:", err.message);
     res.status(500).json({
@@ -5606,71 +6306,78 @@ app.get("/api/reports/ap-aging", authenticateToken, authorizePermission("REPORTS
   }
 });
 
+app.get("/api/reports/ap-aging-summary", authenticateToken, authorizePermission("REPORTS.AP", "VIEW"), async (req, res) => {
+  try {
+    const { asOf, currency, partyId, status } = req.query;
+    const reportDate = asOf || new Date().toISOString().slice(0, 10);
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+    const rows = await AgingReportService.getAgingRows("AP", {
+      companyId,
+      asOfDate: reportDate,
+      currencyCode: currency,
+      partyId,
+      status,
+    });
+    const parties = AgingReportService.getSummaryByParty(rows);
+
+    res.json({ asOfDate: reportDate, parties });
+  } catch (err) {
+    console.error("AP AGING SUMMARY REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate AP aging summary report",
+      error: err.message,
+    });
+  }
+});
+
 
 // ====================== AR AGING REPORT ======================
 app.get("/api/reports/ar-aging", authenticateToken, authorizePermission("REPORTS.AR", "VIEW"), async (req, res) => {
   try {
-    const { asOf } = req.query;
+    const { asOf, currency, partyId, status } = req.query;
     const reportDate = asOf || new Date().toISOString().slice(0, 10);
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
-    const [rows] = await pool.execute(
-      `
-      SELECT
-        source_type,
-        id,
-        reference_no,
-        party_name,
-        transaction_date,
-        due_date,
-        total_amount,
-        paid_amount,
-        balance_amount,
-        days_past_due
-      FROM (
-        SELECT
-          'INV' AS source_type,
-          id,
-          voucher_no AS reference_no,
-          customer_name AS party_name,
-          DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transaction_date,
-          DATE_FORMAT(due_date, '%Y-%m-%d') AS due_date,
-          total_debit AS total_amount,
-          COALESCE(paid_amount, 0) AS paid_amount,
-          COALESCE(balance_amount, total_debit, 0) AS balance_amount,
-          GREATEST(DATEDIFF(?, COALESCE(due_date, transaction_date)), 0) AS days_past_due
-        FROM invoice_headers
-        WHERE COALESCE(balance_amount, total_debit, 0) > 0
-          AND COALESCE(payment_status, 'Unpaid') != 'Paid'
+    const rows = await AgingReportService.getAgingRows("AR", {
+      companyId,
+      asOfDate: reportDate,
+      currencyCode: currency,
+      partyId,
+      status,
+    });
+    const bucketTotals = AgingReportService.getBucketTotals(rows);
 
-        UNION ALL
-
-        SELECT
-          'AR BEGINNING' AS source_type,
-          l.id,
-          l.reference_no,
-          l.party_name,
-          DATE_FORMAT(h.balance_date, '%Y-%m-%d') AS transaction_date,
-          DATE_FORMAT(l.due_date, '%Y-%m-%d') AS due_date,
-          l.debit AS total_amount,
-          COALESCE(l.paid_amount, 0) AS paid_amount,
-          COALESCE(l.balance_amount, l.debit, 0) AS balance_amount,
-          GREATEST(DATEDIFF(?, COALESCE(l.due_date, h.balance_date)), 0) AS days_past_due
-        FROM arap_beginning_balance_lines l
-        JOIN arap_beginning_balance_headers h ON h.id = l.header_id
-        WHERE h.balance_type = 'AR'
-          AND COALESCE(l.balance_amount, l.debit, 0) > 0
-          AND COALESCE(l.status, 'Unpaid') != 'Paid'
-      ) aging
-      ORDER BY party_name ASC, due_date ASC
-      `,
-      [reportDate, reportDate]
-    );
-
-    res.json(rows);
+    res.json({ asOfDate: reportDate, rows, bucketTotals });
   } catch (err) {
     console.error("AR AGING REPORT ERROR:", err.message);
     res.status(500).json({
       message: "Failed to generate AR aging report",
+      error: err.message,
+    });
+  }
+});
+
+app.get("/api/reports/ar-aging-summary", authenticateToken, authorizePermission("REPORTS.AR", "VIEW"), async (req, res) => {
+  try {
+    const { asOf, currency, partyId, status } = req.query;
+    const reportDate = asOf || new Date().toISOString().slice(0, 10);
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+    const rows = await AgingReportService.getAgingRows("AR", {
+      companyId,
+      asOfDate: reportDate,
+      currencyCode: currency,
+      partyId,
+      status,
+    });
+    const parties = AgingReportService.getSummaryByParty(rows);
+
+    res.json({ asOfDate: reportDate, parties });
+  } catch (err) {
+    console.error("AR AGING SUMMARY REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate AR aging summary report",
       error: err.message,
     });
   }
@@ -6760,9 +7467,19 @@ app.get(/^\/(?!api).*/, (req, res, next) => {
 
 // ===================== SERVER START =====================
 
+// Checkpoint 4I: makes the app importable by Supertest (or anything else)
+// without opening a production listener or starting the scheduler cron -
+// require.main === module is true only when this file is executed
+// directly (exactly what `npm start` / `node src/backend/server.js` does),
+// false when require()'d by a test file. Production startup is otherwise
+// byte-identical to before this change.
+module.exports = app;
 
 const PORT = process.env.PORT || 8080;
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+    require("./jobs/recurringSchedulerJob").start();
+  });
+}

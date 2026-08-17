@@ -1,0 +1,86 @@
+.rhm-table-wrapper {
+  overflow-x: auto;
+}
+
+.rhm-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  min-width: 950px;
+}
+
+.rhm-table th {
+  text-align: left;
+  padding: 10px 12px;
+  color: var(--text-secondary);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  font-weight: 700;
+  border-bottom: 1px solid var(--border-color);
+  white-space: nowrap;
+}
+
+.rhm-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.rhm-amount {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.rhm-reason {
+  max-width: 220px;
+  white-space: normal;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.rhm-empty {
+  text-align: center;
+  padding: 24px !important;
+  color: var(--text-secondary);
+  white-space: normal !important;
+}
+
+.rhm-status {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+.rhm-status-SUCCESS { background: rgba(22, 163, 74, 0.15); color: #16a34a; }
+.rhm-status-FAILED { background: rgba(185, 28, 28, 0.18); color: #991b1b; }
+.rhm-status-SKIPPED { background: var(--bg-surface-muted); color: var(--text-secondary); }
+.rhm-status-RATE_REVIEW_REQUIRED { background: rgba(239, 68, 68, 0.15); color: #dc2626; }
+
+.rhm-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.rhm-actions button {
+  border: 1px solid var(--border-color-strong);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  min-width: 28px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.rhm-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

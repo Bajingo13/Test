@@ -4,12 +4,42 @@ const { HttpError } = require("../lib/httpError");
 const TemplateService = require("../services/recurringTemplateService");
 const GenerationService = require("../services/recurringGenerationService");
 const DateService = require("../services/recurringDateService");
+const CurrencyService = require("../services/currencyService");
+
+// Checkpoint 3F: Railway Cron Job entry point - see routes.js comment.
+// Not gated by authenticateToken (no interactive user); gated instead by
+// a shared secret configured out-of-band. Calls the exact same
+// processDueSchedules() the in-process cron and "Generate Now" both use.
+exports.runDue = async (req, res) => {
+  const configuredSecret = process.env.RECURRING_CRON_SECRET;
+  if (!configuredSecret) {
+    return res.status(404).json({ message: "Not found." });
+  }
+  if (req.headers["x-cron-secret"] !== configuredSecret) {
+    return res.status(401).json({ message: "Unauthorized." });
+  }
+  try {
+    const result = await GenerationService.processDueSchedules({ triggerType: "SCHEDULED" });
+    res.json(result);
+  } catch (err) {
+    console.error("RUN-DUE ERROR:", err);
+    res.status(500).json({ message: "Failed to process due recurring schedules." });
+  }
+};
 
 // Templates and schedules are 1:1 in Phase 1 - the external API surface
 // only exposes the template id (:id), this resolves the associated
 // schedule id internally so callers never need to know two ids exist.
-async function resolveScheduleId(templateId) {
-  const [rows] = await pool.execute("SELECT id FROM recurring_transaction_schedules WHERE template_id = ?", [templateId]);
+// Joins through the template to verify company ownership before handing
+// back a schedule id - every caller below acts on that id without a
+// second ownership check, so this is the one place isolation must hold.
+async function resolveScheduleId(templateId, companyId) {
+  const [rows] = await pool.execute(
+    `SELECT s.id FROM recurring_transaction_schedules s
+     JOIN recurring_transaction_templates t ON t.id = s.template_id
+     WHERE s.template_id = ? AND t.company_id = ?`,
+    [templateId, companyId]
+  );
   if (rows.length === 0) throw new HttpError(404, "Recurring schedule not found for this template.");
   return rows[0].id;
 }
@@ -17,7 +47,8 @@ async function resolveScheduleId(templateId) {
 exports.createFromTransaction = async (req, res) => {
   try {
     const { moduleType, id } = req.params;
-    const bootstrap = await TemplateService.createTemplateFromTransaction(moduleType, id, req.user.id);
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+    const bootstrap = await TemplateService.createTemplateFromTransaction(moduleType, id, req.user.id, companyId);
     res.json(bootstrap);
   } catch (err) {
     console.error("CREATE RECURRING FROM TRANSACTION ERROR:", err);
@@ -27,7 +58,8 @@ exports.createFromTransaction = async (req, res) => {
 
 exports.create = async (req, res) => {
   try {
-    const result = await TemplateService.createTemplate(req.body, req.user.id);
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.body.companyId);
+    const result = await TemplateService.createTemplate(req.body, req.user.id, companyId);
 
     await logAudit(pool, {
       module: "RECURRING.TRANSACTIONS",
@@ -50,7 +82,8 @@ exports.create = async (req, res) => {
 exports.list = async (req, res) => {
   try {
     const { moduleType, status } = req.query;
-    const rows = await TemplateService.listTemplates({ moduleType, status });
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+    const rows = await TemplateService.listTemplates({ moduleType, status, companyId });
     res.json(rows);
   } catch (err) {
     console.error("LIST RECURRING TEMPLATES ERROR:", err);
@@ -60,7 +93,8 @@ exports.list = async (req, res) => {
 
 exports.getOne = async (req, res) => {
   try {
-    const result = await TemplateService.getTemplateById(req.params.id);
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+    const result = await TemplateService.getTemplateById(req.params.id, companyId);
     res.json(result);
   } catch (err) {
     console.error("GET RECURRING TEMPLATE ERROR:", err);
@@ -75,6 +109,7 @@ exports.getOne = async (req, res) => {
 exports.update = async (req, res) => {
   try {
     const { templateName, descriptionTemplate, amountMode, amountConfig, dueDateRule } = req.body;
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.body.companyId);
     const [result] = await pool.execute(
       `UPDATE recurring_transaction_templates
        SET template_name = COALESCE(?, template_name),
@@ -83,12 +118,12 @@ exports.update = async (req, res) => {
            amount_config = COALESCE(?, amount_config),
            due_date_rule = COALESCE(?, due_date_rule),
            updated_by = ?
-       WHERE id = ?`,
+       WHERE id = ? AND company_id = ?`,
       [
         templateName || null, descriptionTemplate || null, amountMode || null,
         amountConfig ? JSON.stringify(amountConfig) : null,
         dueDateRule ? JSON.stringify(dueDateRule) : null,
-        req.user.id, req.params.id,
+        req.user.id, req.params.id, companyId,
       ]
     );
     if (result.affectedRows === 0) throw new HttpError(404, "Recurring template not found.");
@@ -113,7 +148,8 @@ exports.update = async (req, res) => {
 
 exports.pause = async (req, res) => {
   try {
-    const scheduleId = await resolveScheduleId(req.params.id);
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.body?.companyId);
+    const scheduleId = await resolveScheduleId(req.params.id, companyId);
     await TemplateService.setPaused(scheduleId, true, req.user.id);
     await logAudit(pool, {
       module: "RECURRING.TRANSACTIONS", entityType: "RECURRING_TEMPLATE", entityId: Number(req.params.id),
@@ -129,14 +165,24 @@ exports.pause = async (req, res) => {
 
 exports.resume = async (req, res) => {
   try {
-    const scheduleId = await resolveScheduleId(req.params.id);
-    await TemplateService.setPaused(scheduleId, false, req.user.id);
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.body?.companyId);
+    const scheduleId = await resolveScheduleId(req.params.id, companyId);
+    const { catchUpPolicy } = req.body || {};
+    const result = await TemplateService.resumeSchedule(scheduleId, { catchUpPolicy: catchUpPolicy || null, userId: req.user.id });
+
+    if (result.requiresCatchUpDecision) {
+      // Not resumed yet - the frontend must ask the user SKIP_TO_NEXT vs
+      // GENERATE_MISSED and call this endpoint again with that choice.
+      return res.status(409).json({ ...result, message: "This schedule is overdue. Choose how to catch up before resuming." });
+    }
+
     await logAudit(pool, {
       module: "RECURRING.TRANSACTIONS", entityType: "RECURRING_TEMPLATE", entityId: Number(req.params.id),
-      action: "TEMPLATE_RESUMED", description: `Recurring template #${req.params.id} resumed`,
+      action: "TEMPLATE_RESUMED", description: `Recurring template #${req.params.id} resumed${result.catchUpPolicy ? ` (catch-up: ${result.catchUpPolicy})` : ""}`,
+      afterData: { catchUpPolicy: result.catchUpPolicy || null, newNextRunDate: result.newNextRunDate || null },
       user: req.user, ...requestMeta(req),
     });
-    res.json({ success: true });
+    res.json({ success: true, ...result });
   } catch (err) {
     console.error("RESUME RECURRING ERROR:", err);
     res.status(err.statusCode || 500).json({ message: err.message || "Failed to resume recurring schedule." });
@@ -145,7 +191,8 @@ exports.resume = async (req, res) => {
 
 exports.stop = async (req, res) => {
   try {
-    const scheduleId = await resolveScheduleId(req.params.id);
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.body?.companyId);
+    const scheduleId = await resolveScheduleId(req.params.id, companyId);
     await TemplateService.stopSchedule(scheduleId, req.user.id);
     await logAudit(pool, {
       module: "RECURRING.TRANSACTIONS", entityType: "RECURRING_TEMPLATE", entityId: Number(req.params.id),
@@ -164,18 +211,27 @@ exports.stop = async (req, res) => {
 // itself IS the confirmation); records who triggered it via trigger_type=MANUAL + generated_by.
 exports.generate = async (req, res) => {
   try {
-    const scheduleId = await resolveScheduleId(req.params.id);
-    const result = await GenerationService.processSchedule(scheduleId, { triggerType: "MANUAL", userId: req.user.id });
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.body?.companyId);
+    const scheduleId = await resolveScheduleId(req.params.id, companyId);
+    // approvedRate: section 25's manual-review workflow - a human supplies
+    // the rate to approve for THIS occurrence only, never persisted onto
+    // the template itself.
+    const { approvedRate } = req.body || {};
+    const result = await GenerationService.processSchedule(scheduleId, { triggerType: "MANUAL", userId: req.user.id, approvedRate: approvedRate ?? null });
     res.json(result);
   } catch (err) {
     console.error("GENERATE RECURRING ERROR:", err);
-    res.status(err.statusCode || 500).json({ message: err.message || "Failed to generate the recurring transaction." });
+    // reasonCode (NO_APPROVED_RATE / CURRENCY_INACTIVE / ...) lets the
+    // frontend distinguish "show a Review Rate action" from a generic
+    // error, without parsing the message string.
+    res.status(err.statusCode || 500).json({ message: err.message || "Failed to generate the recurring transaction.", reasonCode: err.reasonCode || null });
   }
 };
 
 exports.skip = async (req, res) => {
   try {
-    const scheduleId = await resolveScheduleId(req.params.id);
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.body?.companyId);
+    const scheduleId = await resolveScheduleId(req.params.id, companyId);
     const [scheduleRows] = await pool.execute("SELECT next_run_date FROM recurring_transaction_schedules WHERE id = ?", [scheduleId]);
     if (scheduleRows.length === 0) throw new HttpError(404, "Recurring schedule not found.");
     const occurrenceDate = DateService.toISODate(DateService.toDT(scheduleRows[0].next_run_date));
@@ -198,7 +254,8 @@ exports.skip = async (req, res) => {
 
 exports.history = async (req, res) => {
   try {
-    const scheduleId = await resolveScheduleId(req.params.id);
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+    const scheduleId = await resolveScheduleId(req.params.id, companyId);
     const rows = await TemplateService.getHistory(scheduleId);
     res.json(rows);
   } catch (err) {
@@ -245,11 +302,46 @@ exports.previewSchedule = async (req, res) => {
 
 exports.preview = async (req, res) => {
   try {
-    const { schedule } = await TemplateService.getTemplateById(req.params.id);
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+    const { template, lines, schedule } = await TemplateService.getTemplateById(req.params.id, companyId);
     if (!schedule) throw new HttpError(404, "Recurring schedule not found.");
     const count = Math.min(Number(req.query.count) || 5, 24);
     const dates = DateService.previewOccurrences(schedule, count);
-    res.json({ dates });
+
+    // Section 36: "Preview Next Transaction" - shows the CURRENT available
+    // rate for display only, clearly labeled as subject to change unless
+    // FIXED_RATE. Never resolves/writes anything - a plain read.
+    let currencyPreview = null;
+    if (template.currency_id) {
+      const foreignTotal = lines.reduce((s, l) => s + (Number(l.debit) || 0), 0) || lines.reduce((s, l) => s + (Number(l.credit) || 0), 0);
+      const [currencyRows] = await pool.execute("SELECT currency_code AS currencyCode FROM currencies WHERE id = ?", [template.currency_id]);
+      const currencyCode = currencyRows[0]?.currencyCode || null;
+
+      if (template.rate_policy === "FIXED_RATE") {
+        currencyPreview = {
+          currencyCode, ratePolicy: "FIXED_RATE", rate: Number(template.fixed_rate), rateWillChange: false,
+          foreignTotal, estimatedBaseAmount: Math.round(foreignTotal * Number(template.fixed_rate) * 100) / 100,
+        };
+      } else if (template.rate_policy === "MANUAL_REVIEW") {
+        currencyPreview = { currencyCode, ratePolicy: "MANUAL_REVIEW", rate: null, rateWillChange: true, foreignTotal, estimatedBaseAmount: null };
+      } else {
+        try {
+          const Resolver = require("../services/exchangeRateResolverService");
+          const CurrencyService = require("../services/currencyService");
+          const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, template.company_id);
+          const resolved = await Resolver.resolveRate({ companyId, foreignCurrencyId: template.currency_id, transactionDate: dates[0] || new Date().toISOString().slice(0, 10) });
+          currencyPreview = {
+            currencyCode, ratePolicy: "RESOLVE_ON_GENERATION", rate: resolved.rate, rateEffectiveDate: resolved.effectiveDate,
+            rateWillChange: true, foreignTotal,
+            estimatedBaseAmount: resolved.rate != null ? Math.round(foreignTotal * resolved.rate * 100) / 100 : null,
+          };
+        } catch {
+          currencyPreview = { currencyCode, ratePolicy: "RESOLVE_ON_GENERATION", rate: null, rateWillChange: true, foreignTotal, estimatedBaseAmount: null };
+        }
+      }
+    }
+
+    res.json({ dates, currencyPreview, moduleType: template.module_type, isPaused: !!schedule.is_paused });
   } catch (err) {
     console.error("PREVIEW RECURRING ERROR:", err);
     res.status(err.statusCode || 500).json({ message: err.message || "Failed to preview occurrences." });

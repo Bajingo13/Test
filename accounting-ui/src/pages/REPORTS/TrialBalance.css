@@ -254,57 +254,75 @@ TRIAL BALANCE TABLE
 }
 
 /* ==========================
-AR/AP AGING TABLE (9 columns):
-PARTY | REF NO | DUE DATE | CURRENT | 1-30 | 31-60 | 61-90 | OVER 90 | BALANCE
+AR/AP AGING TABLE (Checkpoint 3E: currency-aware Detailed Aging) - column
+count varies per row (foreign columns only appear for foreign-currency
+rows via colSpan bridging is avoided; every row renders every column,
+foreign cells just show "-" for base-currency rows). Widths are no longer
+pinned to fixed nth-child percentages since the column count grew and now
+varies by module - the wrapper below scrolls horizontally instead of
+squeezing text.
 ========================== */
+
+.aging-table-wrapper {
+  overflow-x: auto;
+}
+
+.tb-report-table.aging-table {
+  min-width: 1100px;
+}
 
 .tb-report-table.aging-table th,
 .tb-report-table.aging-table td {
-  width: auto;
+  white-space: nowrap;
 }
 
-.tb-report-table.aging-table th:nth-child(1),
-.tb-report-table.aging-table td:nth-child(1) {
-  width: 16%;
+.tb-report-table.aging-table td.party-cell {
   text-align: left;
-  white-space: nowrap;
+  max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.tb-report-table.aging-table th:nth-child(2),
-.tb-report-table.aging-table td:nth-child(2) {
-  width: 11%;
-  text-align: center;
-}
-
-.tb-report-table.aging-table th:nth-child(3),
-.tb-report-table.aging-table td:nth-child(3) {
-  width: 10%;
-  text-align: center;
-}
-
-.tb-report-table.aging-table th:nth-child(n+4),
-.tb-report-table.aging-table td:nth-child(n+4) {
-  width: 9%;
+.tb-report-table.aging-table td.amount,
+.tb-report-table.aging-table th.amount-head {
   text-align: right;
   padding-right: 14px;
-  white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
 
-.tb-report-table.aging-table th:nth-child(9),
-.tb-report-table.aging-table td:nth-child(9) {
-  width: 12%;
+.tb-report-table.aging-table td.muted {
+  color: var(--text-secondary, #888);
 }
 
-.tb-report-table.aging-table tfoot td:nth-child(n+4) {
+.tb-report-table.aging-table tfoot td {
   text-align: right;
   padding-right: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tb-report-table.aging-table tfoot td:first-child {
+  text-align: left;
 }
 
 .tb-report-table tfoot tr {
   border-top: 3px solid var(--text-primary);
+}
+
+.aging-summary-table td.amount,
+.aging-summary-table th.amount-head {
+  text-align: right;
+  padding-right: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.aging-currency-badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--bg-muted, #eee);
 }
 
 .tb-report-table tfoot td {
@@ -332,6 +350,17 @@ PARTY | REF NO | DUE DATE | CURRENT | 1-30 | 31-60 | 61-90 | OVER 90 | BALANCE
   @page {
     size: auto;
     margin: 5mm;
+  }
+
+  /* Detailed Aging has more columns than fit comfortably in portrait -
+     print it landscape and let the wrapper's overflow become visible
+     instead of clipped, so the full row (foreign + bucket columns) prints. */
+  .aging-table-wrapper {
+    overflow: visible;
+  }
+
+  .tb-report-table.aging-table {
+    font-size: 11px;
   }
 
   html,

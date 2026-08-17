@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import BeginningBalanceImportModal from "../../components/BeginningBalanceImportModal";
 import "./BeginningBalanceGL.css";
 
@@ -21,6 +21,13 @@ const emptyEntry = {
   creditBased: "",
   debitOrigCurr: "",
   creditOrigCurr: "",
+  // Checkpoint 3D: per-row currency (a GL beginning balance batch can mix
+  // currencies - section 4). currencyId defaults to the base currency once
+  // loaded, so a PHP-only user never has to think about this.
+  currencyId: "",
+  isManualRate: false,
+  exchangeRate: "",
+  rateDate: "",
 };
 
 export default function BeginningBalance() {
@@ -37,8 +44,28 @@ export default function BeginningBalance() {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
+  const [currencyOptions, setCurrencyOptions] = useState([]);
+  const [baseCurrency, setBaseCurrency] = useState(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/currencies`, { headers: authHeaders() });
+        const data = await res.json();
+        if (!res.ok) return;
+        const active = Array.isArray(data) ? data.filter((c) => c.isActive) : [];
+        setCurrencyOptions(active);
+        const base = active.find((c) => c.isBaseCurrency) || null;
+        setBaseCurrency(base);
+        setEntry((prev) => ({ ...prev, currencyId: prev.currencyId || (base ? String(base.id) : "") }));
+      } catch (err) {
+        console.error("LOAD CURRENCIES ERROR:", err);
+      }
+    })();
+  }, []);
 
   const selectedRow = rows.find((row) => row.id === selectedId);
+  const isForeignEntry = entry.currencyId && baseCurrency && String(entry.currencyId) !== String(baseCurrency.id);
 
   const totals = useMemo(() => {
     return rows.reduce(
@@ -83,7 +110,7 @@ export default function BeginningBalance() {
   }
 
   function insertEntry() {
-    setEntry(emptyEntry);
+    setEntry({ ...emptyEntry, currencyId: baseCurrency ? String(baseCurrency.id) : "" });
     setEditing(true);
     setSelectedId(null);
   }
@@ -126,13 +153,19 @@ export default function BeginningBalance() {
       return alert("Debit and credit cannot both have amount.");
     }
 
-    if (entry.id) {
+    if (isForeignEntry && (!entry.exchangeRate || Number(entry.exchangeRate) <= 0)) {
+      return alert("Opening Exchange Rate is required for a foreign currency entry.");
+    }
+
+    const finalEntry = { ...entry, isManualRate: isForeignEntry };
+
+    if (finalEntry.id) {
       setRows((prev) =>
-        prev.map((row) => (row.id === entry.id ? entry : row))
+        prev.map((row) => (row.id === finalEntry.id ? finalEntry : row))
       );
     } else {
       const newRow = {
-        ...entry,
+        ...finalEntry,
         id: crypto.randomUUID(),
       };
 
@@ -291,8 +324,9 @@ export default function BeginningBalance() {
                 <th>Title</th>
                 <th>Project</th>
                 <th>Dept</th>
-                <th>Other Debit</th>
-                <th>Other Credit</th>
+                <th>Currency</th>
+                <th>Foreign Debit</th>
+                <th>Foreign Credit</th>
                 <th>Debit Based</th>
                 <th>Credit Based</th>
               </tr>
@@ -301,27 +335,31 @@ export default function BeginningBalance() {
             <tbody>
               {rows.length === 0 ? (
                 <tr>
-                  <td colSpan="8" className="empty">
+                  <td colSpan="9" className="empty">
                     No beginning balance entries yet.
                   </td>
                 </tr>
               ) : (
-                rows.map((row) => (
-                  <tr
-                    key={row.id}
-                    onClick={() => setSelectedId(row.id)}
-                    className={selectedId === row.id ? "selected" : ""}
-                  >
-                    <td>{row.code}</td>
-                    <td>{row.title}</td>
-                    <td>{row.project}</td>
-                    <td>{row.dept}</td>
-                    <td className="amount">{formatAmount(row.otherDebit)}</td>
-                    <td className="amount">{formatAmount(row.otherCredit)}</td>
-                    <td className="amount">{formatAmount(row.debitBased)}</td>
-                    <td className="amount">{formatAmount(row.creditBased)}</td>
-                  </tr>
-                ))
+                rows.map((row) => {
+                  const rowCurrency = currencyOptions.find((c) => String(c.id) === String(row.currencyId));
+                  return (
+                    <tr
+                      key={row.id}
+                      onClick={() => setSelectedId(row.id)}
+                      className={selectedId === row.id ? "selected" : ""}
+                    >
+                      <td>{row.code}</td>
+                      <td>{row.title}</td>
+                      <td>{row.project}</td>
+                      <td>{row.dept}</td>
+                      <td>{rowCurrency?.currencyCode || baseCurrency?.currencyCode || "PHP"}</td>
+                      <td className="amount">{formatAmount(row.otherDebit)}</td>
+                      <td className="amount">{formatAmount(row.otherCredit)}</td>
+                      <td className="amount">{formatAmount(row.debitBased)}</td>
+                      <td className="amount">{formatAmount(row.creditBased)}</td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
 
@@ -377,7 +415,21 @@ export default function BeginningBalance() {
               </div>
 
               <div>
-                <label>Debit</label>
+                <label>Currency</label>
+                <select
+                  value={entry.currencyId}
+                  onChange={(e) => handleEntryChange("currencyId", e.target.value)}
+                >
+                  {currencyOptions.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.currencySymbol} {c.currencyCode}{c.isBaseCurrency ? " (Base)" : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label>{isForeignEntry ? "Foreign Debit" : "Debit"}</label>
                 <input
                   type="number"
                   value={entry.otherDebit}
@@ -389,7 +441,7 @@ export default function BeginningBalance() {
               </div>
 
               <div>
-                <label>Credit</label>
+                <label>{isForeignEntry ? "Foreign Credit" : "Credit"}</label>
                 <input
                   type="number"
                   value={entry.otherCredit}
@@ -399,6 +451,40 @@ export default function BeginningBalance() {
                   placeholder="0.0000"
                 />
               </div>
+
+              {isForeignEntry && (
+                <>
+                  <div>
+                    <label>Opening Exchange Rate</label>
+                    <input
+                      type="number"
+                      step="0.000001"
+                      value={entry.exchangeRate}
+                      onChange={(e) => handleEntryChange("exchangeRate", e.target.value)}
+                      placeholder="e.g. 56.50"
+                    />
+                  </div>
+                  <div>
+                    <label>Rate Date</label>
+                    <input
+                      type="date"
+                      value={entry.rateDate}
+                      onChange={(e) => handleEntryChange("rateDate", e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label>Base Equivalent</label>
+                    <input
+                      readOnly
+                      value={
+                        entry.exchangeRate
+                          ? formatAmount((Number(entry.otherDebit || entry.otherCredit) || 0) * Number(entry.exchangeRate))
+                          : "-"
+                      }
+                    />
+                  </div>
+                </>
+              )}
             </div>
 
             <div className="glbb-footer-actions">

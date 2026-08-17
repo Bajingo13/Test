@@ -1,0 +1,402 @@
+/* Currency Setup - reuses FileSetupPages.css for the outer page/table/
+   toolbar (same convention as every other FILESETUP module) and mirrors
+   TransactionPrintOptionsModal.css's overlay/modal visual language for the
+   Add/Edit and Rate Configuration modals. All colors come from the
+   existing --* CSS custom properties, so light/dark mode is inherited
+   automatically - nothing here is a hardcoded color. */
+
+.cs-banner {
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+
+.cs-banner-success {
+  background: var(--success-bg, #e6f7ee);
+  color: var(--success-text, #1a7f4b);
+}
+
+.cs-banner-error {
+  background: var(--danger-bg);
+  color: var(--danger-text, var(--danger-hover));
+}
+
+.cs-banner-info {
+  background: var(--bg-surface-muted);
+  color: var(--text-secondary);
+}
+
+.cs-toolbar-meta {
+  display: flex;
+  align-items: center;
+  min-height: 20px;
+}
+
+.cs-refreshing {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.cs-error-text {
+  color: var(--danger-hover, var(--danger-text));
+}
+
+.cs-badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.cs-badge-base {
+  background: var(--accent-blue);
+  color: white;
+}
+
+.cs-badge-active {
+  background: var(--success-bg, #e6f7ee);
+  color: var(--success-text, #1a7f4b);
+}
+
+.cs-badge-inactive {
+  background: var(--bg-surface-muted);
+  color: var(--text-secondary);
+}
+
+.cs-actions-cell {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.cs-btn-sm {
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+/* ---- Modal ---- */
+
+.cs-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(var(--shadow-rgb), 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 1200;
+}
+
+.cs-modal {
+  width: min(720px, 96vw);
+  max-height: 92vh;
+  background: var(--bg-surface);
+  border-radius: 18px;
+  box-shadow: 0 28px 70px rgba(var(--shadow-rgb), 0.32);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.cs-modal-narrow {
+  width: min(440px, 92vw);
+}
+
+.cs-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 22px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.cs-modal-header h2 {
+  margin: 0;
+  font-size: 19px;
+  color: var(--text-primary);
+}
+
+.cs-close {
+  border: none;
+  background: var(--bg-surface-muted);
+  color: var(--text-primary);
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  font-size: 20px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.cs-modal-body {
+  padding: 20px 22px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.cs-modal-body p {
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+
+.cs-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 16px 22px;
+  border-top: 1px solid var(--border-color);
+  background: var(--bg-surface-muted);
+}
+
+.cs-btn-secondary,
+.cs-btn-primary {
+  height: 40px;
+  padding: 0 16px;
+  border-radius: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.cs-btn-secondary {
+  border: 1px solid var(--border-color-strong);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+
+.cs-btn-primary {
+  border: 1px solid var(--dark-btn-bg);
+  background: var(--dark-btn-bg);
+  color: var(--dark-btn-text);
+}
+
+.cs-btn-secondary:disabled,
+.cs-btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.cs-preset-field {
+  margin-bottom: 16px;
+}
+
+.cs-notes-field {
+  margin-top: 16px;
+}
+
+.cs-notes-field textarea {
+  border: 1px solid var(--border-color-strong);
+  border-radius: 10px;
+  padding: 11px 12px;
+  font-size: 14px;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.cs-preview {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--bg-surface-muted);
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.cs-preview strong {
+  color: var(--text-primary);
+  font-size: 16px;
+  margin-left: 6px;
+}
+
+/* ---- Rate modal specifics ---- */
+
+.cs-rate-current {
+  margin-bottom: 16px;
+  color: var(--text-primary);
+  font-size: 13.5px;
+}
+
+.cs-rate-example {
+  color: var(--text-secondary);
+}
+
+.cs-rate-form {
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 20px;
+  background: var(--bg-surface-muted);
+}
+
+.cs-rate-submit {
+  margin-top: 14px;
+}
+
+.cs-history-title {
+  font-size: 14px;
+  color: var(--text-primary);
+  margin: 0 0 12px;
+}
+
+.cs-history-table th,
+.cs-history-table td {
+  font-size: 12.5px;
+}
+
+/* ---- Phase 2: header actions, provider status, refresh results ---- */
+
+.cs-header-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.cs-provider-panel h2,
+.cs-refresh-results h2 {
+  margin: 0 0 12px;
+  font-size: 15px;
+  color: var(--text-primary);
+}
+
+.cs-provider-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.cs-provider-card {
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 12px;
+  background: var(--bg-surface-muted);
+}
+
+.cs-provider-code {
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.cs-provider-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+.cs-provider-message {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin: 8px 0 0;
+  line-height: 1.4;
+}
+
+.cs-provider-status-available {
+  background: var(--success-bg, #e6f7ee);
+  color: var(--success-text, #1a7f4b);
+}
+
+.cs-provider-status-manual_only {
+  background: var(--bg-surface-muted);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color-strong);
+}
+
+.cs-provider-status-unavailable {
+  background: var(--danger-bg);
+  color: var(--danger-text, var(--danger-hover));
+}
+
+.cs-refresh-results ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.cs-refresh-results li {
+  margin-bottom: 4px;
+}
+
+.cs-refresh-btn {
+  margin-left: 12px;
+}
+
+/* ---- Phase 2: rate modal tabs, official entry, import ---- */
+
+.cs-tabs {
+  display: flex;
+  gap: 8px;
+  margin: 16px 0;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.cs-tab {
+  border: none;
+  background: none;
+  padding: 8px 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+
+.cs-tab-active {
+  color: var(--text-primary);
+  border-bottom-color: var(--dark-btn-bg);
+}
+
+.cs-tab-hint {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  margin: 0 0 12px;
+  line-height: 1.4;
+}
+
+.cs-import-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.cs-import-preview {
+  margin-top: 10px;
+}
+
+.cs-row-invalid {
+  background: var(--danger-bg);
+}
+
+.cs-import-summary {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin: 8px 0;
+}
+
+.cs-derivation-link {
+  border: none;
+  background: none;
+  color: var(--accent-blue, #2563eb);
+  font-size: 11px;
+  cursor: pointer;
+  margin-left: 6px;
+  text-decoration: underline;
+  padding: 0;
+}
+
+.cs-derivation-detail {
+  background: var(--bg-surface-muted);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.cs-derivation-detail ul {
+  margin: 6px 0;
+  padding-left: 18px;
+}

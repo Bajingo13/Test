@@ -15,6 +15,58 @@ function err(column, value, message) {
   return { column, value: value ?? "", message };
 }
 
+// Checkpoint 3D: shared currency validation for GL/AR/AP rows. Pure - takes
+// a pre-fetched context.currenciesByCode map (mirrors accountsByCode) plus
+// context.baseCurrencyCode, never calls the resolver itself (section 18's
+// historical-rate lookup happens in the import service, which already does
+// async DB work - this function only validates what's already on the row).
+function validateCurrency(row, context) {
+  const errors = [];
+  const warnings = [];
+
+  const rawCode = row.currencyCode ? String(row.currencyCode).trim().toUpperCase() : "";
+  const openingRate = row.openingRate === "" || row.openingRate == null ? null : parseStatementAmount(row.openingRate);
+  const baseCode = String(context.baseCurrencyCode || "PHP").toUpperCase();
+
+  if (!rawCode || rawCode === baseCode) {
+    if (openingRate != null && Math.abs(openingRate - 1) > 0.000001) {
+      errors.push(err("Opening Exchange Rate", row.openingRate, `Opening Exchange Rate must be 1 for the base currency (${baseCode}).`));
+    }
+    return { errors, warnings, currencyCode: baseCode, currencyId: context.baseCurrencyId || null, openingRate: 1, rateDate: null, isBase: true };
+  }
+
+  const currency = context.currenciesByCode.get(rawCode);
+  if (!currency) {
+    errors.push(err("Currency Code", rawCode, `Currency Code "${rawCode}" does not exist for this company.`));
+    return { errors, warnings, currencyCode: rawCode, currencyId: null, openingRate: null, rateDate: null, isBase: false };
+  }
+  if (!currency.isActive) {
+    errors.push(err("Currency Code", rawCode, `Currency "${rawCode}" is not active.`));
+  }
+
+  if (openingRate == null) {
+    errors.push(
+      err(
+        "Opening Exchange Rate",
+        row.openingRate,
+        `Opening Exchange Rate is required for foreign currency "${rawCode}" (no automatic historical lookup is performed during import - provide the opening rate that applied when this balance was brought into the system).`
+      )
+    );
+  } else if (openingRate <= 0) {
+    errors.push(err("Opening Exchange Rate", row.openingRate, "Opening Exchange Rate must be greater than zero."));
+  }
+
+  return {
+    errors,
+    warnings,
+    currencyCode: currency.currencyCode,
+    currencyId: currency.id,
+    openingRate: openingRate,
+    rateDate: row.rateDate ? parseStatementDate(row.rateDate) : null,
+    isBase: false,
+  };
+}
+
 // ---- GL Beginning Balance ----
 
 function validateGLRow(row, context) {
@@ -66,6 +118,10 @@ function validateGLRow(row, context) {
     }
   }
 
+  const currencyResult = validateCurrency(row, context);
+  errors.push(...currencyResult.errors);
+  warnings.push(...currencyResult.warnings);
+
   return {
     errors,
     warnings,
@@ -81,18 +137,50 @@ function validateGLRow(row, context) {
       department: row.department ? String(row.department).trim() : null,
       project: row.project ? String(row.project).trim() : null,
       remarks: row.remarks ? String(row.remarks).trim() : null,
+      currencyId: currencyResult.currencyId,
+      currencyCode: currencyResult.currencyCode,
+      openingRate: currencyResult.openingRate,
+      rateDate: currencyResult.rateDate,
     },
   };
 }
 
-// Batch-level: total debit must equal total credit across every VALID row
-// in the file before commit is even offered as an option.
+// Batch-level: total debit must equal total credit, in BASE currency,
+// across every VALID row in the file before commit is even offered as an
+// option (section 4 - never require different-currency rows to balance
+// against each other in their own foreign amounts). Rows carry their own
+// openingRate (1 for base-currency rows), so this single reduction is
+// correct whether the batch is all-PHP or a mix of USD/EUR/PHP.
+function baseAmount(row, field) {
+  const rate = Number(row.openingRate) || 1;
+  return Math.round((Number(row[field]) || 0) * rate * 100) / 100;
+}
+
 function validateGLBatchBalance(resolvedRows) {
-  const totalDebit = resolvedRows.reduce((sum, r) => sum + (r.debit || 0), 0);
-  const totalCredit = resolvedRows.reduce((sum, r) => sum + (r.credit || 0), 0);
+  const totalDebit = resolvedRows.reduce((sum, r) => sum + baseAmount(r, "debit"), 0);
+  const totalCredit = resolvedRows.reduce((sum, r) => sum + baseAmount(r, "credit"), 0);
   const difference = Math.round((totalDebit - totalCredit) * 100) / 100;
 
   return { totalDebit, totalCredit, difference, balanced: Math.abs(difference) < 0.01 };
+}
+
+// Foreign totals grouped BY CURRENCY (section 17) - never summed across
+// different currencies into one meaningless number. `fields` names which
+// resolved-row properties to sum (GL: debit/credit; AR/AP: originalAmount).
+function summarizeForeignTotalsByCurrency(resolvedRows, fields) {
+  const byCurrency = new Map();
+  for (const row of resolvedRows) {
+    if (!row.currencyCode || row.currencyId == null) continue; // base-currency rows aren't "foreign"
+    const key = row.currencyCode;
+    if (!byCurrency.has(key)) {
+      byCurrency.set(key, { currencyCode: key, ...Object.fromEntries(fields.map((f) => [f, 0])) });
+    }
+    const entry = byCurrency.get(key);
+    for (const f of fields) {
+      entry[f] = Math.round((entry[f] + (Number(row[f]) || 0)) * 100) / 100;
+    }
+  }
+  return Array.from(byCurrency.values());
 }
 
 // ---- AR / AP Beginning Balance (shared - AR and AP differ only in which
@@ -207,6 +295,10 @@ function validatePartyRow(row, context, { partyTypeLabel }) {
       ? Math.round((originalAmount - paidAmount) * 100) / 100
       : 0;
 
+  const currencyResult = validateCurrency(row, context);
+  errors.push(...currencyResult.errors);
+  warnings.push(...currencyResult.warnings);
+
   return {
     errors,
     warnings,
@@ -225,6 +317,10 @@ function validatePartyRow(row, context, { partyTypeLabel }) {
       originalAmount: originalAmount || 0,
       paidAmount,
       balanceAmount: resolvedBalance,
+      currencyId: currencyResult.currencyId,
+      currencyCode: currencyResult.currencyCode,
+      openingRate: currencyResult.openingRate,
+      rateDate: currencyResult.rateDate,
     },
   };
 }
@@ -261,8 +357,10 @@ function findInFileDuplicates(rows, keyFn) {
 
 module.exports = {
   normalizeCode,
+  validateCurrency,
   validateGLRow,
   validateGLBatchBalance,
+  summarizeForeignTotalsByCurrency,
   validateARRow,
   validateAPRow,
   findInFileDuplicates,

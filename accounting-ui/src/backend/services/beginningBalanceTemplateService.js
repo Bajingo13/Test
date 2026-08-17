@@ -21,12 +21,23 @@ function generatedMeta(module, companyName) {
   ];
 }
 
+async function getCurrencies(companyId) {
+  const [rows] = await pool.execute(
+    "SELECT currency_code AS code, currency_name AS name, currency_symbol AS symbol, is_base_currency AS isBase, is_active AS isActive FROM currencies WHERE company_id = ? ORDER BY is_base_currency DESC, currency_code ASC",
+    [companyId]
+  );
+  return rows.map((r) => ({ ...r, isBase: r.isBase ? "Base" : "Foreign", isActive: r.isActive ? "Active" : "Inactive" }));
+}
+
 const GL_COLUMNS = [
   { key: "accountCode", header: "Account Code" },
   { key: "accountTitle", header: "Account Title" },
   { key: "balanceDate", header: "Beginning Balance Date" },
-  { key: "debit", header: "Debit" },
-  { key: "credit", header: "Credit" },
+  { key: "currencyCode", header: "Currency Code" },
+  { key: "debit", header: "Foreign Debit" },
+  { key: "credit", header: "Foreign Credit" },
+  { key: "openingRate", header: "Opening Exchange Rate" },
+  { key: "rateDate", header: "Rate Date" },
   { key: "referenceNo", header: "Reference Number" },
   { key: "description", header: "Description" },
   { key: "department", header: "Department" },
@@ -42,19 +53,25 @@ function buildCsvTemplate(columns, sampleRow) {
   return rows.map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(",")).join("\n");
 }
 
-async function buildGLTemplate(format) {
+async function buildGLTemplate(format, companyId) {
   const companyName = await getCompanyName();
 
   const [accounts] = await pool.execute(
     "SELECT code, title, account_class AS accountClass FROM chart_of_accounts ORDER BY code ASC"
   );
 
+  const currencies = await getCurrencies(companyId);
+  const baseCurrency = currencies.find((c) => c.isBase === "Base");
+
   const sampleRow = {
     accountCode: accounts[0]?.code || "101001",
     accountTitle: accounts[0]?.title || "CASH ON HAND",
     balanceDate: new Date().toISOString().slice(0, 10),
+    currencyCode: baseCurrency?.code || "PHP",
     debit: "10000.00",
     credit: "",
+    openingRate: "1",
+    rateDate: "",
     referenceNo: "GL-BEG-0001",
     description: "Opening balance",
     department: "",
@@ -75,8 +92,11 @@ async function buildGLTemplate(format) {
           { key: "accountCode", header: "Account Code", width: 16, required: true },
           { key: "accountTitle", header: "Account Title", width: 30, note: "Reference only - validated against Account Code, not used to look up the account." },
           { key: "balanceDate", header: "Beginning Balance Date", width: 20, required: true, note: "Format: YYYY-MM-DD" },
-          { key: "debit", header: "Debit", width: 16, note: "Leave blank or 0 if this row is a credit. A row cannot have both Debit and Credit." },
-          { key: "credit", header: "Credit", width: 16, note: "Leave blank or 0 if this row is a debit." },
+          { key: "currencyCode", header: "Currency Code", width: 14, note: `Leave blank or ${baseCurrency?.code || "PHP"} for the company base currency. See the Currency Reference sheet.` },
+          { key: "debit", header: "Foreign Debit", width: 16, note: "In the row's own Currency Code. Leave blank or 0 if this row is a credit. A row cannot have both Debit and Credit." },
+          { key: "credit", header: "Foreign Credit", width: 16, note: "In the row's own Currency Code. Leave blank or 0 if this row is a debit." },
+          { key: "openingRate", header: "Opening Exchange Rate", width: 18, note: "Required for any non-base Currency Code - the historical rate in effect when this balance was opened. Must be 1 for the base currency. No automatic lookup is performed." },
+          { key: "rateDate", header: "Rate Date", width: 16, note: "Optional - defaults to the Beginning Balance Date." },
           { key: "referenceNo", header: "Reference Number", width: 20 },
           { key: "description", header: "Description", width: 30 },
           { key: "department", header: "Department", width: 16 },
@@ -112,6 +132,15 @@ async function buildGLTemplate(format) {
             body: [
               "Dates: YYYY-MM-DD (e.g. 2026-01-01). Excel date-formatted cells are also accepted.",
               "Amounts: plain numbers, e.g. 10000.00 or 10000. Currency symbols and thousands separators are stripped automatically.",
+            ],
+          },
+          {
+            heading: "Foreign Currency Beginning Balances",
+            body: [
+              "Each row may be in its own currency (see the Currency Reference sheet) - a single import can mix USD, EUR, and PHP rows.",
+              "The whole file's Total Debit/Total Credit balance check is done in BASE currency after conversion - rows in different currencies are never summed against each other in their own foreign amounts.",
+              "Opening Exchange Rate must be the HISTORICAL rate that applied when this balance was opened, never today's market rate. This importer does not look one up automatically - supply it directly.",
+              "Once imported, the opening rate is locked and cannot be changed except through a proper correction workflow.",
             ],
           },
           {
@@ -162,6 +191,18 @@ async function buildGLTemplate(format) {
         ],
         rows: accounts,
       },
+      {
+        type: "reference",
+        name: "Currency Reference",
+        columns: [
+          { key: "code", header: "Code", width: 12 },
+          { key: "name", header: "Name", width: 26 },
+          { key: "symbol", header: "Symbol", width: 10 },
+          { key: "isBase", header: "Base/Foreign", width: 14 },
+          { key: "isActive", header: "Status", width: 12 },
+        ],
+        rows: currencies,
+      },
     ],
   });
 
@@ -176,16 +217,19 @@ const PARTY_COLUMNS = [
   { key: "balanceDate", header: "Beginning Balance Date" },
   { key: "documentDate", header: "Document Date" },
   { key: "dueDate", header: "Due Date" },
+  { key: "currencyCode", header: "Currency Code" },
+  { key: "originalAmount", header: "Original Foreign Amount" },
+  { key: "paidAmount", header: "Foreign Paid Amount" },
+  { key: "balanceAmount", header: "Foreign Balance Amount" },
+  { key: "openingRate", header: "Opening Exchange Rate" },
+  { key: "rateDate", header: "Rate Date" },
   { key: "referenceNo", header: "Reference Number" },
-  { key: "originalAmount", header: "Original Amount" },
-  { key: "paidAmount", header: "Paid Amount" },
-  { key: "balanceAmount", header: "Balance Amount" },
 ];
 
 // AR and AP templates are structurally identical - only the party type
 // (Customer/Supplier), the COA validation flag (AR CODE/AP CODE), and
 // labels differ, so one function builds both.
-async function buildPartyTemplate(module, format) {
+async function buildPartyTemplate(module, format, companyId) {
   const isAR = module === "ar";
   const partyLabel = isAR ? "Customer" : "Supplier";
   const partyType = isAR ? "CUSTOMER" : "SUPPLIER";
@@ -195,8 +239,8 @@ async function buildPartyTemplate(module, format) {
   const companyName = await getCompanyName();
 
   const [parties] = await pool.execute(
-    "SELECT code, name FROM general_libraries WHERE party_type = ? ORDER BY code ASC",
-    [partyType]
+    "SELECT code, name FROM general_libraries WHERE party_type = ? AND company_id = ? ORDER BY code ASC",
+    [partyType, companyId]
   );
 
   const [accounts] = await pool.execute(
@@ -208,6 +252,9 @@ async function buildPartyTemplate(module, format) {
     [coaFlag]
   );
 
+  const currencies = await getCurrencies(companyId);
+  const baseCurrency = currencies.find((c) => c.isBase === "Base");
+
   const today = new Date().toISOString().slice(0, 10);
   const sampleRow = {
     partyCode: parties[0]?.code || `${docPrefix}0001`,
@@ -217,10 +264,12 @@ async function buildPartyTemplate(module, format) {
     balanceDate: today,
     documentDate: today,
     dueDate: today,
-    referenceNo: "",
+    currencyCode: baseCurrency?.code || "PHP",
     originalAmount: "10000.00",
     paidAmount: "0.00",
     balanceAmount: "10000.00",
+    openingRate: "1",
+    rateDate: "",
   };
 
   const columnHeaderFor = (key) => {
@@ -247,10 +296,13 @@ async function buildPartyTemplate(module, format) {
           { key: "balanceDate", header: "Beginning Balance Date", width: 20, required: true, note: "Format: YYYY-MM-DD. Groups rows into the same beginning balance batch/header." },
           { key: "documentDate", header: "Document Date", width: 18, note: "Format: YYYY-MM-DD" },
           { key: "dueDate", header: "Due Date", width: 16, required: true, note: "Format: YYYY-MM-DD. Cannot be earlier than Document Date." },
+          { key: "currencyCode", header: "Currency Code", width: 14, note: `Leave blank or ${baseCurrency?.code || "PHP"} for the company base currency. See the Currency Reference sheet.` },
+          { key: "originalAmount", header: "Original Foreign Amount", width: 20, required: true, note: "In the row's own Currency Code." },
+          { key: "paidAmount", header: "Foreign Paid Amount", width: 18, note: "Leave blank or 0 if unpaid. Cannot exceed Original Foreign Amount." },
+          { key: "balanceAmount", header: "Foreign Balance Amount", width: 20, note: "Must equal Original Foreign Amount minus Foreign Paid Amount. Leave blank to have it calculated automatically." },
+          { key: "openingRate", header: "Opening Exchange Rate", width: 18, note: "Required for any non-base Currency Code - the historical rate in effect when this balance was opened. Must be 1 for the base currency. No automatic lookup is performed." },
+          { key: "rateDate", header: "Rate Date", width: 16, note: "Optional - defaults to the Beginning Balance Date." },
           { key: "referenceNo", header: "Reference Number", width: 20 },
-          { key: "originalAmount", header: "Original Amount", width: 18, required: true },
-          { key: "paidAmount", header: "Paid Amount", width: 16, note: "Leave blank or 0 if unpaid. Cannot exceed Original Amount." },
-          { key: "balanceAmount", header: "Balance Amount", width: 18, note: "Must equal Original Amount minus Paid Amount. Leave blank to have it calculated automatically." },
         ],
         sampleRow,
       },
@@ -326,15 +378,27 @@ async function buildPartyTemplate(module, format) {
         ],
         rows: parties,
       },
+      {
+        type: "reference",
+        name: "Currency Reference",
+        columns: [
+          { key: "code", header: "Code", width: 12 },
+          { key: "name", header: "Name", width: 26 },
+          { key: "symbol", header: "Symbol", width: 10 },
+          { key: "isBase", header: "Base/Foreign", width: 14 },
+          { key: "isActive", header: "Status", width: 12 },
+        ],
+        rows: currencies,
+      },
     ],
   });
 
   return buffer;
 }
 
-async function buildTemplate(module, format) {
-  if (module === "gl") return buildGLTemplate(format);
-  if (module === "ar" || module === "ap") return buildPartyTemplate(module, format);
+async function buildTemplate(module, format, companyId) {
+  if (module === "gl") return buildGLTemplate(format, companyId);
+  if (module === "ar" || module === "ap") return buildPartyTemplate(module, format, companyId);
   throw Object.assign(new Error(`Template for module "${module}" is not available yet`), { statusCode: 400 });
 }
 

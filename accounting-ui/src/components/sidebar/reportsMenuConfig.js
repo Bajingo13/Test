@@ -31,6 +31,7 @@ import {
   ListChecks,
   FileCheck2,
   CircleDollarSign,
+  RefreshCw,
 } from "lucide-react";
 
 export const REPORTS_MENU = [
@@ -50,6 +51,7 @@ export const REPORTS_MENU = [
       { id: "ai-reconciliation", label: "AI Reconciliation Assistant", icon: Sparkles, path: "/reports/ai-reconciliation" },
       { id: "cash-flow", label: "Cash Flow", icon: Waves, path: "/reports/cash-flow-statement" },
       { id: "daily-cash-position", label: "Daily Cash Position Report", icon: Banknote, path: null },
+      { id: "fx-revaluation", label: "Month-End FX Revaluation", icon: RefreshCw, path: "/reports/fx-revaluation" },
     ],
   },
   {
@@ -61,8 +63,8 @@ export const REPORTS_MENU = [
         id: "ar-aging-reports",
         label: "Aging Reports",
         children: [
-          { id: "ar-aging-detailed", label: "Detailed Aging Report", icon: FileText, path: null },
-          { id: "ar-aging-summary", label: "Aging Summary Report", icon: FileBarChart, path: "/reports/ar-aging" },
+          { id: "ar-aging-detailed", label: "Detailed Aging Report", icon: FileText, path: "/reports/ar-aging" },
+          { id: "ar-aging-summary", label: "Aging Summary Report", icon: FileBarChart, path: "/reports/ar-aging-summary" },
         ],
       },
       { id: "ar-subsidiary-ledger", label: "Subsidiary Ledger Report", icon: BookOpen, path: "/reports/subsidiary-ledger" },
@@ -80,8 +82,8 @@ export const REPORTS_MENU = [
         id: "ap-aging-reports",
         label: "Aging Reports",
         children: [
-          { id: "ap-aging-detailed", label: "Detailed Aging Report", icon: FileText, path: null },
-          { id: "ap-aging-summary", label: "Aging Summary Report", icon: FileBarChart, path: "/reports/ap-aging" },
+          { id: "ap-aging-detailed", label: "Detailed Aging Report", icon: FileText, path: "/reports/ap-aging" },
+          { id: "ap-aging-summary", label: "Aging Summary Report", icon: FileBarChart, path: "/reports/ap-aging-summary" },
         ],
       },
       { id: "ap-subsidiary-ledger", label: "Subsidiary Ledger Report", icon: BookOpen, path: "/reports/subsidiary-ledger" },

@@ -248,7 +248,7 @@ export default function EWTLibrary() {
             <select value={form.birForm} onChange={(e) => updateField("birForm", e.target.value)}>
               {BIR_FORMS.map((f) => (
                 <option key={f}>{f}</option>
-              ))}
+              ))};
             </select>
           </div>
 

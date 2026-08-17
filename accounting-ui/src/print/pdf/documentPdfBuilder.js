@@ -47,6 +47,14 @@ export async function buildDocumentPdf({
   const { documentLabel, partyRoleLabel, ewtDirection } =
     MODULE_META[transactionType] || { documentLabel: "TRANSACTION", partyRoleLabel: "Party", ewtDirection: null };
   const withEntries = mode === "with_entries";
+  // doc.currency is only present (Checkpoint 3A: Invoice/APV) when the
+  // transaction was saved in a foreign currency - null for base-currency
+  // and legacy transactions, which fall back to the original hardcoded-P
+  // behavior. Printed straight from the stored snapshot (never re-resolved
+  // here) per the "never re-resolve at render time" requirement.
+  const isForeign = !!doc.currency;
+  const baseSymbol = doc.currency?.baseCurrencySymbol || "P";
+  const foreignSymbol = doc.currency?.currencySymbol || "";
   const kit = await createPdfKit();
   const { marginX, pageWidth } = kit;
   const contentWidth = pageWidth - marginX * 2;
@@ -129,6 +137,12 @@ export async function buildDocumentPdf({
     if (doc.paymentMethod) metaPairs.push(["Payment Method", doc.paymentMethod]);
     if (bankAccount) metaPairs.push(["Bank Account", `${bankAccount.bankCode} - ${bankAccount.bankName} (${bankAccount.accountNo})`]);
     if (doc.preparedFor) metaPairs.push(["Prepared For", doc.preparedFor]);
+    if (isForeign) {
+      metaPairs.push([
+        "Currency / Rate",
+        `${doc.currency.currencyCode} @ ${Number(doc.currency.exchangeRate).toFixed(6)} (as of ${doc.currency.rateDate || "-"})`,
+      ]);
+    }
     metaPairs.push(["Status", doc.status || "-"]);
 
     const metaColWidth = contentWidth / 2;
@@ -246,17 +260,33 @@ export async function buildDocumentPdf({
     const totalsLabelRight = marginX + contentWidth * 0.72;
 
     kit.drawRight("Total Amount", totalsLabelRight, { size: 9.5, color: COLORS.grey });
-    kit.drawRight(`P ${formatMoney(doc.totalDebit)}`, rightEdge, { size: 9.5, bold: true });
+    kit.drawRight(
+      `${isForeign ? foreignSymbol : baseSymbol} ${formatMoney(isForeign ? doc.currency.foreignTotal : doc.totalDebit)}`,
+      rightEdge,
+      { size: 9.5, bold: true }
+    );
     kit.moveDown(16);
 
+    // Base-currency equivalent, informational only - the GL truth (never
+    // re-derived; it's the same base_total already stored on the snapshot).
+    if (isForeign) {
+      kit.drawRight("Base Currency Equivalent", totalsLabelRight, { size: 8, color: COLORS.grey });
+      kit.drawRight(`${baseSymbol} ${formatMoney(doc.currency.baseTotal)}`, rightEdge, { size: 8, color: COLORS.grey });
+      kit.moveDown(14);
+    }
+
+    // Paid/Balance are actual cash-received facts, always tracked in base
+    // currency (see transactionCurrencyService.js) - shown with the base
+    // symbol, never the foreign one, to avoid implying they were collected
+    // in the foreign currency.
     if (doc.paidAmount !== undefined) {
       kit.drawRight("Paid", totalsLabelRight, { size: 9.5, color: COLORS.grey });
-      kit.drawRight(`P ${formatMoney(doc.paidAmount)}`, rightEdge, { size: 9.5 });
+      kit.drawRight(`${baseSymbol} ${formatMoney(doc.paidAmount)}`, rightEdge, { size: 9.5 });
       kit.moveDown(12);
       kit.drawLine({ x1: totalsLabelRight - 100, x2: rightEdge, color: COLORS.dark });
       kit.moveDown(14);
       kit.drawRight("Balance Due", totalsLabelRight, { size: 11, bold: true });
-      kit.drawRight(`P ${formatMoney(doc.balanceAmount)}`, rightEdge, { size: 11, bold: true });
+      kit.drawRight(`${baseSymbol} ${formatMoney(doc.balanceAmount)}`, rightEdge, { size: 11, bold: true });
       kit.moveDown(26);
     } else {
       kit.moveDown(10);
@@ -303,11 +333,11 @@ export async function buildDocumentPdf({
 
       wtRow(
         ["VAT-Exclusive Base", "VAT Amount", "EWT Code / Rate"],
-        [`P ${formatMoney(taxableBase)}`, `P ${formatMoney(vatAmount)}`, `${doc.atcCode} (${formatMoney(doc.taxRate)}%)`]
+        [`${baseSymbol} ${formatMoney(taxableBase)}`, `${baseSymbol} ${formatMoney(vatAmount)}`, `${doc.atcCode} (${formatMoney(doc.taxRate)}%)`]
       );
       wtRow(
         ["EWT Amount", netLabel],
-        [`P ${formatMoney(ewtAmount)}`, `P ${formatMoney(gross - ewtAmount)}`],
+        [`${baseSymbol} ${formatMoney(ewtAmount)}`, `${baseSymbol} ${formatMoney(gross - ewtAmount)}`],
         { bold: true }
       );
       if (doc.payeeTin) {

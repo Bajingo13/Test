@@ -1,6 +1,7 @@
 const TrialBalanceDifferenceService = require("../services/trialBalanceDifferenceService");
 const ValidationService = require("../services/trialBalanceValidationService");
 const CheckerService = require("../services/trialBalanceCheckerService");
+const CurrencyService = require("../services/currencyService");
 
 // Cheap balanced/unbalanced/difference check - backs the persistent badge
 // on the Trial Balance report page. Does not run the full investigation or
@@ -9,8 +10,9 @@ exports.getStatus = async (req, res) => {
   try {
     const { from, to } = req.query;
     const tolerance = req.query.tolerance ?? "0";
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
-    const totals = await TrialBalanceDifferenceService.getTrialBalanceTotals({ from, to });
+    const totals = await TrialBalanceDifferenceService.getTrialBalanceTotals({ from, to, companyId });
     const balance = ValidationService.evaluateBalance({ difference: totals.difference, tolerance });
 
     res.json({
@@ -29,7 +31,8 @@ exports.getStatus = async (req, res) => {
 exports.runCheck = async (req, res) => {
   try {
     const { from, to, tolerance } = req.body;
-    const result = await CheckerService.runCheck({ from, to, tolerance, user: req.user });
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.body.companyId);
+    const result = await CheckerService.runCheck({ from, to, tolerance, user: req.user, companyId });
     res.json(result);
   } catch (err) {
     console.error("TRIAL BALANCE CHECKER RUN ERROR:", err.message);
@@ -50,11 +53,13 @@ exports.getRun = async (req, res) => {
 exports.recheck = async (req, res) => {
   try {
     const prior = await CheckerService.getRun(req.params.runId);
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.body?.companyId);
     const result = await CheckerService.runCheck({
       from: prior.summary.fromDate,
       to: prior.summary.toDate,
       tolerance: prior.summary.tolerance,
       user: req.user,
+      companyId,
     });
     res.json(result);
   } catch (err) {
