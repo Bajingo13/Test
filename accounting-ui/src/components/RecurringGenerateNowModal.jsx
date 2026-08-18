@@ -147,6 +147,11 @@ export default function RecurringGenerateNowModal({ template, onClose, onGenerat
               {result.status === "RATE_REVIEW_REQUIRED" && (
                 <div className="rtm-error-banner">This occurrence requires rate review. Supply an approved rate and try again.</div>
               )}
+              {result.status === "PERIOD_CLOSED" && (
+                <div className="rtm-error-banner">
+                  {result.message || "The accounting period for this occurrence is closed."} No transaction was generated - the occurrence is recorded for review and can be retried once the period reopens.
+                </div>
+              )}
             </>
           )}
 

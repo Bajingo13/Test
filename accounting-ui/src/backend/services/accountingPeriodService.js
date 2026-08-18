@@ -133,7 +133,15 @@ async function assertPeriodOpen({ companyId, transactionDate, operation, user },
   }
 
   if (period.status === "SOFT_CLOSED") {
-    if (operation === "CREATE") return { status: "SOFT_CLOSED", period };
+    // No CREATE exemption: a directly-Posted create is a real accounting
+    // effect exactly like an edit or a post, and section 5's own language
+    // ("normal users cannot post/edit into the period... authorized users
+    // may still complete approved adjustments") draws no distinction for
+    // create. An earlier version of this function exempted CREATE
+    // unconditionally, which let an unauthorized user post a brand-new
+    // transaction into a soft-closed period - caught by
+    // periodLocking.http.test.js and fixed here, with both the unit and
+    // HTTP tests updated to match.
     const authorized = user && (await PermissionService.can(user.id, "ACCOUNTING_PERIODS", "POST_SOFT_CLOSED"));
     if (authorized) return { status: "SOFT_CLOSED_AUTHORIZED", period };
     throw new HttpError(

@@ -112,18 +112,25 @@ describe("assertPeriodOpen", () => {
     }
   });
 
-  test("SOFT_CLOSED period: CREATE passes for anyone, other operations require POST_SOFT_CLOSED permission", async () => {
+  test("SOFT_CLOSED period: every operation, including CREATE, requires POST_SOFT_CLOSED permission", async () => {
     await makePeriod(companyA, 2026, 6, "SOFT_CLOSED", { softClosedBy: adminUserA.id });
 
-    const createResult = await PeriodService.assertPeriodOpen({
-      companyId: companyA, transactionDate: "2026-06-15", operation: "CREATE", user: unauthorizedAdminA,
+    const authorizedCreate = await PeriodService.assertPeriodOpen({
+      companyId: companyA, transactionDate: "2026-06-15", operation: "CREATE", user: adminUserA,
     });
-    expect(createResult.status).toBe("SOFT_CLOSED");
+    expect(authorizedCreate.status).toBe("SOFT_CLOSED_AUTHORIZED");
 
     const authorizedResult = await PeriodService.assertPeriodOpen({
       companyId: companyA, transactionDate: "2026-06-15", operation: "EDIT", user: adminUserA,
     });
     expect(authorizedResult.status).toBe("SOFT_CLOSED_AUTHORIZED");
+
+    // Unauthorized CREATE is rejected exactly like unauthorized EDIT - a
+    // directly-Posted create is a real accounting effect, not a harmless
+    // draft, so it gets no special exemption.
+    await expect(
+      PeriodService.assertPeriodOpen({ companyId: companyA, transactionDate: "2026-06-15", operation: "CREATE", user: unauthorizedAdminA })
+    ).rejects.toMatchObject({ statusCode: 409, code: "ACCOUNTING_PERIOD_SOFT_CLOSED" });
 
     await expect(
       PeriodService.assertPeriodOpen({ companyId: companyA, transactionDate: "2026-06-15", operation: "EDIT", user: unauthorizedAdminA })
