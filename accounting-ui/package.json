@@ -1,13 +1,20 @@
 {
   "scripts": {
     "dev": "vite",
+    "dev:backend": "cross-env NODE_ENV=development node src/backend/server.js",
     "build": "vite build",
     "preview": "vite preview",
     "start": "node src/backend/server.js",
-    "test": "jest"
+    "test": "cross-env NODE_ENV=test jest",
+    "test:integration": "cross-env NODE_ENV=test jest --runInBand",
+    "db:migrate:dev": "cross-env NODE_ENV=development node src/backend/scripts/migrate.js",
+    "db:migrate:test": "cross-env NODE_ENV=test node src/backend/scripts/migrate.js",
+    "db:test:reset": "cross-env NODE_ENV=test node src/backend/scripts/dbTestReset.js",
+    "db:verify-env": "node src/backend/scripts/verifyEnv.js"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^6.0.1",
+    "cross-env": "^10.1.0",
     "jest": "^30.4.2",
     "supertest": "^7.2.2",
     "vite": "^8.0.0"

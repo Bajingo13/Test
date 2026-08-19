@@ -152,13 +152,18 @@ async function lookupLastApproved({ currencyId, transactionDate, allowPreviousBu
   const earliestAllowed = new Date(transactionDate);
   earliestAllowed.setDate(earliestAllowed.getDate() - BUSINESS_DAY_LOOKBACK_LIMIT);
 
+  // created_at is whole-second precision, so two rate changes recorded
+  // within the same second (routine on fast local MySQL, rare against
+  // Railway's network latency) would otherwise sort non-deterministically
+  // once effective_date also ties. id DESC breaks the tie using actual
+  // insertion order.
   const [rows] = await pool.execute(
     `SELECT new_rate AS rate, provider, rate_basis AS rateBasis, provider_rate_description AS providerRateDescription,
             effective_date AS effectiveDate, publication_timestamp AS publicationTimestamp,
             retrieval_timestamp AS retrievalTimestamp, status, source_reference AS sourceReference
      FROM currency_rates
      WHERE currency_id = ? AND effective_date <= ? AND effective_date >= ?
-     ORDER BY effective_date DESC, created_at DESC
+     ORDER BY effective_date DESC, created_at DESC, id DESC
      LIMIT 1`,
     [currencyId, transactionDate, toDateOnly(earliestAllowed)]
   );

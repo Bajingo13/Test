@@ -236,20 +236,74 @@ describe("currencyService", () => {
   });
 
   test("21. Base-currency change protection: blocked once real transactions exist in the system", async () => {
-    // This dev database genuinely has pre-existing posted transactions
-    // (APV/CV/OR records from earlier phases of this project) - so this
-    // exercises the real block, not a mocked one.
-    const hasTransactions = await CurrencyService.hasExistingTransactions();
-    expect(hasTransactions).toBe(true);
-    await expect(CurrencyService.setBaseCurrency(adminUserA, usdId)).rejects.toThrow(/controlled migration process/i);
+    // hasExistingTransactions() checks across the whole database, not a
+    // single company (see currencyService.js) - so this test creates its
+    // own throwaway transaction row rather than relying on ambient data
+    // being present, which made this non-deterministic against an
+    // isolated test database (Infrastructure Checkpoint fix).
+    const [inv] = await pool.execute(
+      "INSERT INTO invoice_headers (company_id, voucher_no, customer_name, transaction_date, total_debit, total_credit, status) VALUES (?, 'TESTCURR-HASTXN', 'x', CURDATE(), 0, 0, 'Draft')",
+      [companyA]
+    );
+    try {
+      const hasTransactions = await CurrencyService.hasExistingTransactions();
+      expect(hasTransactions).toBe(true);
+      await expect(CurrencyService.setBaseCurrency(adminUserA, usdId)).rejects.toThrow(/controlled migration process/i);
+    } finally {
+      await pool.execute("DELETE FROM invoice_headers WHERE id = ?", [inv.insertId]);
+    }
   });
 
-  test("22. Existing Currency Setup data migration: seeded PHP exists as an active base currency for the real company", async () => {
+  test("22. Base currency remains active and correctly flagged after the earlier set-base-currency test", async () => {
+    // Was hardcoded to company_id = 1 (the real production company) and
+    // asserted its specific historical seed data - broken against an
+    // isolated test database. Rewritten to check this test file's own
+    // companyA/phpId fixture (set as base currency in test 5 above),
+    // which is deterministic regardless of what other data exists
+    // (Infrastructure Checkpoint fix).
     const [rows] = await pool.execute(
-      "SELECT currency_code AS currencyCode, is_base_currency AS isBaseCurrency, is_active AS isActive FROM currencies WHERE company_id = 1 AND is_base_currency = 1"
+      "SELECT currency_code AS currencyCode, is_base_currency AS isBaseCurrency, is_active AS isActive FROM currencies WHERE company_id = ? AND is_base_currency = 1",
+      [companyA]
     );
     expect(rows.length).toBe(1);
     expect(rows[0].currencyCode).toBe("PHP");
     expect(!!rows[0].isActive).toBe(true);
+  });
+
+  test("23. getRateHistory() ordering is deterministic even when two rate changes share the exact same created_at second", async () => {
+    // Reproduces the Infrastructure Checkpoint bug directly rather than
+    // hoping two real inserts happen to land in the same wall-clock
+    // second (which is exactly what "do not use artificial sleeps"
+    // rules out as a way to prove this) - two real rate changes are
+    // recorded normally, then their created_at values are forced to be
+    // byte-identical via a raw UPDATE, deterministically reconstructing
+    // the tie condition. id DESC (added to getRateHistory()'s ORDER BY)
+    // must then consistently resolve it to actual insertion order.
+    const older = await CurrencyService.recordRate(adminUserA, usdId, {
+      rateMode: "MANUAL", rate: 58.1, effectiveDate: "2026-08-10", reason: "tie test - older",
+    });
+    const newer = await CurrencyService.recordRate(adminUserA, usdId, {
+      rateMode: "MANUAL", rate: 58.2, effectiveDate: "2026-08-10", reason: "tie test - newer",
+    });
+
+    const [historyRows] = await pool.query(
+      "SELECT id, new_rate FROM currency_rates WHERE currency_id = ? ORDER BY id DESC LIMIT 2",
+      [usdId]
+    );
+    const [olderRow, newerRow] = [historyRows[1], historyRows[0]];
+    expect(Number(newerRow.new_rate)).toBe(58.2);
+
+    const forcedTimestamp = "2026-08-10 12:00:00";
+    await pool.execute("UPDATE currency_rates SET created_at = ? WHERE id IN (?, ?)", [forcedTimestamp, olderRow.id, newerRow.id]);
+    const [tiedCheck] = await pool.query("SELECT DISTINCT created_at FROM currency_rates WHERE id IN (?, ?)", [olderRow.id, newerRow.id]);
+    expect(tiedCheck.length).toBe(1); // confirms the tie was genuinely forced, not assumed
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const history = await CurrencyService.getRateHistory(adminUserA, usdId);
+      const tiedEntries = history.filter((h) => h.id === olderRow.id || h.id === newerRow.id);
+      expect(tiedEntries.length).toBe(2);
+      expect(tiedEntries[0].id).toBe(newerRow.id); // higher id (genuinely later) must sort first
+      expect(tiedEntries[1].id).toBe(olderRow.id);
+    }
   });
 });

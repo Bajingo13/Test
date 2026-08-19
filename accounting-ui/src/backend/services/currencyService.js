@@ -478,6 +478,10 @@ async function recordRate(user, id, {
 async function getRateHistory(user, id) {
   await getCurrencyById(user, id); // company-access check + 404
 
+  // created_at is whole-second precision, so two rate changes recorded
+  // within the same second (routine on fast local MySQL, rare against
+  // Railway's network latency) would otherwise sort non-deterministically.
+  // id DESC breaks the tie using actual insertion order.
   const [rows] = await pool.execute(
     `SELECT cr.id, cr.currency_id AS currencyId, cr.base_currency_id AS baseCurrencyId,
             bc.currency_code AS baseCurrencyCode,
@@ -492,7 +496,7 @@ async function getRateHistory(user, id) {
      LEFT JOIN currencies bc ON bc.id = cr.base_currency_id
      LEFT JOIN users u ON u.id = cr.created_by
      WHERE cr.currency_id = ?
-     ORDER BY cr.created_at DESC`,
+     ORDER BY cr.created_at DESC, cr.id DESC`,
     [id]
   );
   return rows.map((r) => ({

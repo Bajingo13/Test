@@ -1,3 +1,14 @@
+# AstreaBlue Accounting System
+
+Backend: `src/backend` (Express + MySQL). Frontend: this Vite + React app.
+
+**Database setup (production / development / test):** see
+[`DATABASE_ENVIRONMENTS.md`](../DATABASE_ENVIRONMENTS.md) at the repo
+root before running `npm test` or `npm run dev:backend` for the first
+time - tests and local backend development must never connect to the
+live production database, and that document explains how the three
+environments are separated and how to configure your own.
+
 # React + Vite
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.

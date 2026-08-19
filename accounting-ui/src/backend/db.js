@@ -1,34 +1,30 @@
 const mysql = require("mysql2/promise");
-require("dotenv").config({ path: require("path").join(__dirname, ".env") });
+const path = require("path");
+const dotenv = require("dotenv");
+const { resolveDatabaseConfig, describeSafely } = require("./config/database");
 
-function buildPoolConfig() {
-  const database = process.env.MYSQLDATABASE || process.env.MYSQL_DATABASE;
-
-  if (process.env.MYSQL_URL) {
-    const url = new URL(process.env.MYSQL_URL);
-
-    return {
-      host: url.hostname,
-      port: url.port || 3306,
-      user: decodeURIComponent(url.username),
-      password: decodeURIComponent(url.password),
-      database: database || url.pathname.replace(/^\//, "") || undefined,
-      waitForConnections: true,
-      connectionLimit: 10,
-    };
-  }
-
-  return {
-    host: process.env.MYSQLHOST || process.env.MYSQL_HOST,
-    port: process.env.MYSQLPORT || process.env.MYSQL_PORT,
-    user: process.env.MYSQLUSER || process.env.MYSQL_USER,
-    password: process.env.MYSQLPASSWORD || process.env.MYSQL_PASSWORD,
-    database,
-    waitForConnections: true,
-    connectionLimit: 10,
-  };
+// NODE_ENV-aware .env file loading (Infrastructure Checkpoint). The more
+// specific "<env>.local" file is loaded first (dotenv never overrides an
+// already-set process.env var), then the shared "<env>" file fills in
+// anything not already set. An unset/production NODE_ENV keeps loading
+// the original ".env" - unchanged from before this checkpoint, since
+// Railway's deployed service has no .env file on disk at all (its vars
+// are injected directly into process.env by the platform) and any local
+// run with NODE_ENV unset must keep working exactly as it always has.
+const nodeEnv = process.env.NODE_ENV;
+if (nodeEnv === "test" || nodeEnv === "development") {
+  dotenv.config({ path: path.join(__dirname, `.env.${nodeEnv}.local`) });
+  dotenv.config({ path: path.join(__dirname, `.env.${nodeEnv}`) });
+} else {
+  dotenv.config({ path: path.join(__dirname, ".env") });
 }
 
-const pool = mysql.createPool(buildPoolConfig());
+const poolConfig = resolveDatabaseConfig();
+const { environment, ...mysqlPoolConfig } = poolConfig;
+
+// Section 33/34 - safe startup logging, never a password or full URL.
+console.log("Database environment:", describeSafely(poolConfig));
+
+const pool = mysql.createPool(mysqlPoolConfig);
 
 module.exports = pool;

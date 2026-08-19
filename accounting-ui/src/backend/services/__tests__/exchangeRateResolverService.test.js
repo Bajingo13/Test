@@ -342,4 +342,38 @@ describe("resolveRate (DB-backed integration)", () => {
     expect(chain[0].provider).toBe("BAP"); // PHP/USD pair -> BAP is still the preferred USD/PHP tier
     void phpForUsdCompany;
   });
+
+  test("30. lookupLastApproved() is deterministic even when two same-effective-date rate rows share the exact same created_at second", async () => {
+    // Same reproduction technique as currencyService.test.js's equivalent
+    // test: force a real tie via a raw UPDATE rather than hoping two
+    // real inserts land in the same wall-clock second. id DESC (added to
+    // lookupLastApproved()'s ORDER BY) must consistently resolve it to
+    // actual insertion order - the newer row's rate must win, every time.
+    const older = await CurrencyService.recordRate(adminPhp, usdCurrencyId, {
+      rateMode: "MANUAL", rate: 61.1, effectiveDate: "2026-08-11", reason: "tie test - older",
+    });
+    const newer = await CurrencyService.recordRate(adminPhp, usdCurrencyId, {
+      rateMode: "MANUAL", rate: 61.2, effectiveDate: "2026-08-11", reason: "tie test - newer",
+    });
+    void older;
+    expect(newer.currentRate).toBe(61.2);
+
+    const [tieRows] = await pool.query(
+      "SELECT id FROM currency_rates WHERE currency_id = ? AND effective_date = '2026-08-11' ORDER BY id DESC LIMIT 2",
+      [usdCurrencyId]
+    );
+    const [newerId, olderId] = [tieRows[0].id, tieRows[1].id];
+
+    const forcedTimestamp = "2026-08-11 09:30:00";
+    await pool.execute("UPDATE currency_rates SET created_at = ? WHERE id IN (?, ?)", [forcedTimestamp, olderId, newerId]);
+    const [tiedCheck] = await pool.query("SELECT DISTINCT created_at FROM currency_rates WHERE id IN (?, ?)", [olderId, newerId]);
+    expect(tiedCheck.length).toBe(1); // confirms the tie was genuinely forced, not assumed
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const result = await Resolver.lookupLastApproved({
+        currencyId: usdCurrencyId, transactionDate: "2026-08-11", allowPreviousBusinessDay: false, maxRateAgeDays: 5,
+      });
+      expect(result.rate).toBe(61.2); // the genuinely later (higher id) row must win every time
+    }
+  });
 });
