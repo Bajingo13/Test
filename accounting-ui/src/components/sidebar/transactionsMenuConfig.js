@@ -29,5 +29,9 @@ export const TRANSACTIONS_MENU = [
   { id: "accounts-payable-voucher", label: "Accounts Payable Voucher", icon: CreditCard, path: "/transactions/apv" },
   { id: "purchase-order", label: "Purchase Order", icon: ShoppingCart, path: "/transactions/purchase-order" },
   { id: "petty-cash-voucher", label: "Petty Cash Voucher", icon: PiggyBank, path: "/transactions/petty-cash-voucher" },
-  { id: "debit-credit-memo", label: "Debit Credit Memo", icon: FileWarning, path: "/transactions/debit-credit-memo" },
+  // Checkpoint 6: split from a single "Debit Credit Memo" entry - the old
+  // page had no way to distinguish the two at all (see the Checkpoint 6
+  // investigation report). Same sidebar position, now two items.
+  { id: "debit-memo", label: "Debit Memo", icon: FileWarning, path: "/transactions/debit-memo" },
+  { id: "credit-memo", label: "Credit Memo", icon: FileWarning, path: "/transactions/credit-memo" },
 ];

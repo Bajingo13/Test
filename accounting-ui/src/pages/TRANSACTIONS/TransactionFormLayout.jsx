@@ -5,6 +5,7 @@ import TransactionPrintOptionsModal from "../../components/TransactionPrintOptio
 import RecurringTemplateModal from "../../components/RecurringTemplateModal";
 import { computeEwtTaxableBase, computeEwtAmount } from "../../utils/ewtCalculations";
 import usePermissions from "../../hooks/usePermissions";
+import { getTransactionModuleConfig } from "./transactionModuleConfig";
 import "./TransactionFormLayout.css";
 
 const CURRENCY_MODULE_KEY = "FILESETUP.CURRENCY_SETUP";
@@ -81,21 +82,25 @@ export default function TransactionFormLayout({
   const [searchParams] = useSearchParams();
   const { can: canCurrency } = usePermissions();
 
-  // Checkpoint 3A only - Invoice and APV. Every other module keeps
-  // operating exactly as before; TransactionFormLayout is shared, but the
-  // currency selector/rate card only render for these two codes until a
-  // later checkpoint extends this gate.
-  // Checkpoint 3B extends the same currency card/rate-card UI to OR/CV
-  // (payment documents) - identical mechanics, just applied to the
-  // payment's own currency instead of the source document's.
-  // Checkpoint 3C extends it to JV (posts to GL, same as Invoice/APV) and
-  // PO (does not post to GL - currency is stored for reference/printing
-  // only, see server.js's PO handlers). JE/Debit-Credit Memo/Petty Cash are
-  // NOT included: investigation confirmed none of them have any backend
-  // route or table today, so there is nothing existing to extend currency
-  // onto without inventing a new module outright.
-  const CURRENCY_ELIGIBLE =
-    code === "INV" || code === "APV" || code === "OR" || code === "CV" || code === "JV" || code === "PO";
+  // Checkpoint 6: a single explicit module-routing config replaces what
+  // used to be three duplicated endpoint ternaries, each defaulting an
+  // unrecognized code to "apv" - the exact bug that let Petty Cash
+  // Voucher and Debit/Credit Memo silently save into apv_headers (see
+  // the Checkpoint 6 completion report). An unmapped code now fails
+  // clearly (moduleConfigError, rendered below) instead of ever
+  // resolving to another module's endpoint. currencyEligible now covers
+  // Petty Cash/Memo too - Checkpoint 6 gave them real backend currency
+  // support (transactionCurrencyService), closing the gap the old
+  // comment here used to document.
+  let moduleConfig = null;
+  let moduleConfigError = null;
+  try {
+    moduleConfig = getTransactionModuleConfig(code);
+  } catch (err) {
+    moduleConfigError = err.message;
+  }
+
+  const CURRENCY_ELIGIBLE = moduleConfig?.currencyEligible ?? false;
 
   const [mode, setMode] = useState("list");
   const [transactions, setTransactions] = useState([]);
@@ -446,19 +451,9 @@ export default function TransactionFormLayout({
   }
 
   async function loadTransactions() {
+    if (moduleConfigError) return;
     try {
-      const endpoint =
-  code === "CV"
-    ? "cv"
-    : code === "OR"
-    ? "or"
-    : code === "INV"
-    ? "invoices"
-    : code === "PO"
-    ? "purchase-orders"
-    : code === "JV"
-    ? "jv"
-    : "apv";
+      const endpoint = moduleConfig.endpoint;
       const res = await fetch(`${API_BASE}/api/${endpoint}`, {
         credentials: "include",
         headers: authHeaders(),
@@ -624,6 +619,63 @@ if (code === "OR") {
               referenceNo: item.referenceNo || item.voucherNo,
               party: item.preparedFor,
               partyId: null,
+              description: item.description,
+              checkNo: "",
+              status: item.status,
+            },
+            lines: [],
+          }))
+        );
+      }
+
+      // Checkpoint 6 - PCV/DM/CM previously had no branch here at all, so
+      // setTransactions() was simply never called for them: the list page
+      // permanently showed "No transactions yet" even though the API
+      // correctly returned real rows (the endpoint-routing fix alone
+      // wasn't enough - this per-module mapping is a second, separate
+      // place the old code hardcoded a fixed module list). Found via
+      // live Playwright verification, not a code review guess.
+      if (code === "PCV") {
+        setTransactions(
+          data.map((item) => ({
+            id: item.id,
+            referenceNo: item.referenceNo || item.voucherNo,
+            date: item.transactionDate,
+            party: item.payeeName,
+            amount: item.foreignTotal ?? (item.totalDebit || item.totalCredit),
+            status: item.status,
+            currencySymbol: item.currencySymbol || null,
+            currencyCode: item.currencyCode || null,
+            form: {
+              date: item.transactionDate,
+              referenceNo: item.referenceNo || item.voucherNo,
+              party: item.payeeName,
+              partyId: item.payeeId,
+              description: item.description,
+              checkNo: "",
+              status: item.status,
+            },
+            lines: [],
+          }))
+        );
+      }
+
+      if (code === "DM" || code === "CM") {
+        setTransactions(
+          data.map((item) => ({
+            id: item.id,
+            referenceNo: item.referenceNo || item.voucherNo,
+            date: item.transactionDate,
+            party: item.partyName,
+            amount: item.foreignTotal ?? (item.totalDebit || item.totalCredit),
+            status: item.status,
+            currencySymbol: item.currencySymbol || null,
+            currencyCode: item.currencyCode || null,
+            form: {
+              date: item.transactionDate,
+              referenceNo: item.referenceNo || item.voucherNo,
+              party: item.partyName,
+              partyId: item.partyId,
               description: item.description,
               checkNo: "",
               status: item.status,
@@ -1040,20 +1092,10 @@ setError("");
 
   async function handleView(transaction) {
     setSelectedTransaction(transaction);
+    if (moduleConfigError) return;
 
     try {
-      const endpoint =
-  code === "CV"
-    ? "cv"
-    : code === "OR"
-    ? "or"
-    : code === "INV"
-    ? "invoices"
-    : code === "PO"
-    ? "purchase-orders"
-    : code === "JV"
-    ? "jv"
-    : "apv";
+      const endpoint = moduleConfig.endpoint;
       const res = await fetch(`${API_BASE}/api/${endpoint}/${transaction.id}`, {
         credentials: "include",
         headers: authHeaders(),
@@ -1073,6 +1115,10 @@ setError("");
       ? data.customerName
       : code === "JV"
       ? data.preparedFor
+      : code === "PCV"
+      ? data.payeeName
+      : code === "DM" || code === "CM"
+      ? data.partyName
       : data.supplierName,
 
   partyId:
@@ -1082,6 +1128,10 @@ setError("");
       ? data.customerId
       : code === "JV"
       ? null
+      : code === "PCV"
+      ? data.payeeId
+      : code === "DM" || code === "CM"
+      ? data.partyId
       : data.supplierId,
 
   description: data.description,
@@ -1228,6 +1278,12 @@ if (code === "OR" || code === "CV") {
       ...prev,
       party: value,
       partyId: selectedParty ? selectedParty.id : null,
+      // Checkpoint 6: Debit/Credit Memo needs to know whether the picked
+      // party is a customer or supplier (party.type from /api/genlib,
+      // matching general_libraries.party_type) - nothing before this
+      // checkpoint needed it captured in form state, since every other
+      // party-bearing module has a fixed single partyType.
+      partyType: selectedParty ? selectedParty.type : null,
     }));
 
     if (ewtEligible) {
@@ -1619,6 +1675,11 @@ if (code === "OR" || code === "CV") {
 }
 
   async function handleSave(status) {
+    if (moduleConfigError) {
+      setError(moduleConfigError);
+      return;
+    }
+
     const validationError = validate();
 
     if (validationError) {
@@ -1640,6 +1701,20 @@ if (code === "OR" || code === "CV") {
 
         customerId: updatedForm.partyId || null,
         customerName: updatedForm.party,
+
+        // Checkpoint 6 - Petty Cash reads payeeId/payeeName, Debit/Credit
+        // Memo reads partyId/partyName/partyType (see server.js). Sent
+        // redundantly alongside supplierId/customerId above, same
+        // established pattern this payload already uses so each
+        // module's backend route can read the one key pair it cares
+        // about - discovered missing via live Playwright verification
+        // (records were saving with an empty payee/party name).
+        payeeId: updatedForm.partyId || null,
+        payeeName: updatedForm.party,
+
+        partyId: updatedForm.partyId || null,
+        partyName: updatedForm.party,
+        partyType: updatedForm.partyType || null,
 
         transactionDate: updatedForm.date,
         dueDate: updatedForm.date,
@@ -1724,18 +1799,7 @@ if (code === "OR" || code === "CV") {
         } : undefined,
       };
 
-      const endpoint =
-  code === "CV"
-    ? "cv"
-    : code === "OR"
-    ? "or"
-    : code === "INV"
-    ? "invoices"
-    : code === "PO"
-    ? "purchase-orders"
-    : code === "JV"
-    ? "jv"
-    : "apv";
+      const endpoint = moduleConfig.endpoint;
       const isExisting = selectedTransaction?.id;
 
       const res = await fetch(
@@ -1777,6 +1841,25 @@ if (code === "OR") {
     } finally {
       setSaving(false);
     }
+  }
+
+  // Checkpoint 6: fail clearly instead of ever silently routing an
+  // unmapped module code to another module's API endpoint (the old bug -
+  // see transactionModuleConfig.js). This is a configuration error a
+  // developer needs to fix, not a data/permission error a user can act
+  // on, so it replaces the whole page rather than trying to render a
+  // form that has no real endpoint behind it.
+  if (moduleConfigError) {
+    return (
+      <div className="transaction-page">
+        <div className="transaction-wrapper">
+          <div className="transaction-card" style={{ padding: 24 }}>
+            <h1 className="transaction-title">Configuration Error</h1>
+            <p style={{ color: "var(--danger-text, #b91c1c)", marginTop: 12 }}>{moduleConfigError}</p>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (

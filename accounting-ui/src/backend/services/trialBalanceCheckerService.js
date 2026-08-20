@@ -3,6 +3,7 @@ const { logAudit } = require("../lib/audit");
 const TrialBalanceDifferenceService = require("./trialBalanceDifferenceService");
 const ValidationService = require("./trialBalanceValidationService");
 const CurrencyService = require("./currencyService");
+const { postedOnlySql } = require("./reportRecognitionService");
 
 // The 3 header/line modules Trial Balance actually unions (see
 // trialBalanceDifferenceService.js) that carry their own total_debit/
@@ -26,6 +27,34 @@ const ALL_LINE_MODULES = [
 function dateFilter(alias, dateCol, from, to) {
   if (!from || !to) return { sql: "", params: [] };
   return { sql: `WHERE ${alias}.${dateCol} BETWEEN ? AND ?`, params: [from, to] };
+}
+
+// Checkpoint 6A: every detector below previously ran with no company_id
+// filter at all - a user running the checker against their own company
+// would see real transaction IDs, voucher numbers, amounts, and reference
+// numbers belonging to OTHER companies in the findings list. scopeFilter is
+// the same date+company WHERE/AND pattern trialBalanceDifferenceService.js
+// and LedgerReportService.js already use, applied here to the checker's own
+// independent queries so it can never leak across companies either.
+function scopeFilter(alias, dateCol, from, to, companyId) {
+  if (!from || !to) return { sql: `WHERE ${alias}.company_id = ?`, params: [companyId] };
+  return { sql: `WHERE ${alias}.${dateCol} BETWEEN ? AND ? AND ${alias}.company_id = ?`, params: [from, to, companyId] };
+}
+
+// Checkpoint 6B: same as scopeFilter, plus the recognized-only predicate.
+// Used by every detector that frames a finding as "this explains a Trial
+// Balance imbalance" (unbalanced lines, header/line mismatch, invalid
+// accounts, orphaned headers, duplicate postings, missing dates) - since a
+// Draft transaction no longer contributes to Trial Balance at all (see
+// reportRecognitionService.js), a Draft-only issue can no longer be part of
+// why today's Trial Balance is off, and surfacing it as if it were would be
+// misleading. NOT used by findOtherSuspicious's line-anomaly/status-anomaly
+// checks, which are general data-hygiene checks (worth catching on a Draft
+// before it's posted), not imbalance explanations - deliberate, not an
+// oversight.
+function recognizedScopeFilter(alias, dateCol, from, to, companyId) {
+  const base = scopeFilter(alias, dateCol, from, to, companyId);
+  return { sql: `${base.sql} AND ${postedOnlySql(alias)}`, params: base.params };
 }
 
 function toleranceDecimal(tolerance) {
@@ -55,12 +84,12 @@ function baseFinding(overrides) {
 }
 
 // ---- Category 1: Unbalanced Transactions (causes #1, #6) ----
-async function findUnbalancedTransactions({ from, to, tolerance }) {
+async function findUnbalancedTransactions({ from, to, tolerance, companyId }) {
   const findings = [];
   const tol = toleranceDecimal(tolerance);
 
   for (const mod of HEADER_LINE_MODULES) {
-    const { sql: dateSql, params: dateParams } = dateFilter("h", mod.dateCol, from, to);
+    const { sql: dateSql, params: dateParams } = recognizedScopeFilter("h", mod.dateCol, from, to, companyId);
     const [rows] = await pool.execute(
       `
       SELECT h.id AS transaction_id, h.${mod.voucherCol} AS transaction_number,
@@ -105,12 +134,12 @@ async function findUnbalancedTransactions({ from, to, tolerance }) {
 }
 
 // ---- Category 2: Header/Line Total Mismatches (cause #2) ----
-async function findHeaderLineMismatches({ from, to, tolerance }) {
+async function findHeaderLineMismatches({ from, to, tolerance, companyId }) {
   const findings = [];
   const tol = toleranceDecimal(tolerance);
 
   for (const mod of HEADER_LINE_MODULES) {
-    const { sql: dateSql, params: dateParams } = dateFilter("h", mod.dateCol, from, to);
+    const { sql: dateSql, params: dateParams } = recognizedScopeFilter("h", mod.dateCol, from, to, companyId);
     const [rows] = await pool.execute(
       `
       SELECT h.id AS transaction_id, h.${mod.voucherCol} AS transaction_number,
@@ -152,11 +181,11 @@ async function findHeaderLineMismatches({ from, to, tolerance }) {
 }
 
 // ---- Category 3: Invalid or Missing Accounts (causes #7, #8) ----
-async function findInvalidAccounts({ from, to }) {
+async function findInvalidAccounts({ from, to, companyId }) {
   const findings = [];
 
   for (const mod of ALL_LINE_MODULES) {
-    const { sql: dateSql, params: dateParams } = dateFilter("h", mod.dateCol, from, to);
+    const { sql: dateSql, params: dateParams } = recognizedScopeFilter("h", mod.dateCol, from, to, companyId);
     const voucherSelect = mod.voucherCol ? `h.${mod.voucherCol}` : "NULL";
 
     const [rows] = await pool.execute(
@@ -244,11 +273,11 @@ async function findInvalidAccounts({ from, to }) {
 }
 
 // ---- Category 4: Orphaned Records (causes #5, #14, #19) ----
-async function findOrphanedRecords({ from, to }) {
+async function findOrphanedRecords({ from, to, companyId }) {
   const findings = [];
 
   for (const mod of HEADER_LINE_MODULES) {
-    const { sql: dateSql, params: dateParams } = dateFilter("h", mod.dateCol, from, to);
+    const { sql: dateSql, params: dateParams } = recognizedScopeFilter("h", mod.dateCol, from, to, companyId);
     const [rows] = await pool.execute(
       `
       SELECT h.id AS transaction_id, h.${mod.voucherCol} AS transaction_number,
@@ -296,11 +325,11 @@ async function findOrphanedRecords({ from, to }) {
 // two different voucher numbers, not a voucher-number collision. Matched on
 // date + reference_no + totals, which is what an accidental double-entry
 // actually looks like given this schema's constraints.
-async function findDuplicatePostings({ from, to }) {
+async function findDuplicatePostings({ from, to, companyId }) {
   const findings = [];
 
   for (const mod of HEADER_LINE_MODULES) {
-    const { sql: dateSql, params: dateParams } = dateFilter("h", mod.dateCol, from, to);
+    const { sql: dateSql, params: dateParams } = recognizedScopeFilter("h", mod.dateCol, from, to, companyId);
 
     const [rows] = await pool.execute(
       `
@@ -314,9 +343,11 @@ async function findDuplicatePostings({ from, to }) {
         AND EXISTS (
           SELECT 1 FROM ${mod.headerTable} h2
           WHERE h2.id != h.id
+            AND h2.company_id = h.company_id
             AND h2.${mod.dateCol} = h.${mod.dateCol}
             AND h2.reference_no = h.reference_no
             AND h2.total_debit = h.total_debit AND h2.total_credit = h.total_credit
+            AND ${postedOnlySql("h2")}
         )
       `,
       dateParams
@@ -347,11 +378,16 @@ async function findDuplicatePostings({ from, to }) {
 }
 
 // ---- Category 6: Beginning Balance Issues (causes #11, #12) ----
-async function findBeginningBalanceIssues({ from, to, tolerance }) {
+async function findBeginningBalanceIssues({ from, to, tolerance, companyId }) {
   const findings = [];
   const tol = toleranceDecimal(tolerance);
 
-  const { sql: glDateSql, params: glDateParams } = dateFilter("h", "balance_date", from, to);
+  // Beginning Balance headers always insert as immediately-effective
+  // 'Posted' (no Draft lifecycle exists for either table - see
+  // reportRecognitionService.js) so this predicate is a documentation-only
+  // no-op today, kept for consistency and as a safety net if that ever
+  // changes.
+  const { sql: glDateSql, params: glDateParams } = recognizedScopeFilter("h", "balance_date", from, to, companyId);
   const [glRows] = await pool.execute(
     `
     SELECT h.id AS transaction_id, h.filter_code AS transaction_number,
@@ -391,7 +427,7 @@ async function findBeginningBalanceIssues({ from, to, tolerance }) {
   // no matching credit, and vice versa for AP, so the system-wide net of
   // (AR debits - AP credits) for the period is a very plausible structural
   // contributor to the overall Trial Balance difference.
-  const { sql: arapDateSql, params: arapDateParams } = dateFilter("h", "balance_date", from, to);
+  const { sql: arapDateSql, params: arapDateParams } = recognizedScopeFilter("h", "balance_date", from, to, companyId);
   const [arapTotals] = await pool.execute(
     `
     SELECT h.balance_type,
@@ -432,13 +468,14 @@ async function findBeginningBalanceIssues({ from, to, tolerance }) {
 }
 
 // ---- Category 7: Date and Period Issues (cause #17) ----
-async function findDatePeriodIssues() {
+async function findDatePeriodIssues({ companyId }) {
   const findings = [];
 
   for (const mod of HEADER_LINE_MODULES) {
     const [rows] = await pool.execute(
       `SELECT id AS transaction_id, ${mod.voucherCol} AS transaction_number, reference_no, status, total_debit, total_credit
-       FROM ${mod.headerTable} WHERE ${mod.dateCol} IS NULL`
+       FROM ${mod.headerTable} WHERE ${mod.dateCol} IS NULL AND company_id = ? AND ${postedOnlySql()}`,
+      [companyId]
     );
 
     for (const r of rows) {
@@ -465,10 +502,10 @@ async function findDatePeriodIssues() {
 }
 
 // ---- Category 8: Rounding Differences (cause #18) ----
-async function findRoundingDifferences({ from, to }) {
+async function findRoundingDifferences({ from, to, companyId }) {
   const findings = [];
 
-  const { sql: glDateSql, params: glDateParams } = dateFilter("h", "balance_date", from, to);
+  const { sql: glDateSql, params: glDateParams } = recognizedScopeFilter("h", "balance_date", from, to, companyId);
   const [glRows] = await pool.execute(
     `
     SELECT l.id AS line_id, h.id AS transaction_id, h.filter_code AS transaction_number,
@@ -502,7 +539,7 @@ async function findRoundingDifferences({ from, to }) {
     );
   }
 
-  const { sql: arapDateSql, params: arapDateParams } = dateFilter("h", "balance_date", from, to);
+  const { sql: arapDateSql, params: arapDateParams } = recognizedScopeFilter("h", "balance_date", from, to, companyId);
   const [arapRows] = await pool.execute(
     `
     SELECT l.id AS line_id, h.id AS transaction_id, l.reference_no AS transaction_number,
@@ -540,7 +577,7 @@ async function findRoundingDifferences({ from, to }) {
 }
 
 // ---- Category 9: Other Suspicious Records (causes #3, #4, #10, #13, #15, #20) ----
-async function findOtherSuspicious({ from, to }) {
+async function findOtherSuspicious({ from, to, companyId }) {
   const findings = [];
   const KNOWN_STATUSES = {
     JV: ["Draft", "Posted"],
@@ -549,7 +586,7 @@ async function findOtherSuspicious({ from, to }) {
   };
 
   for (const mod of HEADER_LINE_MODULES) {
-    const { sql: dateSql, params: dateParams } = dateFilter("h", mod.dateCol, from, to);
+    const { sql: dateSql, params: dateParams } = scopeFilter("h", mod.dateCol, from, to, companyId);
 
     // Both debit and credit filled, or both zero, on a single line.
     const [lineRows] = await pool.execute(
@@ -597,7 +634,7 @@ async function findOtherSuspicious({ from, to }) {
     // Anomalous status strings.
     const known = KNOWN_STATUSES[mod.key] || [];
     if (known.length) {
-      const { sql: statusDateSql, params: statusDateParams } = dateFilter("h", mod.dateCol, from, to);
+      const { sql: statusDateSql, params: statusDateParams } = scopeFilter("h", mod.dateCol, from, to, companyId);
       const placeholders = known.map(() => "?").join(",");
       const [statusRows] = await pool.execute(
         `
@@ -612,6 +649,12 @@ async function findOtherSuspicious({ from, to }) {
 
       for (const r of statusRows) {
         const isVoidLike = /VOID|CANCEL|DELETE/i.test(r.status || "");
+        // Checkpoint 6B: Trial Balance (and every other report) now only
+        // recognizes a header whose status case-insensitively equals
+        // "Posted" (reportRecognitionService.js). Report this per-row,
+        // since an unrecognized status string could coincidentally still
+        // satisfy that comparison (e.g. a stray "posted" typo-cased value).
+        const isRecognized = String(r.status || "").toUpperCase() === "POSTED";
         findings.push(
           baseFinding({
             category: "OTHER_SUSPICIOUS",
@@ -626,8 +669,8 @@ async function findOtherSuspicious({ from, to }) {
             credit: r.total_credit,
             status: r.status,
             reason: isVoidLike
-              ? `This ${mod.key} header has a void/cancelled-looking status ("${r.status}") but is still included in the Trial Balance total, which has no status filter today.`
-              : `This ${mod.key} header has an unrecognized status value ("${r.status || "(empty)"}") outside the normal Draft/Posted set.`,
+              ? `This ${mod.key} header has a void/cancelled-looking status ("${r.status}") and ${isRecognized ? "still counts as Posted (case-insensitively) and IS included in Trial Balance - review whether that's intended" : "is correctly excluded from Trial Balance under the Posted-only recognition rule, since it does not match 'Posted'"}.`
+              : `This ${mod.key} header has an unrecognized status value ("${r.status || "(empty)"}") outside the normal Draft/Posted set, and ${isRecognized ? "happens to match 'Posted' case-insensitively, so it IS included in Trial Balance" : "does not match 'Posted', so it is excluded from Trial Balance"}.`,
             recommended_action: "Open for Review",
           })
         );
@@ -637,27 +680,40 @@ async function findOtherSuspicious({ from, to }) {
 
   // Static, informational findings - not detected by a query, but
   // explicitly requested transparency about causes that don't apply given
-  // this app's current architecture.
+  // this app's current architecture. (Checkpoint 6A: the two findings below
+  // that referenced "no company scoping" and "DM/CM falls into APV" were
+  // both stale/factually wrong as of Checkpoint 6 and this checkpoint - the
+  // app has had real company_id scoping since checkpoint4h, and Debit/Credit
+  // Memo have had their own dedicated memo_headers/memo_lines tables since
+  // Checkpoint 6. Both are corrected here rather than left actively
+  // misleading.)
   findings.push(
     baseFinding({
       category: "OTHER_SUSPICIOUS",
       severity: "LOW",
       source_module: "SYSTEM",
-      reason: `Company/Branch scoping is not applicable: this application has no multi-company or branch data model today, so "wrong company/branch" cannot be checked.`,
+      reason: `This checker run is scoped to your company only (company_id enforced on every query, Checkpoint 6A) - findings from other companies never appear here.`,
       recommended_action: "Mark as Investigated",
     }),
     baseFinding({
       category: "OTHER_SUSPICIOUS",
       severity: "LOW",
       source_module: "SYSTEM",
-      reason: `Trial Balance's totals (and this check) include General Journal, AP Voucher, Check Voucher, and AR/AP Beginning Balance only - Invoice, Official Receipt, and GL Beginning Balance records are excluded, same as this report has always worked. If you're comparing against General Ledger, that report includes those extra sources.`,
+      reason: `Trial Balance's totals (and this check) include General Journal, AP Voucher, Check Voucher, AR/AP Beginning Balance, Petty Cash, Debit/Credit Memo, Invoice, and Official Receipt (Invoice/OR added Checkpoint 6A). GL Beginning Balance remains excluded - it seeds General Ledger's opening running balances rather than being a Trial-Balance-eligible transaction source. If you're comparing against General Ledger, that report also includes GL Beginning Balance.`,
       recommended_action: "Mark as Investigated",
     }),
     baseFinding({
       category: "OTHER_SUSPICIOUS",
       severity: "LOW",
       source_module: "SYSTEM",
-      reason: `Debit Memo / Credit Memo transactions have no dedicated table in this system - submitting one currently saves it into the AP Voucher tables, indistinguishable from a real APV. Any DM/CM activity is already covered by the APV checks above, but can't be identified as DM/CM specifically.`,
+      reason: `This investigation (unbalanced/mismatch/orphaned/duplicate/status checks) covers JV, APV, and CV only - Invoice, OR, Petty Cash, and Debit/Credit Memo are included in the Trial Balance totals above but not yet in this deeper investigation. If the totals look unbalanced and no finding above explains it, the cause may be in one of those modules.`,
+      recommended_action: "Mark as Investigated",
+    }),
+    baseFinding({
+      category: "OTHER_SUSPICIOUS",
+      severity: "LOW",
+      source_module: "SYSTEM",
+      reason: `As of Checkpoint 6B, Trial Balance (and every other financial report) only recognizes Posted transactions - Draft transactions never contribute to these totals, and this investigation's unbalanced/mismatch/invalid-account/orphaned/duplicate/date checks above are scoped to Posted transactions only for the same reason. A Draft transaction with a real problem (unbalanced lines, a bad account reference, etc.) will not appear as a finding here until it is posted.`,
       recommended_action: "Mark as Investigated",
     })
   );
@@ -735,7 +791,7 @@ async function runCheck({ from, to, tolerance, user, companyId }) {
   const runId = runResult.insertId;
 
   try {
-    const findings = await runAllDetectors({ from, to, tolerance: tol });
+    const findings = await runAllDetectors({ from, to, tolerance: tol, companyId });
 
     for (const f of findings) {
       await pool.execute(

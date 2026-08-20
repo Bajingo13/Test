@@ -2,11 +2,14 @@
 // GET/VIEW access to it, mirroring the exact mapping server.js's routes
 // were wired with. Paths intentionally left OUT of this map (Book
 // Template, Particulars Template, Transaction Setup, Industry, Category
-// Code, Petty Cash Voucher, Debit/Credit Memo, Input VAT, Comparative
-// Income Statement, and the `path: null` "Coming Soon" placeholders) have
-// no corresponding permission in the catalog yet - they stay visible to
-// everyone rather than being hidden on a guessed mapping, since an
-// incorrect guess here is worse than no filtering at all.
+// Code, Input VAT, Comparative Income Statement, and the `path: null`
+// "Coming Soon" placeholders) have no corresponding permission in the
+// catalog yet - they stay visible to everyone rather than being hidden on
+// a guessed mapping, since an incorrect guess here is worse than no
+// filtering at all. Petty Cash Voucher / Debit Memo / Credit Memo used to
+// be in that excluded list too - Checkpoint 6 gave them real backend
+// routes gated by TRANSACTIONS.PETTY_CASH/TRANSACTIONS.DEBIT_CREDIT_MEMO,
+// so they're mapped below like every other real transaction module now.
 const PATH_PERMISSIONS = {
   "/coa": ["FILESETUP.COA", "VIEW"],
   "/general-libraries": ["FILESETUP.GENLIB", "VIEW"],
@@ -30,6 +33,9 @@ const PATH_PERMISSIONS = {
   "/transactions/jv": ["TRANSACTIONS.JV", "VIEW"],
   "/transactions/apv": ["TRANSACTIONS.APV", "VIEW"],
   "/transactions/purchase-order": ["TRANSACTIONS.PURCHASE_ORDER", "VIEW"],
+  "/transactions/petty-cash-voucher": ["TRANSACTIONS.PETTY_CASH", "VIEW"],
+  "/transactions/debit-memo": ["TRANSACTIONS.DEBIT_CREDIT_MEMO", "VIEW"],
+  "/transactions/credit-memo": ["TRANSACTIONS.DEBIT_CREDIT_MEMO", "VIEW"],
 
   "/posting": ["POSTING", "VIEW"],
 

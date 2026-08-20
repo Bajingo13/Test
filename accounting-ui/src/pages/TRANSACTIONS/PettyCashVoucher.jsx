@@ -6,6 +6,7 @@ export default function PettyCashVoucher() {
     <TransactionFormLayout
       title="Petty Cash Voucher"
       code="PCV"
+      printModuleType="pettyCash"
       partyLabel="Payee"
       defaultDescription="Petty cash disbursement"
       defaultLines={[

@@ -195,9 +195,12 @@ beforeAll(async () => {
   );
   cvAId = cvA.insertId;
 
+  // Checkpoint 6B: Posted, not Draft - reports now only recognize Posted
+  // transactions, and test 28 below specifically asserts this JV appears in
+  // Account Analysis, which would no longer be true for a Draft.
   const [jvA] = await pool.execute(
     `INSERT INTO jv_headers (company_id, voucher_no, transaction_date, description, total_debit, total_credit, status)
-     VALUES (?, 'TEST4I-JV-A1', '2026-08-10', 'x', 300, 300, 'Draft')`,
+     VALUES (?, 'TEST4I-JV-A1', '2026-08-10', 'x', 300, 300, 'Posted')`,
     [companyAId]
   );
   jvAId = jvA.insertId;

@@ -67,6 +67,7 @@ const MIGRATION_ORDER = [
   "checkpoint4h_company_isolation_migration.sql",
   "checkpoint4i_company_phase_e_migration.sql",
   "checkpoint5_accounting_period_closing_migration.sql",
+  "petty_cash_and_memo_migration.sql",
 ];
 
 module.exports = { MIGRATION_ORDER };

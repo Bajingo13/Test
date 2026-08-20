@@ -387,6 +387,96 @@ export const PO_PRINT_OPTIONS = [
   },
 ];
 
+// Checkpoint 6 - previously fell through to apv (indistinguishable
+// printing, or unreachable since PettyCashVoucher.jsx/DebitCreditMemo.jsx
+// never passed printModuleType at all). Petty Cash has a payee (party-like,
+// matches CV's shape); Debit/Credit Memo share one options array since
+// they're structurally identical, only the module key + title differ.
+export const PETTY_CASH_PRINT_OPTIONS = [
+  ...SINGLE_OPTIONS("Payee"),
+  {
+    id: "list_by_number",
+    scope: "list",
+    grouping: "number",
+    label: "Print List by Voucher Number",
+    description: "Summarized list of petty cash vouchers sorted by voucher number.",
+    icon: ListOrdered,
+    requiredPermissionAction: "PRINT",
+    needsFilters: true,
+    listTitle: "Petty Cash Voucher List — By Voucher Number",
+    listColumns: buildListColumns("Payee"),
+  },
+  {
+    id: "list_by_date",
+    scope: "list",
+    grouping: "date",
+    label: "Print List by Date",
+    description: "Summarized list of petty cash vouchers sorted chronologically.",
+    icon: CalendarDays,
+    requiredPermissionAction: "PRINT",
+    needsFilters: true,
+    listTitle: "Petty Cash Voucher List — By Date",
+    listColumns: buildListColumns("Payee"),
+  },
+  {
+    id: "list_by_reference",
+    scope: "list",
+    grouping: "reference",
+    label: "Print List by Reference",
+    description: "Summarized list of petty cash vouchers sorted by reference number.",
+    icon: Tag,
+    requiredPermissionAction: "PRINT",
+    needsFilters: true,
+    listTitle: "Petty Cash Voucher List — By Reference",
+    listColumns: buildListColumns("Payee"),
+  },
+];
+
+function memoPrintOptions(memoLabel) {
+  return [
+    ...SINGLE_OPTIONS("Customer/Supplier"),
+    {
+      id: "list_by_number",
+      scope: "list",
+      grouping: "number",
+      label: `Print List by ${memoLabel} Number`,
+      description: `Summarized list of ${memoLabel.toLowerCase()}s sorted by memo number.`,
+      icon: ListOrdered,
+      requiredPermissionAction: "PRINT",
+      needsFilters: true,
+      listTitle: `${memoLabel} List — By Memo Number`,
+      listColumns: buildListColumns("Customer/Supplier"),
+    },
+    {
+      id: "list_by_date",
+      scope: "list",
+      grouping: "date",
+      label: "Print List by Date",
+      description: `Summarized list of ${memoLabel.toLowerCase()}s sorted chronologically.`,
+      icon: CalendarDays,
+      requiredPermissionAction: "PRINT",
+      needsFilters: true,
+      listTitle: `${memoLabel} List — By Date`,
+      listColumns: buildListColumns("Customer/Supplier"),
+    },
+    {
+      id: "list_by_reference",
+      scope: "list",
+      grouping: "reference",
+      label: "Print List by Reference",
+      description: `Summarized list of ${memoLabel.toLowerCase()}s sorted by reference number.`,
+      icon: Tag,
+      requiredPermissionAction: "PRINT",
+      needsFilters: true,
+      listTitle: `${memoLabel} List — By Reference`,
+      listColumns: buildListColumns("Customer/Supplier"),
+    },
+  ];
+}
+
+export const DEBIT_MEMO_PRINT_OPTIONS = memoPrintOptions("Debit Memo");
+export const CREDIT_MEMO_PRINT_OPTIONS = memoPrintOptions("Credit Memo");
+
 export const PRINT_OPTIONS_BY_MODULE = {
   invoice: { moduleKey: "TRANSACTIONS.INVOICE", title: "Invoice", options: INVOICE_PRINT_OPTIONS },
   or: { moduleKey: "TRANSACTIONS.OR", title: "Official Receipt", options: OR_PRINT_OPTIONS },
@@ -394,4 +484,7 @@ export const PRINT_OPTIONS_BY_MODULE = {
   cv: { moduleKey: "TRANSACTIONS.CV", title: "Check Voucher", options: CV_PRINT_OPTIONS },
   jv: { moduleKey: "TRANSACTIONS.JV", title: "Journal Voucher", options: JV_PRINT_OPTIONS },
   po: { moduleKey: "TRANSACTIONS.PURCHASE_ORDER", title: "Purchase Order", options: PO_PRINT_OPTIONS },
+  pettyCash: { moduleKey: "TRANSACTIONS.PETTY_CASH", title: "Petty Cash Voucher", options: PETTY_CASH_PRINT_OPTIONS },
+  debitMemo: { moduleKey: "TRANSACTIONS.DEBIT_CREDIT_MEMO", title: "Debit Memo", options: DEBIT_MEMO_PRINT_OPTIONS },
+  creditMemo: { moduleKey: "TRANSACTIONS.DEBIT_CREDIT_MEMO", title: "Credit Memo", options: CREDIT_MEMO_PRINT_OPTIONS },
 };

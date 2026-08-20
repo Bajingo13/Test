@@ -1,5 +1,6 @@
 const pool = require("../../db");
 const { ExchangeRateProvider, nowIso } = require("./baseProvider");
+const { toDateOnly } = require("../../lib/dateOnly");
 
 // Wraps Phase 1's existing fixed-rate mechanism (currencyService.recordRate
 // with rateMode: "FIXED"). A fixed rate stays in effect until an
@@ -33,7 +34,8 @@ class FixedExchangeRateProvider extends ExchangeRateProvider {
       provider: this.code,
       rateBasis: row.rateBasis || null,
       providerRateDescription: "Fixed company rate",
-      effectiveDate: row.effectiveDate,
+      // Checkpoint 6C: see the identical fix/comment in manualProvider.js.
+      effectiveDate: toDateOnly(row.effectiveDate),
       publicationTimestamp: row.publicationTimestamp,
       retrievalTimestamp: nowIso(),
       status: "FIXED",

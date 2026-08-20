@@ -2,6 +2,7 @@ const pool = require("../db");
 const { HttpError } = require("../lib/httpError");
 const Resolver = require("./exchangeRateResolverService");
 const { sumVatLines } = require("./ewtCalculationService");
+const { toDateOnly, isValidDateOnly } = require("../lib/dateOnly");
 
 // Wires Invoice/APV (Checkpoint 3A) to the existing Phase 1/2 currency
 // infrastructure. Does NOT duplicate provider-resolution logic - every
@@ -98,6 +99,19 @@ async function getSnapshot(transactionType, transactionId) {
   const row = rows[0];
   return {
     ...row,
+    // Checkpoint 6C root-cause fix: rate_date is a MySQL DATE column, which
+    // mysql2 returns as a JS Date object. Left as-is, that Date object
+    // flows into res.json() (which calls .toISOString() on it internally
+    // via JSON.stringify) -> a full UTC datetime string reaches the
+    // frontend -> the frontend echoes it straight back as currency.rateDate
+    // on the next save -> this same string gets bound to rate_date on the
+    // next INSERT/UPDATE, which MySQL rejects outright (its DATE parser
+    // does not accept ISO "T"/"Z" punctuation) and can also represent the
+    // wrong calendar day (UTC's own shift). Normalizing here, at the single
+    // point this value is read out of the database, keeps it a plain
+    // "YYYY-MM-DD" string for its entire round trip through the API and
+    // back - see lib/dateOnly.js for the full explanation.
+    rateDate: toDateOnly(row.rateDate),
     rateLocked: !!row.rateLocked,
     exchangeRate: Number(row.exchangeRate),
     systemRate: row.systemRate == null ? null : Number(row.systemRate),
@@ -147,7 +161,12 @@ async function resolveTransactionCurrency({
       // 1), but the column still needs a valid value. Falls back to today,
       // same as the foreign-currency branch below.
       currencyCode: baseCurrency.currencyCode, exchangeRate: 1,
-      rateDate: currencyPayload?.rateDate || new Date().toISOString().split("T")[0], rateSource: "BASE",
+      // Checkpoint 6C: normalized through toDateOnly() rather than trusted
+      // (or, for the fallback, built via .toISOString(), which has the
+      // exact same UTC-shift risk against the server's local "today" - see
+      // lib/dateOnly.js) as-is - a client could in principle still send
+      // something other than the "YYYY-MM-DD" this app always sends.
+      rateDate: currencyPayload?.rateDate ? toDateOnly(currencyPayload.rateDate) : toDateOnly(new Date()), rateSource: "BASE",
       rateBasis: null, rateStatus: "FINAL", rateRetrievedAt: null, rateIngestionMethod: null,
       systemRate: null, overrideRate: null, overrideReason: null,
     };
@@ -166,7 +185,8 @@ async function resolveTransactionCurrency({
     throw new HttpError(400, "Selected currency is not active.");
   }
   const currency = currencyRows[0];
-  const transactionDate = currencyPayload?.rateDate || new Date().toISOString().split("T")[0];
+  // Checkpoint 6C: same normalization as the base-currency branch above.
+  const transactionDate = currencyPayload?.rateDate ? toDateOnly(currencyPayload.rateDate) : toDateOnly(new Date());
 
   let rateInfo;
 
@@ -198,7 +218,12 @@ async function resolveTransactionCurrency({
       throw new HttpError(422, resolved.errorMessage || `No approved exchange rate is available for ${currency.currencyCode}/${baseCurrency.currencyCode} on ${transactionDate}.`);
     }
     rateInfo = {
-      currencyCode: currency.currencyCode, exchangeRate: resolved.rate, rateDate: resolved.effectiveDate,
+      // Checkpoint 6C: resolveRate()'s own tiers already normalize
+      // effectiveDate at their DB-read boundaries (lookupLastApproved,
+      // manualProvider, fixedProvider), but toDateOnly() here too as a
+      // final defense-in-depth boundary - this is the last point before
+      // the value becomes rateInfo.rateDate and reaches the INSERT.
+      currencyCode: currency.currencyCode, exchangeRate: resolved.rate, rateDate: toDateOnly(resolved.effectiveDate),
       rateSource: resolved.provider, rateBasis: resolved.rateBasis, rateStatus: resolved.status,
       rateRetrievedAt: resolved.retrievalTimestamp, rateIngestionMethod: resolved.derivationMethod ? "DERIVED" : "API",
       systemRate: resolved.rate, overrideRate: null, overrideReason: null,
@@ -250,6 +275,13 @@ function finalizeWithRate({ currencyId, currencyCode, baseCurrency, rateInfo, li
 }
 
 async function saveSnapshot(conn, { companyId, transactionType, transactionId, currencyId, currencyCode, baseCurrencyId, baseCurrencyCode, rateInfo, foreignTotals, baseTotals, userId, lockNow }) {
+  // Checkpoint 6C, Section 6: rate_date is NOT NULL with no legitimate NULL
+  // case (see the comment on the base-currency branch above) - a malformed
+  // value must fail as a controlled application error here, not reach
+  // MySQL and surface as a raw ER_TRUNCATED_WRONG_VALUE.
+  if (!isValidDateOnly(rateInfo.rateDate)) {
+    throw new HttpError(500, `Internal error: invalid rate date "${rateInfo.rateDate}" - expected YYYY-MM-DD.`);
+  }
   await conn.execute(
     `INSERT INTO transaction_currency_snapshots (
       company_id, transaction_type, transaction_id, currency_id, currency_code, base_currency_id, base_currency_code,

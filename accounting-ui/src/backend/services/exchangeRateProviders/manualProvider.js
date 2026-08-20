@@ -1,5 +1,6 @@
 const pool = require("../../db");
 const { ExchangeRateProvider, nowIso } = require("./baseProvider");
+const { toDateOnly } = require("../../lib/dateOnly");
 
 // Wraps Phase 1's existing manual-rate mechanism (currencyService.recordRate
 // with rateMode: "MANUAL") as a resolver-priority-list provider. "Latest
@@ -45,7 +46,11 @@ class ManualExchangeRateProvider extends ExchangeRateProvider {
       provider: this.code,
       rateBasis: row.rateBasis || null,
       providerRateDescription: "Manually entered rate",
-      effectiveDate: row.effectiveDate,
+      // Checkpoint 6C: effective_date is a MySQL DATE column - normalize
+      // here at the read boundary (same fix as lookupLastApproved already
+      // applies in exchangeRateResolverService.js) rather than let a raw
+      // Date object leak out to callers. See lib/dateOnly.js.
+      effectiveDate: toDateOnly(row.effectiveDate),
       publicationTimestamp: row.publicationTimestamp,
       retrievalTimestamp: nowIso(),
       status: "MANUAL",
@@ -66,7 +71,7 @@ class ManualExchangeRateProvider extends ExchangeRateProvider {
     if (!rows.length) {
       return { rate: null, provider: this.code, rateBasis: null, providerRateDescription: null, effectiveDate: null, publicationTimestamp: null, retrievalTimestamp: nowIso(), status: "FAILED", sourceReference: null, errorMessage: "No manual rate available on or before that date." };
     }
-    return { rate: Number(rows[0].rate), provider: this.code, rateBasis: rows[0].rateBasis || null, providerRateDescription: "Manually entered rate", effectiveDate: rows[0].effectiveDate, publicationTimestamp: null, retrievalTimestamp: nowIso(), status: "MANUAL", sourceReference: null, errorMessage: null };
+    return { rate: Number(rows[0].rate), provider: this.code, rateBasis: rows[0].rateBasis || null, providerRateDescription: "Manually entered rate", effectiveDate: toDateOnly(rows[0].effectiveDate), publicationTimestamp: null, retrievalTimestamp: nowIso(), status: "MANUAL", sourceReference: null, errorMessage: null };
   }
 
   async healthCheck() {

@@ -44,7 +44,8 @@ import JV from "./pages/TRANSACTIONS/JV";
 import OR from "./pages/TRANSACTIONS/OR";
 import JournalEntry from "./pages/TRANSACTIONS/JournalEntry";
 import PettyCashVoucher from "./pages/TRANSACTIONS/PettyCashVoucher";
-import DebitCreditMemo from "./pages/TRANSACTIONS/DebitCreditMemo";
+import DebitMemo from "./pages/TRANSACTIONS/DebitMemo";
+import CreditMemo from "./pages/TRANSACTIONS/CreditMemo";
 import PurchaseOrder from "./pages/TRANSACTIONS/PurchaseOrder";
 import Quotation from "./pages/TRANSACTIONS/Quotation";
 
@@ -160,7 +161,8 @@ function AppLayout() {
           <Route path="/transactions/apv" element={<APV />} />
           <Route path="/transactions/accounts-payable-voucher" element={<APV />} />
           <Route path="/transactions/petty-cash-voucher" element={<PettyCashVoucher />} />
-          <Route path="/transactions/debit-credit-memo" element={<DebitCreditMemo />} />
+          <Route path="/transactions/debit-memo" element={<DebitMemo />} />
+          <Route path="/transactions/credit-memo" element={<CreditMemo />} />
           <Route path="/transactions/journalization" element={<PlaceholderPage title="Journalization" />} />
           <Route path="/transactions/journal-entry" element={<JournalEntry />} />
           <Route path="/transactions/purchase-order" element={<PurchaseOrder />} />

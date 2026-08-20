@@ -1,18 +1,36 @@
 const pool = require("../db");
+const { postedOnlySql } = require("./reportRecognitionService");
 
-// The exact 4-source union GET /api/reports/trial-balance has always used
-// (apv, cv, arap beginning balance, jv) - extracted here so the Unbalanced
-// Trial Balance Checker can never drift from what that report actually
-// shows; both read this same SQL. Deliberately NOT the 7-source union
-// LedgerReportService.js uses for General Ledger (invoice/OR/GL-beginning-
-// balance are excluded here, same as the existing report always has) -
-// trialBalanceCheckerService surfaces that gap as its own informational
-// finding instead of silently changing what Trial Balance counts.
+// CHECKPOINT 6A: this union previously covered only apv/cv/arap-beginning/
+// jv (+ petty-cash/memo added in Checkpoint 6), deliberately excluding
+// Invoice and OR - a real, confirmed omission (Invoice/OR carry GL-postable
+// debit/credit lines like every other module here; there was no accounting
+// reason to leave them out, just a historical gap). Invoice and OR are now
+// included so Trial Balance matches the same population LedgerReportService
+// (General Ledger) has always used. GL Beginning Balance remains
+// intentionally excluded - it exists to seed General Ledger's running
+// balances for a report that starts mid-history, not as a Trial-Balance-
+// eligible transaction source; adding it here is a separate design question,
+// out of this checkpoint's narrow scope, and is called out under Known
+// Limitations rather than silently decided here.
+//
+// CHECKPOINT 6B: every branch now also requires the transaction be
+// financially recognized (Posted) - see reportRecognitionService.js. Draft
+// transactions no longer affect Trial Balance at all.
 function buildTrialBalanceUnionSql(dateFilterSql) {
-  const apvFilter = dateFilterSql ? `WHERE h.transaction_date ${dateFilterSql} AND h.company_id = ?` : "WHERE h.company_id = ?";
-  const cvFilter = dateFilterSql ? `WHERE h.transaction_date ${dateFilterSql} AND h.company_id = ?` : "WHERE h.company_id = ?";
-  const arapFilter = dateFilterSql ? `WHERE h.balance_date ${dateFilterSql} AND h.company_id = ?` : "WHERE h.company_id = ?";
-  const jvFilter = dateFilterSql ? `WHERE h.transaction_date ${dateFilterSql} AND h.company_id = ?` : "WHERE h.company_id = ?";
+  const filterFor = (dateCol) =>
+    dateFilterSql
+      ? `WHERE h.${dateCol} ${dateFilterSql} AND h.company_id = ? AND ${postedOnlySql("h")}`
+      : `WHERE h.company_id = ? AND ${postedOnlySql("h")}`;
+
+  const apvFilter = filterFor("transaction_date");
+  const cvFilter = filterFor("transaction_date");
+  const arapFilter = filterFor("balance_date");
+  const jvFilter = filterFor("transaction_date");
+  const pettyCashFilter = filterFor("transaction_date");
+  const memoFilter = filterFor("transaction_date");
+  const invoiceFilter = filterFor("transaction_date");
+  const orFilter = filterFor("transaction_date");
 
   return `
     SELECT l.account_code, l.account_title AS account_name,
@@ -40,12 +58,40 @@ function buildTrialBalanceUnionSql(dateFilterSql) {
       COALESCE(l.debit, 0) AS debit, COALESCE(l.credit, 0) AS credit
     FROM jv_lines l JOIN jv_headers h ON h.id = l.jv_id
     ${jvFilter}
+
+    UNION ALL
+
+    SELECT l.account_code, l.account_title AS account_name,
+      COALESCE(l.debit, 0) AS debit, COALESCE(l.credit, 0) AS credit
+    FROM petty_cash_lines l JOIN petty_cash_headers h ON h.id = l.petty_cash_id
+    ${pettyCashFilter}
+
+    UNION ALL
+
+    SELECT l.account_code, l.account_title AS account_name,
+      COALESCE(l.debit, 0) AS debit, COALESCE(l.credit, 0) AS credit
+    FROM memo_lines l JOIN memo_headers h ON h.id = l.memo_id
+    ${memoFilter}
+
+    UNION ALL
+
+    SELECT l.account_code, l.account_title AS account_name,
+      COALESCE(l.debit, 0) AS debit, COALESCE(l.credit, 0) AS credit
+    FROM invoice_lines l JOIN invoice_headers h ON h.id = l.invoice_id
+    ${invoiceFilter}
+
+    UNION ALL
+
+    SELECT l.account_code, l.account_title AS account_name,
+      COALESCE(l.debit, 0) AS debit, COALESCE(l.credit, 0) AS credit
+    FROM or_lines l JOIN or_headers h ON h.id = l.or_id
+    ${orFilter}
   `;
 }
 
 function buildDateParams(from, to, companyId) {
-  if (!from || !to) return { dateFilterSql: "", params: Array(4).fill(companyId) };
-  return { dateFilterSql: "BETWEEN ? AND ?", params: Array(4).fill([from, to, companyId]).flat() };
+  if (!from || !to) return { dateFilterSql: "", params: Array(8).fill(companyId) };
+  return { dateFilterSql: "BETWEEN ? AND ?", params: Array(8).fill([from, to, companyId]).flat() };
 }
 
 // Same per-account rows GET /api/reports/trial-balance has always returned.

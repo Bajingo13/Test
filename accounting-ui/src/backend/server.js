@@ -9,6 +9,7 @@ const pool = require("./db");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const { authenticateToken } = require("./lib/auth");
+const { HttpError } = require("./lib/httpError");
 const { logAudit, requestMeta } = require("./lib/audit");
 const authorizePermission = require("./middleware/authorizePermission");
 
@@ -32,6 +33,7 @@ const BeginningBalanceCurrencyService = require("./services/beginningBalanceCurr
 const TrialBalanceDifferenceService = require("./services/trialBalanceDifferenceService");
 const { computeEwtTaxableBase, computeEwtAmount } = require("./services/ewtCalculationService");
 const CurrencyService = require("./services/currencyService");
+const { postedOnlySql } = require("./services/reportRecognitionService");
 const TransactionCurrencyService = require("./services/transactionCurrencyService");
 const AgingReportService = require("./services/agingReportService");
 const AccountingPeriodService = require("./services/accountingPeriodService");
@@ -5065,6 +5067,723 @@ app.delete("/api/jv/:id", authenticateToken, authorizePermission("TRANSACTIONS.J
   }
 });
 
+// ===================== PETTY CASH VOUCHER API =====================
+// Checkpoint 6: previously fell through TransactionFormLayout's default
+// endpoint and was silently saved into apv_headers/apv_lines - see the
+// Checkpoint 6 completion report. Shaped like JV (immediate GL entry, no
+// AP-aging concept) plus payee_id/payee_name matching CV's convention.
+//
+// Balance validation (Step 17: SUM(debit) = SUM(credit) before commit) is
+// NOT re-implemented here - TransactionCurrencyService.resolveTransactionCurrency()
+// (called below, same as every other module) already throws "Transaction
+// lines are not balanced in the transaction currency." via its own
+// finalizeWithRate(), unconditionally, for every save (Draft or Posted).
+// An earlier version of this file added a second, redundant check here
+// that assumed balance was only enforced at posting - discovered wrong
+// during Checkpoint 6's own test-writing, removed in favor of relying on
+// the one enforcement point that already existed.
+
+app.get("/api/petty-cash", authenticateToken, authorizePermission("TRANSACTIONS.PETTY_CASH", "VIEW"), async (req, res) => {
+  try {
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+    const [rows] = await pool.execute(`
+      SELECT
+        petty_cash_headers.id AS id,
+        voucher_no AS voucherNo,
+        payee_id AS payeeId,
+        payee_name AS payeeName,
+        DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate,
+        reference_no AS referenceNo,
+        description,
+        total_debit AS totalDebit,
+        total_credit AS totalCredit,
+        status,
+        petty_cash_headers.currency_id AS currencyId,
+        cur.currency_code AS currencyCode,
+        cur.currency_symbol AS currencySymbol,
+        snap.foreign_total AS foreignTotal
+      FROM petty_cash_headers
+      LEFT JOIN currencies cur ON cur.id = petty_cash_headers.currency_id
+      LEFT JOIN transaction_currency_snapshots snap ON snap.transaction_type = 'PETTY_CASH' AND snap.transaction_id = petty_cash_headers.id
+      WHERE petty_cash_headers.company_id = ?
+      ORDER BY petty_cash_headers.id DESC
+    `, [companyId]);
+
+    res.json(rows);
+  } catch (err) {
+    console.error("GET PETTY CASH ERROR:", err);
+    res.status(500).json({ message: "Failed to load Petty Cash records" });
+  }
+});
+
+app.post("/api/petty-cash", authenticateToken, authorizePermission("TRANSACTIONS.PETTY_CASH", "CREATE"), async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const {
+      voucherNo,
+      payeeId,
+      payeeName,
+      transactionDate,
+      referenceNo,
+      description,
+      remarks,
+      status,
+      lines = [],
+      currency,
+    } = req.body;
+
+    const finalStatus = status || "Draft";
+    const userId = req.user?.id || null;
+    const isPosting = finalStatus === "Posted";
+
+    const grossAmount = lines.reduce((sum, line) => sum + (Number(line.debit) || 0), 0);
+
+    await conn.beginTransaction();
+
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
+    await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate, operation: "CREATE", user: req.user }, conn);
+    const currencyResult = await TransactionCurrencyService.resolveTransactionCurrency({
+      user: req.user, companyId, transactionType: "PETTY_CASH", transactionId: null, currencyPayload: currency,
+      lines, grossAmount, vatKeyword: "vat", taxWithheldAmount: 0, isPosting,
+    });
+
+
+    const [result] = await conn.execute(
+      `INSERT INTO petty_cash_headers(
+        company_id, voucher_no, payee_id, payee_name, transaction_date, reference_no,
+        description, remarks, total_debit, total_credit, status, created_by, posted_by, posted_at, currency_id
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [
+        companyId, voucherNo || "", payeeId ?? null, payeeName || "", transactionDate || null, referenceNo || "",
+        description || "", remarks || "", currencyResult.baseTotalDebit, currencyResult.baseTotalCredit, finalStatus,
+        userId, isPosting ? userId : null, isPosting ? new Date() : null, currencyResult.currencyId,
+      ]
+    );
+
+    const pettyCashId = result.insertId;
+
+    for (const line of currencyResult.lines) {
+      await conn.execute(
+        `INSERT INTO petty_cash_lines(
+          petty_cash_id, account_id, account_code, account_title, particulars, gen_ref, gen_name,
+          debit, credit, foreign_debit, foreign_credit
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+        [
+          pettyCashId, line.accountId ?? null, line.accountCode || "", line.accountTitle || "", line.particulars || "",
+          line.genRef || "", line.genName || "", line.baseDebit, line.baseCredit, line.foreignDebit, line.foreignCredit,
+        ]
+      );
+    }
+
+    await TransactionCurrencyService.saveSnapshot(conn, {
+      companyId, transactionType: "PETTY_CASH", transactionId: pettyCashId,
+      currencyId: currencyResult.currencyId, currencyCode: currencyResult.currencyCode,
+      baseCurrencyId: currencyResult.baseCurrencyId, baseCurrencyCode: currencyResult.baseCurrencyCode,
+      rateInfo: currencyResult.rateInfo, foreignTotals: currencyResult.foreignTotals, baseTotals: currencyResult.baseTotals,
+      userId: req.user.id, lockNow: isPosting,
+    });
+
+    await logAudit(conn, {
+      module: "PETTY_CASH",
+      entityType: "PETTY_CASH",
+      entityId: pettyCashId,
+      action: isPosting ? "POST" : "CREATE",
+      description: isPosting ? `Petty Cash Voucher ${voucherNo} created and posted` : `Petty Cash Voucher ${voucherNo} created (${finalStatus})`,
+      afterData: {
+        voucherNo, payeeName, transactionDate, status: finalStatus,
+        totalDebit: currencyResult.baseTotalDebit, totalCredit: currencyResult.baseTotalCredit,
+        currencyCode: currencyResult.currencyCode,
+      },
+      user: req.user,
+    });
+
+    await conn.commit();
+
+    res.json({ success: true, id: pettyCashId, message: "Petty Cash Voucher saved successfully" });
+  } catch (err) {
+    await conn.rollback();
+    console.error("CREATE PETTY CASH ERROR:", err);
+
+    if (err.code === "ER_DUP_ENTRY") {
+      return res.status(400).json({ message: "Petty Cash voucher number already exists" });
+    }
+
+    res.status(err.statusCode || 500).json({ message: err.message || "Failed to save Petty Cash Voucher", ...(err.statusCode && err.code ? { code: err.code } : {}) });
+  } finally {
+    conn.release();
+  }
+});
+
+app.get("/api/petty-cash/:id", authenticateToken, authorizePermission("TRANSACTIONS.PETTY_CASH", "VIEW"), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+    const [headers] = await pool.execute(
+      `SELECT
+        id, voucher_no AS voucherNo, payee_id AS payeeId, payee_name AS payeeName,
+        DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate,
+        reference_no AS referenceNo, description, remarks,
+        total_debit AS totalDebit, total_credit AS totalCredit, status, currency_id AS currencyId
+      FROM petty_cash_headers
+      WHERE id = ? AND company_id = ?`,
+      [id, companyId]
+    );
+
+    if (headers.length === 0) {
+      return res.status(404).json({ message: "Petty Cash Voucher not found" });
+    }
+
+    const [lines] = await pool.execute(
+      `SELECT
+        id, petty_cash_id AS pettyCashId, account_id AS accountId, account_code AS accountCode,
+        account_title AS accountTitle, particulars, debit, credit, gen_ref AS genRef, gen_name AS genName,
+        foreign_debit AS foreignDebit, foreign_credit AS foreignCredit
+      FROM petty_cash_lines
+      WHERE petty_cash_id = ?
+      ORDER BY id ASC`,
+      [id]
+    );
+
+    const currencySnapshot = await TransactionCurrencyService.getSnapshot("PETTY_CASH", id);
+
+    res.json({ ...headers[0], lines, currency: currencySnapshot });
+  } catch (err) {
+    console.error("GET PETTY CASH DETAILS ERROR:", err);
+    res.status(500).json({ message: "Failed to load Petty Cash Voucher details" });
+  }
+});
+
+app.put("/api/petty-cash/:id", authenticateToken, authorizePermission("TRANSACTIONS.PETTY_CASH", "EDIT"), async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const { id } = req.params;
+    const { voucherNo, payeeId, payeeName, transactionDate, referenceNo, description, remarks, status, lines = [], currency } = req.body;
+
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
+
+    const [existing] = await conn.execute(
+      "SELECT status, posted_by, posted_at, company_id AS companyId, transaction_date AS transactionDate FROM petty_cash_headers WHERE id = ?",
+      [id]
+    );
+
+    if (existing.length === 0 || existing[0].companyId !== companyId) {
+      return res.status(404).json({ message: "Petty Cash Voucher not found" });
+    }
+
+    const finalStatus = status || "Draft";
+    const userId = req.user?.id || null;
+    const wasAlreadyPosted = existing[0].status === "Posted";
+    const isPosting = finalStatus === "Posted";
+    const nextPostedBy = isPosting ? (wasAlreadyPosted ? existing[0].posted_by : userId) : null;
+    const nextPostedAt = isPosting ? (wasAlreadyPosted ? existing[0].posted_at : new Date()) : null;
+
+    const grossAmount = lines.reduce((sum, line) => sum + (Number(line.debit) || 0), 0);
+
+    await conn.beginTransaction();
+
+    const existingDateISO = AccountingPeriodService.toDateOnly(existing[0].transactionDate);
+    await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate: existingDateISO, operation: "EDIT", user: req.user }, conn);
+    if (transactionDate && transactionDate !== existingDateISO) {
+      await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate, operation: "EDIT", user: req.user }, conn);
+    }
+
+    const currencyResult = await TransactionCurrencyService.resolveTransactionCurrency({
+      user: req.user, companyId, transactionType: "PETTY_CASH", transactionId: Number(id), currencyPayload: currency,
+      lines, grossAmount, vatKeyword: "vat", taxWithheldAmount: 0, isPosting,
+    });
+
+
+    await conn.execute(
+      `UPDATE petty_cash_headers SET
+        voucher_no = ?, payee_id = ?, payee_name = ?, transaction_date = ?, reference_no = ?,
+        description = ?, remarks = ?, total_debit = ?, total_credit = ?, status = ?,
+        posted_by = ?, posted_at = ?, currency_id = ?
+      WHERE id = ? AND company_id = ?`,
+      [
+        voucherNo || "", payeeId ?? null, payeeName || "", transactionDate || null, referenceNo || "",
+        description || "", remarks || "", currencyResult.baseTotalDebit, currencyResult.baseTotalCredit, finalStatus,
+        nextPostedBy, nextPostedAt, currencyResult.currencyId, id, companyId,
+      ]
+    );
+
+    await conn.execute("DELETE FROM petty_cash_lines WHERE petty_cash_id = ?", [id]);
+
+    for (const line of currencyResult.lines) {
+      await conn.execute(
+        `INSERT INTO petty_cash_lines(
+          petty_cash_id, account_id, account_code, account_title, particulars, gen_ref, gen_name,
+          debit, credit, foreign_debit, foreign_credit
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+        [
+          id, line.accountId ?? null, line.accountCode || "", line.accountTitle || "", line.particulars || "",
+          line.genRef || "", line.genName || "", line.baseDebit, line.baseCredit, line.foreignDebit, line.foreignCredit,
+        ]
+      );
+    }
+
+    await TransactionCurrencyService.saveSnapshot(conn, {
+      companyId, transactionType: "PETTY_CASH", transactionId: Number(id),
+      currencyId: currencyResult.currencyId, currencyCode: currencyResult.currencyCode,
+      baseCurrencyId: currencyResult.baseCurrencyId, baseCurrencyCode: currencyResult.baseCurrencyCode,
+      rateInfo: currencyResult.rateInfo, foreignTotals: currencyResult.foreignTotals, baseTotals: currencyResult.baseTotals,
+      userId: req.user.id, lockNow: isPosting,
+    });
+
+    const isPostingNow = isPosting && !wasAlreadyPosted;
+
+    await logAudit(conn, {
+      module: "PETTY_CASH",
+      entityType: "PETTY_CASH",
+      entityId: Number(id),
+      action: isPostingNow ? "POST" : "UPDATE",
+      description: isPostingNow ? `Petty Cash Voucher ${voucherNo} posted` : `Petty Cash Voucher ${voucherNo} updated (${finalStatus})`,
+      beforeData: existing[0],
+      afterData: {
+        voucherNo, payeeName, transactionDate, status: finalStatus,
+        totalDebit: currencyResult.baseTotalDebit, totalCredit: currencyResult.baseTotalCredit,
+        currencyCode: currencyResult.currencyCode,
+      },
+      user: req.user,
+    });
+
+    await conn.commit();
+
+    res.json({ success: true, message: "Petty Cash Voucher updated successfully" });
+  } catch (err) {
+    await conn.rollback();
+    console.error("UPDATE PETTY CASH ERROR:", err);
+
+    if (err.code === "ER_DUP_ENTRY") {
+      return res.status(400).json({ message: "Petty Cash voucher number already exists" });
+    }
+
+    res.status(err.statusCode || 500).json({ message: err.message || "Failed to update Petty Cash Voucher", ...(err.statusCode && err.code ? { code: err.code } : {}) });
+  } finally {
+    conn.release();
+  }
+});
+
+app.delete("/api/petty-cash/:id", authenticateToken, authorizePermission("TRANSACTIONS.PETTY_CASH", "DELETE"), async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const { id } = req.params;
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId || req.body?.companyId);
+
+    const [existing] = await conn.execute(
+      "SELECT voucher_no, status, company_id AS companyId, transaction_date AS transactionDate FROM petty_cash_headers WHERE id = ?",
+      [id]
+    );
+
+    if (existing.length === 0 || existing[0].companyId !== companyId) {
+      return res.status(404).json({ message: "Petty Cash Voucher not found" });
+    }
+
+    await conn.beginTransaction();
+
+    const delDateISO = AccountingPeriodService.toDateOnly(existing[0].transactionDate);
+    await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate: delDateISO, operation: "DELETE", user: req.user }, conn);
+
+    await conn.execute("DELETE FROM petty_cash_headers WHERE id = ? AND company_id = ?", [id, companyId]);
+
+    await logAudit(conn, {
+      module: "PETTY_CASH",
+      entityType: "PETTY_CASH",
+      entityId: Number(id),
+      action: "DELETE",
+      description: `Petty Cash Voucher ${existing[0].voucher_no} deleted`,
+      beforeData: existing[0],
+      user: req.user,
+    });
+
+    await conn.commit();
+
+    res.json({ success: true, message: "Petty Cash Voucher deleted successfully" });
+  } catch (err) {
+    await conn.rollback();
+    console.error("DELETE PETTY CASH ERROR:", err);
+    res.status(err.statusCode || 500).json({ message: err.statusCode ? err.message : "Failed to delete Petty Cash Voucher", ...(err.statusCode && err.code ? { code: err.code } : {}) });
+  } finally {
+    conn.release();
+  }
+});
+
+// ===================== DEBIT MEMO / CREDIT MEMO API =====================
+// Checkpoint 6: previously fell through TransactionFormLayout's default
+// endpoint and was silently saved into apv_headers/apv_lines - see the
+// Checkpoint 6 completion report. One shared memo_headers/memo_lines
+// table pair (structurally identical, only accounting direction
+// differs), registered as two separate URL namespaces so a Debit Memo
+// request can never create or read a Credit Memo row or vice versa -
+// memoType is a server-side constant per route, never client-controlled,
+// and every query filters on it in addition to company_id.
+//
+// The actual GL entries stay fully user-driven (debit/credit lines
+// entered directly), consistent with every other module here - only
+// OR/CV's settlement wizard auto-posts, and that's out of scope for
+// Memo per the approved Checkpoint 6 design. source_type/source_id is an
+// optional, non-mutating reference to the Invoice/APV a memo relates to.
+
+function registerMemoRoutes(memoType, urlPrefix, permissionModule, label) {
+  app.get(`/api/${urlPrefix}`, authenticateToken, authorizePermission(permissionModule, "VIEW"), async (req, res) => {
+    try {
+      const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+      const [rows] = await pool.execute(`
+        SELECT
+          memo_headers.id AS id,
+          voucher_no AS voucherNo,
+          party_id AS partyId,
+          party_name AS partyName,
+          party_type AS partyType,
+          DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate,
+          reference_no AS referenceNo,
+          description,
+          total_debit AS totalDebit,
+          total_credit AS totalCredit,
+          status,
+          source_type AS sourceType,
+          source_id AS sourceId,
+          memo_headers.currency_id AS currencyId,
+          cur.currency_code AS currencyCode,
+          cur.currency_symbol AS currencySymbol,
+          snap.foreign_total AS foreignTotal
+        FROM memo_headers
+        LEFT JOIN currencies cur ON cur.id = memo_headers.currency_id
+        LEFT JOIN transaction_currency_snapshots snap ON snap.transaction_type = ? AND snap.transaction_id = memo_headers.id
+        WHERE memo_headers.company_id = ? AND memo_headers.memo_type = ?
+        ORDER BY memo_headers.id DESC
+      `, [`MEMO_${memoType}`, companyId, memoType]);
+
+      res.json(rows);
+    } catch (err) {
+      console.error(`GET ${label} ERROR:`, err);
+      res.status(500).json({ message: `Failed to load ${label} records` });
+    }
+  });
+
+  app.post(`/api/${urlPrefix}`, authenticateToken, authorizePermission(permissionModule, "CREATE"), async (req, res) => {
+    const conn = await pool.getConnection();
+
+    try {
+      const {
+        voucherNo, partyId, partyName, partyType, transactionDate, referenceNo, description, remarks,
+        status, lines = [], currency, sourceType, sourceId,
+      } = req.body;
+
+      const finalStatus = status || "Draft";
+      const userId = req.user?.id || null;
+      const isPosting = finalStatus === "Posted";
+      const finalSourceType = sourceType === "INVOICE" || sourceType === "APV" ? sourceType : null;
+      const finalSourceId = finalSourceType ? (Number(sourceId) || null) : null;
+
+      const grossAmount = lines.reduce((sum, line) => sum + (Number(line.debit) || 0), 0);
+
+      await conn.beginTransaction();
+
+      const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
+      await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate, operation: "CREATE", user: req.user }, conn);
+
+      // A source Invoice/APV, if given, must belong to the same company -
+      // this is a documentation-only reference (Step 8: never overwrites
+      // the source document), but it must still respect company isolation.
+      if (finalSourceType && finalSourceId) {
+        const sourceTable = finalSourceType === "INVOICE" ? "invoice_headers" : "apv_headers";
+        const [sourceRows] = await conn.execute(`SELECT company_id AS companyId FROM ${sourceTable} WHERE id = ?`, [finalSourceId]);
+        if (!sourceRows.length || sourceRows[0].companyId !== companyId) {
+          throw new HttpError(404, `Source ${finalSourceType.toLowerCase()} not found.`);
+        }
+      }
+
+      const currencyResult = await TransactionCurrencyService.resolveTransactionCurrency({
+        user: req.user, companyId, transactionType: `MEMO_${memoType}`, transactionId: null, currencyPayload: currency,
+        lines, grossAmount, vatKeyword: "vat", taxWithheldAmount: 0, isPosting,
+      });
+
+
+      const [result] = await conn.execute(
+        `INSERT INTO memo_headers(
+          company_id, voucher_no, memo_type, party_id, party_name, party_type, transaction_date, reference_no,
+          description, remarks, total_debit, total_credit, status, source_type, source_id, created_by, posted_by, posted_at, currency_id
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [
+          companyId, voucherNo || "", memoType, partyId ?? null, partyName || "", partyType || null,
+          transactionDate || null, referenceNo || "", description || "", remarks || "",
+          currencyResult.baseTotalDebit, currencyResult.baseTotalCredit, finalStatus,
+          finalSourceType, finalSourceId, userId, isPosting ? userId : null, isPosting ? new Date() : null, currencyResult.currencyId,
+        ]
+      );
+
+      const memoId = result.insertId;
+
+      for (const line of currencyResult.lines) {
+        await conn.execute(
+          `INSERT INTO memo_lines(
+            memo_id, account_id, account_code, account_title, particulars, gen_ref, gen_name,
+            debit, credit, foreign_debit, foreign_credit
+          ) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+          [
+            memoId, line.accountId ?? null, line.accountCode || "", line.accountTitle || "", line.particulars || "",
+            line.genRef || "", line.genName || "", line.baseDebit, line.baseCredit, line.foreignDebit, line.foreignCredit,
+          ]
+        );
+      }
+
+      await TransactionCurrencyService.saveSnapshot(conn, {
+        companyId, transactionType: `MEMO_${memoType}`, transactionId: memoId,
+        currencyId: currencyResult.currencyId, currencyCode: currencyResult.currencyCode,
+        baseCurrencyId: currencyResult.baseCurrencyId, baseCurrencyCode: currencyResult.baseCurrencyCode,
+        rateInfo: currencyResult.rateInfo, foreignTotals: currencyResult.foreignTotals, baseTotals: currencyResult.baseTotals,
+        userId: req.user.id, lockNow: isPosting,
+      });
+
+      await logAudit(conn, {
+        module: `MEMO_${memoType}`,
+        entityType: `MEMO_${memoType}`,
+        entityId: memoId,
+        action: isPosting ? "POST" : "CREATE",
+        description: isPosting ? `${label} ${voucherNo} created and posted` : `${label} ${voucherNo} created (${finalStatus})`,
+        afterData: {
+          voucherNo, partyName, transactionDate, status: finalStatus,
+          totalDebit: currencyResult.baseTotalDebit, totalCredit: currencyResult.baseTotalCredit,
+          currencyCode: currencyResult.currencyCode, sourceType: finalSourceType, sourceId: finalSourceId,
+        },
+        user: req.user,
+      });
+
+      await conn.commit();
+
+      res.json({ success: true, id: memoId, message: `${label} saved successfully` });
+    } catch (err) {
+      await conn.rollback();
+      console.error(`CREATE ${label} ERROR:`, err);
+
+      if (err.code === "ER_DUP_ENTRY") {
+        return res.status(400).json({ message: `${label} number already exists` });
+      }
+
+      res.status(err.statusCode || 500).json({ message: err.message || `Failed to save ${label}`, ...(err.statusCode && err.code ? { code: err.code } : {}) });
+    } finally {
+      conn.release();
+    }
+  });
+
+  app.get(`/api/${urlPrefix}/:id`, authenticateToken, authorizePermission(permissionModule, "VIEW"), async (req, res) => {
+    try {
+      const { id } = req.params;
+      const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+      const [headers] = await pool.execute(
+        `SELECT
+          id, voucher_no AS voucherNo, party_id AS partyId, party_name AS partyName, party_type AS partyType,
+          DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate,
+          reference_no AS referenceNo, description, remarks,
+          total_debit AS totalDebit, total_credit AS totalCredit, status,
+          source_type AS sourceType, source_id AS sourceId, currency_id AS currencyId
+        FROM memo_headers
+        WHERE id = ? AND company_id = ? AND memo_type = ?`,
+        [id, companyId, memoType]
+      );
+
+      if (headers.length === 0) {
+        return res.status(404).json({ message: `${label} not found` });
+      }
+
+      const [lines] = await pool.execute(
+        `SELECT
+          id, memo_id AS memoId, account_id AS accountId, account_code AS accountCode,
+          account_title AS accountTitle, particulars, debit, credit, gen_ref AS genRef, gen_name AS genName,
+          foreign_debit AS foreignDebit, foreign_credit AS foreignCredit
+        FROM memo_lines
+        WHERE memo_id = ?
+        ORDER BY id ASC`,
+        [id]
+      );
+
+      const currencySnapshot = await TransactionCurrencyService.getSnapshot(`MEMO_${memoType}`, id);
+
+      res.json({ ...headers[0], lines, currency: currencySnapshot });
+    } catch (err) {
+      console.error(`GET ${label} DETAILS ERROR:`, err);
+      res.status(500).json({ message: `Failed to load ${label} details` });
+    }
+  });
+
+  app.put(`/api/${urlPrefix}/:id`, authenticateToken, authorizePermission(permissionModule, "EDIT"), async (req, res) => {
+    const conn = await pool.getConnection();
+
+    try {
+      const { id } = req.params;
+      const {
+        voucherNo, partyId, partyName, partyType, transactionDate, referenceNo, description, remarks,
+        status, lines = [], currency, sourceType, sourceId,
+      } = req.body;
+
+      const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
+
+      const [existing] = await conn.execute(
+        "SELECT status, posted_by, posted_at, company_id AS companyId, transaction_date AS transactionDate FROM memo_headers WHERE id = ? AND memo_type = ?",
+        [id, memoType]
+      );
+
+      if (existing.length === 0 || existing[0].companyId !== companyId) {
+        return res.status(404).json({ message: `${label} not found` });
+      }
+
+      const finalStatus = status || "Draft";
+      const userId = req.user?.id || null;
+      const wasAlreadyPosted = existing[0].status === "Posted";
+      const isPosting = finalStatus === "Posted";
+      const nextPostedBy = isPosting ? (wasAlreadyPosted ? existing[0].posted_by : userId) : null;
+      const nextPostedAt = isPosting ? (wasAlreadyPosted ? existing[0].posted_at : new Date()) : null;
+      const finalSourceType = sourceType === "INVOICE" || sourceType === "APV" ? sourceType : null;
+      const finalSourceId = finalSourceType ? (Number(sourceId) || null) : null;
+
+      const grossAmount = lines.reduce((sum, line) => sum + (Number(line.debit) || 0), 0);
+
+      await conn.beginTransaction();
+
+      const existingDateISO = AccountingPeriodService.toDateOnly(existing[0].transactionDate);
+      await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate: existingDateISO, operation: "EDIT", user: req.user }, conn);
+      if (transactionDate && transactionDate !== existingDateISO) {
+        await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate, operation: "EDIT", user: req.user }, conn);
+      }
+
+      if (finalSourceType && finalSourceId) {
+        const sourceTable = finalSourceType === "INVOICE" ? "invoice_headers" : "apv_headers";
+        const [sourceRows] = await conn.execute(`SELECT company_id AS companyId FROM ${sourceTable} WHERE id = ?`, [finalSourceId]);
+        if (!sourceRows.length || sourceRows[0].companyId !== companyId) {
+          throw new HttpError(404, `Source ${finalSourceType.toLowerCase()} not found.`);
+        }
+      }
+
+      const currencyResult = await TransactionCurrencyService.resolveTransactionCurrency({
+        user: req.user, companyId, transactionType: `MEMO_${memoType}`, transactionId: Number(id), currencyPayload: currency,
+        lines, grossAmount, vatKeyword: "vat", taxWithheldAmount: 0, isPosting,
+      });
+
+
+      await conn.execute(
+        `UPDATE memo_headers SET
+          voucher_no = ?, party_id = ?, party_name = ?, party_type = ?, transaction_date = ?, reference_no = ?,
+          description = ?, remarks = ?, total_debit = ?, total_credit = ?, status = ?,
+          source_type = ?, source_id = ?, posted_by = ?, posted_at = ?, currency_id = ?
+        WHERE id = ? AND company_id = ? AND memo_type = ?`,
+        [
+          voucherNo || "", partyId ?? null, partyName || "", partyType || null, transactionDate || null, referenceNo || "",
+          description || "", remarks || "", currencyResult.baseTotalDebit, currencyResult.baseTotalCredit, finalStatus,
+          finalSourceType, finalSourceId, nextPostedBy, nextPostedAt, currencyResult.currencyId, id, companyId, memoType,
+        ]
+      );
+
+      await conn.execute("DELETE FROM memo_lines WHERE memo_id = ?", [id]);
+
+      for (const line of currencyResult.lines) {
+        await conn.execute(
+          `INSERT INTO memo_lines(
+            memo_id, account_id, account_code, account_title, particulars, gen_ref, gen_name,
+            debit, credit, foreign_debit, foreign_credit
+          ) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+          [
+            id, line.accountId ?? null, line.accountCode || "", line.accountTitle || "", line.particulars || "",
+            line.genRef || "", line.genName || "", line.baseDebit, line.baseCredit, line.foreignDebit, line.foreignCredit,
+          ]
+        );
+      }
+
+      await TransactionCurrencyService.saveSnapshot(conn, {
+        companyId, transactionType: `MEMO_${memoType}`, transactionId: Number(id),
+        currencyId: currencyResult.currencyId, currencyCode: currencyResult.currencyCode,
+        baseCurrencyId: currencyResult.baseCurrencyId, baseCurrencyCode: currencyResult.baseCurrencyCode,
+        rateInfo: currencyResult.rateInfo, foreignTotals: currencyResult.foreignTotals, baseTotals: currencyResult.baseTotals,
+        userId: req.user.id, lockNow: isPosting,
+      });
+
+      const isPostingNow = isPosting && !wasAlreadyPosted;
+
+      await logAudit(conn, {
+        module: `MEMO_${memoType}`,
+        entityType: `MEMO_${memoType}`,
+        entityId: Number(id),
+        action: isPostingNow ? "POST" : "UPDATE",
+        description: isPostingNow ? `${label} ${voucherNo} posted` : `${label} ${voucherNo} updated (${finalStatus})`,
+        beforeData: existing[0],
+        afterData: {
+          voucherNo, partyName, transactionDate, status: finalStatus,
+          totalDebit: currencyResult.baseTotalDebit, totalCredit: currencyResult.baseTotalCredit,
+          currencyCode: currencyResult.currencyCode, sourceType: finalSourceType, sourceId: finalSourceId,
+        },
+        user: req.user,
+      });
+
+      await conn.commit();
+
+      res.json({ success: true, message: `${label} updated successfully` });
+    } catch (err) {
+      await conn.rollback();
+      console.error(`UPDATE ${label} ERROR:`, err);
+
+      if (err.code === "ER_DUP_ENTRY") {
+        return res.status(400).json({ message: `${label} number already exists` });
+      }
+
+      res.status(err.statusCode || 500).json({ message: err.message || `Failed to update ${label}`, ...(err.statusCode && err.code ? { code: err.code } : {}) });
+    } finally {
+      conn.release();
+    }
+  });
+
+  app.delete(`/api/${urlPrefix}/:id`, authenticateToken, authorizePermission(permissionModule, "DELETE"), async (req, res) => {
+    const conn = await pool.getConnection();
+
+    try {
+      const { id } = req.params;
+      const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId || req.body?.companyId);
+
+      const [existing] = await conn.execute(
+        "SELECT voucher_no, status, company_id AS companyId, transaction_date AS transactionDate FROM memo_headers WHERE id = ? AND memo_type = ?",
+        [id, memoType]
+      );
+
+      if (existing.length === 0 || existing[0].companyId !== companyId) {
+        return res.status(404).json({ message: `${label} not found` });
+      }
+
+      await conn.beginTransaction();
+
+      const delDateISO = AccountingPeriodService.toDateOnly(existing[0].transactionDate);
+      await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate: delDateISO, operation: "DELETE", user: req.user }, conn);
+
+      await conn.execute("DELETE FROM memo_headers WHERE id = ? AND company_id = ? AND memo_type = ?", [id, companyId, memoType]);
+
+      await logAudit(conn, {
+        module: `MEMO_${memoType}`,
+        entityType: `MEMO_${memoType}`,
+        entityId: Number(id),
+        action: "DELETE",
+        description: `${label} ${existing[0].voucher_no} deleted`,
+        beforeData: existing[0],
+        user: req.user,
+      });
+
+      await conn.commit();
+
+      res.json({ success: true, message: `${label} deleted successfully` });
+    } catch (err) {
+      await conn.rollback();
+      console.error(`DELETE ${label} ERROR:`, err);
+      res.status(err.statusCode || 500).json({ message: err.statusCode ? err.message : `Failed to delete ${label}`, ...(err.statusCode && err.code ? { code: err.code } : {}) });
+    } finally {
+      conn.release();
+    }
+  });
+}
+
+registerMemoRoutes("DEBIT", "debit-memos", "TRANSACTIONS.DEBIT_CREDIT_MEMO", "Debit Memo");
+registerMemoRoutes("CREDIT", "credit-memos", "TRANSACTIONS.DEBIT_CREDIT_MEMO", "Credit Memo");
+
 // ===================== AUDIT LOG API =====================
 
 app.get("/api/audit-logs", authenticateToken, authorizePermission("ADMIN.AUDIT_LOGS", "VIEW"), async (req, res) => {
@@ -5714,6 +6433,16 @@ app.get("/api/reports/account-analysis", authenticateToken, authorizePermission(
       from,
       to,
       companyId,
+
+      accountCode,
+      from,
+      to,
+      companyId,
+
+      accountCode,
+      from,
+      to,
+      companyId,
     ];
 
     const [rows] = await pool.execute(
@@ -5749,6 +6478,7 @@ app.get("/api/reports/account-analysis", authenticateToken, authorizePermission(
         WHERE l.account_code = ?
           AND h.transaction_date BETWEEN ? AND ?
           AND h.company_id = ?
+          AND ${postedOnlySql("h")}
 
         UNION ALL
 
@@ -5769,6 +6499,7 @@ app.get("/api/reports/account-analysis", authenticateToken, authorizePermission(
         WHERE l.account_code = ?
           AND h.transaction_date BETWEEN ? AND ?
           AND h.company_id = ?
+          AND ${postedOnlySql("h")}
 
         UNION ALL
 
@@ -5789,6 +6520,7 @@ app.get("/api/reports/account-analysis", authenticateToken, authorizePermission(
         WHERE l.account_code = ?
           AND h.balance_date BETWEEN ? AND ?
           AND h.company_id = ?
+          AND ${postedOnlySql("h")}
 
         UNION ALL
 
@@ -5809,6 +6541,49 @@ app.get("/api/reports/account-analysis", authenticateToken, authorizePermission(
         WHERE l.account_code = ?
           AND h.transaction_date BETWEEN ? AND ?
           AND h.company_id = ?
+          AND ${postedOnlySql("h")}
+
+        UNION ALL
+
+        SELECT
+          l.id,
+          DATE_FORMAT(h.transaction_date, '%Y-%m-%d') AS transaction_date,
+          'PETTY CASH' AS source_type,
+          h.voucher_no AS reference_no,
+          h.id AS transaction_id,
+          l.account_code,
+          l.account_title,
+          COALESCE(l.particulars, h.description, '') AS particulars,
+          COALESCE(l.debit, 0) AS debit,
+          COALESCE(l.credit, 0) AS credit,
+          5 AS sort_order
+        FROM petty_cash_lines l
+        JOIN petty_cash_headers h ON h.id = l.petty_cash_id
+        WHERE l.account_code = ?
+          AND h.transaction_date BETWEEN ? AND ?
+          AND h.company_id = ?
+          AND ${postedOnlySql("h")}
+
+        UNION ALL
+
+        SELECT
+          l.id,
+          DATE_FORMAT(h.transaction_date, '%Y-%m-%d') AS transaction_date,
+          CONCAT(h.memo_type, ' MEMO') AS source_type,
+          h.voucher_no AS reference_no,
+          h.id AS transaction_id,
+          l.account_code,
+          l.account_title,
+          COALESCE(l.particulars, h.description, '') AS particulars,
+          COALESCE(l.debit, 0) AS debit,
+          COALESCE(l.credit, 0) AS credit,
+          6 AS sort_order
+        FROM memo_lines l
+        JOIN memo_headers h ON h.id = l.memo_id
+        WHERE l.account_code = ?
+          AND h.transaction_date BETWEEN ? AND ?
+          AND h.company_id = ?
+          AND ${postedOnlySql("h")}
       ) aa
       ORDER BY transaction_date, sort_order, id
       `,
@@ -6007,8 +6782,25 @@ app.get("/api/reports/output-vat", authenticateToken, authorizePermission("REPOR
 app.get("/api/reports/income-statement", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
   try {
     const { from, to } = req.query;
+    // Checkpoint 6A: this query previously had NO company_id filter at all
+    // on any of its 6 UNION branches - every company's revenue/expense data
+    // was combined into one report regardless of who was logged in. Fixed
+    // by resolving the caller's company the same way every other report
+    // does and requiring company_id = ? on each branch. chart_of_accounts/
+    // coa_groups/account_group_codes are intentionally NOT company-filtered
+    // - they're a single shared catalog across companies (see
+    // checkpoint4h_company_isolation_migration.sql's explicit exclusion),
+    // same as every other report in this file already treats them.
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
-    const params = [from, to, from, to, from, to, from, to];
+    const params = [
+      from, to, companyId,
+      from, to, companyId,
+      from, to, companyId,
+      from, to, companyId,
+      from, to, companyId,
+      from, to, companyId,
+    ];
 
     const [rows] = await pool.execute(
       `
@@ -6028,7 +6820,7 @@ app.get("/api/reports/income-statement", authenticateToken, authorizePermission(
           COALESCE(l.credit, 0) AS credit
         FROM apv_lines l
         JOIN apv_headers h ON h.id = l.apv_id
-        WHERE h.transaction_date BETWEEN ? AND ?
+        WHERE h.transaction_date BETWEEN ? AND ? AND h.company_id = ? AND ${postedOnlySql("h")}
 
         UNION ALL
 
@@ -6038,7 +6830,7 @@ app.get("/api/reports/income-statement", authenticateToken, authorizePermission(
           COALESCE(l.credit, 0) AS credit
         FROM cv_lines l
         JOIN cv_headers h ON h.id = l.cv_id
-        WHERE h.transaction_date BETWEEN ? AND ?
+        WHERE h.transaction_date BETWEEN ? AND ? AND h.company_id = ? AND ${postedOnlySql("h")}
 
         UNION ALL
 
@@ -6048,7 +6840,7 @@ app.get("/api/reports/income-statement", authenticateToken, authorizePermission(
   COALESCE(l.othrcredit, 0) AS credit
 FROM gl_beginning_balance_lines l
 JOIN gl_beginning_balance_headers h ON h.id = l.header_id
-WHERE h.balance_date BETWEEN ? AND ?
+WHERE h.balance_date BETWEEN ? AND ? AND h.company_id = ? AND ${postedOnlySql("h")}
 
         UNION ALL
 
@@ -6058,7 +6850,27 @@ WHERE h.balance_date BETWEEN ? AND ?
           COALESCE(l.credit, 0) AS credit
         FROM arap_beginning_balance_lines l
         JOIN arap_beginning_balance_headers h ON h.id = l.header_id
-        WHERE h.balance_date BETWEEN ? AND ?
+        WHERE h.balance_date BETWEEN ? AND ? AND h.company_id = ? AND ${postedOnlySql("h")}
+
+        UNION ALL
+
+        SELECT
+          l.account_code,
+          COALESCE(l.debit, 0) AS debit,
+          COALESCE(l.credit, 0) AS credit
+        FROM petty_cash_lines l
+        JOIN petty_cash_headers h ON h.id = l.petty_cash_id
+        WHERE h.transaction_date BETWEEN ? AND ? AND h.company_id = ? AND ${postedOnlySql("h")}
+
+        UNION ALL
+
+        SELECT
+          l.account_code,
+          COALESCE(l.debit, 0) AS debit,
+          COALESCE(l.credit, 0) AS credit
+        FROM memo_lines l
+        JOIN memo_headers h ON h.id = l.memo_id
+        WHERE h.transaction_date BETWEEN ? AND ? AND h.company_id = ? AND ${postedOnlySql("h")}
       ) tx ON TRIM(tx.account_code) = TRIM(ca.code)
       WHERE UPPER(ag.group_description) IN ('REVENUE', 'EXPENSES', 'EXPENSE')
          OR UPPER(ca.account_class) IN ('INCOME', 'EXPENSE')
@@ -6096,8 +6908,19 @@ WHERE h.balance_date BETWEEN ? AND ?
 app.get("/api/reports/balance-sheet", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
   try {
     const { to } = req.query;
+    // Checkpoint 6A: same fix as Income Statement above - this query had no
+    // company_id filter on any branch at all. chart_of_accounts/coa_groups/
+    // account_group_codes remain unfiltered by design (shared catalog).
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
-    const params = [to, to, to, to];
+    const params = [
+      to, companyId,
+      to, companyId,
+      to, companyId,
+      to, companyId,
+      to, companyId,
+      to, companyId,
+    ];
 
     const [rows] = await pool.execute(
       `
@@ -6121,7 +6944,7 @@ app.get("/api/reports/balance-sheet", authenticateToken, authorizePermission("RE
           COALESCE(l.credit, 0) AS credit
         FROM apv_lines l
         JOIN apv_headers h ON h.id = l.apv_id
-        WHERE h.transaction_date <= ?
+        WHERE h.transaction_date <= ? AND h.company_id = ? AND ${postedOnlySql("h")}
 
         UNION ALL
 
@@ -6131,7 +6954,7 @@ app.get("/api/reports/balance-sheet", authenticateToken, authorizePermission("RE
           COALESCE(l.credit, 0) AS credit
         FROM cv_lines l
         JOIN cv_headers h ON h.id = l.cv_id
-        WHERE h.transaction_date <= ?
+        WHERE h.transaction_date <= ? AND h.company_id = ? AND ${postedOnlySql("h")}
 
         UNION ALL
 
@@ -6141,7 +6964,7 @@ app.get("/api/reports/balance-sheet", authenticateToken, authorizePermission("RE
   COALESCE(l.othrcredit, 0) AS credit
 FROM gl_beginning_balance_lines l
 JOIN gl_beginning_balance_headers h ON h.id = l.header_id
-WHERE h.balance_date <= ?
+WHERE h.balance_date <= ? AND h.company_id = ? AND ${postedOnlySql("h")}
 
         UNION ALL
 
@@ -6151,7 +6974,27 @@ WHERE h.balance_date <= ?
           COALESCE(l.credit, 0) AS credit
         FROM arap_beginning_balance_lines l
         JOIN arap_beginning_balance_headers h ON h.id = l.header_id
-        WHERE h.balance_date <= ?
+        WHERE h.balance_date <= ? AND h.company_id = ? AND ${postedOnlySql("h")}
+
+        UNION ALL
+
+        SELECT
+          l.account_code,
+          COALESCE(l.debit, 0) AS debit,
+          COALESCE(l.credit, 0) AS credit
+        FROM petty_cash_lines l
+        JOIN petty_cash_headers h ON h.id = l.petty_cash_id
+        WHERE h.transaction_date <= ? AND h.company_id = ? AND ${postedOnlySql("h")}
+
+        UNION ALL
+
+        SELECT
+          l.account_code,
+          COALESCE(l.debit, 0) AS debit,
+          COALESCE(l.credit, 0) AS credit
+        FROM memo_lines l
+        JOIN memo_headers h ON h.id = l.memo_id
+        WHERE h.transaction_date <= ? AND h.company_id = ? AND ${postedOnlySql("h")}
       ) tx ON TRIM(tx.account_code) = TRIM(ca.code)
       WHERE UPPER(ag.group_description) IN ('ASSETS', 'ASSET', 'LIABILITIES', 'LIABILITY', 'EQUITY', 'CAPITAL')
          OR UPPER(ca.account_class) IN ('ASSET', 'LIABILITY', 'LIABILITIES', 'EQUITY', 'CAPITAL')
@@ -6397,6 +7240,20 @@ app.get("/api/reports/subsidiary-ledger", authenticateToken, authorizePermission
       return res.status(400).json({ message: "partyId is required" });
     }
 
+    // Checkpoint 6A: this query previously had NO company_id filter at all -
+    // any authenticated user could pass another company's partyId and read
+    // that company's real invoice/OR/CV/APV/beginning-balance data. Fixed
+    // the same way every other report in this file resolves and enforces
+    // company scope, plus an explicit party-ownership check (same pattern
+    // used elsewhere for general_libraries records) so a cross-company
+    // partyId is rejected outright rather than just returning an empty set.
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+    const [partyRows] = await pool.execute("SELECT company_id FROM general_libraries WHERE id = ?", [partyId]);
+    if (!partyRows.length || partyRows[0].company_id !== companyId) {
+      return res.status(404).json({ message: "Party not found" });
+    }
+
     const query =
       type === "AR"
         ? `
@@ -6410,7 +7267,7 @@ app.get("/api/reports/subsidiary-ledger", authenticateToken, authorizePermission
           COALESCE(description, '') AS particulars,
           COALESCE(total_debit, 0) AS debit, 0 AS credit, 1 AS sort_order
         FROM invoice_headers
-        WHERE customer_id = ? AND transaction_date BETWEEN ? AND ?
+        WHERE customer_id = ? AND transaction_date BETWEEN ? AND ? AND company_id = ? AND ${postedOnlySql()}
 
         UNION ALL
 
@@ -6420,7 +7277,7 @@ app.get("/api/reports/subsidiary-ledger", authenticateToken, authorizePermission
           COALESCE(description, '') AS particulars,
           0 AS debit, COALESCE(total_debit, 0) AS credit, 2 AS sort_order
         FROM or_headers
-        WHERE customer_id = ? AND transaction_date BETWEEN ? AND ?
+        WHERE customer_id = ? AND transaction_date BETWEEN ? AND ? AND company_id = ? AND ${postedOnlySql()}
 
         UNION ALL
 
@@ -6431,7 +7288,7 @@ app.get("/api/reports/subsidiary-ledger", authenticateToken, authorizePermission
           COALESCE(l.debit, 0) AS debit, 0 AS credit, 0 AS sort_order
         FROM arap_beginning_balance_lines l
         JOIN arap_beginning_balance_headers h ON h.id = l.header_id
-        WHERE h.balance_type = ? AND l.party_id = ? AND h.balance_date BETWEEN ? AND ?
+        WHERE h.balance_type = ? AND l.party_id = ? AND h.balance_date BETWEEN ? AND ? AND h.company_id = ? AND ${postedOnlySql("h")}
       ) sl
       ORDER BY transaction_date, sort_order, id
       `
@@ -6446,7 +7303,7 @@ app.get("/api/reports/subsidiary-ledger", authenticateToken, authorizePermission
           COALESCE(description, '') AS particulars,
           COALESCE(total_credit, 0) AS debit, 0 AS credit, 2 AS sort_order
         FROM cv_headers
-        WHERE payee_id = ? AND transaction_date BETWEEN ? AND ?
+        WHERE payee_id = ? AND transaction_date BETWEEN ? AND ? AND company_id = ? AND ${postedOnlySql()}
 
         UNION ALL
 
@@ -6456,7 +7313,7 @@ app.get("/api/reports/subsidiary-ledger", authenticateToken, authorizePermission
           COALESCE(description, '') AS particulars,
           0 AS debit, COALESCE(total_credit, 0) AS credit, 1 AS sort_order
         FROM apv_headers
-        WHERE supplier_id = ? AND transaction_date BETWEEN ? AND ?
+        WHERE supplier_id = ? AND transaction_date BETWEEN ? AND ? AND company_id = ? AND ${postedOnlySql()}
 
         UNION ALL
 
@@ -6467,15 +7324,15 @@ app.get("/api/reports/subsidiary-ledger", authenticateToken, authorizePermission
           0 AS debit, COALESCE(l.credit, 0) AS credit, 0 AS sort_order
         FROM arap_beginning_balance_lines l
         JOIN arap_beginning_balance_headers h ON h.id = l.header_id
-        WHERE h.balance_type = ? AND l.party_id = ? AND h.balance_date BETWEEN ? AND ?
+        WHERE h.balance_type = ? AND l.party_id = ? AND h.balance_date BETWEEN ? AND ? AND h.company_id = ? AND ${postedOnlySql("h")}
       ) sl
       ORDER BY transaction_date, sort_order, id
       `;
 
     const queryParams =
       type === "AR"
-        ? [partyId, from, to, partyId, from, to, "AR", partyId, from, to]
-        : [partyId, from, to, partyId, from, to, "AP", partyId, from, to];
+        ? [partyId, from, to, companyId, partyId, from, to, companyId, "AR", partyId, from, to, companyId]
+        : [partyId, from, to, companyId, partyId, from, to, companyId, "AP", partyId, from, to, companyId];
 
     const [rows] = await pool.execute(query, queryParams);
 

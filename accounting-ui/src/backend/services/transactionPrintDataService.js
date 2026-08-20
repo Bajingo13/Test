@@ -113,6 +113,66 @@ const MODULE_CONFIG = {
     hasCurrency: true,
     currencyTxnType: "PO",
   },
+  // Checkpoint 6 - previously fell through to apv, printing indistinguishably
+  // from a real Accounts Payable Voucher. Shaped like cv (payee_id/payee_name,
+  // no aging), no check/tax fields since a petty cash voucher isn't a check
+  // payment.
+  pettyCash: {
+    moduleKey: "TRANSACTIONS.PETTY_CASH",
+    headerTable: "petty_cash_headers",
+    lineTable: "petty_cash_lines",
+    lineIdCol: "petty_cash_id",
+    hasParty: true,
+    partyIdCol: "payee_id",
+    partyNameCol: "payee_name",
+    hasDueDate: false,
+    hasPaidBalance: false,
+    hasCheck: false,
+    hasPaymentMethod: false,
+    hasEwt: false,
+    hasCurrency: true,
+    currencyTxnType: "PETTY_CASH",
+  },
+  // Checkpoint 6 - debitMemo/creditMemo share memo_headers/memo_lines
+  // (memoType distinguishes them, enforced server-side in server.js's
+  // route registration, never client-controlled) - see the Checkpoint 6
+  // completion report for the approved design.
+  debitMemo: {
+    moduleKey: "TRANSACTIONS.DEBIT_CREDIT_MEMO",
+    headerTable: "memo_headers",
+    lineTable: "memo_lines",
+    lineIdCol: "memo_id",
+    extraWhere: "h.memo_type = 'DEBIT'",
+    hasParty: true,
+    partyIdCol: "party_id",
+    partyNameCol: "party_name",
+    hasDueDate: false,
+    hasPaidBalance: false,
+    hasCheck: false,
+    hasPaymentMethod: false,
+    hasEwt: false,
+    hasCurrency: true,
+    currencyTxnType: "MEMO_DEBIT",
+    extraCols: ["source_type AS sourceType", "source_id AS sourceId"],
+  },
+  creditMemo: {
+    moduleKey: "TRANSACTIONS.DEBIT_CREDIT_MEMO",
+    headerTable: "memo_headers",
+    lineTable: "memo_lines",
+    lineIdCol: "memo_id",
+    extraWhere: "h.memo_type = 'CREDIT'",
+    hasParty: true,
+    partyIdCol: "party_id",
+    partyNameCol: "party_name",
+    hasDueDate: false,
+    hasPaidBalance: false,
+    hasCheck: false,
+    hasPaymentMethod: false,
+    hasEwt: false,
+    hasCurrency: true,
+    currencyTxnType: "MEMO_CREDIT",
+    extraCols: ["source_type AS sourceType", "source_id AS sourceId"],
+  },
 };
 
 function getModuleConfig(transactionType) {
@@ -199,8 +259,13 @@ async function getTransactionDocument(transactionType, id, { withEntries, compan
   if (cfg.hasPayeeTin) metaCols.push("payee_tin AS payeeTin");
   if (cfg.extraCols) metaCols.push(...cfg.extraCols);
 
+  // extraWhere (e.g. memo_type = 'DEBIT') scopes headerTable to the right
+  // subtype when two print modules share one physical table (debitMemo/
+  // creditMemo both read memo_headers) - without it, printing a credit
+  // memo's id through the debit-memo module would succeed and mislabel it.
+  const headerWhere = cfg.extraWhere ? `WHERE id = ? AND company_id = ? AND ${cfg.extraWhere}` : `WHERE id = ? AND company_id = ?`;
   const [headers] = await pool.execute(
-    `SELECT ${metaCols.join(", ")} FROM ${cfg.headerTable} WHERE id = ? AND company_id = ?`,
+    `SELECT ${metaCols.join(", ")} FROM ${cfg.headerTable} h ${headerWhere}`,
     [id, companyId]
   );
   if (headers.length === 0) {
@@ -322,6 +387,7 @@ async function getTransactionList(transactionType, { from, to, grouping, company
 
   const params = [companyId];
   let where = "WHERE company_id = ?";
+  if (cfg.extraWhere) where += ` AND ${cfg.extraWhere}`;
   if (from) {
     where += " AND transaction_date >= ?";
     params.push(from);
@@ -335,7 +401,7 @@ async function getTransactionList(transactionType, { from, to, grouping, company
   const orderBy = isGrouped ? GROUP_ORDER_BY[grouping] : FLAT_ORDER_BY[grouping] || FLAT_ORDER_BY.number;
 
   const [rows] = await pool.execute(
-    `SELECT ${cols.join(", ")} FROM ${cfg.headerTable} ${where} ORDER BY ${orderBy}`,
+    `SELECT ${cols.join(", ")} FROM ${cfg.headerTable} h ${where} ORDER BY ${orderBy}`,
     params
   );
 

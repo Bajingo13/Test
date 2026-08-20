@@ -11,6 +11,7 @@ const TransactionCurrencyService = require("../transactionCurrencyService");
 // without touching production-shaped data.
 const INV_TYPE = "ZZTCSTST";
 const APV_TYPE = "ZZTCSTSA";
+const RATE_DATE_TYPE = "ZZTCSTRD"; // Checkpoint 6C rate_date regression - same isolation convention
 
 jest.setTimeout(30000);
 
@@ -72,7 +73,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await pool.execute("DELETE FROM transaction_currency_snapshots WHERE transaction_type IN (?, ?)", [INV_TYPE, APV_TYPE]);
+  await pool.execute("DELETE FROM transaction_currency_snapshots WHERE transaction_type IN (?, ?, ?)", [INV_TYPE, APV_TYPE, RATE_DATE_TYPE]);
   await pool.execute("DELETE FROM currency_rate_derivations WHERE currency_rate_id IN (SELECT id FROM currency_rates WHERE company_id = ?)", [companyId]);
   await pool.execute("DELETE FROM currency_rates WHERE company_id = ?", [companyId]);
   await pool.execute("DELETE FROM currencies WHERE company_id = ?", [companyId]);
@@ -453,5 +454,118 @@ describe("APV parity - the same service drives APV with an 'input vat' keyword a
     const invSnapshot = await TransactionCurrencyService.getSnapshot(INV_TYPE, apvTransactionId);
     expect(apvSnapshot.exchangeRate).toBe(56.5);
     expect(invSnapshot.exchangeRate).toBe(60); // INV_TYPE/id=1's snapshot from the earlier describe block, untouched
+  });
+});
+
+// Checkpoint 6C: regression coverage for the reproduced posting failure -
+// "Incorrect date value" on transaction_currency_snapshots.rate_date. Root
+// cause: getSnapshot() returned rate_date as mysql2's raw JS Date object;
+// res.json() serialized it via .toISOString() (JSON.stringify's default for
+// any Date); the frontend echoed that ISO string straight back as
+// currency.rateDate on the next save (exactly what happens reopening a
+// Draft and clicking Post); nothing on the way in normalized it before it
+// reached a parameterized INSERT bound to a DATE column, which MySQL
+// rejects outright. Fixed at the single read boundary (getSnapshot) plus
+// defense-in-depth at every place a rateDate value flows in (see
+// transactionCurrencyService.js and lib/dateOnly.js for the full trace).
+describe("Checkpoint 6C - rate_date normalization regression", () => {
+  const rateDate = "2026-08-01";
+
+  beforeAll(async () => {
+    await CurrencyService.recordRate(adminUser, usdId, { rateMode: "MANUAL", rate: 58, effectiveDate: rateDate, reason: "6C regression" });
+  });
+
+  test("26. a fresh snapshot's rate_date round-trips through getSnapshot() as a plain YYYY-MM-DD string, never a raw Date object", async () => {
+    const result = await TransactionCurrencyService.resolveTransactionCurrency({
+      user: adminUser, companyId, transactionType: RATE_DATE_TYPE, transactionId: null,
+      currencyPayload: { currencyId: usdId, rateDate }, lines: makeBalancedLines(), grossAmount: 112,
+      vatKeyword: "output vat", taxWithheldAmount: 0, isPosting: false,
+    });
+    await TransactionCurrencyService.saveSnapshot(pool, {
+      companyId, transactionType: RATE_DATE_TYPE, transactionId: 1, currencyId: result.currencyId, currencyCode: result.currencyCode,
+      baseCurrencyId: result.baseCurrencyId, baseCurrencyCode: result.baseCurrencyCode, rateInfo: result.rateInfo,
+      foreignTotals: result.foreignTotals, baseTotals: result.baseTotals, userId: adminUser.id, lockNow: false,
+    });
+    const snapshot = await TransactionCurrencyService.getSnapshot(RATE_DATE_TYPE, 1);
+    expect(typeof snapshot.rateDate).toBe("string");
+    expect(snapshot.rateDate).toBe(rateDate);
+  });
+
+  test("27. THE EXACT REPRODUCED BUG: echoing getSnapshot()'s own rateDate back as currencyPayload.rateDate on the next save (the real Draft-reopen-then-Post round trip) no longer throws, and posting locks the snapshot with the date intact", async () => {
+    const existing = await TransactionCurrencyService.getSnapshot(RATE_DATE_TYPE, 1);
+    const result = await TransactionCurrencyService.resolveTransactionCurrency({
+      user: adminUser, companyId, transactionType: RATE_DATE_TYPE, transactionId: 1,
+      currencyPayload: { currencyId: usdId, rateDate: existing.rateDate }, lines: makeBalancedLines(), grossAmount: 112,
+      vatKeyword: "output vat", taxWithheldAmount: 0, isPosting: true,
+    });
+    await expect(
+      TransactionCurrencyService.saveSnapshot(pool, {
+        companyId, transactionType: RATE_DATE_TYPE, transactionId: 1, currencyId: result.currencyId, currencyCode: result.currencyCode,
+        baseCurrencyId: result.baseCurrencyId, baseCurrencyCode: result.baseCurrencyCode, rateInfo: result.rateInfo,
+        foreignTotals: result.foreignTotals, baseTotals: result.baseTotals, userId: adminUser.id, lockNow: true,
+      })
+    ).resolves.not.toThrow();
+    const locked = await TransactionCurrencyService.getSnapshot(RATE_DATE_TYPE, 1);
+    expect(locked.rateLocked).toBe(true);
+    expect(locked.rateDate).toBe(rateDate);
+  });
+
+  test("28. an ISO datetime string sent as currencyPayload.rateDate (e.g. a stale client) is normalized instead of crashing", async () => {
+    const result = await TransactionCurrencyService.resolveTransactionCurrency({
+      user: adminUser, companyId, transactionType: RATE_DATE_TYPE, transactionId: null,
+      currencyPayload: { currencyId: phpId, rateDate: "2026-08-05T16:00:00.000Z" }, lines: makeBalancedLines(), grossAmount: 112,
+      vatKeyword: "output vat", taxWithheldAmount: 0, isPosting: false,
+    });
+    expect(result.rateInfo.rateDate).toBe("2026-08-05");
+    await expect(
+      TransactionCurrencyService.saveSnapshot(pool, {
+        companyId, transactionType: RATE_DATE_TYPE, transactionId: 2, currencyId: result.currencyId, currencyCode: result.currencyCode,
+        baseCurrencyId: result.baseCurrencyId, baseCurrencyCode: result.baseCurrencyCode, rateInfo: result.rateInfo,
+        foreignTotals: result.foreignTotals, baseTotals: result.baseTotals, userId: adminUser.id, lockNow: false,
+      })
+    ).resolves.not.toThrow();
+  });
+
+  test("29. a malformed rateInfo.rateDate is rejected with a controlled application error, never reaching MySQL as a raw SQL error", async () => {
+    await expect(
+      TransactionCurrencyService.saveSnapshot(pool, {
+        companyId, transactionType: RATE_DATE_TYPE, transactionId: 3, currencyId: usdId, currencyCode: "USD",
+        baseCurrencyId: phpId, baseCurrencyCode: "PHP",
+        rateInfo: { exchangeRate: 58, rateDate: "2026-08-01T16:00:00.000Z-garbage", rateSource: "MANUAL", rateStatus: "FINAL" },
+        foreignTotals: { foreignSubtotal: 100, foreignTax: 12, foreignEwt: 0, foreignTotal: 112 },
+        baseTotals: { baseSubtotal: 5800, baseTax: 696, baseEwt: 0, baseTotal: 6496 },
+        userId: adminUser.id, lockNow: false,
+      })
+    ).rejects.toThrow(/invalid rate date/i);
+  });
+
+  test("30. null rateInfo.rateDate is rejected with a controlled application error (column is NOT NULL, no legitimate null case)", async () => {
+    await expect(
+      TransactionCurrencyService.saveSnapshot(pool, {
+        companyId, transactionType: RATE_DATE_TYPE, transactionId: 4, currencyId: usdId, currencyCode: "USD",
+        baseCurrencyId: phpId, baseCurrencyCode: "PHP",
+        rateInfo: { exchangeRate: 58, rateDate: null, rateSource: "MANUAL", rateStatus: "FINAL" },
+        foreignTotals: { foreignSubtotal: 100, foreignTax: 12, foreignEwt: 0, foreignTotal: 112 },
+        baseTotals: { baseSubtotal: 5800, baseTax: 696, baseEwt: 0, baseTotal: 6496 },
+        userId: adminUser.id, lockNow: false,
+      })
+    ).rejects.toThrow(/invalid rate date/i);
+  });
+
+  test("31. timezone-boundary: a Jan 1 rate date survives the full resolve -> save -> read round trip without rolling into the previous year", async () => {
+    await CurrencyService.recordRate(adminUser, usdId, { rateMode: "MANUAL", rate: 59, effectiveDate: "2026-01-01", reason: "6C timezone boundary" });
+    const result = await TransactionCurrencyService.resolveTransactionCurrency({
+      user: adminUser, companyId, transactionType: RATE_DATE_TYPE, transactionId: null,
+      currencyPayload: { currencyId: usdId, rateDate: "2026-01-01", isRefresh: true }, lines: makeBalancedLines(), grossAmount: 112,
+      vatKeyword: "output vat", taxWithheldAmount: 0, isPosting: false,
+    });
+    expect(result.rateInfo.rateDate).toBe("2026-01-01");
+    await TransactionCurrencyService.saveSnapshot(pool, {
+      companyId, transactionType: RATE_DATE_TYPE, transactionId: 5, currencyId: result.currencyId, currencyCode: result.currencyCode,
+      baseCurrencyId: result.baseCurrencyId, baseCurrencyCode: result.baseCurrencyCode, rateInfo: result.rateInfo,
+      foreignTotals: result.foreignTotals, baseTotals: result.baseTotals, userId: adminUser.id, lockNow: false,
+    });
+    const snapshot = await TransactionCurrencyService.getSnapshot(RATE_DATE_TYPE, 5);
+    expect(snapshot.rateDate).toBe("2026-01-01");
   });
 });
