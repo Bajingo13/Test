@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { generateNextCode } from "../../utils/genLibCode";
+import { authHeaders, handleAuthError } from "../../utils/authSession";
 import "./GenLib.css";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
@@ -67,11 +68,13 @@ export default function GenLib() {
 
       const res = await fetch(`${API_BASE}/api/genlib`, {
         credentials: "include",
+        headers: authHeaders(),
       });
 
       const data = await res.json();
 
       if (!res.ok) {
+        if (handleAuthError(res.status)) return;
         alert(data.message || "Failed to load General Libraries");
         return;
       }
@@ -150,11 +153,13 @@ export default function GenLib() {
       const res = await fetch(`${API_BASE}/api/genlib/${form.id}`, {
         method: "DELETE",
         credentials: "include",
+        headers: authHeaders(),
       });
 
       const data = await res.json();
 
       if (!res.ok) {
+        if (handleAuthError(res.status)) return;
         alert(data.message || "Failed to delete record");
         return;
       }
@@ -186,6 +191,7 @@ export default function GenLib() {
         method,
         headers: {
           "Content-Type": "application/json",
+          ...authHeaders(),
         },
         credentials: "include",
         body: JSON.stringify(form),
@@ -194,6 +200,7 @@ export default function GenLib() {
       const data = await res.json();
 
       if (!res.ok) {
+        if (handleAuthError(res.status)) return;
         alert(data.message || "Failed to save record");
         return;
       }
@@ -233,9 +240,11 @@ export default function GenLib() {
     try {
       const res = await fetch(`${API_BASE}/api/genlib/template`, {
         credentials: "include",
+        headers: authHeaders(),
       });
 
       if (!res.ok) {
+        if (handleAuthError(res.status)) return;
         alert("Failed to generate template");
         return;
       }
@@ -270,12 +279,14 @@ export default function GenLib() {
       const res = await fetch(`${API_BASE}/api/genlib/import`, {
         method: "POST",
         credentials: "include",
+        headers: authHeaders(),
         body: formData,
       });
 
       const data = await res.json();
 
       if (!res.ok) {
+        if (handleAuthError(res.status)) return;
         alert(data.message || "Failed to import file");
         return;
       }

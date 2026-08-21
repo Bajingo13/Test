@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { authHeaders, handleAuthError } from "../../utils/authSession";
 import "./GroupCodes.css";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
@@ -43,11 +44,13 @@ export default function GroupCodes() {
 
       const res = await fetch(`${API_BASE}/api/group-codes`, {
         credentials: "include",
+        headers: authHeaders(),
       });
 
       const data = await res.json();
 
       if (!res.ok) {
+        if (handleAuthError(res.status)) return;
         alert(data.message || "Failed to load group codes.");
         return;
       }
@@ -93,6 +96,7 @@ export default function GroupCodes() {
         method,
         headers: {
           "Content-Type": "application/json",
+          ...authHeaders(),
         },
         credentials: "include",
         body: JSON.stringify({
@@ -106,6 +110,7 @@ export default function GroupCodes() {
       const data = await res.json();
 
       if (!res.ok) {
+        if (handleAuthError(res.status)) return;
         alert(data.message || "Failed to save group code.");
         return;
       }
@@ -127,11 +132,13 @@ export default function GroupCodes() {
       const res = await fetch(`${API_BASE}/api/group-codes/${id}`, {
         method: "DELETE",
         credentials: "include",
+        headers: authHeaders(),
       });
 
       const data = await res.json();
 
       if (!res.ok) {
+        if (handleAuthError(res.status)) return;
         alert(data.message || "Failed to delete group code.");
         return;
       }

@@ -1,17 +1,13 @@
+import { authHeaders, handleAuthError } from "./utils/authSession";
+
 const API_BASE_URL = import.meta.env.VITE_API_URL || "";
 
 export async function apiRequest(endpoint, options = {}) {
-  const token = localStorage.getItem("token");
-
   const response = await fetch(`${API_BASE_URL}${endpoint}`, {
     ...options,
     headers: {
       "Content-Type": "application/json",
-      ...(token
-        ? {
-            Authorization: `Bearer ${token}`,
-          }
-        : {}),
+      ...authHeaders(),
       ...options.headers,
     },
   });
@@ -24,13 +20,13 @@ export async function apiRequest(endpoint, options = {}) {
     data = null;
   }
 
-  if (response.status === 401 || response.status === 403) {
-    localStorage.removeItem("token");
-    localStorage.removeItem("user");
-
-    if (window.location.pathname !== "/login") {
-      window.location.href = "/login";
-    }
+  // 403 (authenticated but not permitted) must not clear the session or
+  // redirect - only a real 401 (missing/expired/revoked token) does, and
+  // POST /api/login's own 401 for a wrong password is excluded entirely
+  // (see authSession.js/installAuthFetchGuard.js for the same rule applied
+  // to every other fetch() call in the app).
+  if (response.status === 401 && !endpoint.includes("/api/login")) {
+    handleAuthError(401);
   }
 
   if (!response.ok) {

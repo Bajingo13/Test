@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { authHeaders, handleAuthError } from "../../utils/authSession";
 import "./GroupCodes.css";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
@@ -47,10 +48,14 @@ export default function FixedAssetSetup() {
     try {
       setLoading(true);
 
-      const res = await fetch(`${API_BASE}/api/fixed-assets`, { credentials: "include" });
+      const res = await fetch(`${API_BASE}/api/fixed-assets`, {
+        credentials: "include",
+        headers: authHeaders(),
+      });
       const data = await res.json();
 
       if (!res.ok) {
+        if (handleAuthError(res.status)) return;
         alert(data.message || "Failed to load fixed assets.");
         return;
       }
@@ -104,7 +109,7 @@ export default function FixedAssetSetup() {
 
       const res = await fetch(url, {
         method,
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         credentials: "include",
         body: JSON.stringify(form),
       });
@@ -112,6 +117,7 @@ export default function FixedAssetSetup() {
       const data = await res.json();
 
       if (!res.ok) {
+        if (handleAuthError(res.status)) return;
         alert(data.message || "Failed to save fixed asset.");
         return;
       }
@@ -132,11 +138,13 @@ export default function FixedAssetSetup() {
       const res = await fetch(`${API_BASE}/api/fixed-assets/${id}`, {
         method: "DELETE",
         credentials: "include",
+        headers: authHeaders(),
       });
 
       const data = await res.json();
 
       if (!res.ok) {
+        if (handleAuthError(res.status)) return;
         alert(data.message || "Failed to delete fixed asset.");
         return;
       }

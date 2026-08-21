@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { authHeaders, handleAuthError } from "../../utils/authSession";
 import "./GroupCodes.css";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
@@ -21,10 +22,14 @@ export default function CompanyProfile() {
     try {
       setLoading(true);
 
-      const res = await fetch(`${API_BASE}/api/company-profile`, { credentials: "include" });
+      const res = await fetch(`${API_BASE}/api/company-profile`, {
+        credentials: "include",
+        headers: authHeaders(),
+      });
       const data = await res.json();
 
       if (!res.ok) {
+        if (handleAuthError(res.status)) return;
         alert(data.message || "Failed to load company profile.");
         return;
       }
@@ -53,7 +58,7 @@ export default function CompanyProfile() {
 
       const res = await fetch(`${API_BASE}/api/company-profile`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         credentials: "include",
         body: JSON.stringify(form),
       });
@@ -61,6 +66,7 @@ export default function CompanyProfile() {
       const data = await res.json();
 
       if (!res.ok) {
+        if (handleAuthError(res.status)) return;
         alert(data.message || "Failed to save company profile.");
         return;
       }

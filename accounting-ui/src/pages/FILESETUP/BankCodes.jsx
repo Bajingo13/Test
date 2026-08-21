@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { authHeaders, handleAuthError } from "../../utils/authSession";
 import "./FileSetupPages.css";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
@@ -29,10 +30,14 @@ export default function BankCodes() {
     try {
       setLoading(true);
 
-      const res = await fetch(`${API_BASE}/api/bank-codes`, { credentials: "include" });
+      const res = await fetch(`${API_BASE}/api/bank-codes`, {
+        credentials: "include",
+        headers: authHeaders(),
+      });
       const data = await res.json();
 
       if (!res.ok) {
+        if (handleAuthError(res.status)) return;
         alert(data.message || "Failed to load bank codes.");
         return;
       }
@@ -57,11 +62,13 @@ export default function BankCodes() {
       const res = await fetch(`${API_BASE}/api/bank-codes/sync`, {
         method: "POST",
         credentials: "include",
+        headers: authHeaders(),
       });
 
       const data = await res.json();
 
       if (!res.ok) {
+        if (handleAuthError(res.status)) return;
         if (!silent) alert(data.message || "Failed to sync from Chart of Accounts.");
         return;
       }
@@ -109,7 +116,7 @@ export default function BankCodes() {
 
       const res = await fetch(url, {
         method,
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         credentials: "include",
         body: JSON.stringify(form),
       });
@@ -117,6 +124,7 @@ export default function BankCodes() {
       const data = await res.json();
 
       if (!res.ok) {
+        if (handleAuthError(res.status)) return;
         alert(data.message || "Failed to save bank code.");
         return;
       }
@@ -137,11 +145,13 @@ export default function BankCodes() {
       const res = await fetch(`${API_BASE}/api/bank-codes/${id}`, {
         method: "DELETE",
         credentials: "include",
+        headers: authHeaders(),
       });
 
       const data = await res.json();
 
       if (!res.ok) {
+        if (handleAuthError(res.status)) return;
         alert(data.message || "Failed to delete bank code.");
         return;
       }

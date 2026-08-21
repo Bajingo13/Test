@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { authHeaders, handleAuthError } from "../../utils/authSession";
 import "./FileSetupPages.css";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
@@ -45,10 +46,14 @@ export default function EWTLibrary() {
     try {
       setLoading(true);
 
-      const res = await fetch(`${API_BASE}/api/ewt-library`, { credentials: "include" });
+      const res = await fetch(`${API_BASE}/api/ewt-library`, {
+        credentials: "include",
+        headers: authHeaders(),
+      });
       const data = await res.json();
 
       if (!res.ok) {
+        if (handleAuthError(res.status)) return;
         alert(data.message || "Failed to load EWT library.");
         return;
       }
@@ -92,7 +97,7 @@ export default function EWTLibrary() {
 
       const res = await fetch(url, {
         method,
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         credentials: "include",
         body: JSON.stringify(form),
       });
@@ -100,6 +105,7 @@ export default function EWTLibrary() {
       const data = await res.json();
 
       if (!res.ok) {
+        if (handleAuthError(res.status)) return;
         alert(data.message || "Failed to save EWT code.");
         return;
       }
@@ -120,11 +126,13 @@ export default function EWTLibrary() {
       const res = await fetch(`${API_BASE}/api/ewt-library/${id}`, {
         method: "DELETE",
         credentials: "include",
+        headers: authHeaders(),
       });
 
       const data = await res.json();
 
       if (!res.ok) {
+        if (handleAuthError(res.status)) return;
         alert(data.message || "Failed to delete EWT code.");
         return;
       }

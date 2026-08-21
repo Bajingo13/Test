@@ -1,24 +1,8 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { authHeaders, handleAuthError } from "../../utils/authSession";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
-
-function authHeaders() {
-  const token = localStorage.getItem("token");
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
-function handleAuthError(status) {
-  if (status === 401 || status === 403) {
-    localStorage.removeItem("token");
-    localStorage.removeItem("user");
-    if (window.location.pathname !== "/login") {
-      window.location.href = "/login";
-    }
-    return true;
-  }
-  return false;
-}
 
 function formatMoney(value) {
   return Number(value || 0).toLocaleString("en-PH", {

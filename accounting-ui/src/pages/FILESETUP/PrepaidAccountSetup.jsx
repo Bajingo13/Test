@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { authHeaders, handleAuthError } from "../../utils/authSession";
 import "./GroupCodes.css";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
@@ -45,10 +46,14 @@ export default function PrepaidAccountSetup() {
     try {
       setLoading(true);
 
-      const res = await fetch(`${API_BASE}/api/prepaid-accounts`, { credentials: "include" });
+      const res = await fetch(`${API_BASE}/api/prepaid-accounts`, {
+        credentials: "include",
+        headers: authHeaders(),
+      });
       const data = await res.json();
 
       if (!res.ok) {
+        if (handleAuthError(res.status)) return;
         alert(data.message || "Failed to load prepaid accounts.");
         return;
       }
@@ -102,7 +107,7 @@ export default function PrepaidAccountSetup() {
 
       const res = await fetch(url, {
         method,
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         credentials: "include",
         body: JSON.stringify(form),
       });
@@ -110,6 +115,7 @@ export default function PrepaidAccountSetup() {
       const data = await res.json();
 
       if (!res.ok) {
+        if (handleAuthError(res.status)) return;
         alert(data.message || "Failed to save prepaid account.");
         return;
       }
@@ -130,11 +136,13 @@ export default function PrepaidAccountSetup() {
       const res = await fetch(`${API_BASE}/api/prepaid-accounts/${id}`, {
         method: "DELETE",
         credentials: "include",
+        headers: authHeaders(),
       });
 
       const data = await res.json();
 
       if (!res.ok) {
+        if (handleAuthError(res.status)) return;
         alert(data.message || "Failed to delete prepaid account.");
         return;
       }

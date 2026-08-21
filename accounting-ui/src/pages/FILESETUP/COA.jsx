@@ -1,24 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { authHeaders, handleAuthError } from "../../utils/authSession";
 import "./COA.css";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
-
-function authHeaders() {
-  const token = localStorage.getItem("token");
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
-function handleAuthError(status) {
-  if (status === 401 || status === 403) {
-    localStorage.removeItem("token");
-    localStorage.removeItem("user");
-    if (window.location.pathname !== "/login") {
-      window.location.href = "/login";
-    }
-    return true;
-  }
-  return false;
-}
 
 const CLASS_OPTIONS = ["ASSET", "LIABILITY", "EQUITY", "INCOME", "EXPENSE"];
 

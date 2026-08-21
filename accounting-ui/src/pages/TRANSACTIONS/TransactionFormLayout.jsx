@@ -18,6 +18,7 @@ import VatEntryModal from "./VatEntryModal";
 import EwtEntryModal from "./EwtEntryModal";
 import TaxDetailsViewModal from "./TaxDetailsViewModal";
 import { filterTransactions, deriveStatusOptions } from "./transactionListFilters.mjs";
+import { authHeaders, handleAuthError } from "../../utils/authSession";
 import "./TransactionFormLayout.css";
 
 const CURRENCY_MODULE_KEY = "FILESETUP.CURRENCY_SETUP";
@@ -31,26 +32,6 @@ function getCurrentUser() {
 }
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
-
-function authHeaders() {
-  const token = localStorage.getItem("token");
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
-// A stale/expired JWT (server returns 401/403) previously just surfaced as a raw
-// "Invalid or expired token" alert with no recovery - the page stayed stuck showing
-// no data. Clear the dead token and send the user back to login instead.
-function handleAuthError(status) {
-  if (status === 401 || status === 403) {
-    localStorage.removeItem("token");
-    localStorage.removeItem("user");
-    if (window.location.pathname !== "/login") {
-      window.location.href = "/login";
-    }
-    return true;
-  }
-  return false;
-}
 
 function createLine() {
   return {

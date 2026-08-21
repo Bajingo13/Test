@@ -19,7 +19,12 @@ async function authenticateToken(req, res, next) {
 
   jwt.verify(token, process.env.JWT_SECRET, async (err, decoded) => {
     if (err) {
-      return res.status(403).json({ message: "Invalid or expired token" });
+      // System-wide auth audit: this used to be 403, which is indistinguishable
+      // on the frontend from authorizePermission.js's genuine "you don't have
+      // permission" 403 - an expired/malformed/tampered token is an
+      // AUTHENTICATION failure (401), not an authorization one. See
+      // src/utils/authSession.js on the frontend for the corresponding fix.
+      return res.status(401).json({ message: "Invalid or expired token" });
     }
 
     try {
@@ -32,17 +37,17 @@ async function authenticateToken(req, res, next) {
       const user = rows[0];
 
       if (!user) {
-        return res.status(403).json({ message: "Invalid or expired token" });
+        return res.status(401).json({ message: "Invalid or expired token" });
       }
       if (user.status !== "ACTIVE") {
-        return res.status(403).json({ message: "Account is not active" });
+        return res.status(401).json({ message: "Account is not active" });
       }
       // Tokens signed before this middleware existed carry no `tv` claim -
       // treat that as version 0, matching the column's DEFAULT 0, so
       // already-issued tokens for still-current users keep working.
       const tokenVersion = decoded.tv ?? 0;
       if (tokenVersion !== user.token_version) {
-        return res.status(403).json({ message: "Session has been revoked - please log in again" });
+        return res.status(401).json({ message: "Session has been revoked - please log in again" });
       }
 
       req.user = {
