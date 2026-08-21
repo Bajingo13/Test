@@ -6980,7 +6980,19 @@ app.get("/api/reports/output-vat", authenticateToken, authorizePermission("REPOR
       return res.status(400).json({ message: "Account code is required" });
     }
 
-    const params = [accountCode, from, to, accountCode, from, to];
+    // Checkpoint 7F: this query previously had NO company_id filter at all on
+    // either UNION branch (found during the Checkpoint 7 pre-deployment
+    // review) - the same class of cross-company leak Checkpoint 6A fixed for
+    // Income Statement. Resolved the same established way every other report
+    // in this file does. Also found: no Posted-only predicate existed here,
+    // unlike every other financial report (Checkpoint 6B's postedOnlySql) -
+    // Draft invoices/ORs were leaking into a report that must reflect only
+    // financially-recognized transactions. Both are fixed together since the
+    // second is a clear, pre-existing violation of the already-approved
+    // Posted-only policy, not a scope expansion.
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+    const params = [accountCode, from, to, companyId, accountCode, from, to, companyId];
 
     const [rows] = await pool.execute(
       `
@@ -7014,6 +7026,8 @@ app.get("/api/reports/output-vat", authenticateToken, authorizePermission("REPOR
         JOIN invoice_headers h ON h.id = l.invoice_id
         WHERE l.account_code = ?
           AND h.transaction_date BETWEEN ? AND ?
+          AND h.company_id = ?
+          AND ${postedOnlySql("h")}
 
         UNION ALL
 
@@ -7033,6 +7047,8 @@ app.get("/api/reports/output-vat", authenticateToken, authorizePermission("REPOR
         JOIN or_headers h ON h.id = l.or_id
         WHERE l.account_code = ?
           AND h.transaction_date BETWEEN ? AND ?
+          AND h.company_id = ?
+          AND ${postedOnlySql("h")}
       ) ov
       ORDER BY transaction_date, sort_order, id
       `,
