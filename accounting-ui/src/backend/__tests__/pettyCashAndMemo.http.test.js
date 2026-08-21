@@ -51,8 +51,16 @@ async function loginAs(username, password) {
   if (res.status !== 200) throw new Error(`Login failed for ${username}: ${res.status} ${JSON.stringify(res.body)}`);
   return res.body.token;
 }
+// Phase 7B fix: this must be scoped to THIS test's own company, not a
+// global COUNT(*) across the whole table. Jest's default (non
+// --runInBand) run executes test files in parallel worker processes that
+// all share the one astrea_accounting_test database - any other suite
+// creating an APV fixture in a different company at the same moment (e.g.
+// postedImmutability.http.test.js's own APV fixtures) raced this
+// unscoped count and produced an intermittent, order/timing-dependent
+// false failure unrelated to this file's own Petty Cash/Memo logic.
 async function countApvRows() {
-  const [[row]] = await pool.query("SELECT COUNT(*) c FROM apv_headers");
+  const [[row]] = await pool.query("SELECT COUNT(*) c FROM apv_headers WHERE company_id = ?", [companyAId]);
   return row.c;
 }
 

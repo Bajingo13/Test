@@ -37,6 +37,8 @@ const { postedOnlySql } = require("./services/reportRecognitionService");
 const TransactionCurrencyService = require("./services/transactionCurrencyService");
 const AgingReportService = require("./services/agingReportService");
 const AccountingPeriodService = require("./services/accountingPeriodService");
+const TaxEntryService = require("./services/taxEntryService");
+const EwtReportReconciliationService = require("./services/ewtReportReconciliationService");
 
 console.log("ENV FILE:", require("path").resolve(".env"));
 console.log("JWT_SECRET loaded:", Boolean(process.env.JWT_SECRET));
@@ -1023,12 +1025,14 @@ app.get("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACTION
     );
 
     const currencySnapshot = await TransactionCurrencyService.getSnapshot("INV", id);
+    const taxEntries = await TaxEntryService.loadTaxEntries("INV", id);
 
     res.json({
       ...headers[0],
       lines,
       applications,
       currency: currencySnapshot,
+      taxEntries,
     });
   } catch (err) {
     console.error("GET INVOICE DETAILS ERROR:", err);
@@ -1084,6 +1088,16 @@ app.post("/api/invoices", authenticateToken, authorizePermission("TRANSACTIONS.I
       user: req.user, companyId, transactionType: "INV", transactionId: null, currencyPayload: currency,
       lines, grossAmount: total, vatKeyword: "output vat", taxWithheldAmount: ewt.taxWithheldAmount,
       isPosting: String(finalStatus).toUpperCase() === "POSTED",
+    });
+
+    // Phase 7C.1: reconciles the submitted EWT journal line (if any)
+    // against the authoritative `ewt` result computed above - a brand-new
+    // transaction has no existing atc_code, so any non-null atcCode here
+    // is by definition a new EWT application and requires a matching
+    // line. Throws before any row is written; caught by this route's own
+    // catch block below (rollback + statusCode/code-aware response).
+    const reconciledEwt = TaxEntryService.reconcileEwtTaxEntry({
+      ewt, lines: currencyResult.lines, existingAtcCode: null, expectedSide: "debit", moduleLabel: "Invoice",
     });
 
     const [result] = await conn.execute(
@@ -1144,8 +1158,22 @@ app.post("/api/invoices", authenticateToken, authorizePermission("TRANSACTIONS.I
 
     const invoiceId = result.insertId;
 
+    // Phase 7C: each client line may carry an optional `taxEntry` object
+    // (from the Input/Output VAT or EWT popup) - it survives
+    // resolveTransactionCurrency() untouched (computeBaseLines() spreads
+    // `...line` first) since that function has no reason to know about it.
+    // A VAT-type entry's amount is independently re-validated against the
+    // ONE centralized helper before it's allowed onto this line - see
+    // taxEntryService.js's own comment on why a mismatch is rejected
+    // rather than silently corrected, unlike EWT's header-only precedent.
+    const taxEntriesToSave = [];
+
     for (const line of currencyResult.lines) {
-      await conn.execute(
+      if (line.taxEntry && (line.taxEntry.entryType === "INPUT_VAT" || line.taxEntry.entryType === "OUTPUT_VAT")) {
+        TaxEntryService.validateVatTaxEntry(line.taxEntry, line.foreignDebit || line.foreignCredit);
+      }
+
+      const [lineResult] = await conn.execute(
         `INSERT INTO invoice_lines (
           invoice_id,
           account_id,
@@ -1173,7 +1201,40 @@ app.post("/api/invoices", authenticateToken, authorizePermission("TRANSACTIONS.I
           line.foreignCredit,
         ]
       );
+
+      if (reconciledEwt && line === reconciledEwt.lineRef) {
+        // Phase 7C.1: the EWT line's saved metadata comes from the
+        // RECONCILED (backend-authoritative) entry, never the client's raw
+        // taxEntry - see reconcileEwtTaxEntry()'s own comment for why this
+        // is what guarantees header/structured-entry/journal-line
+        // agreement by construction.
+        taxEntriesToSave.push({
+          ...reconciledEwt.entry,
+          lineId: lineResult.insertId,
+          accountId: line.accountId || null,
+        });
+      } else if (line.taxEntry) {
+        // Phase 7C bug fix (caught via Playwright, see the completion
+        // report's "bugs discovered/fixed" item): a RELOADED taxEntry
+        // already carries its OWN lineId/accountId fields (from
+        // loadTaxEntries()'s own SELECT aliases) - spreading it AFTER
+        // these two let that stale, previous-save lineId silently
+        // clobber the line that was just actually inserted THIS save.
+        // The structural fields (lineId/accountId) must always win over
+        // whatever the client echoed back; only the content fields
+        // (party/amounts/etc.) come from the client's taxEntry.
+        taxEntriesToSave.push({
+          ...line.taxEntry,
+          lineId: lineResult.insertId,
+          accountId: line.accountId || null,
+        });
+      }
     }
+
+    await TaxEntryService.saveTaxEntries(conn, {
+      companyId, transactionType: "INV", transactionId: invoiceId,
+      entries: taxEntriesToSave, userId: req.user.id,
+    });
 
     await TransactionCurrencyService.saveSnapshot(conn, {
       companyId, transactionType: "INV", transactionId: invoiceId,
@@ -1245,10 +1306,23 @@ app.put("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACTION
     });
 
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
-    const [ownerRows] = await conn.execute("SELECT company_id, transaction_date FROM invoice_headers WHERE id = ?", [id]);
+    // atc_code is fetched alongside the existing ownership/status columns
+    // (Phase 7C.1's existingAtcCode - see reconcileEwtTaxEntry's own
+    // comment for why comparing against this exact stored value is what
+    // exempts an untouched legacy re-save from the new line requirement).
+    const [ownerRows] = await conn.execute("SELECT company_id, transaction_date, status, atc_code FROM invoice_headers WHERE id = ?", [id]);
     if (!ownerRows.length || ownerRows[0].company_id !== companyId) {
       await conn.rollback();
       return res.status(404).json({ message: "Invoice not found" });
+    }
+    // Phase 7A.1: Posted accounting history is immutable - this is an
+    // accounting-integrity rule, not an RBAC check, so it applies
+    // regardless of role (including SUPER_ADMIN) and cannot be bypassed by
+    // the client re-submitting status:"Draft" in the payload, since the
+    // decision is based on the STORED status, never the incoming one.
+    if (String(ownerRows[0].status).toUpperCase() === "POSTED") {
+      await conn.rollback();
+      return res.status(409).json({ message: "Posted transactions cannot be edited.", code: "TRANSACTION_ALREADY_POSTED" });
     }
     // Both the period being edited out of and the period being moved into
     // must be open (Checkpoint 5 section 13 - date movement is validated
@@ -1262,6 +1336,11 @@ app.put("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACTION
       user: req.user, companyId, transactionType: "INV", transactionId: Number(id), currencyPayload: currency,
       lines, grossAmount: foreignGross, vatKeyword: "output vat", taxWithheldAmount: ewt.taxWithheldAmount,
       isPosting: String(finalStatus).toUpperCase() === "POSTED",
+    });
+
+    // Phase 7C.1: see the identical comment in POST /api/invoices above.
+    const reconciledEwt = TaxEntryService.reconcileEwtTaxEntry({
+      ewt, lines: currencyResult.lines, existingAtcCode: ownerRows[0].atc_code, expectedSide: "debit", moduleLabel: "Invoice",
     });
 
     await conn.execute(
@@ -1313,8 +1392,15 @@ app.put("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACTION
 
     await conn.execute("DELETE FROM invoice_lines WHERE invoice_id = ?", [id]);
 
+    // Phase 7C: see the identical comment in POST /api/invoices above.
+    const taxEntriesToSave = [];
+
     for (const line of currencyResult.lines) {
-      await conn.execute(
+      if (line.taxEntry && (line.taxEntry.entryType === "INPUT_VAT" || line.taxEntry.entryType === "OUTPUT_VAT")) {
+        TaxEntryService.validateVatTaxEntry(line.taxEntry, line.foreignDebit || line.foreignCredit);
+      }
+
+      const [lineResult] = await conn.execute(
         `INSERT INTO invoice_lines (
           invoice_id,
           account_id,
@@ -1342,7 +1428,40 @@ app.put("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACTION
           line.foreignCredit,
         ]
       );
+
+      if (reconciledEwt && line === reconciledEwt.lineRef) {
+        // Phase 7C.1: the EWT line's saved metadata comes from the
+        // RECONCILED (backend-authoritative) entry, never the client's raw
+        // taxEntry - see reconcileEwtTaxEntry()'s own comment for why this
+        // is what guarantees header/structured-entry/journal-line
+        // agreement by construction.
+        taxEntriesToSave.push({
+          ...reconciledEwt.entry,
+          lineId: lineResult.insertId,
+          accountId: line.accountId || null,
+        });
+      } else if (line.taxEntry) {
+        // Phase 7C bug fix (caught via Playwright, see the completion
+        // report's "bugs discovered/fixed" item): a RELOADED taxEntry
+        // already carries its OWN lineId/accountId fields (from
+        // loadTaxEntries()'s own SELECT aliases) - spreading it AFTER
+        // these two let that stale, previous-save lineId silently
+        // clobber the line that was just actually inserted THIS save.
+        // The structural fields (lineId/accountId) must always win over
+        // whatever the client echoed back; only the content fields
+        // (party/amounts/etc.) come from the client's taxEntry.
+        taxEntriesToSave.push({
+          ...line.taxEntry,
+          lineId: lineResult.insertId,
+          accountId: line.accountId || null,
+        });
+      }
     }
+
+    await TaxEntryService.saveTaxEntries(conn, {
+      companyId, transactionType: "INV", transactionId: Number(id),
+      entries: taxEntriesToSave, userId: req.user.id,
+    });
 
     await TransactionCurrencyService.saveSnapshot(conn, {
       companyId, transactionType: "INV", transactionId: Number(id),
@@ -1383,10 +1502,16 @@ app.delete("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACT
 
     await conn.beginTransaction();
 
-    const [ownerRows] = await conn.execute("SELECT company_id, transaction_date FROM invoice_headers WHERE id = ?", [id]);
+    const [ownerRows] = await conn.execute("SELECT company_id, transaction_date, status FROM invoice_headers WHERE id = ?", [id]);
     if (!ownerRows.length || ownerRows[0].company_id !== companyId) {
       await conn.rollback();
       return res.status(404).json({ message: "Invoice not found" });
+    }
+    // Phase 7A.1: Posted transactions cannot be deleted - an accounting-
+    // integrity rule, applies regardless of role.
+    if (String(ownerRows[0].status).toUpperCase() === "POSTED") {
+      await conn.rollback();
+      return res.status(409).json({ message: "Posted transactions cannot be deleted.", code: "TRANSACTION_ALREADY_POSTED" });
     }
     const delDateISO = AccountingPeriodService.toDateOnly(ownerRows[0].transaction_date);
     await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate: delDateISO, operation: "DELETE", user: req.user }, conn);
@@ -1783,10 +1908,20 @@ app.put("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
 
     await conn.beginTransaction();
 
-    const [ownerRows] = await conn.execute("SELECT company_id, transaction_date FROM or_headers WHERE id = ?", [id]);
+    const [ownerRows] = await conn.execute("SELECT company_id, transaction_date, status FROM or_headers WHERE id = ?", [id]);
     if (!ownerRows.length || ownerRows[0].company_id !== companyId) {
       await conn.rollback();
       return res.status(404).json({ message: "OR not found" });
+    }
+    // Phase 7A.1: a Posted OR cannot be freely edited. This guards OR's OWN
+    // record only - it is structurally separate from updateInvoicePaymentStatus(),
+    // which other OR/CV routes call as a side effect to keep a SOURCE
+    // Invoice's paid_amount/balance_amount/payment_status in sync with
+    // settlement applications; that call never goes through this route and
+    // is unaffected by this guard.
+    if (String(ownerRows[0].status).toUpperCase() === "POSTED") {
+      await conn.rollback();
+      return res.status(409).json({ message: "Posted transactions cannot be edited.", code: "TRANSACTION_ALREADY_POSTED" });
     }
     const existingDateISO = AccountingPeriodService.toDateOnly(ownerRows[0].transaction_date);
     await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate: existingDateISO, operation: "EDIT", user: req.user }, conn);
@@ -2274,12 +2409,14 @@ app.get("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV
     );
 
     const currencySnapshot = await TransactionCurrencyService.getSnapshot("APV", id);
+    const taxEntries = await TaxEntryService.loadTaxEntries("APV", id);
 
     res.json({
       ...headers[0],
       lines,
       applications,
       currency: currencySnapshot,
+      taxEntries,
     });
   } catch (err) {
     console.error("GET APV DETAILS ERROR:", err);
@@ -2387,6 +2524,12 @@ app.post("/api/apv", authenticateToken, authorizePermission("TRANSACTIONS.APV", 
       isPosting: String(finalStatus).toUpperCase() === "POSTED",
     });
 
+    // Phase 7C.1: see the identical comment in POST /api/invoices above -
+    // APV is "outbound" (credit side; a Withholding Tax Payable liability).
+    const reconciledEwt = TaxEntryService.reconcileEwtTaxEntry({
+      ewt, lines: currencyResult.lines, existingAtcCode: null, expectedSide: "credit", moduleLabel: "APV",
+    });
+
     const [result] = await conn.execute(
       `INSERT INTO apv_headers (
         company_id,
@@ -2449,8 +2592,14 @@ app.post("/api/apv", authenticateToken, authorizePermission("TRANSACTIONS.APV", 
       );
     }
 
+    const taxEntriesToSave = [];
+
     for (const line of currencyResult.lines) {
-      await conn.execute(
+      if (line.taxEntry && line.taxEntry.entryType === "INPUT_VAT") {
+        TaxEntryService.validateVatTaxEntry(line.taxEntry, line.foreignDebit || line.foreignCredit);
+      }
+
+      const [lineResult] = await conn.execute(
         `INSERT INTO apv_lines (
           apv_id,
           account_id,
@@ -2478,7 +2627,40 @@ app.post("/api/apv", authenticateToken, authorizePermission("TRANSACTIONS.APV", 
           line.foreignCredit,
         ]
       );
+
+      if (reconciledEwt && line === reconciledEwt.lineRef) {
+        // Phase 7C.1: the EWT line's saved metadata comes from the
+        // RECONCILED (backend-authoritative) entry, never the client's raw
+        // taxEntry - see reconcileEwtTaxEntry()'s own comment for why this
+        // is what guarantees header/structured-entry/journal-line
+        // agreement by construction.
+        taxEntriesToSave.push({
+          ...reconciledEwt.entry,
+          lineId: lineResult.insertId,
+          accountId: line.accountId || null,
+        });
+      } else if (line.taxEntry) {
+        // Phase 7C bug fix (caught via Playwright, see the completion
+        // report's "bugs discovered/fixed" item): a RELOADED taxEntry
+        // already carries its OWN lineId/accountId fields (from
+        // loadTaxEntries()'s own SELECT aliases) - spreading it AFTER
+        // these two let that stale, previous-save lineId silently
+        // clobber the line that was just actually inserted THIS save.
+        // The structural fields (lineId/accountId) must always win over
+        // whatever the client echoed back; only the content fields
+        // (party/amounts/etc.) come from the client's taxEntry.
+        taxEntriesToSave.push({
+          ...line.taxEntry,
+          lineId: lineResult.insertId,
+          accountId: line.accountId || null,
+        });
+      }
     }
+
+    await TaxEntryService.saveTaxEntries(conn, {
+      companyId, transactionType: "APV", transactionId: apvId,
+      entries: taxEntriesToSave, userId: req.user.id,
+    });
 
     await TransactionCurrencyService.saveSnapshot(conn, {
       companyId, transactionType: "APV", transactionId: apvId,
@@ -2551,10 +2733,17 @@ app.put("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV
     });
 
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
-    const [ownerRows] = await conn.execute("SELECT company_id, transaction_date FROM apv_headers WHERE id = ?", [id]);
+    // atc_code fetched alongside for Phase 7C.1's existingAtcCode - see the
+    // identical comment in PUT /api/invoices/:id above.
+    const [ownerRows] = await conn.execute("SELECT company_id, transaction_date, status, atc_code FROM apv_headers WHERE id = ?", [id]);
     if (!ownerRows.length || ownerRows[0].company_id !== companyId) {
       await conn.rollback();
       return res.status(404).json({ message: "APV not found" });
+    }
+    // Phase 7A.1: Posted transactions cannot be freely edited.
+    if (String(ownerRows[0].status).toUpperCase() === "POSTED") {
+      await conn.rollback();
+      return res.status(409).json({ message: "Posted transactions cannot be edited.", code: "TRANSACTION_ALREADY_POSTED" });
     }
     const existingDateISO = AccountingPeriodService.toDateOnly(ownerRows[0].transaction_date);
     await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate: existingDateISO, operation: "EDIT", user: req.user }, conn);
@@ -2565,6 +2754,11 @@ app.put("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV
       user: req.user, companyId, transactionType: "APV", transactionId: Number(id), currencyPayload: currency,
       lines, grossAmount: foreignGross, vatKeyword: "input vat", taxWithheldAmount: ewt.taxWithheldAmount,
       isPosting: String(finalStatus).toUpperCase() === "POSTED",
+    });
+
+    // Phase 7C.1: see the identical comment in POST /api/invoices above.
+    const reconciledEwt = TaxEntryService.reconcileEwtTaxEntry({
+      ewt, lines: currencyResult.lines, existingAtcCode: ownerRows[0].atc_code, expectedSide: "credit", moduleLabel: "APV",
     });
 
     await conn.execute(
@@ -2614,8 +2808,14 @@ app.put("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV
 
     await conn.execute("DELETE FROM apv_lines WHERE apv_id = ?", [id]);
 
+    const taxEntriesToSave = [];
+
     for (const line of currencyResult.lines) {
-      await conn.execute(
+      if (line.taxEntry && line.taxEntry.entryType === "INPUT_VAT") {
+        TaxEntryService.validateVatTaxEntry(line.taxEntry, line.foreignDebit || line.foreignCredit);
+      }
+
+      const [lineResult] = await conn.execute(
         `INSERT INTO apv_lines (
           apv_id,
           account_id,
@@ -2643,7 +2843,40 @@ app.put("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV
           line.foreignCredit,
         ]
       );
+
+      if (reconciledEwt && line === reconciledEwt.lineRef) {
+        // Phase 7C.1: the EWT line's saved metadata comes from the
+        // RECONCILED (backend-authoritative) entry, never the client's raw
+        // taxEntry - see reconcileEwtTaxEntry()'s own comment for why this
+        // is what guarantees header/structured-entry/journal-line
+        // agreement by construction.
+        taxEntriesToSave.push({
+          ...reconciledEwt.entry,
+          lineId: lineResult.insertId,
+          accountId: line.accountId || null,
+        });
+      } else if (line.taxEntry) {
+        // Phase 7C bug fix (caught via Playwright, see the completion
+        // report's "bugs discovered/fixed" item): a RELOADED taxEntry
+        // already carries its OWN lineId/accountId fields (from
+        // loadTaxEntries()'s own SELECT aliases) - spreading it AFTER
+        // these two let that stale, previous-save lineId silently
+        // clobber the line that was just actually inserted THIS save.
+        // The structural fields (lineId/accountId) must always win over
+        // whatever the client echoed back; only the content fields
+        // (party/amounts/etc.) come from the client's taxEntry.
+        taxEntriesToSave.push({
+          ...line.taxEntry,
+          lineId: lineResult.insertId,
+          accountId: line.accountId || null,
+        });
+      }
     }
+
+    await TaxEntryService.saveTaxEntries(conn, {
+      companyId, transactionType: "APV", transactionId: Number(id),
+      entries: taxEntriesToSave, userId: req.user.id,
+    });
 
     await TransactionCurrencyService.saveSnapshot(conn, {
       companyId, transactionType: "APV", transactionId: Number(id),
@@ -2684,10 +2917,15 @@ app.delete("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.
 
     await conn.beginTransaction();
 
-    const [ownerRows] = await conn.execute("SELECT company_id, transaction_date FROM apv_headers WHERE id = ?", [id]);
+    const [ownerRows] = await conn.execute("SELECT company_id, transaction_date, status FROM apv_headers WHERE id = ?", [id]);
     if (!ownerRows.length || ownerRows[0].company_id !== companyId) {
       await conn.rollback();
       return res.status(404).json({ message: "APV not found" });
+    }
+    // Phase 7A.1: Posted transactions cannot be deleted.
+    if (String(ownerRows[0].status).toUpperCase() === "POSTED") {
+      await conn.rollback();
+      return res.status(409).json({ message: "Posted transactions cannot be deleted.", code: "TRANSACTION_ALREADY_POSTED" });
     }
     const delDateISO = AccountingPeriodService.toDateOnly(ownerRows[0].transaction_date);
     await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate: delDateISO, operation: "DELETE", user: req.user }, conn);
@@ -4379,10 +4617,17 @@ app.put("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
 
     await conn.beginTransaction();
 
-    const [ownerRows] = await conn.execute("SELECT company_id, transaction_date FROM cv_headers WHERE id = ?", [id]);
+    const [ownerRows] = await conn.execute("SELECT company_id, transaction_date, status FROM cv_headers WHERE id = ?", [id]);
     if (!ownerRows.length || ownerRows[0].company_id !== companyId) {
       await conn.rollback();
       return res.status(404).json({ message: "CV not found" });
+    }
+    // Phase 7A.1: a Posted CV cannot be freely edited (see the matching OR
+    // comment above - the settlement side-effect on a source APV is a
+    // separate call path, unaffected by this guard).
+    if (String(ownerRows[0].status).toUpperCase() === "POSTED") {
+      await conn.rollback();
+      return res.status(409).json({ message: "Posted transactions cannot be edited.", code: "TRANSACTION_ALREADY_POSTED" });
     }
     const existingDateISO = AccountingPeriodService.toDateOnly(ownerRows[0].transaction_date);
     await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate: existingDateISO, operation: "EDIT", user: req.user }, conn);
@@ -4881,6 +5126,13 @@ app.put("/api/jv/:id", authenticateToken, authorizePermission("TRANSACTIONS.JV",
     const finalStatus = status || "Draft";
     const userId = req.user?.id || null;
     const wasAlreadyPosted = existing[0].status === "Posted";
+    // Phase 7A.1: Posted transactions cannot be freely edited - an
+    // accounting-integrity rule based on the STORED status (wasAlreadyPosted
+    // above), never the incoming payload's status, so a client cannot
+    // "unpost" a transaction by submitting status:"Draft".
+    if (wasAlreadyPosted) {
+      return res.status(409).json({ message: "Posted transactions cannot be edited.", code: "TRANSACTION_ALREADY_POSTED" });
+    }
     const isPosting = finalStatus === "Posted";
 
     // Preserve the original posted_by/posted_at if it was already Posted and stays
@@ -5033,6 +5285,10 @@ app.delete("/api/jv/:id", authenticateToken, authorizePermission("TRANSACTIONS.J
 
     if (existing.length === 0 || existing[0].companyId !== companyId) {
       return res.status(404).json({ message: "JV not found" });
+    }
+    // Phase 7A.1: Posted transactions cannot be deleted.
+    if (existing[0].status === "Posted") {
+      return res.status(409).json({ message: "Posted transactions cannot be deleted.", code: "TRANSACTION_ALREADY_POSTED" });
     }
 
     await conn.beginTransaction();
@@ -5276,6 +5532,10 @@ app.put("/api/petty-cash/:id", authenticateToken, authorizePermission("TRANSACTI
     const finalStatus = status || "Draft";
     const userId = req.user?.id || null;
     const wasAlreadyPosted = existing[0].status === "Posted";
+    // Phase 7A.1: Posted transactions cannot be freely edited.
+    if (wasAlreadyPosted) {
+      return res.status(409).json({ message: "Posted transactions cannot be edited.", code: "TRANSACTION_ALREADY_POSTED" });
+    }
     const isPosting = finalStatus === "Posted";
     const nextPostedBy = isPosting ? (wasAlreadyPosted ? existing[0].posted_by : userId) : null;
     const nextPostedAt = isPosting ? (wasAlreadyPosted ? existing[0].posted_at : new Date()) : null;
@@ -5380,6 +5640,10 @@ app.delete("/api/petty-cash/:id", authenticateToken, authorizePermission("TRANSA
 
     if (existing.length === 0 || existing[0].companyId !== companyId) {
       return res.status(404).json({ message: "Petty Cash Voucher not found" });
+    }
+    // Phase 7A.1: Posted transactions cannot be deleted.
+    if (existing[0].status === "Posted") {
+      return res.status(409).json({ message: "Posted transactions cannot be deleted.", code: "TRANSACTION_ALREADY_POSTED" });
     }
 
     await conn.beginTransaction();
@@ -5635,6 +5899,10 @@ function registerMemoRoutes(memoType, urlPrefix, permissionModule, label) {
       const finalStatus = status || "Draft";
       const userId = req.user?.id || null;
       const wasAlreadyPosted = existing[0].status === "Posted";
+      // Phase 7A.1: Posted transactions cannot be freely edited.
+      if (wasAlreadyPosted) {
+        return res.status(409).json({ message: "Posted transactions cannot be edited.", code: "TRANSACTION_ALREADY_POSTED" });
+      }
       const isPosting = finalStatus === "Posted";
       const nextPostedBy = isPosting ? (wasAlreadyPosted ? existing[0].posted_by : userId) : null;
       const nextPostedAt = isPosting ? (wasAlreadyPosted ? existing[0].posted_at : new Date()) : null;
@@ -5749,6 +6017,10 @@ function registerMemoRoutes(memoType, urlPrefix, permissionModule, label) {
 
       if (existing.length === 0 || existing[0].companyId !== companyId) {
         return res.status(404).json({ message: `${label} not found` });
+      }
+      // Phase 7A.1: Posted transactions cannot be deleted.
+      if (existing[0].status === "Posted") {
+        return res.status(409).json({ message: "Posted transactions cannot be deleted.", code: "TRANSACTION_ALREADY_POSTED" });
       }
 
       await conn.beginTransaction();
@@ -7906,53 +8178,40 @@ app.get("/api/reports/alphalist", authenticateToken, authorizePermission("REPORT
       return res.status(400).json({ message: "month (YYYY-MM) is required" });
     }
 
-    // Sources tax actually withheld/remitted by us as the withholding agent:
-    // APV and CV (the two modules where a real payment happened). Purchase
-    // Order deliberately excluded even though it supports EWT recording
-    // (Phase 2) - a PO is a pre-payment commitment, not a remittance event,
-    // and a PO commonly converts into an APV (source_po_id), so including
-    // both would double-count the same withholding. Invoice/OR excluded for
-    // a different reason: EWT there is the CUSTOMER's withholding, not
-    // ours, so it never belongs on a report of taxes we remitted.
-    const [rows] = await pool.execute(
-      `
-      SELECT
-        payeeName, tin, atcCode, taxRate,
-        SUM(transactionCount) AS transactionCount,
-        SUM(grossAmount) AS grossAmount,
-        SUM(taxWithheld) AS taxWithheld
-      FROM (
-        SELECT
-          supplier_name AS payeeName,
-          COALESCE(payee_tin, '') AS tin,
-          atc_code AS atcCode,
-          tax_rate AS taxRate,
-          COUNT(*) AS transactionCount,
-          SUM(total_credit) AS grossAmount,
-          SUM(tax_withheld_amount) AS taxWithheld
-        FROM apv_headers
-        WHERE tax_type = ? AND DATE_FORMAT(transaction_date, '%Y-%m') = ? AND tax_withheld_amount > 0
-        GROUP BY supplier_name, payee_tin, atc_code, tax_rate
+    // Phase 7D.1 bug fix: this query previously had NO company_id filter
+    // at all - a cross-company data leak matching the exact class of bug
+    // Checkpoint 6A fixed for the income statement report, just missed
+    // here. Discovered and fixed while already touching this exact query
+    // for the EWT double-count fix below (see
+    // ewtReportReconciliationService.js for the full authority-rule
+    // reasoning) - not something Phase 7D.1 originally set out to look
+    // for, but directly in the blast radius of what it's already editing.
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
-        UNION ALL
+    const fromDate = `${month}-01`;
+    const toDate = `${month}-31`; // inclusive upper bound - a real calendar date compare, not a strict day count
 
-        SELECT
-          payee_name AS payeeName,
-          COALESCE(payee_tin, '') AS tin,
-          atc_code AS atcCode,
-          tax_rate AS taxRate,
-          COUNT(*) AS transactionCount,
-          SUM(total_credit) AS grossAmount,
-          SUM(tax_withheld_amount) AS taxWithheld
-        FROM cv_headers
-        WHERE tax_type = ? AND DATE_FORMAT(transaction_date, '%Y-%m') = ? AND tax_withheld_amount > 0
-        GROUP BY payee_name, payee_tin, atc_code, tax_rate
-      ) combined
-      GROUP BY payeeName, tin, atcCode, taxRate
-      ORDER BY payeeName ASC
-      `,
-      [taxType, month, taxType, month]
-    );
+    // The APV-accrual-vs-CV-remittance double-count risk is architecturally
+    // identical for EWT and FINAL tax (both flow through the same
+    // apv_headers/cv_headers.tax_type/tax_withheld_amount columns) - the
+    // same reconciliation applies uniformly to whichever taxType was
+    // requested, not just EWT.
+    const allEvents = await EwtReportReconciliationService.resolveReportableEwtEvents({ companyId, taxType });
+    const events = EwtReportReconciliationService.filterEventsByDateRange(allEvents, fromDate, toDate);
+
+    const grouped = new Map();
+    for (const e of events) {
+      const key = [e.partyName, e.tin, e.atcCode, e.taxRate].join("|");
+      if (!grouped.has(key)) {
+        grouped.set(key, { payeeName: e.partyName, tin: e.tin, atcCode: e.atcCode, taxRate: e.taxRate, transactionCount: 0, grossAmount: 0, taxWithheld: 0 });
+      }
+      const g = grouped.get(key);
+      g.transactionCount += 1;
+      g.grossAmount = EwtReportReconciliationService.roundMoney(g.grossAmount + Number(e.grossAmount || 0));
+      g.taxWithheld = EwtReportReconciliationService.roundMoney(g.taxWithheld + Number(e.taxWithheld || 0));
+    }
+
+    const rows = [...grouped.values()].sort((a, b) => a.payeeName.localeCompare(b.payeeName));
 
     res.json(rows);
   } catch (err) {
@@ -8012,10 +8271,16 @@ app.get("/api/reports/2307", authenticateToken, authorizePermission("REPORTS.BIR
     const secondMonth = firstMonth + 1;
     const thirdMonth = firstMonth + 2;
 
+    // Phase 7D.1 bug fix: this route (and its general_libraries payee
+    // lookup) previously had NO company_id scoping at all - the same
+    // cross-company leak fixed in /api/reports/alphalist above, found
+    // while touching this exact query for the EWT double-count fix.
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
     const [payeeRows] = await pool.execute(
       `SELECT name, tin, address1, address2, address3, atc_code AS atcCode
-       FROM general_libraries WHERE id = ?`,
-      [supplierId]
+       FROM general_libraries WHERE id = ? AND company_id = ?`,
+      [supplierId, companyId]
     );
 
     if (payeeRows.length === 0) {
@@ -8032,55 +8297,38 @@ app.get("/api/reports/2307", authenticateToken, authorizePermission("REPORTS.BIR
     );
     const payor = payorRows[0] || { payorName: "", payorTin: "", payorAddress: "", payorZip: "" };
 
-    // Same APV+CV scope as the alphalist report above (real remittance
-    // events only - PO excluded to avoid double-counting against the APV it
-    // converts into; Invoice/OR excluded because that EWT is the
-    // customer's, not ours). CV's party column is payee_id, but it
-    // references the same general_libraries row as APV's supplier_id.
-    const [lines] = await pool.execute(
-      `
-      SELECT
-        atcCode,
-        SUM(month1Amount) AS month1Amount,
-        SUM(month2Amount) AS month2Amount,
-        SUM(month3Amount) AS month3Amount,
-        SUM(totalAmount) AS totalAmount,
-        SUM(totalTaxWithheld) AS totalTaxWithheld
-      FROM (
-        SELECT
-          atc_code AS atcCode,
-          SUM(CASE WHEN MONTH(transaction_date) = ? THEN total_credit ELSE 0 END) AS month1Amount,
-          SUM(CASE WHEN MONTH(transaction_date) = ? THEN total_credit ELSE 0 END) AS month2Amount,
-          SUM(CASE WHEN MONTH(transaction_date) = ? THEN total_credit ELSE 0 END) AS month3Amount,
-          SUM(total_credit) AS totalAmount,
-          SUM(tax_withheld_amount) AS totalTaxWithheld
-        FROM apv_headers
-        WHERE supplier_id = ? AND tax_type = 'EWT' AND tax_withheld_amount > 0
-          AND YEAR(transaction_date) = ? AND QUARTER(transaction_date) = ?
-        GROUP BY atc_code
+    // Phase 7D.1: same reconciliation as /api/reports/alphalist (CV
+    // supersedes APV when it safely, unambiguously settles exactly that
+    // one APV and independently recorded its own EWT - see
+    // ewtReportReconciliationService.js). PO stays excluded (converts
+    // into APV) and Invoice/OR stay excluded (that EWT is the customer's,
+    // not ours) - both preserved exactly as the original comment
+    // documented, unchanged by this fix. CV's party column is payee_id,
+    // but it references the same general_libraries row as APV's
+    // supplier_id - both are `partyId` on the reconciled events below.
+    const quarterStart = `${year}-${String(firstMonth).padStart(2, "0")}-01`;
+    const quarterEnd = `${year}-${String(thirdMonth).padStart(2, "0")}-31`;
 
-        UNION ALL
+    const allEvents = await EwtReportReconciliationService.resolveReportableEwtEvents({ companyId, taxType: "EWT" });
+    const events = EwtReportReconciliationService.filterEventsByDateRange(allEvents, quarterStart, quarterEnd)
+      .filter((e) => String(e.partyId) === String(supplierId));
 
-        SELECT
-          atc_code AS atcCode,
-          SUM(CASE WHEN MONTH(transaction_date) = ? THEN total_credit ELSE 0 END) AS month1Amount,
-          SUM(CASE WHEN MONTH(transaction_date) = ? THEN total_credit ELSE 0 END) AS month2Amount,
-          SUM(CASE WHEN MONTH(transaction_date) = ? THEN total_credit ELSE 0 END) AS month3Amount,
-          SUM(total_credit) AS totalAmount,
-          SUM(tax_withheld_amount) AS totalTaxWithheld
-        FROM cv_headers
-        WHERE payee_id = ? AND tax_type = 'EWT' AND tax_withheld_amount > 0
-          AND YEAR(transaction_date) = ? AND QUARTER(transaction_date) = ?
-        GROUP BY atc_code
-      ) combined
-      GROUP BY atcCode
-      ORDER BY atcCode ASC
-      `,
-      [
-        firstMonth, secondMonth, thirdMonth, supplierId, year, q,
-        firstMonth, secondMonth, thirdMonth, supplierId, year, q,
-      ]
-    );
+    const grouped = new Map();
+    for (const e of events) {
+      if (!grouped.has(e.atcCode)) {
+        grouped.set(e.atcCode, { atcCode: e.atcCode, month1Amount: 0, month2Amount: 0, month3Amount: 0, totalAmount: 0, totalTaxWithheld: 0 });
+      }
+      const g = grouped.get(e.atcCode);
+      const eventMonth = Number(e.transactionDate.slice(5, 7));
+      const gross = Number(e.grossAmount || 0);
+      if (eventMonth === firstMonth) g.month1Amount = EwtReportReconciliationService.roundMoney(g.month1Amount + gross);
+      else if (eventMonth === secondMonth) g.month2Amount = EwtReportReconciliationService.roundMoney(g.month2Amount + gross);
+      else if (eventMonth === thirdMonth) g.month3Amount = EwtReportReconciliationService.roundMoney(g.month3Amount + gross);
+      g.totalAmount = EwtReportReconciliationService.roundMoney(g.totalAmount + gross);
+      g.totalTaxWithheld = EwtReportReconciliationService.roundMoney(g.totalTaxWithheld + Number(e.taxWithheld || 0));
+    }
+
+    const lines = [...grouped.values()].sort((a, b) => (a.atcCode || "").localeCompare(b.atcCode || ""));
 
     res.json({
       payee: {

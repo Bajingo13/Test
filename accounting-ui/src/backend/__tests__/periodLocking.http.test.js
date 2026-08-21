@@ -119,9 +119,13 @@ beforeAll(async () => {
   // (bypassing the app layer, same convention as every other fixture in
   // this session) - used to prove edit/delete/settlement rules against a
   // genuinely pre-existing closed-period document.
+  // Phase 7A.1: Draft, not Posted - a Posted transaction is now immutable
+  // regardless of period status (a separate, more fundamental rule), so a
+  // Draft fixture is what actually lets these tests isolate and prove the
+  // PERIOD gate specifically, which is what they exist to test.
   const [invResult] = await pool.execute(
     `INSERT INTO invoice_headers (company_id, voucher_no, customer_id, customer_name, transaction_date, total_debit, total_credit, paid_amount, balance_amount, payment_status, status)
-     VALUES (?, 'TEST5-INV-JUL1', ?, '5 Company A Customer', '2026-07-10', 1000, 0, 0, 1000, 'Unpaid', 'Posted')`,
+     VALUES (?, 'TEST5-INV-JUL1', ?, '5 Company A Customer', '2026-07-10', 1000, 0, 0, 1000, 'Unpaid', 'Draft')`,
     [companyAId, custAId]
   );
   julyInvoiceId = invResult.insertId;
@@ -315,9 +319,14 @@ describe("Invoice period enforcement", () => {
   });
 
   test("date movement: an OPEN August invoice cannot be backdated into CLOSED July", async () => {
+    // Phase 7A.1: created as Draft, not Posted - a Posted transaction is
+    // immutable regardless of period, so the PUT below (which also carries
+    // status: "Posted") needs a Draft starting point to actually exercise
+    // the date-movement/period check this test is about, rather than being
+    // blocked earlier for the unrelated "already posted" reason.
     const createRes = await request(app).post("/api/invoices").set("Authorization", `Bearer ${tokenA}`).send({
       voucherNo: "TEST5-INV-MOVE1", customerId: custAId, customerName: "x", transactionDate: "2026-08-10",
-      totalDebit: 300, totalCredit: 300, status: "Posted",
+      totalDebit: 300, totalCredit: 300, status: "Draft",
       lines: [
         { accountId: arA, accountCode: "TEST5AR-A", accountTitle: "AR", particulars: "x", debit: 300, credit: 0 },
         { accountId: revA, accountCode: "TEST5REV-A", accountTitle: "Revenue", particulars: "x", debit: 0, credit: 300 },

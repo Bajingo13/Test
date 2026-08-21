@@ -1,11 +1,23 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import PartyQuickAddModal from "../../components/PartyQuickAddModal";
 import TransactionPrintOptionsModal from "../../components/TransactionPrintOptionsModal";
 import RecurringTemplateModal from "../../components/RecurringTemplateModal";
 import { computeEwtTaxableBase, computeEwtAmount } from "../../utils/ewtCalculations";
 import usePermissions from "../../hooks/usePermissions";
 import { getTransactionModuleConfig } from "./transactionModuleConfig";
+import { getVoucherToolbarVisibility } from "./voucherToolbarRules.mjs";
+import { formatMoney } from "./transactionFormUtils";
+import TransactionVoucherHeader from "./TransactionVoucherHeader";
+import CurrencySummary from "./CurrencySummary";
+import AccountingEntriesGrid from "./AccountingEntriesGrid";
+import EntryTotals from "./EntryTotals";
+import ViewField from "./ViewField";
+import VoucherToolbar from "./VoucherToolbar";
+import AddEntryMenu from "./AddEntryMenu";
+import VatEntryModal from "./VatEntryModal";
+import EwtEntryModal from "./EwtEntryModal";
+import TaxDetailsViewModal from "./TaxDetailsViewModal";
+import { filterTransactions, deriveStatusOptions } from "./transactionListFilters.mjs";
 import "./TransactionFormLayout.css";
 
 const CURRENCY_MODULE_KEY = "FILESETUP.CURRENCY_SETUP";
@@ -52,13 +64,6 @@ function createLine() {
   };
 }
 
-function formatMoney(value) {
-  return Number(value || 0).toLocaleString("en-PH", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-}
-
 // Checkpoint 3FX: for the application modal's "estimated FX" preview only
 // (informational, section 14) - never posted from here. The backend
 // independently recalculates everything at save time (section 29) via
@@ -80,7 +85,7 @@ export default function TransactionFormLayout({
   recurringModuleType = null,
 }) {
   const [searchParams] = useSearchParams();
-  const { can: canCurrency } = usePermissions();
+  const { can } = usePermissions();
 
   // Checkpoint 6: a single explicit module-routing config replaces what
   // used to be three duplicated endpoint ternaries, each defaulting an
@@ -103,10 +108,18 @@ export default function TransactionFormLayout({
   const CURRENCY_ELIGIBLE = moduleConfig?.currencyEligible ?? false;
 
   const [mode, setMode] = useState("list");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("All Status");
+  // Phase 7B: "view" opens a read-only voucher (the new default when
+  // clicking View from the list); "edit" restores the pre-7B fully
+  // editable form. Only meaningful while mode === "form".
+  const [formMode, setFormMode] = useState("view");
   const [transactions, setTransactions] = useState([]);
   const [selectedTransaction, setSelectedTransaction] = useState(null);
   const [showPrintOptionsModal, setShowPrintOptionsModal] = useState(false);
   const [showRecurringModal, setShowRecurringModal] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const [accountOptions, setAccountOptions] = useState([]);
   const [partyOptions, setPartyOptions] = useState([]);
@@ -147,6 +160,16 @@ export default function TransactionFormLayout({
   const [vatAccountId, setVatAccountId] = useState("");
   const [vatTaxableAmount, setVatTaxableAmount] = useState("");
   const [vatRate, setVatRate] = useState("12");
+
+  // Phase 7C: Unified Journal Entry Tax Workflow. `editingTaxLineId` is
+  // null when the popup is adding a brand-new tax entry, or the client
+  // line.id being re-edited via "Edit Tax Details" (spec section 20).
+  const [showVatEntryModal, setShowVatEntryModal] = useState(false);
+  const [vatEntryDirection, setVatEntryDirection] = useState("INPUT");
+  const [showEwtEntryModal, setShowEwtEntryModal] = useState(false);
+  const [editingTaxLineId, setEditingTaxLineId] = useState(null);
+  const [showTaxDetailsView, setShowTaxDetailsView] = useState(false);
+  const [viewingTaxEntry, setViewingTaxEntry] = useState(null);
 
   // Multi-currency (Checkpoint 3A) - selectedCurrencyId defaults to the
   // company base currency once loaded. currencySnapshot mirrors what the
@@ -911,6 +934,24 @@ if (code === "OR") {
   const ewtInbound = code === "INV" || code === "OR";
   const ewtEligible = ewtOutbound || ewtInbound;
 
+  // Phase 7E section 6: Phase 7D's audit conclusively found that OR/CV tax
+  // entry can double-recognize tax when the voucher is settling an existing
+  // source document (Invoice for OR, APV for CV) - the source document
+  // already carries its own VAT/EWT. When it isn't settling anything (a
+  // legitimate direct/invoice-less OR or CV), the legacy tax card below is
+  // still the correct, unchanged way to record tax - see Phase 7D's "OR/CV
+  // dual nature" finding. This flag never changes accounting policy; it
+  // only warns and blocks NEW entry through the legacy fields.
+  const hasSourceApplications =
+    (code === "OR" && invoiceApplications.length > 0) ||
+    (code === "CV" && apvApplications.length > 0);
+  const sourceDuplicationWarning =
+    code === "OR"
+      ? "Tax is recognized on the source Invoice. Additional Output VAT on this settlement may duplicate tax."
+      : code === "CV"
+      ? "Tax is recognized on the source APV. Additional Input VAT/EWT may duplicate tax."
+      : "";
+
   const vatAmount =
     (Number(vatTaxableAmount || 0) * Number(vatRate || 0)) / 100;
 
@@ -940,6 +981,125 @@ if (code === "OR") {
     ]);
 
     setVatTaxableAmount("");
+  }
+
+  // Phase 7C: "+ Add Entry" workflow (INV/APV only - see spec sections
+  // 28-30 and the AddEntryMenu wiring below). Confirming a popup builds
+  // one journal line carrying `taxEntry` metadata; editing re-opens the
+  // same popup pre-filled from that line's existing taxEntry. The tax
+  // entry lives ON the line object itself (not a separate parallel
+  // structure) - removing the line via the existing removeLine() already
+  // removes its metadata for free (spec section 21), and the save payload
+  // already includes it automatically wherever `lines` is serialized.
+  function openAddVatEntry(direction) {
+    setVatEntryDirection(direction);
+    setEditingTaxLineId(null);
+    setShowVatEntryModal(true);
+  }
+
+  function openEditVatEntry(line) {
+    setVatEntryDirection(line.taxEntry.entryType === "OUTPUT_VAT" ? "OUTPUT" : "INPUT");
+    setEditingTaxLineId(line.id);
+    setShowVatEntryModal(true);
+  }
+
+  function handleVatEntryConfirm(entry) {
+    const isOutput = vatEntryDirection === "OUTPUT";
+    const selectedPartyForRef = partyOptions.find((p) => p.id === entry.partyId);
+
+    const lineData = {
+      accountId: entry.accountId,
+      particulars: `${isOutput ? "Output VAT" : "Input VAT"} (${entry.vatRate}%)`,
+      genRef: selectedPartyForRef?.code || "",
+      genName: entry.partyName || "",
+      debit: isOutput ? "" : String(entry.vatAmount),
+      credit: isOutput ? String(entry.vatAmount) : "",
+      taxEntry: { entryType: isOutput ? "OUTPUT_VAT" : "INPUT_VAT", ...entry },
+    };
+
+    if (editingTaxLineId) {
+      setLines((prev) => prev.map((l) => (l.id === editingTaxLineId ? { ...l, ...lineData } : l)));
+    } else {
+      setLines((prev) => [...prev, { ...createLine(), ...lineData }]);
+    }
+
+    setShowVatEntryModal(false);
+    setEditingTaxLineId(null);
+  }
+
+  function openAddEwtEntry() {
+    setEditingTaxLineId(null);
+    setShowEwtEntryModal(true);
+  }
+
+  function openEditEwtEntry(line) {
+    setEditingTaxLineId(line.id);
+    setShowEwtEntryModal(true);
+  }
+
+  function handleEwtEntryConfirm(entry) {
+    const lineData = {
+      accountId: entry.accountId,
+      particulars: `EWT - ${entry.atcCode}`,
+      genRef: entry.partyId ? (partyOptions.find((p) => p.id === entry.partyId)?.code || "") : "",
+      genName: entry.partyName || "",
+      // Inbound (INV): a Creditable WHT Receivable asset increases -> debit.
+      // Outbound (APV): a Withholding Tax Payable liability increases -> credit.
+      debit: ewtInbound ? String(entry.withheldAmount) : "",
+      credit: ewtOutbound ? String(entry.withheldAmount) : "",
+      taxEntry: { entryType: "EWT", ...entry },
+    };
+
+    if (editingTaxLineId) {
+      setLines((prev) => prev.map((l) => (l.id === editingTaxLineId ? { ...l, ...lineData } : l)));
+    } else {
+      setLines((prev) => [...prev, { ...createLine(), ...lineData }]);
+    }
+
+    // Section 33/34 backward compatibility: keep the EXISTING header-level
+    // EWT columns (read by resolveTaxWithholding and every existing EWT
+    // report) in sync with the new journal line, rather than replacing
+    // that mechanism.
+    setAtcCode(entry.atcCode);
+    setTaxWithheldAmount(String(entry.withheldAmount));
+    setTaxWithheldTouched(true);
+    if (ewtOutbound) setPayeeTin(entry.partyTin || "");
+
+    setShowEwtEntryModal(false);
+    setEditingTaxLineId(null);
+  }
+
+  // Routes the grid's single "Edit Tax Details" trigger to the correct
+  // popup based on the line's own stable entry_type metadata (never a
+  // title/particulars string match - spec section 36).
+  function openEditVatEntryOrEwt(line) {
+    if (!line.taxEntry) return;
+    if (line.taxEntry.entryType === "EWT") {
+      openEditEwtEntry(line);
+    } else {
+      openEditVatEntry(line);
+    }
+  }
+
+  function openViewTaxDetails(line) {
+    setViewingTaxEntry(line.taxEntry);
+    setShowTaxDetailsView(true);
+  }
+
+  // Removing an EWT-generated line must also clear the header-level EWT
+  // fields it was kept in sync with above - otherwise a stale atcCode
+  // would still flow through resolveTaxWithholding on save with no
+  // matching journal line to justify it (spec section 21's "no orphaned
+  // tax schedule" requirement, applied to the legacy header mirror too).
+  function handleRemoveTaxAwareLine(id) {
+    const line = lines.find((l) => l.id === id);
+    if (line?.taxEntry?.entryType === "EWT") {
+      setAtcCode("");
+      setTaxWithheldAmount("");
+      setTaxWithheldTouched(false);
+      if (ewtOutbound) setPayeeTin("");
+    }
+    removeLine(id);
   }
 
   function isAPorARAccount(accountId) {
@@ -1033,6 +1193,9 @@ setError("");
 
   function handleAddNew() {
     resetForm();
+    // Phase 7B: a brand-new, never-saved transaction has nothing to "view" -
+    // it opens directly in edit mode, same as before 7B.
+    setFormMode("edit");
     setMode("form");
   }
 
@@ -1041,56 +1204,74 @@ setError("");
     setError("");
   }
 
-  function handlePrint() {
-    window.print();
+  // Phase 7B: switches the already-loaded transaction into edit mode
+  // without re-fetching - the data is already in `form`/`lines` from the
+  // handleView() call that opened this voucher (spec section 4: "Do not
+  // re-fetch unless actually necessary").
+  function handleEditClick() {
+    setFormMode("edit");
   }
 
-  function handleExportCSV() {
-    const rows = [
-      ["Company", "ASTREABLUE COMPANY"],
-      ["Transaction", title],
-      ["Reference No.", form.referenceNo],
-      ["Date", form.date],
-      [partyLabel, form.party],
-      ["Description", form.description],
-      [],
-      ["Account", "Particulars", "Gen Ref", "Gen Name", "Debit", "Credit"],
-      ...lines.map((line) => {
-        const account = accountOptions.find(
-          (acc) => String(acc.id) === String(line.accountId)
-        );
+  // Phase 7E (spec section 14): the list's Search/Status controls now
+  // actually filter - this is the same filtered list the table renders,
+  // so Previous/Next (below) can share it and stay in sync with whatever
+  // subset the user is currently looking at (spec sections 16/30-G).
+  const filteredTransactions = useMemo(
+    () => filterTransactions(transactions, { searchQuery, statusFilter }),
+    [transactions, searchQuery, statusFilter]
+  );
+  const statusFilterOptions = useMemo(() => deriveStatusOptions(transactions), [transactions]);
 
-        return [
-          account ? `${account.code} - ${account.title}` : "",
-          line.particulars,
-          line.genRef || "",
-          line.genName || "",
-          line.debit || "0.00",
-          line.credit || "0.00",
-        ];
-      }),
-      [],
-      ["Totals", "", "", "", totals.totalDebit, totals.totalCredit],
-    ];
+  // Phase 7B Previous/Next (spec sections 15-16): navigates within the
+  // already-loaded, module-scoped `transactions` array only - Invoice can
+  // never step into APV, since each module fetches from its own endpoint.
+  // Always lands back in view mode, same reasoning as targetFormMode's
+  // default on handleView. Phase 7E: switched to the filtered list so
+  // Previous/Next follows whatever Search/Status subset is active (spec
+  // sections 16/30-G) - a transaction filtered out of view is no longer a
+  // valid Previous/Next target.
+  const currentTransactionIndex = selectedTransaction?.id
+    ? filteredTransactions.findIndex((t) => String(t.id) === String(selectedTransaction.id))
+    : -1;
+  const hasPreviousTransaction = currentTransactionIndex > 0;
+  const hasNextTransaction =
+    currentTransactionIndex >= 0 && currentTransactionIndex < filteredTransactions.length - 1;
 
-    const csvContent = rows
-      .map((row) =>
-        row.map((cell) => `"${String(cell ?? "").replace(/"/g, '""')}"`).join(",")
-      )
-      .join("\n");
-
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `${code}-${form.referenceNo || "transaction"}.csv`;
-    link.click();
-
-    URL.revokeObjectURL(url);
+  function handlePreviousTransaction() {
+    if (!hasPreviousTransaction) return;
+    handleView(filteredTransactions[currentTransactionIndex - 1]);
   }
 
-  async function handleView(transaction) {
+  function handleNextTransaction() {
+    if (!hasNextTransaction) return;
+    handleView(filteredTransactions[currentTransactionIndex + 1]);
+  }
+
+  // Phase 7B status/permission gating (spec sections 7-10): PO's Open/
+  // Closed/Draft lifecycle has no backend status restriction on Edit/
+  // Delete at all (confirmed in Phase 7A.1 - see transactionModuleConfig.js),
+  // so it's gated on permission + existing-record only; every other module
+  // follows the real Draft/Posted rule the Phase 7A.1 backend guard
+  // enforces, hiding Edit/Delete once a record is Posted so the frontend
+  // stops offering an action the backend will now reject with 409.
+  const toolbarVisibility = getVoucherToolbarVisibility({ moduleConfig, status: form.status, can });
+
+  // Phase 7B: the old CSV-export/browser-print fallback (only reachable
+  // when a module had no printModuleType, or for a brand-new unsaved
+  // transaction) was removed along with the old top-actions/bottom-bar
+  // buttons that triggered it - see the Phase 7B report's "known
+  // limitations" item. Every module now has a real printModuleType, and
+  // the toolbar's Print button (which opens TransactionPrintOptionsModal)
+  // only makes sense for an already-saved record with a real id to fetch.
+
+  // Phase 7B: targetFormMode lets every caller that needs a fresh fetch +
+  // populate (the list's View button, Previous/Next, and the post-save
+  // reload) share this one function instead of duplicating it - see the
+  // Phase 7B report's "read-only voucher implementation" item. Defaults to
+  // "view" (the new default landing mode); Previous/Next also always pass
+  // "view" explicitly, since navigating away from an in-progress edit is
+  // expected to discard it, same as Back to List already does.
+  async function handleView(transaction, targetFormMode = "view") {
     setSelectedTransaction(transaction);
     if (moduleConfigError) return;
 
@@ -1147,22 +1328,33 @@ setError("");
 });
 
         setLines(
-          data.lines.map((line) => ({
-            id: crypto.randomUUID(),
-            accountId: line.accountId || "",
-            particulars: line.particulars || "",
-            genRef: line.genRef || "",
-            genName: line.genName || "",
-            // debit/credit store the BASE-currency GL amount (Checkpoint
-            // 3A) - the editable form must show the transaction's own
-            // foreign amount instead, or re-saving would resubmit the
-            // already-converted base figure and get converted AGAIN.
-            // foreignDebit/foreignCredit are undefined for modules with no
-            // currency columns (OR/CV/JV/PO), so this falls back to
-            // debit/credit unchanged for them.
-            debit: (line.foreignDebit ?? line.debit) || "",
-            credit: (line.foreignCredit ?? line.credit) || "",
-          }))
+          data.lines.map((line) => {
+            // Phase 7C: correlates by the line's REAL database id (still
+            // present on `line.id` at this exact point) - the very next
+            // field below regenerates a fresh client UUID for React/
+            // updateLine's own identity, which is NOT stable across
+            // save/reload cycles (see taxEntryService.js's header comment
+            // for why the tax-entries table links by DB line id instead).
+            const matchingTaxEntry = (data.taxEntries || []).find((te) => te.lineId === line.id);
+
+            return {
+              id: crypto.randomUUID(),
+              accountId: line.accountId || "",
+              particulars: line.particulars || "",
+              genRef: line.genRef || "",
+              genName: line.genName || "",
+              // debit/credit store the BASE-currency GL amount (Checkpoint
+              // 3A) - the editable form must show the transaction's own
+              // foreign amount instead, or re-saving would resubmit the
+              // already-converted base figure and get converted AGAIN.
+              // foreignDebit/foreignCredit are undefined for modules with no
+              // currency columns (OR/CV/JV/PO), so this falls back to
+              // debit/credit unchanged for them.
+              debit: (line.foreignDebit ?? line.debit) || "",
+              credit: (line.foreignCredit ?? line.credit) || "",
+              ...(matchingTaxEntry ? { taxEntry: matchingTaxEntry } : {}),
+            };
+          })
         );
 
        if (code === "CV") {
@@ -1246,6 +1438,7 @@ if (code === "OR" || code === "CV") {
   setCheckNumber(data.checkNo || "");
   setCheckDate(data.checkDate || "");
 }
+        setFormMode(targetFormMode);
         setMode("form");
         return;
       }
@@ -1258,7 +1451,62 @@ if (code === "OR" || code === "CV") {
     setForm(transaction.form);
     setLines(transaction.lines);
     setApvApplications([]);
+    setFormMode(targetFormMode);
     setMode("form");
+  }
+
+  // Phase 7B Delete (spec sections 11-13): a compact confirm dialog first
+  // (never delete on click), then the real DELETE call. Errors - most
+  // notably the Phase 7A.1 backend guard's 409 TRANSACTION_ALREADY_POSTED,
+  // or AccountingPeriodService's period-closed rejection - surface the
+  // server's own human-readable `message` (never raw JSON/SQL, matching
+  // this file's existing alert(data.message) convention everywhere else),
+  // and reload the record so a stale local view can't keep offering an
+  // action the backend just refused.
+  function handleDeleteClick() {
+    setShowDeleteConfirm(true);
+  }
+
+  function cancelDeleteConfirm() {
+    setShowDeleteConfirm(false);
+  }
+
+  async function confirmDelete() {
+    if (!selectedTransaction?.id || moduleConfigError) return;
+
+    setDeleting(true);
+    try {
+      const endpoint = moduleConfig.endpoint;
+      const res = await fetch(`${API_BASE}/api/${endpoint}/${selectedTransaction.id}`, {
+        method: "DELETE",
+        credentials: "include",
+        headers: authHeaders(),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        if (handleAuthError(res.status)) return;
+        alert(data.message || "Failed to delete transaction.");
+        setShowDeleteConfirm(false);
+        // Section 33: revert/refresh state after a failed action (e.g. it
+        // was posted by someone else a moment ago) instead of leaving the
+        // voucher showing stale Edit/Delete buttons.
+        await handleView(selectedTransaction);
+        return;
+      }
+
+      setShowDeleteConfirm(false);
+      alert(`${title} deleted successfully.`);
+      await loadTransactions();
+      setMode("list");
+    } catch (err) {
+      console.error("DELETE TRANSACTION ERROR:", err);
+      alert("Unable to connect to server.");
+      setShowDeleteConfirm(false);
+    } finally {
+      setDeleting(false);
+    }
   }
 
   function updateForm(field, value) {
@@ -1740,6 +1988,11 @@ if (code === "OR" || code === "CV") {
             genName: line.genName || "",
             debit: Number(line.debit || 0),
             credit: Number(line.credit || 0),
+            // Phase 7C: carries this line's tax schedule metadata (if any)
+            // through to the backend, which independently re-validates a
+            // VAT-type entry against the centralized helper before saving -
+            // see taxEntryService.js.
+            ...(line.taxEntry ? { taxEntry: line.taxEntry } : {}),
           };
         }),
         apvApplications:
@@ -1822,6 +2075,17 @@ if (code === "OR" || code === "CV") {
       if (!res.ok) {
         if (handleAuthError(res.status)) return;
         alert(data.message || "Failed to save transaction.");
+        // Phase 7B (spec section 33): if someone else posted this record
+        // in the meantime, the Phase 7A.1 backend guard now rejects this
+        // save with 409 TRANSACTION_ALREADY_POSTED - continuing to edit a
+        // form that can never save is pointless, so reload the record and
+        // drop back to its (now Posted) read-only view. Any other error
+        // (validation, network, generic 500) leaves the user's in-progress
+        // edits alone so nothing typed is lost on a possibly-transient
+        // failure.
+        if (data.code === "TRANSACTION_ALREADY_POSTED" && isExisting) {
+          await handleView({ id: selectedTransaction.id });
+        }
         return;
       }
 
@@ -1834,7 +2098,17 @@ if (code === "OR" || code === "CV") {
 if (code === "OR") {
   await loadUnpaidInvoices();
 }
-      setMode("list");
+
+      // Phase 7B (spec section 19, Playwright test A/B): saving an EXISTING
+      // voucher returns to its read-only view instead of the list - the
+      // voucher is now the workspace, matching "View -> Edit -> Save Draft
+      // -> View again". A brand-new transaction has no prior "view" to
+      // return to, so it keeps the original list-return behavior.
+      if (isExisting) {
+        await handleView({ id: selectedTransaction.id });
+      } else {
+        setMode("list");
+      }
     } catch (err) {
       console.error("SAVE TRANSACTION ERROR:", err);
       alert("Unable to connect to server.");
@@ -1886,13 +2160,22 @@ if (code === "OR") {
                   type="text"
                   placeholder="Search transaction..."
                   className="transaction-input"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  aria-label="Search transactions"
                 />
 
-                <select className="transaction-input">
-                  <option>All Status</option>
-                  <option>Draft</option>
-                  <option>Posted</option>
-                  <option>Cancelled</option>
+                <select
+                  className="transaction-input"
+                  value={statusFilter}
+                  onChange={(e) => setStatusFilter(e.target.value)}
+                  aria-label="Filter by status"
+                >
+                  {statusFilterOptions.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
                 </select>
               </div>
 
@@ -1916,8 +2199,14 @@ if (code === "OR") {
                           No transactions yet. Click Add {code} to create one.
                         </td>
                       </tr>
+                    ) : filteredTransactions.length === 0 ? (
+                      <tr>
+                        <td colSpan="6" className="transaction-empty">
+                          No transactions found.
+                        </td>
+                      </tr>
                     ) : (
-                      transactions.map((transaction) => (
+                      filteredTransactions.map((transaction) => (
                         <tr key={transaction.id}>
                           <td>
                             {transaction.referenceNo}
@@ -1945,7 +2234,7 @@ if (code === "OR") {
                               className="transaction-view-button"
                               onClick={() => handleView(transaction)}
                             >
-                              View / Edit
+                              View
                             </button>
                           </td>
                         </tr>
@@ -1963,7 +2252,11 @@ if (code === "OR") {
             <div className="transaction-topbar">
               <div>
                 <h1 className="transaction-title">
-                  {selectedTransaction ? `Edit ${code}` : `Add New ${code}`}
+                  {formMode === "edit"
+                    ? selectedTransaction
+                      ? `Edit ${code}`
+                      : `Add New ${code}`
+                    : `View ${code}`}
                 </h1>
                 <p className="transaction-subtitle">{title}</p>
               </div>
@@ -1971,7 +2264,7 @@ if (code === "OR") {
               <div className="transaction-form-top-actions no-print">
                 <div className="transaction-status-pill">{form.status}</div>
 
-                {code === "APV" && (
+                {code === "APV" && formMode === "edit" && (
                   sourcePoId ? (
                     <div className="transaction-status-pill">
                       Linked to PO {sourcePoNo || `#${sourcePoId}`}
@@ -1989,273 +2282,90 @@ if (code === "OR") {
                     </button>
                   )
                 )}
-
-                {printModuleType && selectedTransaction?.id ? (
-                  <button
-                    type="button"
-                    className="transaction-secondary-button"
-                    onClick={() => setShowPrintOptionsModal(true)}
-                  >
-                    🖨 Print
-                  </button>
-                ) : (
-                  <div className="print-dropdown">
-                    <button type="button" className="transaction-secondary-button">
-                      🖨 Print / Export
-                    </button>
-
-                    <div className="print-dropdown-menu">
-                      <button type="button" onClick={handlePrint}>
-                        Print to Printer
-                      </button>
-                      <button type="button" onClick={handleExportCSV}>
-                        Export to Excel / CSV
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {recurringModuleType && selectedTransaction?.id && (
-                  <button
-                    type="button"
-                    className="transaction-secondary-button"
-                    onClick={() => setShowRecurringModal(true)}
-                  >
-                    🔁 Make Recurring
-                  </button>
-                )}
-
-                <button
-                  className="transaction-secondary-button"
-                  onClick={handleBackToList}
-                >
-                  ← Back to List
-                </button>
               </div>
             </div>
 
-            <div className="transaction-card">
-              <div className="transaction-grid">
-                <div className="transaction-field">
-                  <label className="transaction-label">Date</label>
-                  <input
-                    type="date"
-                    value={form.date}
-                    onChange={(e) => updateForm("date", e.target.value)}
-                    className="transaction-input"
-                  />
-                </div>
+            {/* Phase 7B: the single in-voucher action surface - replaces
+                the old top-actions Print/Make Recurring/Back-to-List
+                buttons AND the old bottom action bar (see the Phase 7B
+                report's "bottom-bar removal/replacement" item). */}
+            <VoucherToolbar
+              formMode={formMode}
+              isNew={!selectedTransaction?.id}
+              saving={saving}
+              deleting={deleting}
+              code={code}
+              showEdit={toolbarVisibility.showEdit}
+              showDelete={toolbarVisibility.showDelete}
+              showPrint={!!printModuleType && toolbarVisibility.showPrint}
+              showRecurring={!!recurringModuleType}
+              showPrevious
+              showNext
+              hasPrevious={hasPreviousTransaction}
+              hasNext={hasNextTransaction}
+              showPost
+              onEdit={handleEditClick}
+              onDelete={handleDeleteClick}
+              onPrint={() => setShowPrintOptionsModal(true)}
+              onRecurring={() => setShowRecurringModal(true)}
+              onPrevious={handlePreviousTransaction}
+              onNext={handleNextTransaction}
+              onBackToList={handleBackToList}
+              onSaveDraft={() => handleSave("Draft")}
+              onPost={handlePostTransactionClick}
+            />
 
-                <div className="transaction-field">
-                  <label className="transaction-label">Reference No.</label>
-                  <input
-                    type="text"
-                    value={form.referenceNo}
-                    onChange={(e) => updateForm("referenceNo", e.target.value)}
-                    placeholder={`${code}-000001`}
-                    className="transaction-input"
-                  />
-                </div>
+            {/* Phase 7E section 7: view mode reads like a real accounting
+                document with clearly labeled sections (Voucher Information /
+                Accounting Entries / Totals) rather than an unlabeled block
+                of fields - edit mode skips this title since the page's own
+                "Edit {code}" heading already establishes context. */}
+            {formMode === "view" && (
+              <h2 className="transaction-view-section-title">Voucher Information</h2>
+            )}
 
-                <div className="transaction-field">
-                  <label className="transaction-label">{partyLabel}</label>
-                  <div className="transaction-party-row">
-                    <input
-                      type="text"
-                      list={`${code}-party-list`}
-                      value={form.party}
-                      onChange={(e) => handlePartyChange(e.target.value)}
-                      placeholder={`Select ${partyLabel.toLowerCase()}`}
-                      className="transaction-input"
-                    />
-
-                    <datalist id={`${code}-party-list`}>
-                      {partyOptions.map((party) => (
-                        <option key={party.id} value={party.name}>
-                          {party.code} - {party.type}
-                        </option>
-                      ))}
-                    </datalist>
-
-                    {partyType && (
-                      <button
-                        type="button"
-                        className="transaction-party-add-btn"
-                        onClick={() => setShowPartyModal(true)}
-                        title={
-                          partyType === "BOTH"
-                            ? "Add New Customer or Supplier"
-                            : `Add New ${partyType === "SUPPLIER" ? "Supplier" : "Customer"}`
-                        }
-                        aria-label={
-                          partyType === "BOTH"
-                            ? "Add New Customer or Supplier"
-                            : `Add New ${partyType === "SUPPLIER" ? "Supplier" : "Customer"}`
-                        }
-                      >
-                        +
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {partyType && (
-                  <PartyQuickAddModal
-                    open={showPartyModal}
-                    partyType={partyType}
-                    onClose={() => setShowPartyModal(false)}
-                    onCreated={handlePartyCreated}
-                  />
-                )}
-
-                <div className="transaction-field">
-                  <label className="transaction-label">
-                    {showCheckNo ? "Check No." : "Transaction Type"}
-                  </label>
-                  <input
-                    type="text"
-                    value={showCheckNo ? form.checkNo : title}
-                    onChange={(e) => {
-                      if (showCheckNo) updateForm("checkNo", e.target.value);
-                    }}
-                    readOnly={!showCheckNo}
-                    placeholder={showCheckNo ? "Enter check number" : ""}
-                    className={`transaction-input ${
-                      !showCheckNo ? "transaction-input-readonly" : ""
-                    }`}
-                  />
-                </div>
-              </div>
-
-              <div className="transaction-memo-wrap">
-                <label className="transaction-label">Description / Memo</label>
-                <textarea
-                  value={form.description}
-                  onChange={(e) => updateForm("description", e.target.value)}
-                  rows={3}
-                  placeholder="Enter transaction details"
-                  className="transaction-textarea"
-                />
-              </div>
-            </div>
+            <TransactionVoucherHeader
+              viewOnly={formMode === "view"}
+              code={code}
+              title={title}
+              partyLabel={partyLabel}
+              partyType={partyType}
+              showCheckNo={showCheckNo}
+              form={form}
+              updateForm={updateForm}
+              handlePartyChange={handlePartyChange}
+              partyOptions={partyOptions}
+              showPartyModal={showPartyModal}
+              setShowPartyModal={setShowPartyModal}
+              handlePartyCreated={handlePartyCreated}
+            />
 
             {CURRENCY_ELIGIBLE && (
-              <div className="transaction-card">
-                <div className="transaction-section-header">
-                  <div>
-                    <h2 className="transaction-section-title">Currency</h2>
-                    <p className="transaction-section-subtext">
-                      {currencySnapshot?.rateLocked
-                        ? "This transaction is posted - its exchange rate is locked and cannot be changed."
-                        : "Select the currency this transaction is denominated in. Defaults to the company base currency."}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="transaction-grid">
-                  <div className="transaction-field">
-                    <label className="transaction-label">Transaction Currency</label>
-                    <select
-                      value={selectedCurrencyId}
-                      onChange={(e) => handleCurrencyChange(e.target.value)}
-                      disabled={currencySnapshot?.rateLocked}
-                      className="transaction-input"
-                    >
-                      {currencyOptions.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.currencySymbol} {c.currencyCode} — {c.currencyName}{c.isBaseCurrency ? " (Base)" : ""}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
-                {rateError && <p className="transaction-rate-error">{rateError}</p>}
-
-                {String(selectedCurrencyId) !== String(baseCurrency?.id || "") && (
-                  <div className="transaction-rate-card">
-                    {rateResolving ? (
-                      <p>Resolving exchange rate…</p>
-                    ) : currencySnapshot ? (
-                      <>
-                        <div className="transaction-rate-headline">
-                          1 {currencyOptions.find((c) => String(c.id) === String(selectedCurrencyId))?.currencyCode} ={" "}
-                          {Number(currencySnapshot.exchangeRate).toFixed(6)} {baseCurrency?.currencyCode}
-                        </div>
-                        <div className="transaction-rate-meta">
-                          <span>Source: <strong>{currencySnapshot.rateSource || "—"}</strong></span>
-                          {currencySnapshot.rateBasis && <span>Basis: <strong>{currencySnapshot.rateBasis}</strong></span>}
-                          <span>Effective: <strong>{currencySnapshot.rateDate || "—"}</strong></span>
-                          <span>Status: <strong>{currencySnapshot.rateStatus || "—"}</strong></span>
-                          {currencySnapshot.rateLocked && <span className="transaction-rate-locked">🔒 Locked (Posted)</span>}
-                          {pendingRateAction === "override" && <span className="transaction-rate-override-badge">Manual Override</span>}
-                        </div>
-
-                        {!currencySnapshot.rateLocked && (
-                          <div className="transaction-rate-actions">
-                            <button type="button" className="transaction-secondary-button" onClick={handleRefreshRateClick} disabled={rateResolving}>
-                              Refresh Rate
-                            </button>
-                            {canCurrency(CURRENCY_MODULE_KEY, "OVERRIDE_RATE") && (
-                              <button type="button" className="transaction-secondary-button" onClick={() => setShowOverrideForm((v) => !v)}>
-                                Manual Override
-                              </button>
-                            )}
-                          </div>
-                        )}
-
-                        {refreshPreview && (
-                          <div className="transaction-rate-refresh-preview">
-                            <p>
-                              Previous Rate: <strong>{Number(currencySnapshot.exchangeRate).toFixed(6)}</strong> (as of {currencySnapshot.rateDate}) →{" "}
-                              New Rate: <strong>{Number(refreshPreview.exchangeRate).toFixed(6)}</strong> (as of {refreshPreview.rateDate}, {refreshPreview.rateSource})
-                            </p>
-                            <div className="transaction-rate-actions">
-                              <button type="button" className="transaction-secondary-button" onClick={() => setRefreshPreview(null)}>Cancel</button>
-                              <button type="button" className="transaction-primary-button" onClick={confirmRefresh}>Use New Rate</button>
-                            </div>
-                          </div>
-                        )}
-
-                        {showOverrideForm && (
-                          <div className="transaction-rate-override-form">
-                            <div className="transaction-grid">
-                              <div className="transaction-field">
-                                <label className="transaction-label">Override Rate</label>
-                                <input
-                                  type="number"
-                                  step="0.0000000001"
-                                  min="0"
-                                  value={overrideRateValue}
-                                  onChange={(e) => setOverrideRateValue(e.target.value)}
-                                  placeholder={String(currencySnapshot.exchangeRate)}
-                                  className="transaction-input"
-                                />
-                              </div>
-                              <div className="transaction-field">
-                                <label className="transaction-label">Reason (required)</label>
-                                <input
-                                  type="text"
-                                  value={overrideReason}
-                                  onChange={(e) => setOverrideReason(e.target.value)}
-                                  placeholder="e.g. Bank settlement rate used"
-                                  className="transaction-input"
-                                />
-                              </div>
-                            </div>
-                            <div className="transaction-rate-actions">
-                              <button type="button" className="transaction-secondary-button" onClick={() => setShowOverrideForm(false)}>Cancel</button>
-                              <button type="button" className="transaction-primary-button" onClick={submitOverride}>Apply Override</button>
-                            </div>
-                          </div>
-                        )}
-                      </>
-                    ) : (
-                      <p>No exchange rate available yet.</p>
-                    )}
-                  </div>
-                )}
-              </div>
+              <CurrencySummary
+                currencySnapshot={currencySnapshot}
+                selectedCurrencyId={selectedCurrencyId}
+                handleCurrencyChange={handleCurrencyChange}
+                currencyOptions={currencyOptions}
+                baseCurrency={baseCurrency}
+                rateError={rateError}
+                rateResolving={rateResolving}
+                pendingRateAction={pendingRateAction}
+                handleRefreshRateClick={handleRefreshRateClick}
+                canCurrency={can}
+                currencyModuleKey={CURRENCY_MODULE_KEY}
+                showOverrideForm={showOverrideForm}
+                setShowOverrideForm={setShowOverrideForm}
+                refreshPreview={refreshPreview}
+                setRefreshPreview={setRefreshPreview}
+                confirmRefresh={confirmRefresh}
+                overrideRateValue={overrideRateValue}
+                setOverrideRateValue={setOverrideRateValue}
+                overrideReason={overrideReason}
+                setOverrideReason={setOverrideReason}
+                submitOverride={submitOverride}
+                viewOnly={formMode === "view"}
+                totals={totals}
+              />
             )}
 
             {code === "INV" && (
@@ -2263,41 +2373,52 @@ if (code === "OR") {
                 <div className="transaction-section-header">
                   <div>
                     <h2 className="transaction-section-title">Invoice Type</h2>
-                    <p className="transaction-section-subtext">
-                      Recurring invoices are for billing the same customer on a repeating schedule.
-                    </p>
+                    {formMode === "edit" && (
+                      <p className="transaction-section-subtext">
+                        Recurring invoices are for billing the same customer on a repeating schedule.
+                      </p>
+                    )}
                   </div>
                 </div>
 
-                <div className="transaction-grid">
-                  <div className="transaction-field">
-                    <label className="transaction-label">Type</label>
-                    <select
-                      className="transaction-input"
-                      value={invoiceType}
-                      onChange={(e) => setInvoiceType(e.target.value)}
-                    >
-                      <option value="Standard">Standard</option>
-                      <option value="Recurring">Recurring</option>
-                    </select>
+                {formMode === "view" ? (
+                  <div className="transaction-view-grid">
+                    <ViewField label="Type" value={invoiceType} />
+                    {invoiceType === "Recurring" && (
+                      <ViewField label="Recurrence" value={recurrenceFrequency} />
+                    )}
                   </div>
-
-                  {invoiceType === "Recurring" && (
+                ) : (
+                  <div className="transaction-grid">
                     <div className="transaction-field">
-                      <label className="transaction-label">Recurrence</label>
+                      <label className="transaction-label">Type</label>
                       <select
                         className="transaction-input"
-                        value={recurrenceFrequency}
-                        onChange={(e) => setRecurrenceFrequency(e.target.value)}
+                        value={invoiceType}
+                        onChange={(e) => setInvoiceType(e.target.value)}
                       >
-                        <option value="Weekly">Weekly</option>
-                        <option value="Monthly">Monthly</option>
-                        <option value="Quarterly">Quarterly</option>
-                        <option value="Annually">Annually</option>
+                        <option value="Standard">Standard</option>
+                        <option value="Recurring">Recurring</option>
                       </select>
                     </div>
-                  )}
-                </div>
+
+                    {invoiceType === "Recurring" && (
+                      <div className="transaction-field">
+                        <label className="transaction-label">Recurrence</label>
+                        <select
+                          className="transaction-input"
+                          value={recurrenceFrequency}
+                          onChange={(e) => setRecurrenceFrequency(e.target.value)}
+                        >
+                          <option value="Weekly">Weekly</option>
+                          <option value="Monthly">Monthly</option>
+                          <option value="Quarterly">Quarterly</option>
+                          <option value="Annually">Annually</option>
+                        </select>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
@@ -2306,86 +2427,137 @@ if (code === "OR") {
                 <div className="transaction-section-header">
                   <div>
                     <h2 className="transaction-section-title">Cash / Check Details</h2>
-                    <p className="transaction-section-subtext">
-                      Captures the bank account and check reference this {code === "OR" ? "receipt" : "payment"}{" "}
-                      moved through, for bank reconciliation.
-                    </p>
+                    {formMode === "edit" && (
+                      <p className="transaction-section-subtext">
+                        Captures the bank account and check reference this {code === "OR" ? "receipt" : "payment"}{" "}
+                        moved through, for bank reconciliation.
+                      </p>
+                    )}
                   </div>
                 </div>
 
-                <div className="transaction-grid">
-                  <div className="transaction-field">
-                    <label className="transaction-label">Payment Method</label>
-                    <select
-                      className="transaction-input"
-                      value={paymentMethod}
-                      onChange={(e) => setPaymentMethod(e.target.value)}
-                    >
-                      <option value="Cash">Cash</option>
-                      <option value="Check">Check</option>
-                    </select>
+                {formMode === "view" ? (
+                  <div className="transaction-view-grid">
+                    <ViewField label="Payment Method" value={paymentMethod} />
+                    <ViewField
+                      label="Bank Account"
+                      value={
+                        bankAccounts.find((b) => String(b.id) === String(bankAccountId))
+                          ? `${bankAccounts.find((b) => String(b.id) === String(bankAccountId)).bankCode} - ${bankAccounts.find((b) => String(b.id) === String(bankAccountId)).bankName}`
+                          : null
+                      }
+                    />
+                    {paymentMethod === "Check" && (
+                      <>
+                        <ViewField label="Check No." value={checkNumber} />
+                        <ViewField label="Check Date" value={checkDate} />
+                      </>
+                    )}
                   </div>
+                ) : (
+                  <div className="transaction-grid">
+                    <div className="transaction-field">
+                      <label className="transaction-label">Payment Method</label>
+                      <select
+                        className="transaction-input"
+                        value={paymentMethod}
+                        onChange={(e) => setPaymentMethod(e.target.value)}
+                      >
+                        <option value="Cash">Cash</option>
+                        <option value="Check">Check</option>
+                      </select>
+                    </div>
 
-                  <div className="transaction-field">
-                    <label className="transaction-label">Bank Account</label>
-                    <select
-                      className="transaction-input"
-                      value={bankAccountId}
-                      onChange={(e) => setBankAccountId(e.target.value)}
-                    >
-                      <option value="">Select bank account</option>
-                      {bankAccounts.map((bank) => (
-                        <option key={bank.id} value={bank.id}>
-                          {bank.bankCode} - {bank.bankName} ({bank.accountNo})
-                        </option>
-                      ))}
-                    </select>
+                    <div className="transaction-field">
+                      <label className="transaction-label">Bank Account</label>
+                      <select
+                        className="transaction-input"
+                        value={bankAccountId}
+                        onChange={(e) => setBankAccountId(e.target.value)}
+                      >
+                        <option value="">Select bank account</option>
+                        {bankAccounts.map((bank) => (
+                          <option key={bank.id} value={bank.id}>
+                            {bank.bankCode} - {bank.bankName} ({bank.accountNo})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {paymentMethod === "Check" && (
+                      <>
+                        <div className="transaction-field">
+                          <label className="transaction-label">Check No.</label>
+                          <input
+                            type="text"
+                            className="transaction-input"
+                            value={checkNumber}
+                            onChange={(e) => setCheckNumber(e.target.value)}
+                            placeholder="Enter check number"
+                          />
+                        </div>
+
+                        <div className="transaction-field">
+                          <label className="transaction-label">Check Date</label>
+                          <input
+                            type="date"
+                            className="transaction-input"
+                            value={checkDate}
+                            onChange={(e) => setCheckDate(e.target.value)}
+                          />
+                        </div>
+                      </>
+                    )}
                   </div>
-
-                  {paymentMethod === "Check" && (
-                    <>
-                      <div className="transaction-field">
-                        <label className="transaction-label">Check No.</label>
-                        <input
-                          type="text"
-                          className="transaction-input"
-                          value={checkNumber}
-                          onChange={(e) => setCheckNumber(e.target.value)}
-                          placeholder="Enter check number"
-                        />
-                      </div>
-
-                      <div className="transaction-field">
-                        <label className="transaction-label">Check Date</label>
-                        <input
-                          type="date"
-                          className="transaction-input"
-                          value={checkDate}
-                          onChange={(e) => setCheckDate(e.target.value)}
-                        />
-                      </div>
-                    </>
-                  )}
-                </div>
+                )}
               </div>
             )}
 
-            {ewtEligible && (
+            {/* Phase 7C (spec section 3/25): the permanent EWT card is
+                retired for Invoice/APV - EWT is now entered via "+ Add
+                Entry" and lives as a journal line + View/Edit Tax Details.
+                OR/CV/PO keep this exact card, completely untouched, since
+                Phase 7C only restructures Invoice/APV (spec section 30). */}
+            {ewtEligible && !["INV", "APV"].includes(code) && (
               <div className="transaction-card">
                 <div className="transaction-section-header">
                   <div>
                     <h2 className="transaction-section-title">
                       {ewtOutbound ? "Withholding Tax" : "Tax Withheld by Customer"}
                     </h2>
-                    <p className="transaction-section-subtext">
-                      {ewtOutbound
-                        ? "Optional — only fill in if tax was withheld from this payment."
-                        : "Optional — only fill in if the customer withheld tax from this amount (per the Form 2307 they issue you)."}
-                      {" "}For VATable transactions, EWT is computed on the amount exclusive of VAT.
-                    </p>
+                    {formMode === "edit" && (
+                      <p className="transaction-section-subtext">
+                        {ewtOutbound
+                          ? "Optional — only fill in if tax was withheld from this payment."
+                          : "Optional — only fill in if the customer withheld tax from this amount (per the Form 2307 they issue you)."}
+                        {" "}For VATable transactions, EWT is computed on the amount exclusive of VAT.
+                      </p>
+                    )}
                   </div>
                 </div>
 
+                {hasSourceApplications && (
+                  <p className="transaction-tax-duplication-warning" role="alert">
+                    ⚠ {sourceDuplicationWarning}
+                  </p>
+                )}
+
+                {formMode === "view" ? (
+                  atcCode ? (
+                    <div className="transaction-view-grid">
+                      <ViewField label="ATC Code" value={atcCode} />
+                      <ViewField
+                        label="Tax Type"
+                        value={selectedEwt ? (selectedEwt.taxType === "FINAL" ? "Final Tax" : "Expanded Withholding Tax") : null}
+                      />
+                      <ViewField label="EWT Base (VAT-exclusive)" value={formatMoney(ewtTaxableBase)} />
+                      <ViewField label="Tax Withheld Amount" value={formatMoney(taxWithheldAmount)} />
+                      {ewtOutbound && <ViewField label="Payee TIN" value={payeeTin} />}
+                    </div>
+                  ) : (
+                    <p className="transaction-section-subtext">No withholding tax recorded on this transaction.</p>
+                  )
+                ) : (
                 <div className="transaction-grid">
                   <div className="transaction-field">
                     <label className="transaction-label">ATC Code</label>
@@ -2393,6 +2565,8 @@ if (code === "OR") {
                       value={atcCode}
                       onChange={(e) => handleAtcCodeChange(e.target.value)}
                       className="transaction-input"
+                      disabled={hasSourceApplications}
+                      title={hasSourceApplications ? sourceDuplicationWarning : undefined}
                     >
                       <option value="">None</option>
                       {ewtCodes.map((ewt) => (
@@ -2447,7 +2621,7 @@ if (code === "OR") {
                         setTaxWithheldAmount(e.target.value);
                         setTaxWithheldTouched(true);
                       }}
-                      disabled={!atcCode}
+                      disabled={!atcCode || hasSourceApplications}
                       placeholder="0.00"
                       className="transaction-input"
                     />
@@ -2466,10 +2640,13 @@ if (code === "OR") {
                     </div>
                   )}
                 </div>
+                )}
               </div>
             )}
 
-            {vatType && (
+            {/* Phase 7C: same retirement as the EWT card above, for the
+                same two modules only - see spec section 3/6/13/28/29. */}
+            {formMode === "edit" && vatType && !["INV", "APV"].includes(code) && (
               <div className="transaction-card">
                 <div className="transaction-section-header">
                   <div>
@@ -2480,6 +2657,12 @@ if (code === "OR") {
                   </div>
                 </div>
 
+                {hasSourceApplications && (
+                  <p className="transaction-tax-duplication-warning" role="alert">
+                    ⚠ {sourceDuplicationWarning}
+                  </p>
+                )}
+
                 <div className="transaction-grid">
                   <div className="transaction-field">
                     <label className="transaction-label">{vatType} Account</label>
@@ -2487,6 +2670,8 @@ if (code === "OR") {
                       value={vatAccountId}
                       onChange={(e) => setVatAccountId(e.target.value)}
                       className="transaction-input"
+                      disabled={hasSourceApplications}
+                      title={hasSourceApplications ? sourceDuplicationWarning : undefined}
                     >
                       <option value="">Select account</option>
                       {accountOptions.map((account) => (
@@ -2505,6 +2690,7 @@ if (code === "OR") {
                       step="0.01"
                       value={vatTaxableAmount}
                       onChange={(e) => setVatTaxableAmount(e.target.value)}
+                      disabled={hasSourceApplications}
                       placeholder="0.00"
                       className="transaction-input"
                     />
@@ -2548,167 +2734,50 @@ if (code === "OR") {
             <div className="transaction-card">
               <div className="transaction-section-header">
                 <div>
-                  <h2 className="transaction-section-title">Journal Entries</h2>
-                  <p className="transaction-section-subtext">
-                    Minimum of one debit and one credit
-                  </p>
+                  <h2 className="transaction-section-title">
+                    {formMode === "view" ? "Accounting Entries" : "Journal Entries"}
+                  </h2>
+                  {formMode === "edit" && (
+                    <p className="transaction-section-subtext">
+                      Minimum of one debit and one credit
+                    </p>
+                  )}
                 </div>
 
-                <div className="transaction-section-actions">
-                  
-                  <button onClick={addLine} className="transaction-add-button">
-                    + Add Line
-                  </button>
-                </div>
+                {formMode === "edit" && (
+                  <div className="transaction-section-actions">
+                    {code === "INV" || code === "APV" ? (
+                      <AddEntryMenu
+                        onRegular={addLine}
+                        taxOptions={[
+                          ...(code === "INV" ? [{ key: "output_vat", label: "Output VAT", onClick: () => openAddVatEntry("OUTPUT") }] : []),
+                          ...(code === "APV" ? [{ key: "input_vat", label: "Input VAT", onClick: () => openAddVatEntry("INPUT") }] : []),
+                          { key: "ewt", label: "EWT / Withholding Tax", onClick: openAddEwtEntry },
+                        ]}
+                      />
+                    ) : (
+                      <button onClick={addLine} className="transaction-add-button">
+                        + Add Line
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
 
               <div className="transaction-table-container">
                 <table className="transaction-table">
-                  <thead>
-                    <tr>
-                      <th>Account</th>
-                      <th>Particulars</th>
-                      <th>Gen Ref</th>
-                      <th>Gen Name</th>
-                      <th className="text-right">Debit</th>
-                      <th className="text-right">Credit</th>
-                      <th className="text-center">Action</th>
-                    </tr>
-                  </thead>
-
-                  <tbody>
-                    {lines.map((line) => (
-                      <tr key={line.id}>
-                        <td>
-                          <select
-                            value={line.accountId}
-                            onChange={(e) =>
-                              updateLine(line.id, "accountId", e.target.value)
-                            }
-                            className="transaction-table-input"
-                          >
-                            <option value="">Select account</option>
-                            {accountOptions.map((account) => (
-                              <option key={account.id} value={account.id}>
-                                {account.code} - {account.title}
-                              </option>
-                            ))}
-                          </select>
-                        </td>
-
-                        <td>
-                          <input
-                            type="text"
-                            value={line.particulars}
-                            onChange={(e) =>
-                              updateLine(line.id, "particulars", e.target.value)
-                            }
-                            placeholder="Entry description"
-                            className="transaction-table-input"
-                          />
-                        </td>
-
-                        <td>
-                          <select
-  value={line.genRef || ""}
-  onChange={(e) =>
-    updateLine(line.id, "genRef", e.target.value)
-  }
-  disabled={!isAPorARAccount(line.accountId)}
-  className="transaction-table-input transaction-gen-input"
->
-  <option value="">
-    {isAPorARAccount(line.accountId)
-      ? "Select Reference"
-      : "Not required"}
-  </option>
-
-  {partyOptions.map((party) => (
-    <option key={party.id} value={party.code}>
-      {party.code}
-    </option>
-  ))}
-</select>
-                        </td>
-
-                        <td>
-                          <input
-  type="text"
-  value={line.genName || ""}
-  readOnly
-  disabled={!isAPorARAccount(line.accountId)}
-  placeholder={
-    isAPorARAccount(line.accountId)
-      ? "Gen Name"
-      : "Not required"
-  }
-  className="transaction-table-input transaction-gen-input"
-/>
-                        </td>
-
-                        <td>
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            value={line.debit}
-                            onChange={(e) =>
-                              updateLine(line.id, "debit", e.target.value)
-                            }
-                            placeholder="0.00"
-                            className="transaction-table-input transaction-table-input-right"
-                          />
-                        </td>
-
-                        <td>
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            value={line.credit}
-                            onChange={(e) =>
-                              updateLine(line.id, "credit", e.target.value)
-                            }
-                            placeholder="0.00"
-                            className="transaction-table-input transaction-table-input-right"
-                          />
-                        </td>
-
-                        <td className="text-center">
-                          <button
-                            onClick={() => removeLine(line.id)}
-                            disabled={lines.length <= 2}
-                            className="transaction-remove-button"
-                          >
-                            Remove
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-
-                  <tfoot>
-                    <tr>
-                      <td colSpan={4} className="transaction-total-label">
-                        Totals
-                      </td>
-                      <td className="transaction-total-amount">
-                        ₱ {formatMoney(totals.totalDebit)}
-                      </td>
-                      <td className="transaction-total-amount">
-                        ₱ {formatMoney(totals.totalCredit)}
-                      </td>
-                      <td className="transaction-total-status">
-                        <span
-                          className={`transaction-balance-badge ${
-                            totals.balanced ? "balanced" : "not-balanced"
-                          }`}
-                        >
-                          {totals.balanced ? "Balanced" : "Not Balanced"}
-                        </span>
-                      </td>
-                    </tr>
-                  </tfoot>
+                  <AccountingEntriesGrid
+                    lines={lines}
+                    accountOptions={accountOptions}
+                    partyOptions={partyOptions}
+                    updateLine={updateLine}
+                    removeLine={handleRemoveTaxAwareLine}
+                    isAPorARAccount={isAPorARAccount}
+                    onEditTaxDetails={openEditVatEntryOrEwt}
+                    onViewTaxDetails={openViewTaxDetails}
+                    viewOnly={formMode === "view"}
+                  />
+                  <EntryTotals totals={totals} viewOnly={formMode === "view"} />
                 </table>
               </div>
 
@@ -2730,6 +2799,7 @@ if (code === "OR") {
                       type="button"
                       className="apv-modal-close"
                       onClick={() => setShowApvModal(false)}
+                      aria-label="Close"
                     >
                       ×
                     </button>
@@ -2891,6 +2961,7 @@ if (code === "OR") {
                       type="button"
                       className="apv-modal-close"
                       onClick={() => setShowInvoiceModal(false)}
+                      aria-label="Close"
                     >
                       ×
                     </button>
@@ -3048,6 +3119,7 @@ if (code === "OR") {
                       type="button"
                       className="apv-modal-close"
                       onClick={() => setShowPoModal(false)}
+                      aria-label="Close"
                     >
                       ×
                     </button>
@@ -3111,58 +3183,48 @@ if (code === "OR") {
             )}
 
 
-            <div className="transaction-bottom-bar no-print">
-              {printModuleType && selectedTransaction?.id ? (
-                <button
-                  type="button"
-                  className="transaction-secondary-button"
-                  onClick={() => setShowPrintOptionsModal(true)}
-                >
-                  🖨 Print
-                </button>
-              ) : (
-                <div className="print-dropdown">
-                  <button type="button" className="transaction-secondary-button">
-                    🖨 Print / Export
-                  </button>
-
-                  <div className="print-dropdown-menu">
-                    <button type="button" onClick={handlePrint}>
-                      Print to Printer
+            {/* Phase 7B Delete confirmation (spec section 11) - reuses the
+                existing apv-modal-* dialog pattern already established for
+                the APV/Invoice/PO application modals above, sized down via
+                .confirm-dialog. Never deletes on click. */}
+            {showDeleteConfirm && (
+              <div className="apv-modal-overlay">
+                <div className="apv-modal confirm-dialog">
+                  <div className="apv-modal-header">
+                    <div>
+                      <h2>Delete this Draft {title}?</h2>
+                      <p>This action cannot be undone.</p>
+                    </div>
+                    <button
+                      type="button"
+                      className="apv-modal-close"
+                      onClick={cancelDeleteConfirm}
+                      aria-label="Close"
+                    >
+                      ×
                     </button>
-                    <button type="button" onClick={handleExportCSV}>
-                      Export to Excel / CSV
+                  </div>
+                  <div className="apv-modal-footer">
+                    <button
+                      type="button"
+                      className="transaction-secondary-button"
+                      onClick={cancelDeleteConfirm}
+                      disabled={deleting}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      className="transaction-danger-button"
+                      onClick={confirmDelete}
+                      disabled={deleting}
+                    >
+                      {deleting ? "Deleting..." : "Delete"}
                     </button>
                   </div>
                 </div>
-              )}
-
-              {recurringModuleType && selectedTransaction?.id && (
-                <button
-                  type="button"
-                  className="transaction-secondary-button"
-                  onClick={() => setShowRecurringModal(true)}
-                >
-                  🔁 Make Recurring
-                </button>
-              )}
-
-              <button
-                onClick={() => handleSave("Draft")}
-                className="transaction-secondary-button"
-                disabled={saving}
-              >
-                {saving ? "Saving..." : "Save Draft"}
-              </button>
-
-              <button
-  onClick={handlePostTransactionClick}
-  className="transaction-primary-button"
-  disabled={saving}
->
-  {saving ? "Saving..." : "Post Transaction"}
-</button>
-            </div>
+              </div>
+            )}
           </>
         )}
 
@@ -3184,6 +3246,53 @@ if (code === "OR") {
             transactionId={selectedTransaction.id}
             currentUser={getCurrentUser()}
           />
+        )}
+
+        {(code === "INV" || code === "APV") && (
+          <>
+            <VatEntryModal
+              open={showVatEntryModal}
+              onClose={() => { setShowVatEntryModal(false); setEditingTaxLineId(null); }}
+              direction={vatEntryDirection}
+              partyLabel={partyLabel}
+              partyOptions={partyOptions}
+              accountOptions={accountOptions}
+              defaultDate={form.date}
+              existingEntry={editingTaxLineId ? lines.find((l) => l.id === editingTaxLineId)?.taxEntry : null}
+              onConfirm={handleVatEntryConfirm}
+            />
+
+            <EwtEntryModal
+              open={showEwtEntryModal}
+              onClose={() => { setShowEwtEntryModal(false); setEditingTaxLineId(null); }}
+              ewtCodes={ewtCodes}
+              direction={ewtOutbound ? "OUTBOUND" : "INBOUND"}
+              partyLabel={partyLabel}
+              defaultParty={{
+                name: form.party,
+                id: form.partyId,
+                tin: partyOptions.find((p) => p.id === form.partyId)?.tin || "",
+                address: [
+                  partyOptions.find((p) => p.id === form.partyId)?.address1,
+                  partyOptions.find((p) => p.id === form.partyId)?.address2,
+                  partyOptions.find((p) => p.id === form.partyId)?.address3,
+                ].filter(Boolean).join(", "),
+              }}
+              accountOptions={accountOptions}
+              lines={lines}
+              grossAmount={totals.totalCredit}
+              vatAccountId={lines.find((l) => l.taxEntry?.entryType === "OUTPUT_VAT" || l.taxEntry?.entryType === "INPUT_VAT")?.accountId}
+              defaultDate={form.date}
+              existingEntry={editingTaxLineId ? lines.find((l) => l.id === editingTaxLineId)?.taxEntry : null}
+              onConfirm={handleEwtEntryConfirm}
+            />
+
+            <TaxDetailsViewModal
+              open={showTaxDetailsView}
+              onClose={() => { setShowTaxDetailsView(false); setViewingTaxEntry(null); }}
+              entry={viewingTaxEntry}
+            />
+          </>
         )}
       </div>
     </div>

@@ -149,6 +149,29 @@
   color: var(--text-secondary);
 }
 
+.transaction-view-section-title {
+  margin: 20px 0 8px;
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+}
+
+.transaction-view-section-title:first-child {
+  margin-top: 0;
+}
+
+.transaction-tax-duplication-warning {
+  margin: 12px 0 0;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: var(--warning-bg);
+  color: var(--warning-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
 .transaction-add-button {
   border: 1px solid var(--border-color-strong);
   background: var(--bg-surface);
@@ -882,4 +905,157 @@
     max-width: 1400px;
     margin: 0 auto;
   }
+}
+
+/* ===================== Phase 7B: in-voucher toolbar ===================== */
+
+.voucher-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+  padding: 14px 18px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  box-shadow: 0 8px 24px rgba(var(--shadow-rgb), 0.05);
+}
+
+.voucher-toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.transaction-danger-button {
+  height: 46px;
+  border-radius: 12px;
+  border: 1px solid var(--danger-text, #b91c1c);
+  background: var(--bg-surface);
+  color: var(--danger-text, #b91c1c);
+  padding: 0 18px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.transaction-danger-button:hover:not(:disabled) {
+  background: var(--danger-bg);
+}
+
+.transaction-danger-button:disabled,
+.voucher-toolbar button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ===================== Phase 7B: read-only voucher fields ===================== */
+
+.transaction-view-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px 24px;
+}
+
+.transaction-view-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.transaction-view-field-wide {
+  margin-top: 18px;
+}
+
+.transaction-view-label {
+  font-weight: 700;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+}
+
+.transaction-view-value {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.transaction-view-value-block {
+  white-space: pre-wrap;
+  font-weight: 500;
+}
+
+/* Phase 7C fix: this is a <td> - `display: flex` here overrides its
+   default `display: table-cell` and breaks the whole table's column
+   layout (every cell collapses into a vertical stack instead of sitting
+   beside its row-mates). Caught via a Phase 7C Playwright screenshot of a
+   Posted voucher's Journal Entries grid - see the Phase 7C report's "bugs
+   discovered/fixed" item; this bug shipped in Phase 7B and had gone
+   undetected because no prior check actually looked at this grid's
+   rendered layout, only button text/visibility. `vertical-align: middle`
+   is the correct table-cell equivalent of the old `align-items: center`. */
+.transaction-view-cell {
+  padding: 0 12px;
+  height: 42px;
+  vertical-align: middle;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.transaction-view-cell.text-right {
+  text-align: right;
+}
+
+/* Phase 7B: a narrower apv-modal variant for the compact Delete
+   confirmation dialog (spec section 11) - reuses the same overlay/card/
+   footer structure as the APV/Invoice/PO application modals. */
+.confirm-dialog {
+  width: min(480px, 92vw);
+}
+
+/* ===================== Phase 7C: unified tax entry workflow ===================== */
+
+.transaction-field-wide {
+  grid-column: span 2;
+}
+
+.tax-entry-modal {
+  width: min(680px, 94vw);
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.tax-entry-modal-body {
+  padding: 20px 22px;
+}
+
+.add-entry-menu .print-dropdown-menu {
+  min-width: 220px;
+}
+
+.tax-entry-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 700;
+  border: none;
+  cursor: pointer;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.tax-entry-badge-input-vat,
+.tax-entry-badge-output-vat {
+  background: var(--info-bg);
+  color: var(--accent-blue);
+}
+
+.tax-entry-badge-ewt {
+  background: #ede9fe;
+  color: #5b21b6;
 }

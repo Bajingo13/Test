@@ -68,6 +68,10 @@ const MIGRATION_ORDER = [
   "checkpoint4i_company_phase_e_migration.sql",
   "checkpoint5_accounting_period_closing_migration.sql",
   "petty_cash_and_memo_migration.sql",
+  // Phase 7C - purely additive (one new standalone table, no ALTERs to
+  // anything else), depends only on companies/chart_of_accounts/
+  // general_libraries already existing in the baseline.
+  "phase7c_tax_schedule_migration.sql",
 ];
 
 module.exports = { MIGRATION_ORDER };
