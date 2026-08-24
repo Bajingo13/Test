@@ -10,6 +10,7 @@ export default function OR() {
       partyType="CUSTOMER"
       showCheckNo={true}
       printModuleType="or"
+      recurringModuleType="or"
       defaultDescription="Collection from customer"
       defaultLines={[
         {

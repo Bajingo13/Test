@@ -9,6 +9,7 @@ export default function CV() {
       partyLabel="Payee"
       partyType="SUPPLIER"
       printModuleType="cv"
+      recurringModuleType="cv"
       defaultDescription="Cash disbursement through check"
       defaultLines={[
         {

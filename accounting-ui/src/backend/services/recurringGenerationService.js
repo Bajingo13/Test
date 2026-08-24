@@ -19,6 +19,30 @@ const AccountingPeriodService = require("./accountingPeriodService");
 // Checkpoint 3D: totalDebit/totalCredit here are BASE-currency (already
 // converted by the caller) - foreignBalance seeds foreign_balance_amount
 // exactly like a manually-created foreign invoice does.
+// Checkpoint 6 (cross-module generalization): apv/jv/po/or/cv entries added
+// below, same shape as invoice's own entry - column lists copied verbatim
+// from each module's real manual POST /api/... handler in server.js so the
+// generated row is structurally identical to a manually-created one.
+//
+// Deliberate, audited omission across ALL FIVE new entries: none of them
+// set atc_code/tax_type/tax_rate/tax_withheld_amount/taxable_base (EWT
+// header-annotation columns), even though apv_headers/or_headers/
+// cv_headers/purchase_order_headers all have them. This exactly mirrors
+// the EXISTING, already-shipped, already-tested invoice entry above, which
+// has never set them either - invoice_headers has the same columns and
+// GENERATION_MODULE_CONFIG.invoice.buildHeaderInsert has never touched
+// them. The underlying GL amounts are NOT lost: any VAT/EWT-bearing line
+// (e.g. "Output VAT Payable", "Withholding Tax Payable") is a normal
+// template line and is copied/generated exactly like every other line -
+// only the header-level ATC-code/rate ANNOTATION used for BIR-form
+// reporting UI is not recomputed automatically. A user can add it back
+// when reviewing the Draft, exactly as they would for a manually-typed
+// entry missing that annotation. Recomputing it automatically would mean
+// either duplicating resolveTaxWithholding's math in a second place (drift
+// risk) or refactoring server.js's inline function into a shared module
+// neither of which the approved plan asked for - "preserve existing
+// Invoice behavior" was read as license to extend the SAME preserved
+// pattern, not to add a new capability invoice doesn't have.
 const GENERATION_MODULE_CONFIG = {
   invoice: {
     headerTable: "invoice_headers",
@@ -33,6 +57,99 @@ const GENERATION_MODULE_CONFIG = {
         foreign_paid_amount, foreign_balance_amount
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'Unpaid', 'Draft', 'Standard', NULL, ?, ?, ?)`,
       params: [companyId, voucherNo, partyId || null, partyName || "", transactionDate, dueDate, referenceNo || "", description || "", remarks || "", totalDebit, totalCredit, totalDebit, currencyId, isForeign ? 0 : null, isForeign ? foreignBalance : null],
+    }),
+  },
+  apv: {
+    headerTable: "apv_headers",
+    lineTable: "apv_lines",
+    lineIdCol: "apv_id",
+    hasDueDate: true,
+    buildHeaderInsert: ({ companyId, voucherNo, partyId, partyName, transactionDate, dueDate, referenceNo, description, remarks, totalDebit, totalCredit, currencyId }) => ({
+      sql: `INSERT INTO apv_headers (
+        company_id, voucher_no, supplier_id, supplier_name, transaction_date, due_date, reference_no,
+        description, remarks, total_debit, total_credit, paid_amount, balance_amount,
+        payment_status, status, source_po_id, currency_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'Unpaid', 'Draft', NULL, ?)`,
+      // balance_amount tracks total_credit (the AP liability side) - the
+      // manual POST /api/apv route uses currencyResult.baseTotalCredit
+      // here, not baseTotalDebit like Invoice's AR-side balance_amount.
+      params: [companyId, voucherNo, partyId || null, partyName || "", transactionDate, dueDate, referenceNo || "", description || "", remarks || "", totalDebit, totalCredit, totalCredit, currencyId],
+    }),
+  },
+  jv: {
+    headerTable: "jv_headers",
+    lineTable: "jv_lines",
+    lineIdCol: "jv_id",
+    hasDueDate: false,
+    // No party: JV's own manual route uses free-text `prepared_for`
+    // (supplierName || customerName || req.body.preparedFor), never a
+    // party_id FK - the template's party_name (optional, per
+    // MODULES_WITHOUT_PARTY) is reused the same way here.
+    buildHeaderInsert: ({ companyId, voucherNo, partyName, transactionDate, referenceNo, description, remarks, totalDebit, totalCredit, currencyId }) => ({
+      sql: `INSERT INTO jv_headers (
+        company_id, voucher_no, transaction_date, reference_no, prepared_for,
+        description, remarks, total_debit, total_credit, status, currency_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Draft', ?)`,
+      params: [companyId, voucherNo, transactionDate, referenceNo || "", partyName || "", description || "", remarks || "", totalDebit, totalCredit, currencyId],
+    }),
+  },
+  po: {
+    headerTable: "purchase_order_headers",
+    lineTable: "purchase_order_lines",
+    lineIdCol: "po_id",
+    hasDueDate: false,
+    // PO never posts to GL (server.js's own comment on POST /api/purchase-
+    // orders: "PO never posts to GL - confirmed non-GL, absent from every
+    // ledger/trial-balance union"). Status is hardcoded 'Draft' here
+    // (never the manual route's default 'Open') exactly per the approved
+    // plan - a generated PO is a commitment placeholder to review, not an
+    // already-issued order.
+    buildHeaderInsert: ({ companyId, voucherNo, partyId, partyName, transactionDate, referenceNo, description, remarks, totalDebit, totalCredit, currencyId }) => ({
+      sql: `INSERT INTO purchase_order_headers (
+        company_id, voucher_no, supplier_id, supplier_name, transaction_date, reference_no,
+        description, remarks, total_debit, total_credit, status, currency_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Draft', ?)`,
+      params: [companyId, voucherNo, partyId || null, partyName || "", transactionDate, referenceNo || "", description || "", remarks || "", totalDebit, totalCredit, currencyId],
+    }),
+  },
+  or: {
+    headerTable: "or_headers",
+    lineTable: "or_lines",
+    lineIdCol: "or_id",
+    hasDueDate: false,
+    // Direct-only enforcement (approved plan, OR section): this function
+    // has no `invoiceApplications` parameter and never touches
+    // transaction_applications - there is structurally no way for a
+    // generated OR to carry a settlement/source-application link, since
+    // the recurring template schema itself has no field capable of
+    // expressing "this settles Invoice #X" (a template line is only
+    // account+particulars+debit/credit). payment_method is hardcoded
+    // 'Cash' with bank_account_id/check_no/check_date all blank/NULL -
+    // never auto-filling physical check details, per the approved plan.
+    buildHeaderInsert: ({ companyId, voucherNo, partyId, partyName, transactionDate, referenceNo, description, totalDebit, totalCredit, currencyId }) => ({
+      sql: `INSERT INTO or_headers (
+        company_id, voucher_no, customer_id, customer_name, transaction_date, reference_no, receipt_no,
+        description, total_debit, total_credit, status, payment_method, bank_account_id, check_no, check_date, currency_id
+      ) VALUES (?, ?, ?, ?, ?, ?, '', ?, ?, ?, 'Draft', 'Cash', NULL, '', NULL, ?)`,
+      params: [companyId, voucherNo, partyId || null, partyName || "", transactionDate, referenceNo || "", description || "", totalDebit, totalCredit, currencyId],
+    }),
+  },
+  cv: {
+    headerTable: "cv_headers",
+    lineTable: "cv_lines",
+    lineIdCol: "cv_id",
+    hasDueDate: false,
+    // Direct-only enforcement: same reasoning as `or` above - no
+    // `apvApplications` parameter, structurally cannot link a source
+    // application. check_no left '' (never auto-filled from a physical
+    // checkbook) and payment_method hardcoded 'Cash' so no check fields
+    // are implied at all on a generated Draft.
+    buildHeaderInsert: ({ companyId, voucherNo, partyId, partyName, transactionDate, referenceNo, description, totalDebit, totalCredit, currencyId }) => ({
+      sql: `INSERT INTO cv_headers (
+        company_id, voucher_no, payee_id, payee_name, transaction_date, reference_no, check_no,
+        description, total_debit, total_credit, status, payment_method, bank_account_id, check_date, currency_id
+      ) VALUES (?, ?, ?, ?, ?, ?, '', ?, ?, ?, 'Draft', 'Cash', NULL, NULL, ?)`,
+      params: [companyId, voucherNo, partyId || null, partyName || "", transactionDate, referenceNo || "", description || "", totalDebit, totalCredit, currencyId],
     }),
   },
 };

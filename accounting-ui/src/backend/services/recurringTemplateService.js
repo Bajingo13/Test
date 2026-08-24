@@ -16,14 +16,54 @@ const SOURCE_MODULE_CONFIG = {
     partyIdCol: "customer_id",
     partyNameCol: "customer_name",
   },
+  apv: {
+    headerTable: "apv_headers",
+    lineTable: "apv_lines",
+    lineIdCol: "apv_id",
+    partyIdCol: "supplier_id",
+    partyNameCol: "supplier_name",
+  },
+  // JV has no party FK anywhere in its schema - its manual route only ever
+  // writes free-text `prepared_for` (see recurringGenerationService's jv
+  // entry). partyIdCol: null signals "this module has no party column",
+  // handled below by selecting a literal NULL instead of a column name.
+  jv: {
+    headerTable: "jv_headers",
+    lineTable: "jv_lines",
+    lineIdCol: "jv_id",
+    partyIdCol: null,
+    partyNameCol: "prepared_for",
+  },
+  po: {
+    headerTable: "purchase_order_headers",
+    lineTable: "purchase_order_lines",
+    lineIdCol: "po_id",
+    partyIdCol: "supplier_id",
+    partyNameCol: "supplier_name",
+  },
+  or: {
+    headerTable: "or_headers",
+    lineTable: "or_lines",
+    lineIdCol: "or_id",
+    partyIdCol: "customer_id",
+    partyNameCol: "customer_name",
+  },
+  cv: {
+    headerTable: "cv_headers",
+    lineTable: "cv_lines",
+    lineIdCol: "cv_id",
+    partyIdCol: "payee_id",
+    partyNameCol: "payee_name",
+  },
 };
 
 async function createTemplateFromTransaction(moduleType, transactionId, userId, companyId) {
   const cfg = SOURCE_MODULE_CONFIG[moduleType];
   if (!cfg) throw new HttpError(400, `Recurring templates from an existing transaction aren't supported yet for: ${moduleType}`);
 
+  const partyIdExpr = cfg.partyIdCol ? `${cfg.partyIdCol} AS partyId` : "NULL AS partyId";
   const [headers] = await pool.execute(
-    `SELECT ${cfg.partyIdCol} AS partyId, ${cfg.partyNameCol} AS partyName, description, currency_id AS currencyId
+    `SELECT ${partyIdExpr}, ${cfg.partyNameCol} AS partyName, description, currency_id AS currencyId
      FROM ${cfg.headerTable} WHERE id = ? AND company_id = ?`,
     [transactionId, companyId]
   );
@@ -440,19 +480,25 @@ async function recordSkip(scheduleId, occurrenceDate, { reason, userId }) {
 // Checkpoint 3F, section 27/28: History must show the GENERATED
 // transaction's own stored document number/currency/rate/totals - never
 // re-resolve a current rate for a past occurrence. voucher_no/currency
-// come straight from invoice_headers + transaction_currency_snapshots (the
-// same snapshot row generation itself wrote with lockNow:false), joined
-// read-only here - nothing is recalculated. Only 'invoice' has a
-// generation target today (see GENERATION_MODULE_CONFIG in
-// recurringGenerationService.js), so the join is invoice-specific; a
-// future module type would add its own LEFT JOIN branch here the same way
-// GENERATION_MODULE_CONFIG gains a new key, not a rewritten query shape.
+// come straight from each module's own header table +
+// transaction_currency_snapshots (the same snapshot row generation itself
+// wrote with lockNow:false), joined read-only here - nothing is
+// recalculated.
+//
+// Checkpoint 6: generalized from the original invoice-only single JOIN to
+// one LEFT JOIN per supported module type, each gated on
+// o.generated_module_type so exactly one (or none, for FAILED/SKIPPED/
+// PERIOD_CLOSED/RATE_REVIEW_REQUIRED occurrences with no generated row)
+// ever matches per occurrence row - COALESCE picks whichever one fired.
+// `or_headers` is aliased `ors` since OR is a reserved SQL word. This is
+// exactly the "future module type adds its own LEFT JOIN branch" shape
+// the original comment anticipated, not a rewritten query structure.
 async function getHistory(scheduleId) {
   const [rows] = await pool.execute(
     `SELECT
       o.*,
-      inv.voucher_no AS documentNumber,
-      inv.status AS documentStatus,
+      COALESCE(inv.voucher_no, apv.voucher_no, jv.voucher_no, po.voucher_no, ors.voucher_no, cv.voucher_no) AS documentNumber,
+      COALESCE(inv.status, apv.status, jv.status, po.status, ors.status, cv.status) AS documentStatus,
       snap.currency_code AS currencyCode,
       snap.exchange_rate AS exchangeRate,
       snap.rate_date AS rateEffectiveDate,
@@ -461,7 +507,14 @@ async function getHistory(scheduleId) {
       snap.base_total AS baseTotal
     FROM recurring_transaction_occurrences o
     LEFT JOIN invoice_headers inv ON o.generated_module_type = 'invoice' AND inv.id = o.generated_transaction_id
-    LEFT JOIN transaction_currency_snapshots snap ON snap.transaction_type = 'INV' AND snap.transaction_id = o.generated_transaction_id
+    LEFT JOIN apv_headers apv ON o.generated_module_type = 'apv' AND apv.id = o.generated_transaction_id
+    LEFT JOIN jv_headers jv ON o.generated_module_type = 'jv' AND jv.id = o.generated_transaction_id
+    LEFT JOIN purchase_order_headers po ON o.generated_module_type = 'po' AND po.id = o.generated_transaction_id
+    LEFT JOIN or_headers ors ON o.generated_module_type = 'or' AND ors.id = o.generated_transaction_id
+    LEFT JOIN cv_headers cv ON o.generated_module_type = 'cv' AND cv.id = o.generated_transaction_id
+    LEFT JOIN transaction_currency_snapshots snap
+      ON snap.transaction_type = (CASE o.generated_module_type WHEN 'invoice' THEN 'INV' ELSE UPPER(o.generated_module_type) END)
+     AND snap.transaction_id = o.generated_transaction_id
     WHERE o.schedule_id = ?
     ORDER BY o.id DESC`,
     [scheduleId]

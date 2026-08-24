@@ -8,6 +8,7 @@ export default function JV() {
       code="JV"
       partyLabel="Prepared For"
       printModuleType="jv"
+      recurringModuleType="jv"
       defaultDescription="Manual journal entry"
       defaultLines={[
         {

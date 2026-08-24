@@ -76,9 +76,19 @@ export default function RecurringHistoryModal({ template, onClose, onChanged }) 
     }
   }
 
+  const MODULE_PATHS = {
+    invoice: "/transactions/invoice",
+    apv: "/transactions/apv",
+    jv: "/transactions/jv",
+    po: "/transactions/purchase-order",
+    or: "/transactions/or",
+    cv: "/transactions/cv",
+  };
+
   function openTransaction(row) {
-    if (!row.generated_transaction_id || row.generated_module_type !== "invoice") return;
-    window.open(`/transactions/invoice?id=${row.generated_transaction_id}`, "_blank");
+    const path = MODULE_PATHS[row.generated_module_type];
+    if (!row.generated_transaction_id || !path) return;
+    window.open(`${path}?id=${row.generated_transaction_id}`, "_blank");
   }
 
   return (

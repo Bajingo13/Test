@@ -9,6 +9,7 @@ export default function PurchaseOrder() {
       partyLabel="Supplier"
       partyType="SUPPLIER"
       printModuleType="po"
+      recurringModuleType="po"
       defaultDescription="Purchase order issued to supplier"
       defaultLines={[
         {
