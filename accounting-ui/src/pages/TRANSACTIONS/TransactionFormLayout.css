@@ -183,6 +183,27 @@
   cursor: pointer;
 }
 
+/* Transaction-entry UI standardization: compact, clickable indicator for
+   OR/CV/PO's Cash/Check/EWT header fields, which have no journal line of
+   their own to show a badge on (unlike Invoice/APV's tax-entry badges).
+   Deliberately subdued, not a button-styled call to action. */
+.transaction-entry-status-chip {
+  border: 1px solid var(--border-color);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.transaction-entry-status-chip:hover {
+  border-color: var(--border-color-strong);
+  color: var(--text-primary);
+}
+
 .transaction-table-container {
   overflow-x: auto;
   width: 100%;

@@ -17,6 +17,9 @@ import AddEntryMenu from "./AddEntryMenu";
 import VatEntryModal from "./VatEntryModal";
 import EwtEntryModal from "./EwtEntryModal";
 import TaxDetailsViewModal from "./TaxDetailsViewModal";
+import LegacyVatEntryModal from "./LegacyVatEntryModal";
+import LegacyEwtEntryModal from "./LegacyEwtEntryModal";
+import CashCheckDetailsModal from "./CashCheckDetailsModal";
 import { filterTransactions, deriveStatusOptions } from "./transactionListFilters.mjs";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
 import "./TransactionFormLayout.css";
@@ -151,6 +154,20 @@ export default function TransactionFormLayout({
   const [editingTaxLineId, setEditingTaxLineId] = useState(null);
   const [showTaxDetailsView, setShowTaxDetailsView] = useState(false);
   const [viewingTaxEntry, setViewingTaxEntry] = useState(null);
+
+  // Transaction-entry UI standardization: OR/CV/PO's VAT/EWT/Cash-Check
+  // fields are NOT moving to the Invoice/APV tagged-line workflow (that
+  // would risk double-recognizing tax on a settlement document, exactly
+  // what Phase 7D's audit and Phase 7E's warning were built to prevent).
+  // Only the container changes - these three modals wrap the EXACT same
+  // state/handlers (vatAccountId/vatTaxableAmount/vatRate, atcCode/
+  // taxWithheldAmount/payeeTin, paymentMethod/bankAccountId/checkNumber/
+  // checkDate) that already existed as always-visible cards, now reached
+  // through the same "+ Add Entry" menu Invoice/APV use instead of always
+  // taking up page space.
+  const [showLegacyVatModal, setShowLegacyVatModal] = useState(false);
+  const [showLegacyEwtModal, setShowLegacyEwtModal] = useState(false);
+  const [showCashCheckModal, setShowCashCheckModal] = useState(false);
 
   // Multi-currency (Checkpoint 3A) - selectedCurrencyId defaults to the
   // company base currency once loaded. currencySnapshot mirrors what the
@@ -2403,94 +2420,37 @@ if (code === "OR") {
               </div>
             )}
 
-            {(code === "OR" || code === "CV") && (
+            {/* Transaction-entry UI standardization: in edit mode this card
+                is retired in favor of "+ Add Entry > Cash / Bank / Check"
+                (see CashCheckDetailsModal.jsx) plus the compact status chip
+                rendered next to that menu - same fields, same state, just
+                reached through the same unified entry point Invoice/APV
+                use. View mode is completely unchanged. */}
+            {(code === "OR" || code === "CV") && formMode === "view" && (
               <div className="transaction-card">
                 <div className="transaction-section-header">
                   <div>
                     <h2 className="transaction-section-title">Cash / Check Details</h2>
-                    {formMode === "edit" && (
-                      <p className="transaction-section-subtext">
-                        Captures the bank account and check reference this {code === "OR" ? "receipt" : "payment"}{" "}
-                        moved through, for bank reconciliation.
-                      </p>
-                    )}
                   </div>
                 </div>
 
-                {formMode === "view" ? (
-                  <div className="transaction-view-grid">
-                    <ViewField label="Payment Method" value={paymentMethod} />
-                    <ViewField
-                      label="Bank Account"
-                      value={
-                        bankAccounts.find((b) => String(b.id) === String(bankAccountId))
-                          ? `${bankAccounts.find((b) => String(b.id) === String(bankAccountId)).bankCode} - ${bankAccounts.find((b) => String(b.id) === String(bankAccountId)).bankName}`
-                          : null
-                      }
-                    />
-                    {paymentMethod === "Check" && (
-                      <>
-                        <ViewField label="Check No." value={checkNumber} />
-                        <ViewField label="Check Date" value={checkDate} />
-                      </>
-                    )}
-                  </div>
-                ) : (
-                  <div className="transaction-grid">
-                    <div className="transaction-field">
-                      <label className="transaction-label">Payment Method</label>
-                      <select
-                        className="transaction-input"
-                        value={paymentMethod}
-                        onChange={(e) => setPaymentMethod(e.target.value)}
-                      >
-                        <option value="Cash">Cash</option>
-                        <option value="Check">Check</option>
-                      </select>
-                    </div>
-
-                    <div className="transaction-field">
-                      <label className="transaction-label">Bank Account</label>
-                      <select
-                        className="transaction-input"
-                        value={bankAccountId}
-                        onChange={(e) => setBankAccountId(e.target.value)}
-                      >
-                        <option value="">Select bank account</option>
-                        {bankAccounts.map((bank) => (
-                          <option key={bank.id} value={bank.id}>
-                            {bank.bankCode} - {bank.bankName} ({bank.accountNo})
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    {paymentMethod === "Check" && (
-                      <>
-                        <div className="transaction-field">
-                          <label className="transaction-label">Check No.</label>
-                          <input
-                            type="text"
-                            className="transaction-input"
-                            value={checkNumber}
-                            onChange={(e) => setCheckNumber(e.target.value)}
-                            placeholder="Enter check number"
-                          />
-                        </div>
-
-                        <div className="transaction-field">
-                          <label className="transaction-label">Check Date</label>
-                          <input
-                            type="date"
-                            className="transaction-input"
-                            value={checkDate}
-                            onChange={(e) => setCheckDate(e.target.value)}
-                          />
-                        </div>
-                      </>
-                    )}
-                  </div>
-                )}
+                <div className="transaction-view-grid">
+                  <ViewField label="Payment Method" value={paymentMethod} />
+                  <ViewField
+                    label="Bank Account"
+                    value={
+                      bankAccounts.find((b) => String(b.id) === String(bankAccountId))
+                        ? `${bankAccounts.find((b) => String(b.id) === String(bankAccountId)).bankCode} - ${bankAccounts.find((b) => String(b.id) === String(bankAccountId)).bankName}`
+                        : null
+                    }
+                  />
+                  {paymentMethod === "Check" && (
+                    <>
+                      <ViewField label="Check No." value={checkNumber} />
+                      <ViewField label="Check Date" value={checkDate} />
+                    </>
+                  )}
+                </div>
               </div>
             )}
 
@@ -2499,218 +2459,47 @@ if (code === "OR") {
                 Entry" and lives as a journal line + View/Edit Tax Details.
                 OR/CV/PO keep this exact card, completely untouched, since
                 Phase 7C only restructures Invoice/APV (spec section 30). */}
-            {ewtEligible && !["INV", "APV"].includes(code) && (
+            {/* Transaction-entry UI standardization: in edit mode this card
+                is retired in favor of "+ Add Entry > EWT / Withholding Tax"
+                (see LegacyEwtEntryModal.jsx) plus the compact status chip
+                next to that menu when atcCode is already set - same fields,
+                same state, same header-only persistence (never a
+                transaction_tax_entries row), just reached through the same
+                unified entry point Invoice/APV use. View mode unchanged. */}
+            {ewtEligible && !["INV", "APV"].includes(code) && formMode === "view" && (
               <div className="transaction-card">
                 <div className="transaction-section-header">
                   <div>
                     <h2 className="transaction-section-title">
                       {ewtOutbound ? "Withholding Tax" : "Tax Withheld by Customer"}
                     </h2>
-                    {formMode === "edit" && (
-                      <p className="transaction-section-subtext">
-                        {ewtOutbound
-                          ? "Optional — only fill in if tax was withheld from this payment."
-                          : "Optional — only fill in if the customer withheld tax from this amount (per the Form 2307 they issue you)."}
-                        {" "}For VATable transactions, EWT is computed on the amount exclusive of VAT.
-                      </p>
-                    )}
                   </div>
                 </div>
 
-                {hasSourceApplications && (
-                  <p className="transaction-tax-duplication-warning" role="alert">
-                    ⚠ {sourceDuplicationWarning}
-                  </p>
-                )}
-
-                {formMode === "view" ? (
-                  atcCode ? (
-                    <div className="transaction-view-grid">
-                      <ViewField label="ATC Code" value={atcCode} />
-                      <ViewField
-                        label="Tax Type"
-                        value={selectedEwt ? (selectedEwt.taxType === "FINAL" ? "Final Tax" : "Expanded Withholding Tax") : null}
-                      />
-                      <ViewField label="EWT Base (VAT-exclusive)" value={formatMoney(ewtTaxableBase)} />
-                      <ViewField label="Tax Withheld Amount" value={formatMoney(taxWithheldAmount)} />
-                      {ewtOutbound && <ViewField label="Payee TIN" value={payeeTin} />}
-                    </div>
-                  ) : (
-                    <p className="transaction-section-subtext">No withholding tax recorded on this transaction.</p>
-                  )
+                {atcCode ? (
+                  <div className="transaction-view-grid">
+                    <ViewField label="ATC Code" value={atcCode} />
+                    <ViewField
+                      label="Tax Type"
+                      value={selectedEwt ? (selectedEwt.taxType === "FINAL" ? "Final Tax" : "Expanded Withholding Tax") : null}
+                    />
+                    <ViewField label="EWT Base (VAT-exclusive)" value={formatMoney(ewtTaxableBase)} />
+                    <ViewField label="Tax Withheld Amount" value={formatMoney(taxWithheldAmount)} />
+                    {ewtOutbound && <ViewField label="Payee TIN" value={payeeTin} />}
+                  </div>
                 ) : (
-                <div className="transaction-grid">
-                  <div className="transaction-field">
-                    <label className="transaction-label">ATC Code</label>
-                    <select
-                      value={atcCode}
-                      onChange={(e) => handleAtcCodeChange(e.target.value)}
-                      className="transaction-input"
-                      disabled={hasSourceApplications}
-                      title={hasSourceApplications ? sourceDuplicationWarning : undefined}
-                    >
-                      <option value="">None</option>
-                      {ewtCodes.map((ewt) => (
-                        <option key={ewt.id} value={ewt.atcCode}>
-                          {ewt.atcCode} - {ewt.description} ({ewt.rate}%)
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="transaction-field">
-                    <label className="transaction-label">Tax Type</label>
-                    <input
-                      type="text"
-                      value={selectedEwt ? (selectedEwt.taxType === "FINAL" ? "Final Tax" : "Expanded Withholding Tax") : ""}
-                      readOnly
-                      placeholder="Select an ATC code"
-                      className="transaction-input transaction-input-readonly"
-                    />
-                  </div>
-
-                  <div className="transaction-field">
-                    <label
-                      className="transaction-label"
-                      title="For VATable transactions, EWT is computed on the amount exclusive of VAT."
-                    >
-                      EWT Base (VAT-exclusive)
-                    </label>
-                    <input
-                      type="text"
-                      value={atcCode ? formatMoney(ewtTaxableBase) : ""}
-                      readOnly
-                      placeholder="Select an ATC code"
-                      className="transaction-input transaction-input-readonly"
-                      title="Gross amount minus VAT posted on this transaction."
-                    />
-                  </div>
-
-                  <div className="transaction-field">
-                    <label
-                      className="transaction-label"
-                      title="For VATable transactions, EWT is computed on the amount exclusive of VAT."
-                    >
-                      Tax Withheld Amount
-                    </label>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={taxWithheldAmount}
-                      onChange={(e) => {
-                        setTaxWithheldAmount(e.target.value);
-                        setTaxWithheldTouched(true);
-                      }}
-                      disabled={!atcCode || hasSourceApplications}
-                      placeholder="0.00"
-                      className="transaction-input"
-                    />
-                  </div>
-
-                  {ewtOutbound && (
-                    <div className="transaction-field">
-                      <label className="transaction-label">Payee TIN</label>
-                      <input
-                        type="text"
-                        value={payeeTin}
-                        onChange={(e) => setPayeeTin(e.target.value)}
-                        placeholder="000-000-000-000"
-                        className="transaction-input"
-                      />
-                    </div>
-                  )}
-                </div>
+                  <p className="transaction-section-subtext">No withholding tax recorded on this transaction.</p>
                 )}
               </div>
             )}
 
-            {/* Phase 7C: same retirement as the EWT card above, for the
-                same two modules only - see spec section 3/6/13/28/29. */}
-            {formMode === "edit" && vatType && !["INV", "APV"].includes(code) && (
-              <div className="transaction-card">
-                <div className="transaction-section-header">
-                  <div>
-                    <h2 className="transaction-section-title">{vatType}</h2>
-                    <p className="transaction-section-subtext">
-                      Optional &mdash; enter the taxable amount to add a {vatType} line automatically.
-                    </p>
-                  </div>
-                </div>
-
-                {hasSourceApplications && (
-                  <p className="transaction-tax-duplication-warning" role="alert">
-                    ⚠ {sourceDuplicationWarning}
-                  </p>
-                )}
-
-                <div className="transaction-grid">
-                  <div className="transaction-field">
-                    <label className="transaction-label">{vatType} Account</label>
-                    <select
-                      value={vatAccountId}
-                      onChange={(e) => setVatAccountId(e.target.value)}
-                      className="transaction-input"
-                      disabled={hasSourceApplications}
-                      title={hasSourceApplications ? sourceDuplicationWarning : undefined}
-                    >
-                      <option value="">Select account</option>
-                      {accountOptions.map((account) => (
-                        <option key={account.id} value={account.id}>
-                          {account.code} - {account.title}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="transaction-field">
-                    <label className="transaction-label">Taxable Amount</label>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={vatTaxableAmount}
-                      onChange={(e) => setVatTaxableAmount(e.target.value)}
-                      disabled={hasSourceApplications}
-                      placeholder="0.00"
-                      className="transaction-input"
-                    />
-                  </div>
-
-                  <div className="transaction-field">
-                    <label className="transaction-label">VAT Rate (%)</label>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={vatRate}
-                      onChange={(e) => setVatRate(e.target.value)}
-                      className="transaction-input"
-                    />
-                  </div>
-
-                  <div className="transaction-field">
-                    <label className="transaction-label">VAT Amount</label>
-                    <input
-                      type="text"
-                      value={formatMoney(vatAmount)}
-                      readOnly
-                      className="transaction-input transaction-input-readonly"
-                    />
-                  </div>
-                </div>
-
-                <div className="transaction-section-actions">
-                  <button
-                    type="button"
-                    className="transaction-add-button"
-                    onClick={handleAddVatLine}
-                  >
-                    + Add {vatType} Line
-                  </button>
-                </div>
-              </div>
-            )}
+            {/* Transaction-entry UI standardization: this card is fully
+                retired (it was edit-mode-only, no view branch) in favor of
+                "+ Add Entry > Output VAT / Input VAT" (see
+                LegacyVatEntryModal.jsx) - same fields, same handleAddVatLine
+                behavior (a plain, untagged line - never
+                transaction_tax_entries), just reached through the same
+                unified entry point Invoice/APV use. */}
 
             <div className="transaction-card">
               <div className="transaction-section-header">
@@ -2727,18 +2516,48 @@ if (code === "OR") {
 
                 {formMode === "edit" && (
                   <div className="transaction-section-actions">
-                    {code === "INV" || code === "APV" ? (
-                      <AddEntryMenu
-                        onRegular={addLine}
-                        taxOptions={[
-                          ...(code === "INV" ? [{ key: "output_vat", label: "Output VAT", onClick: () => openAddVatEntry("OUTPUT") }] : []),
-                          ...(code === "APV" ? [{ key: "input_vat", label: "Input VAT", onClick: () => openAddVatEntry("INPUT") }] : []),
-                          { key: "ewt", label: "EWT / Withholding Tax", onClick: openAddEwtEntry },
-                        ]}
-                      />
-                    ) : (
-                      <button onClick={addLine} className="transaction-add-button">
-                        + Add Line
+                    {/* Transaction-entry UI standardization: every module now
+                        uses the same "+ Add Entry" menu shell - only the
+                        options offered differ, per what that module actually
+                        supports. Invoice/APV keep the Phase 7C tagged-line
+                        workflow unchanged. OR/CV/PO's VAT/EWT/Cash-Check
+                        options open the Legacy*Modal wrappers around their
+                        pre-existing, protected (non-tagged) behavior - never
+                        the Invoice/APV workflow, which would risk
+                        double-recognizing tax on a settlement document
+                        (Phase 7D/7E). JV/Petty Cash/Debit Memo/Credit Memo
+                        get an empty taxOptions list - they were never
+                        tax-eligible, so the menu offers Regular Journal
+                        Entry only. */}
+                    <AddEntryMenu
+                      onRegular={addLine}
+                      taxOptions={[
+                        ...(code === "INV" ? [{ key: "output_vat", label: "Output VAT", onClick: () => openAddVatEntry("OUTPUT") }] : []),
+                        ...(code === "APV" ? [{ key: "input_vat", label: "Input VAT", onClick: () => openAddVatEntry("INPUT") }] : []),
+                        ...(code === "INV" || code === "APV" ? [{ key: "ewt", label: "EWT / Withholding Tax", onClick: openAddEwtEntry }] : []),
+                        ...(vatType && !["INV", "APV"].includes(code) ? [{ key: "legacy_vat", label: vatType, onClick: () => setShowLegacyVatModal(true) }] : []),
+                        ...(ewtEligible && !["INV", "APV"].includes(code) ? [{ key: "legacy_ewt", label: "EWT / Withholding Tax", onClick: () => setShowLegacyEwtModal(true) }] : []),
+                        ...(code === "OR" || code === "CV" ? [{ key: "cash_check", label: "Cash / Bank / Check", onClick: () => setShowCashCheckModal(true) }] : []),
+                      ]}
+                    />
+
+                    {(code === "OR" || code === "CV") && (
+                      <button
+                        type="button"
+                        className="transaction-entry-status-chip"
+                        onClick={() => setShowCashCheckModal(true)}
+                      >
+                        💳 {paymentMethod}{paymentMethod === "Check" && checkNumber ? ` #${checkNumber}` : ""}
+                      </button>
+                    )}
+
+                    {ewtEligible && !["INV", "APV"].includes(code) && atcCode && (
+                      <button
+                        type="button"
+                        className="transaction-entry-status-chip"
+                        onClick={() => setShowLegacyEwtModal(true)}
+                      >
+                        EWT: {atcCode} ({formatMoney(taxWithheldAmount)})
                       </button>
                     )}
                   </div>
@@ -3273,8 +3092,64 @@ if (code === "OR") {
               onClose={() => { setShowTaxDetailsView(false); setViewingTaxEntry(null); }}
               entry={viewingTaxEntry}
             />
+
           </>
         )}
+
+        {/* Transaction-entry UI standardization: unlike the modals above,
+            these three are NOT scoped to INV/APV - they're only ever opened
+            by OR/CV/PO's Add Entry menu (see the taxOptions wiring), but are
+            mounted unconditionally (each returns null while its own `open`
+            is false) rather than re-gating on `code` a second time. */}
+        <LegacyVatEntryModal
+          open={showLegacyVatModal}
+          onClose={() => setShowLegacyVatModal(false)}
+          vatType={vatType}
+          vatAccountId={vatAccountId}
+          setVatAccountId={setVatAccountId}
+          vatTaxableAmount={vatTaxableAmount}
+          setVatTaxableAmount={setVatTaxableAmount}
+          vatRate={vatRate}
+          setVatRate={setVatRate}
+          vatAmount={vatAmount}
+          accountOptions={accountOptions}
+          hasSourceApplications={hasSourceApplications}
+          sourceDuplicationWarning={sourceDuplicationWarning}
+          onAddLine={handleAddVatLine}
+        />
+
+        <LegacyEwtEntryModal
+          open={showLegacyEwtModal}
+          onClose={() => setShowLegacyEwtModal(false)}
+          ewtOutbound={ewtOutbound}
+          atcCode={atcCode}
+          handleAtcCodeChange={handleAtcCodeChange}
+          ewtCodes={ewtCodes}
+          selectedEwt={selectedEwt}
+          ewtTaxableBase={ewtTaxableBase}
+          taxWithheldAmount={taxWithheldAmount}
+          setTaxWithheldAmount={setTaxWithheldAmount}
+          setTaxWithheldTouched={setTaxWithheldTouched}
+          payeeTin={payeeTin}
+          setPayeeTin={setPayeeTin}
+          hasSourceApplications={hasSourceApplications}
+          sourceDuplicationWarning={sourceDuplicationWarning}
+        />
+
+        <CashCheckDetailsModal
+          open={showCashCheckModal}
+          onClose={() => setShowCashCheckModal(false)}
+          code={code}
+          paymentMethod={paymentMethod}
+          setPaymentMethod={setPaymentMethod}
+          bankAccountId={bankAccountId}
+          setBankAccountId={setBankAccountId}
+          bankAccounts={bankAccounts}
+          checkNumber={checkNumber}
+          setCheckNumber={setCheckNumber}
+          checkDate={checkDate}
+          setCheckDate={setCheckDate}
+        />
       </div>
     </div>
   );
