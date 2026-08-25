@@ -44,6 +44,11 @@ const MODULE_CONFIG = {
     hasEwt: true,
     hasCurrency: true,
     currencyTxnType: "OR",
+    // Phase 1 print-completeness checkpoint: an OR that settles one or more
+    // Invoices should print the applied-invoice breakdown (see
+    // getAppliedInvoices below) - scoped to OR only per the approved plan,
+    // not extended to CV/APV's own settlement tables in this checkpoint.
+    hasAppliedInvoices: true,
   },
   apv: {
     moduleKey: "TRANSACTIONS.APV",
@@ -188,6 +193,108 @@ async function getCompanyProfile() {
   return rows[0] || { name: "", tin: "", address: "", zip: "" };
 }
 
+// Phase 1 print-completeness checkpoint: resolves the applied-Invoice
+// breakdown for an OR from transaction_applications - the authoritative
+// settlement relationship (never inferred from journal lines, which don't
+// carry a per-source-document amount at all). company-scoped twice over:
+// the OR itself was already confirmed to belong to `companyId` by the
+// caller's own header query (WHERE id = ? AND company_id = ?), and this
+// query re-verifies the JOINED invoice also belongs to the same company -
+// defense in depth matching the same re-check pattern
+// paymentApplicationService.js's applyInvoicePayment() already does at
+// application-creation time (a cross-company application should never
+// exist, but the print path re-verifies rather than trusting that).
+// AR_BEGINNING-sourced applications (settling a beginning balance, not a
+// real Invoice row) are intentionally excluded - source_type = 'INV' only,
+// per the approved scope ("Invoice No./Date/Description/Amount").
+async function getAppliedInvoices(companyId, orId) {
+  const [rows] = await pool.execute(
+    `SELECT
+      ta.id,
+      ta.source_id AS invoiceId,
+      ta.amount AS amountPaid,
+      DATE_FORMAT(ta.application_date, '%Y-%m-%d') AS applicationDate,
+      ih.voucher_no AS invoiceNo,
+      DATE_FORMAT(ih.transaction_date, '%Y-%m-%d') AS invoiceDate,
+      ih.total_debit AS invoiceAmount
+    FROM transaction_applications ta
+    JOIN invoice_headers ih ON ih.id = ta.source_id AND ih.company_id = ?
+    WHERE ta.applied_type = 'OR' AND ta.applied_id = ? AND ta.source_type = 'INV'
+    ORDER BY ta.id ASC`,
+    [companyId, orId]
+  );
+  // Description is a print-only label, not a stored accounting fact -
+  // mirrors the plain "Payment for invoice {voucherNo}" convention already
+  // visible on this system's own generated payment records elsewhere, so
+  // nothing here is invented data, just a presentation-layer string.
+  return rows.map((r) => ({
+    invoiceId: r.invoiceId,
+    invoiceNo: r.invoiceNo,
+    invoiceDate: r.invoiceDate,
+    description: `Payment for invoice ${r.invoiceNo}`,
+    invoiceAmount: Number(r.invoiceAmount) || 0,
+    amountPaid: Number(r.amountPaid) || 0,
+  }));
+}
+
+// Phase 1 print-completeness checkpoint: previously only built when the
+// transaction was foreign-denominated (isForeign), leaving base-currency
+// documents with a null doc.currency and no currency line printed at all.
+// Now always resolves a display-ready currency object - for a foreign
+// transaction, from its own snapshot; for a base-currency transaction
+// (snapshot exists but currencyId === baseCurrencyId, or no snapshot row
+// at all for a pre-currency-feature legacy transaction), from the
+// company's CURRENT base currency. This is a metadata lookup for display
+// only (code/name/symbol) - never a rate re-resolution, so it doesn't
+// conflict with the "never re-resolve a rate at render time" rule; a
+// legacy transaction's exchange rate is never guessed, only its currency
+// label, which is fine to source from the company's current setup.
+async function resolveCurrencyForDisplay(companyId, currencyTxnType, transactionId) {
+  const snapshot = await TransactionCurrencyService.getSnapshot(currencyTxnType, transactionId);
+
+  if (snapshot) {
+    const isForeign = snapshot.currencyId !== snapshot.baseCurrencyId;
+    const [symRows] = await pool.execute(
+      "SELECT id, currency_name AS name, currency_symbol AS symbol FROM currencies WHERE id IN (?, ?)",
+      [snapshot.currencyId, snapshot.baseCurrencyId]
+    );
+    const byId = new Map(symRows.map((r) => [r.id, r]));
+    return {
+      ...snapshot,
+      isForeign,
+      currencyName: byId.get(snapshot.currencyId)?.name || "",
+      currencySymbol: byId.get(snapshot.currencyId)?.symbol || snapshot.currencyCode,
+      baseCurrencyName: byId.get(snapshot.baseCurrencyId)?.name || "",
+      baseCurrencySymbol: byId.get(snapshot.baseCurrencyId)?.symbol || "P",
+    };
+  }
+
+  // No snapshot row at all - a legacy transaction saved before the
+  // currency-snapshot feature existed. Falls back to the company's current
+  // base currency for a LABEL only (every pre-currency-feature transaction
+  // was implicitly base-currency, since foreign entry didn't exist yet) -
+  // no rate is invented, and isForeign is always false on this path.
+  const [baseRows] = await pool.execute(
+    "SELECT id, currency_code AS currencyCode, currency_name AS currencyName, currency_symbol AS currencySymbol FROM currencies WHERE company_id = ? AND is_base_currency = 1 LIMIT 1",
+    [companyId]
+  );
+  if (!baseRows.length) return null;
+  const base = baseRows[0];
+  return {
+    isForeign: false,
+    currencyId: base.id,
+    currencyCode: base.currencyCode,
+    currencyName: base.currencyName,
+    currencySymbol: base.currencySymbol,
+    baseCurrencyId: base.id,
+    baseCurrencyCode: base.currencyCode,
+    baseCurrencyName: base.currencyName,
+    baseCurrencySymbol: base.currencySymbol,
+    exchangeRate: 1,
+    rateDate: null,
+  };
+}
+
 // When the transaction was saved in a foreign currency, `without_entries`
 // (customer/supplier-facing) copies show the amount the party actually
 // agreed to - the stored foreign_debit/foreign_credit - not the converted
@@ -286,22 +393,15 @@ async function getTransactionDocument(transactionType, id, { withEntries, compan
 
   // Read-only: prints whatever rate/currency was already stored on save
   // (section 33/34) - never calls the resolver or recomputes a rate here.
-  let currencySnapshot = null;
+  // Phase 1 print-completeness checkpoint: now always resolves a display
+  // object (base-currency transactions used to leave doc.currency null and
+  // print no currency line at all - see resolveCurrencyForDisplay's own
+  // comment for why this is a metadata lookup, not a rate re-resolution).
+  let currencyDisplay = null;
   if (cfg.hasCurrency) {
-    const snapshot = await TransactionCurrencyService.getSnapshot(cfg.currencyTxnType, id);
-    if (snapshot && snapshot.currencyId !== snapshot.baseCurrencyId) {
-      const [symRows] = await pool.execute(
-        "SELECT id, currency_symbol AS symbol FROM currencies WHERE id IN (?, ?)",
-        [snapshot.currencyId, snapshot.baseCurrencyId]
-      );
-      const symbolById = new Map(symRows.map((r) => [r.id, r.symbol]));
-      currencySnapshot = {
-        ...snapshot,
-        currencySymbol: symbolById.get(snapshot.currencyId) || snapshot.currencyCode,
-        baseCurrencySymbol: symbolById.get(snapshot.baseCurrencyId) || "P",
-      };
-    }
+    currencyDisplay = await resolveCurrencyForDisplay(companyId, cfg.currencyTxnType, id);
   }
+  const isForeign = !!currencyDisplay?.isForeign;
 
   // Checkpoint 3FX (section 27): the realized FX gain/loss line
   // (server.js's paymentApplicationService.applyForeignSettlementToLines)
@@ -315,9 +415,14 @@ async function getTransactionDocument(transactionType, id, { withEntries, compan
     ? lineRows
     : lineRows.filter((l) => !FX_LINE_PARTICULARS.includes(l.particulars));
 
-  const lines = mapLines(printableLineRows, withEntries, !!currencySnapshot);
+  const lines = mapLines(printableLineRows, withEntries, isForeign);
   const entriesSummary = withEntries ? buildEntriesSummary(lineRows) : null;
-  doc.currency = currencySnapshot;
+  doc.currency = currencyDisplay;
+
+  let appliedInvoices = null;
+  if (cfg.hasAppliedInvoices) {
+    appliedInvoices = await getAppliedInvoices(companyId, id);
+  }
 
   let party = null;
   if (cfg.hasParty && doc.partyId) {
@@ -340,7 +445,7 @@ async function getTransactionDocument(transactionType, id, { withEntries, compan
 
   const company = await getCompanyProfile();
 
-  return { doc, lines, entriesSummary, party, bankAccount, company };
+  return { doc, lines, entriesSummary, party, bankAccount, company, appliedInvoices };
 }
 
 // grouping: "number" | "date" | "due_date" | "check_number" | "reference"

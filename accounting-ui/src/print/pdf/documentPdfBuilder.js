@@ -1,5 +1,6 @@
 import { createPdfKit, COLORS, wrapText, formatMoney, COPY_BADGE_HEIGHT } from "./pdfKit";
 import { DEFAULT_COPY_TYPE, MAX_COPIES } from "../copyTypes";
+import { amountToWords } from "./amountInWords";
 
 const STATUS_WATERMARKS = { DRAFT: "DRAFT", CANCELLED: "CANCELLED", VOID: "VOID" };
 
@@ -43,18 +44,35 @@ export async function buildDocumentPdf({
   generatedBy,
   copyType = DEFAULT_COPY_TYPE,
   copies = 1,
+  appliedInvoices = null,
 }) {
   const { documentLabel, partyRoleLabel, ewtDirection } =
     MODULE_META[transactionType] || { documentLabel: "TRANSACTION", partyRoleLabel: "Party", ewtDirection: null };
   const withEntries = mode === "with_entries";
-  // doc.currency is only present (Checkpoint 3A: Invoice/APV) when the
-  // transaction was saved in a foreign currency - null for base-currency
-  // and legacy transactions, which fall back to the original hardcoded-P
-  // behavior. Printed straight from the stored snapshot (never re-resolved
-  // here) per the "never re-resolve at render time" requirement.
-  const isForeign = !!doc.currency;
-  const baseSymbol = doc.currency?.baseCurrencySymbol || "P";
-  const foreignSymbol = doc.currency?.currencySymbol || "";
+  // Phase 1 print-completeness checkpoint: doc.currency is now ALWAYS
+  // populated when the module has currency support at all (see
+  // transactionPrintDataService.js's resolveCurrencyForDisplay) - even a
+  // base-currency transaction gets a currency object now, so it can always
+  // be printed. isForeign lives on that object explicitly rather than
+  // being inferred from "does doc.currency exist" (which would now always
+  // be true). Printed straight from the stored snapshot/company setup
+  // (never re-resolved here) per the "never re-resolve a rate at render
+  // time" requirement - only currency labels are always-on, not rates.
+  const isForeign = !!doc.currency?.isForeign;
+  // Amount prefixes use the currency CODE (PHP/USD/...), never the raw
+  // currency_symbol character. Found live during this checkpoint's own
+  // verification: pdf-lib's built-in Helvetica font only supports WinAnsi
+  // encoding, which cannot encode the Philippine Peso sign (₱, U+20B1) -
+  // previously this only crashed a FOREIGN-currency print's base-currency
+  // total (a rarely-hit path), but "always show currency" (this
+  // checkpoint) means every base-currency document now resolves a real
+  // stored symbol too, turning a rare crash into an every-print crash. ISO
+  // currency codes are always plain ASCII, so this eliminates the whole
+  // class of risk for any currency a company configures, not just PHP -
+  // the currency NAME/CODE is still shown in the "Currency" meta line, so
+  // no information is lost, only the symbol GLYPH is no longer attempted.
+  const baseSymbol = doc.currency?.baseCurrencyCode || "PHP";
+  const foreignSymbol = doc.currency?.currencyCode || "";
   const kit = await createPdfKit();
   const { marginX, pageWidth } = kit;
   const contentWidth = pageWidth - marginX * 2;
@@ -86,6 +104,71 @@ export async function buildDocumentPdf({
     });
     kit.setY(topY - wrapped.length * step);
     return wrapped.length;
+  }
+
+  // Applied-Invoice breakdown table (OR settlement) - Phase 1 print-
+  // completeness checkpoint. Amounts print in base currency (the `amount`/
+  // `total_debit` columns transaction_applications and invoice_headers
+  // always carry, unambiguous regardless of what currency either document
+  // was recorded in) - deliberately NOT attempting a per-row foreign-
+  // currency display in this checkpoint, since the OR and a settled
+  // Invoice could legitimately be in different currencies and picking the
+  // "right" one to show needs its own dedicated design, not a guess here.
+  function drawAppliedInvoicesTable(applications) {
+    kit.ensureRoom(40);
+    kit.drawText("Applied Invoice(s)", marginX, { size: 9, bold: true, color: COLORS.grey });
+    kit.moveDown(14);
+
+    const appCol = {
+      noX: marginX,
+      noWidth: contentWidth * 0.16,
+      dateX: marginX + contentWidth * 0.16,
+      dateWidth: contentWidth * 0.13,
+      descX: marginX + contentWidth * 0.29,
+      descWidth: contentWidth * 0.36 - 6,
+      invAmtRight: marginX + contentWidth * 0.80,
+      paidRight: rightEdge,
+    };
+
+    function drawAppHeader() {
+      kit.drawRect({ x: marginX, w: contentWidth, h: 18, color: COLORS.lightGrey, yPos: kit.getY() - 13 });
+      kit.drawText("Invoice No.", appCol.noX + 4, { size: 7.5, bold: true, color: COLORS.dark });
+      kit.drawText("Date", appCol.dateX, { size: 7.5, bold: true, color: COLORS.dark });
+      kit.drawText("Description", appCol.descX, { size: 7.5, bold: true, color: COLORS.dark });
+      kit.drawRight("Invoice Amount", appCol.invAmtRight, { size: 7.5, bold: true, color: COLORS.dark });
+      kit.drawRight("Amount Paid", appCol.paidRight - 4, { size: 7.5, bold: true, color: COLORS.dark });
+      kit.moveDown(18);
+    }
+
+    kit.ensureRoom(28);
+    drawAppHeader();
+
+    let totalApplied = 0;
+    for (const app of applications) {
+      totalApplied += Number(app.amountPaid) || 0;
+      const descLines = wrapText(app.description || "-", kit.font, 8, appCol.descWidth);
+      const rowHeight = Math.max(14, descLines.length * 10 + 4);
+
+      if (kit.ensureRoom(rowHeight + 4)) drawAppHeader();
+
+      const rowTopY = kit.getY();
+      kit.drawText(app.invoiceNo || "-", appCol.noX + 4, { size: 8.5, y: rowTopY - 10 });
+      kit.drawText(app.invoiceDate || "-", appCol.dateX, { size: 8.5, y: rowTopY - 10 });
+      descLines.forEach((dl, idx) => {
+        kit.drawText(dl, appCol.descX, { size: 8, y: rowTopY - 10 - idx * 10 });
+      });
+      kit.drawRight(`${baseSymbol} ${formatMoney(app.invoiceAmount)}`, appCol.invAmtRight, { size: 8.5, y: rowTopY - 10 });
+      kit.drawRight(`${baseSymbol} ${formatMoney(app.amountPaid)}`, appCol.paidRight - 4, { size: 8.5, y: rowTopY - 10 });
+
+      kit.moveDown(rowHeight);
+      kit.drawLine({ x1: marginX, x2: rightEdge, color: COLORS.border });
+      kit.moveDown(3);
+    }
+
+    kit.moveDown(4);
+    kit.drawRight("Total Applied", appCol.invAmtRight, { size: 8.5, bold: true, color: COLORS.grey });
+    kit.drawRight(`${baseSymbol} ${formatMoney(totalApplied)}`, appCol.paidRight - 4, { size: 9.5, bold: true });
+    kit.moveDown(18);
   }
 
   // One full copy of the document - called copyCount times above, each
@@ -137,10 +220,17 @@ export async function buildDocumentPdf({
     if (doc.paymentMethod) metaPairs.push(["Payment Method", doc.paymentMethod]);
     if (bankAccount) metaPairs.push(["Bank Account", `${bankAccount.bankCode} - ${bankAccount.bankName} (${bankAccount.accountNo})`]);
     if (doc.preparedFor) metaPairs.push(["Prepared For", doc.preparedFor]);
-    if (isForeign) {
+    // Phase 1 print-completeness checkpoint: currency now always prints
+    // (e.g. "PHP — Philippine Peso"), not only for foreign transactions -
+    // the exchange rate itself only ever displays when it's actually
+    // meaningful (a real foreign-currency conversion), never a fabricated
+    // "1.0000" for base currency.
+    if (doc.currency) {
       metaPairs.push([
-        "Currency / Rate",
-        `${doc.currency.currencyCode} @ ${Number(doc.currency.exchangeRate).toFixed(6)} (as of ${doc.currency.rateDate || "-"})`,
+        "Currency",
+        isForeign
+          ? `${doc.currency.currencyCode} — ${doc.currency.currencyName} @ ${Number(doc.currency.exchangeRate).toFixed(6)} (as of ${doc.currency.rateDate || "-"})`
+          : `${doc.currency.currencyCode} — ${doc.currency.currencyName}`,
       ]);
     }
     metaPairs.push(["Status", doc.status || "-"]);
@@ -188,6 +278,16 @@ export async function buildDocumentPdf({
         }
       }
       kit.moveDown(8);
+    }
+
+    // ---- Applied Invoices (OR settlement breakdown) - only drawn when
+    // this OR actually settles one or more Invoices. A direct OR (the
+    // common case) has an empty appliedInvoices array and this block draws
+    // nothing at all - no empty fake table, the layout falls straight
+    // through to the normal line-items table exactly as before this
+    // checkpoint. Phase 1 print-completeness checkpoint. ----
+    if (Array.isArray(appliedInvoices) && appliedInvoices.length > 0) {
+      drawAppliedInvoicesTable(appliedInvoices);
     }
 
     // ---- Line items table - explicit proportional column widths ----
@@ -292,6 +392,22 @@ export async function buildDocumentPdf({
       kit.moveDown(10);
     }
 
+    // ---- Amount in Words (OR only, per the approved Phase 1 scope) -
+    // formats the SAME already-printed total (never recomputed) - base
+    // amount for a base-currency OR, foreign amount for a foreign one,
+    // matching whichever figure "Total Amount" above just showed. ----
+    if (transactionType === "or") {
+      const wordsAmount = isForeign ? Number(doc.currency.foreignTotal) || 0 : Number(doc.totalDebit) || 0;
+      const singularLabel = doc.currency?.currencyName || "Peso";
+      kit.ensureRoom(20);
+      kit.drawText(
+        `Amount in Words: ${amountToWords(wordsAmount, { currencyLabel: `${singularLabel}s`, singularCurrencyLabel: singularLabel })}`,
+        marginX,
+        { size: 8.5, italic: true, color: COLORS.dark }
+      );
+      kit.moveDown(16);
+    }
+
     if (doc.remarks) {
       kit.ensureRoom(30);
       kit.drawText("Remarks", marginX, { size: 8, bold: true, color: COLORS.grey });
@@ -381,6 +497,51 @@ export async function buildDocumentPdf({
       kit.drawLine({ x1: x, x2: x + sigWidth, yPos: sigTopY, color: COLORS.dark });
       kit.drawText(label, x, { size: 8, color: COLORS.grey, y: sigTopY - 12 });
     });
-    kit.moveDown(50);
+    kit.moveDown(40);
+
+    // ---- System-generated notice + BIR compliance footer block - Phase 1
+    // print-completeness checkpoint. Flows normally via ensureRoom/moveDown
+    // like every other block in this function - never a forced page break,
+    // so it only spills to a second page when the content genuinely doesn't
+    // fit, unlike the E-Invoicing reference PDFs' own fixed-position footer.
+    // No BIR Permit/ATP/PTU/Approved-Serial-Number field exists anywhere in
+    // this system's schema today (confirmed - company_profile has none) -
+    // this deliberately draws ONLY the fields it's given; passing nothing
+    // (as every caller does today) omits the BIR-specific lines entirely
+    // rather than inventing placeholder values, per the approved scope.
+    // This IS the reusable infrastructure a later checkpoint wires real
+    // data into - not a stub to be rewritten.
+    drawComplianceFooter(company?.compliance);
+  }
+
+  function drawComplianceFooter(compliance) {
+    kit.ensureRoom(70);
+    kit.drawLine({ x1: marginX, x2: rightEdge, thickness: 0.75, color: COLORS.border });
+    kit.moveDown(16);
+
+    const noticeText = "THIS IS SYSTEM GENERATED. NO SIGNATURE REQUIRED.";
+    const noticeWidth = kit.boldFont.widthOfTextAtSize(noticeText, 8.5);
+    kit.drawText(noticeText, marginX + (contentWidth - noticeWidth) / 2, { size: 8.5, bold: true });
+    kit.moveDown(16);
+
+    // Only fields actually present are drawn - see the call-site comment
+    // above for why nothing is invented here today.
+    const complianceFields = [
+      ["ATP No.", compliance?.atpNo],
+      ["ATP Date", compliance?.atpDate],
+      ["PTU No.", compliance?.ptuNo],
+      ["PTU Date", compliance?.ptuDate],
+      ["BIR Permit No.", compliance?.birPermitNo],
+      ["Date Issued", compliance?.dateIssued],
+      ["Approved Serial Nos.", compliance?.approvedSerialNos],
+    ].filter(([, value]) => value != null && value !== "");
+
+    for (const [label, value] of complianceFields) {
+      kit.drawText(`${label}: ${value}`, marginX, { size: 7.5, color: COLORS.grey });
+      kit.moveDown(11);
+    }
+
+    kit.drawText("AstreaBlue Accounting System", marginX, { size: 7.5, color: COLORS.grey });
+    kit.moveDown(10);
   }
 }
