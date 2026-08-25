@@ -2,6 +2,7 @@ const pool = require("../db");
 const { logAudit, requestMeta } = require("../lib/audit");
 const DataService = require("../services/transactionPrintDataService");
 const CurrencyService = require("../services/currencyService");
+const PrintTemplateService = require("../services/printTemplateService");
 
 const PRINT_ACTIONS = { preview: "PRINT_PREVIEW", print: "PRINT_DOCUMENT", export_pdf: "PRINT_EXPORT_PDF" };
 const LIST_ACTIONS = { preview: "PRINT_LIST_PREVIEW", print: "PRINT_LIST", export_pdf: "PRINT_LIST_EXPORT_PDF" };
@@ -26,6 +27,28 @@ exports.getDocument = async (req, res) => {
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
     const result = await DataService.getTransactionDocument(transactionType, id, { withEntries: mode === "with_entries", companyId });
+
+    // Phase 2 (Document Print Template Infrastructure): presentation-only
+    // config, resolved and attached alongside the accounting data DataService
+    // already built above - never merged into doc/lines/entriesSummary, so a
+    // template can never influence an accounting value, only how the PDF
+    // draws the values DataService already decided. Only invoice/or are in
+    // scope for this phase (PrintTemplateService.SUPPORTED_MODULE_TYPES) -
+    // every other module keeps templateConfig: null, which
+    // documentPdfBuilder.js treats identically to "no template resolved":
+    // its own built-in defaults, unchanged from before this checkpoint.
+    let templateResolution = null;
+    if (PrintTemplateService.SUPPORTED_MODULE_TYPES.includes(transactionType)) {
+      templateResolution = await PrintTemplateService.resolveEffectiveConfig({
+        companyId,
+        moduleType: transactionType,
+        requestedTemplateId: req.query.templateId || null,
+      });
+    }
+    result.templateConfig = templateResolution?.config || null;
+    result.templateMeta = templateResolution
+      ? { source: templateResolution.source, templateId: templateResolution.templateId, templateName: templateResolution.templateName }
+      : null;
 
     await logAudit(pool, {
       module: moduleKey,

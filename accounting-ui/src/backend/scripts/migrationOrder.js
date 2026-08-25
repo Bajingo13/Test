@@ -72,6 +72,10 @@ const MIGRATION_ORDER = [
   // anything else), depends only on companies/chart_of_accounts/
   // general_libraries already existing in the baseline.
   "phase7c_tax_schedule_migration.sql",
+  // Print Phase 2 - purely additive (one new standalone table, no ALTERs
+  // to anything else), depends only on companies/permissions/roles
+  // already existing in the baseline.
+  "document_print_templates_migration.sql",
 ];
 
 module.exports = { MIGRATION_ORDER };

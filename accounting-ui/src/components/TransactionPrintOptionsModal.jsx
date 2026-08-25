@@ -9,6 +9,12 @@ import "./TransactionPrintOptionsModal.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
 
+// Phase 2 (Document Print Template Infrastructure) - only invoice/or have
+// any print templates to select from. Every other module keeps printing
+// exactly as before (no selector shown at all), matching
+// printTemplateService.SUPPORTED_MODULE_TYPES on the backend.
+const PRINT_TEMPLATE_MODULE_TYPES = ["invoice", "or"];
+
 function authHeaders() {
   const token = localStorage.getItem("token");
   return token ? { Authorization: `Bearer ${token}` } : {};
@@ -30,6 +36,8 @@ export default function TransactionPrintOptionsModal({ open, onClose, transactio
   const [toDate, setToDate] = useState("");
   const [copyType, setCopyType] = useState(DEFAULT_COPY_TYPE);
   const [copies, setCopies] = useState(1);
+  const [templates, setTemplates] = useState([]);
+  const [templateId, setTemplateId] = useState("");
 
   const [busy, setBusy] = useState(false);
   const [busyIntent, setBusyIntent] = useState(null);
@@ -44,9 +52,25 @@ export default function TransactionPrintOptionsModal({ open, onClose, transactio
     setPreviewUrl(null);
     setCopyType(DEFAULT_COPY_TYPE);
     setCopies(1);
+    setTemplateId("");
+    setTemplates([]);
     if (previewUrlRef.current) {
       URL.revokeObjectURL(previewUrlRef.current);
       previewUrlRef.current = null;
+    }
+
+    // Phase 2: fetch the active print templates for this module (if any)
+    // so the user can optionally pick one instead of the resolved
+    // default. Backend already scopes strictly by company + moduleType
+    // (see printTemplateService.listTemplates) - never shows another
+    // company's or module's templates. Silently skipped (not surfaced as
+    // an error) if the fetch fails - the print flow still works via the
+    // company-default/built-in fallback either way.
+    if (PRINT_TEMPLATE_MODULE_TYPES.includes(transactionType)) {
+      fetch(`${API_URL}/api/print-templates?moduleType=${transactionType}`, { credentials: "include", headers: authHeaders() })
+        .then((res) => (res.ok ? res.json() : []))
+        .then((list) => setTemplates(Array.isArray(list) ? list.filter((t) => t.isActive) : []))
+        .catch(() => setTemplates([]));
     }
   }, [open, transactionType, transactionId]);
 
@@ -81,6 +105,7 @@ export default function TransactionPrintOptionsModal({ open, onClose, transactio
 
   async function fetchDocumentData(mode, intent) {
     const params = new URLSearchParams({ mode, intent, copyType, copies: String(copies) });
+    if (templateId) params.set("templateId", templateId);
     const res = await fetch(
       `${API_URL}/api/print/${transactionType}/${transactionId}?${params.toString()}`,
       { credentials: "include", headers: authHeaders() }
@@ -237,6 +262,22 @@ export default function TransactionPrintOptionsModal({ open, onClose, transactio
                   <div>
                     <label>Date To</label>
                     <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
+                  </div>
+                </div>
+              )}
+
+              {selectedOption?.scope === "single" && templates.length > 0 && (
+                <div className="tpom-filters">
+                  <div>
+                    <label>Print Template</label>
+                    <select value={templateId} onChange={(e) => setTemplateId(e.target.value)}>
+                      <option value="">Default</option>
+                      {templates.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.templateName}{t.isDefault ? " (Default)" : ""}
+                        </option>
+                      ))}
+                    </select>
                   </div>
                 </div>
               )}
