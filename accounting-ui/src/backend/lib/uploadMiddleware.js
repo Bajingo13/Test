@@ -19,6 +19,28 @@ const templateImportUpload = multer({
   },
 });
 
+// COA-specific import instance (audit checkpoint): the shared
+// templateImportUpload above still accepts .xls because /api/genlib/import
+// also uses it and is out of scope for this fix - changing that instance
+// would silently change GenLib's accepted formats too. COA's own parser
+// (ExcelJS's workbook.xlsx.load()) never actually supported legacy binary
+// .xls despite the old shared filter advertising it, so COA gets its own
+// narrower instance instead of quietly breaking or widening GenLib.
+const coaImportUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname || "").toLowerCase();
+    if ([".csv", ".xlsx"].includes(ext)) {
+      cb(null, true);
+    } else if (ext === ".xls") {
+      cb(new Error("Legacy .xls files are not supported. Please save the file as .xlsx or .csv and try again."));
+    } else {
+      cb(new Error("Only .csv or .xlsx files are supported"));
+    }
+  },
+});
+
 function handleUpload(uploadMiddleware) {
   return (req, res, next) => {
     uploadMiddleware(req, res, (err) => {
@@ -30,4 +52,4 @@ function handleUpload(uploadMiddleware) {
   };
 }
 
-module.exports = { templateImportUpload, handleUpload };
+module.exports = { templateImportUpload, coaImportUpload, handleUpload };

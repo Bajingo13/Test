@@ -410,3 +410,26 @@ textarea {
     flex-direction: column;
   }
 }
+
+.coa-import-preview-section {
+  margin-top: 14px;
+}
+
+.coa-import-preview-section h4 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.coa-import-preview-list {
+  margin: 0;
+  padding-left: 18px;
+  max-height: 180px;
+  overflow-y: auto;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.coa-import-preview-list li {
+  margin-bottom: 4px;
+}

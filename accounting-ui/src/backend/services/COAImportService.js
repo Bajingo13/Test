@@ -8,6 +8,12 @@ const {
 
 const CLASS_OPTIONS = ["ASSET", "LIABILITY", "EQUITY", "INCOME", "EXPENSE"];
 
+// Schema limits (chart_of_accounts.code VARCHAR(50), .title VARCHAR(255)) -
+// validated here, before any insert is attempted, rather than relying on
+// MySQL's own truncation/rejection behavior at write time.
+const CODE_MAX_LENGTH = 50;
+const TITLE_MAX_LENGTH = 255;
+
 const VALIDATION_OPTIONS = [
   "BANK / CASH",
   "OTHER ACCOUNTS",
@@ -91,8 +97,16 @@ async function parseAndValidateRows(buffer, filename) {
     return { headers, mapping, ready: [], skipped: [], warnings: [], missingRequiredColumns: true };
   }
 
+  // chart_of_accounts.code uses a case-insensitive collation
+  // (utf8mb4_0900_ai_ci) at the DB level - "CASH" and "cash" are the SAME
+  // row as far as MySQL's own UNIQUE constraint is concerned. Comparing
+  // here with a case-sensitive JS Set would let a case-variant slip past
+  // validation and fail at INSERT instead, which is exactly the mid-batch
+  // failure this checkpoint fixes. Comparison is normalized to uppercase;
+  // the ORIGINAL casing the user typed is still what gets stored - this
+  // never rewrites a code, only how two codes are compared for sameness.
   const [existingRows] = await pool.execute("SELECT code FROM chart_of_accounts");
-  const existingCodes = new Set(existingRows.map((r) => String(r.code).trim()));
+  const existingCodesUpper = new Set(existingRows.map((r) => String(r.code).trim().toUpperCase()));
 
   const [groupRows] = await pool.execute(
     "SELECT group_code, group_description FROM account_group_codes"
@@ -102,7 +116,7 @@ async function parseAndValidateRows(buffer, filename) {
   const ready = [];
   const skipped = [];
   const warnings = [];
-  const seenInFile = new Set();
+  const seenInFileUpper = new Set();
 
   dataRows.forEach((rowValues, idx) => {
     const rowNum = idx + 2; // +1 for header row, +1 for 1-indexing
@@ -116,8 +130,22 @@ async function parseAndValidateRows(buffer, filename) {
       return;
     }
 
-    if (existingCodes.has(code) || seenInFile.has(code)) {
+    if (code.length > CODE_MAX_LENGTH) {
+      skipped.push({ row: rowNum, reason: `Code exceeds the maximum length of ${CODE_MAX_LENGTH} characters` });
+      return;
+    }
+    if (title.length > TITLE_MAX_LENGTH) {
+      skipped.push({ row: rowNum, reason: `Title exceeds the maximum length of ${TITLE_MAX_LENGTH} characters` });
+      return;
+    }
+
+    const codeUpper = code.toUpperCase();
+    if (existingCodesUpper.has(codeUpper)) {
       skipped.push({ row: rowNum, reason: `Code "${code}" already exists` });
+      return;
+    }
+    if (seenInFileUpper.has(codeUpper)) {
+      skipped.push({ row: rowNum, reason: `Code "${code}" is a duplicate of another row in this file` });
       return;
     }
 
@@ -155,21 +183,31 @@ async function parseAndValidateRows(buffer, filename) {
       }
     }
 
-    seenInFile.add(code);
+    seenInFileUpper.add(codeUpper);
     ready.push({ code, date, title, accountClass, description, validations, groups });
   });
 
   return { headers, mapping, ready, skipped, warnings };
 }
 
+// Checkpoint (COA import reliability audit): ALL rows in one request now
+// share a SINGLE transaction. Previously each row committed independently,
+// so a failure on (say) row 347 of a 500-row batch left rows 1-346
+// permanently in the database with rows 348-500 never attempted - an
+// unknown, silently-partial COA. Now: any unexpected DB error during
+// insertion rolls back the ENTIRE batch, leaving zero newly-imported rows
+// from this request. Rows already excluded by parseAndValidateRows (missing
+// fields, duplicates, bad class, overlong values) are still just skipped,
+// same as before - this only changes what happens to the rows that WERE
+// classified as valid.
 async function insertCOARows(rows, syncBankCodeForAccount) {
-  let imported = 0;
+  if (rows.length === 0) return 0;
 
-  for (const row of rows) {
-    const conn = await pool.getConnection();
-    try {
-      await conn.beginTransaction();
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
 
+    for (const row of rows) {
       const [result] = await conn.execute(
         `INSERT INTO chart_of_accounts (code, account_date, title, account_class, description)
          VALUES (?, ?, ?, ?, ?)`,
@@ -193,18 +231,16 @@ async function insertCOARows(rows, syncBankCodeForAccount) {
       }
 
       await syncBankCodeForAccount(conn, coaId, row.code, row.title, row.validations);
-
-      await conn.commit();
-      imported++;
-    } catch (err) {
-      await conn.rollback();
-      throw err;
-    } finally {
-      conn.release();
     }
-  }
 
-  return imported;
+    await conn.commit();
+    return rows.length;
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
+  }
 }
 
 module.exports = {

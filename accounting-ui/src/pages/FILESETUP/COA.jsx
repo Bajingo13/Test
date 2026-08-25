@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
 import "./COA.css";
+import "../../components/RecurringTemplateModal.css";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
 
@@ -46,9 +47,20 @@ export default function COA() {
   const [form, setForm] = useState(EMPTY_FORM);
   const [loading, setLoading] = useState(false);
   const [groupCode, setGroupCode] = useState("");
-  const [importing, setImporting] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
   const importInputRef = useRef(null);
+
+  // Preview/confirm import flow: selecting a file only ever calls the
+  // read-only /preview endpoint. The File object is held here so
+  // "Confirm Import" can resubmit the SAME file to the real import
+  // endpoint - nothing is written to the database until that explicit
+  // confirmation.
+  const [previewFile, setPreviewFile] = useState(null);
+  const [previewResult, setPreviewResult] = useState(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState("");
+  const [confirming, setConfirming] = useState(false);
+  const [importResult, setImportResult] = useState(null);
 
   useEffect(() => {
     loadAccounts();
@@ -363,15 +375,60 @@ export default function COA() {
     importInputRef.current?.click();
   }
 
+  // Step 1: file selection only ever triggers a READ-ONLY preview - no
+  // database write happens here. The chosen file is kept in state so the
+  // exact same file can be resubmitted on explicit confirmation.
   async function handleImportFileChange(e) {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    setImporting(true);
+    setPreviewFile(file);
+    setPreviewResult(null);
+    setImportResult(null);
+    setPreviewError("");
+    setPreviewLoading(true);
 
     try {
       const formData = new FormData();
       formData.append("file", file);
+
+      const res = await fetch(`${API_BASE}/api/coa/import/preview`, {
+        method: "POST",
+        credentials: "include",
+        headers: authHeaders(),
+        body: formData,
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        if (handleAuthError(res.status)) return;
+        setPreviewError(data.message || "Failed to read the file.");
+        return;
+      }
+
+      setPreviewResult(data);
+    } catch (error) {
+      console.error("COA IMPORT PREVIEW ERROR:", error);
+      setPreviewError("Unable to read the file.");
+    } finally {
+      setPreviewLoading(false);
+      e.target.value = "";
+    }
+  }
+
+  // Step 2: only fires on the user's explicit "Confirm Import" click.
+  // Resubmits the SAME file to the real import endpoint, which re-parses
+  // and re-validates it server-side (never trusts the earlier preview as
+  // the source of truth for what gets written) and performs the actual
+  // batch-transaction insert.
+  async function handleConfirmImport() {
+    if (!previewFile) return;
+    setConfirming(true);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", previewFile);
 
       const res = await fetch(`${API_BASE}/api/coa/import`, {
         method: "POST",
@@ -384,33 +441,25 @@ export default function COA() {
 
       if (!res.ok) {
         if (handleAuthError(res.status)) return;
-        alert(data.message || "Failed to import file");
+        setImportResult({ success: false, message: data.message || "Failed to import file", skipped: data.skipped, warnings: data.warnings });
         return;
       }
 
-      const lines = [`Imported ${data.imported} account(s).`];
-      if (data.skipped?.length) {
-        lines.push(
-          `Skipped ${data.skipped.length}:`,
-          ...data.skipped.map((s) => `  Row ${s.row}: ${s.reason}`)
-        );
-      }
-      if (data.warnings?.length) {
-        lines.push(
-          `Warnings (${data.warnings.length}):`,
-          ...data.warnings.map((w) => `  Row ${w.row}: ${w.message}`)
-        );
-      }
-      alert(lines.join("\n"));
-
+      setImportResult({ success: true, imported: data.imported, skipped: data.skipped, warnings: data.warnings });
       await loadAccounts();
     } catch (error) {
       console.error("IMPORT COA ERROR:", error);
-      alert("Unable to import file.");
+      setImportResult({ success: false, message: "Unable to import file." });
     } finally {
-      setImporting(false);
-      e.target.value = "";
+      setConfirming(false);
     }
+  }
+
+  function closeImportPreview() {
+    setPreviewFile(null);
+    setPreviewResult(null);
+    setPreviewError("");
+    setImportResult(null);
   }
 
   return (
@@ -451,13 +500,13 @@ export default function COA() {
               <button className="btn" onClick={downloadTemplate}>
                 Generate Template
               </button>
-              <button className="btn" onClick={triggerImport} disabled={importing}>
-                {importing ? "Importing..." : "Import"}
+              <button className="btn" onClick={triggerImport} disabled={previewLoading}>
+                {previewLoading ? "Reading file..." : "Import"}
               </button>
               <input
                 type="file"
                 ref={importInputRef}
-                accept=".csv,.xls,.xlsx"
+                accept=".csv,.xlsx"
                 style={{ display: "none" }}
                 onChange={handleImportFileChange}
               />
@@ -717,6 +766,114 @@ export default function COA() {
           </div>
         </section>
       </div>
+
+      {previewFile && (
+        <div className="rtm-overlay" onClick={(e) => e.target === e.currentTarget && !confirming && closeImportPreview()}>
+          <div className="rtm-modal" style={{ width: "min(680px, 96vw)" }} role="dialog" aria-modal="true" aria-label="Import Chart of Accounts">
+            <div className="rtm-header">
+              <div>
+                <h2>Import Chart of Accounts</h2>
+                <p className="rtm-subtitle">{previewFile.name}</p>
+              </div>
+              <button type="button" className="rtm-close" onClick={closeImportPreview} disabled={confirming}>&times;</button>
+            </div>
+
+            <div className="rtm-body">
+              {previewLoading && (
+                <div className="rtm-loading">Reading file...</div>
+              )}
+
+              {!previewLoading && previewError && (
+                <div className="rtm-error-banner">{previewError}</div>
+              )}
+
+              {!previewLoading && !previewError && previewResult && !importResult && (
+                <>
+                  <p>
+                    <strong>{previewResult.totalRows}</strong> row(s) detected &mdash;{" "}
+                    <strong>{previewResult.readyCount}</strong> ready to import,{" "}
+                    <strong>{previewResult.skipped?.length || 0}</strong> will be skipped.
+                  </p>
+                  <p className="rtm-hint">
+                    No accounts have been created yet. Review the rows below, then confirm to import.
+                  </p>
+
+                  {previewResult.skipped?.length > 0 && (
+                    <div className="coa-import-preview-section">
+                      <h4>Skipped rows ({previewResult.skipped.length})</h4>
+                      <ul className="coa-import-preview-list">
+                        {previewResult.skipped.map((s, i) => (
+                          <li key={i}>Row {s.row}: {s.reason}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {previewResult.warnings?.length > 0 && (
+                    <div className="coa-import-preview-section">
+                      <h4>Warnings ({previewResult.warnings.length})</h4>
+                      <ul className="coa-import-preview-list">
+                        {previewResult.warnings.map((w, i) => (
+                          <li key={i}>Row {w.row}: {w.message}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </>
+              )}
+
+              {importResult && (
+                importResult.success ? (
+                  <div>
+                    <p><strong>Imported {importResult.imported} account(s) successfully.</strong></p>
+                    {importResult.skipped?.length > 0 && (
+                      <div className="coa-import-preview-section">
+                        <h4>Skipped rows ({importResult.skipped.length})</h4>
+                        <ul className="coa-import-preview-list">
+                          {importResult.skipped.map((s, i) => (
+                            <li key={i}>Row {s.row}: {s.reason}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {importResult.warnings?.length > 0 && (
+                      <div className="coa-import-preview-section">
+                        <h4>Warnings ({importResult.warnings.length})</h4>
+                        <ul className="coa-import-preview-list">
+                          {importResult.warnings.map((w, i) => (
+                            <li key={i}>Row {w.row}: {w.message}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="rtm-error-banner">{importResult.message}</div>
+                )
+              )}
+            </div>
+
+            <div className="rtm-footer">
+              {!importResult ? (
+                <>
+                  <button className="rtm-btn-secondary" onClick={closeImportPreview} disabled={confirming}>
+                    Cancel
+                  </button>
+                  <button
+                    className="rtm-btn-primary"
+                    onClick={handleConfirmImport}
+                    disabled={previewLoading || !!previewError || !previewResult || previewResult.readyCount === 0 || confirming}
+                  >
+                    {confirming ? "Importing..." : "Confirm Import"}
+                  </button>
+                </>
+              ) : (
+                <button className="rtm-btn-primary" onClick={closeImportPreview}>Close</button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

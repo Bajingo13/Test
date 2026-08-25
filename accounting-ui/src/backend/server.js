@@ -25,7 +25,7 @@ const loginRateLimiter = rateLimit({
 });
 const LedgerReportService = require("./services/LedgerReportService");
 const { buildXlsxTemplate } = require("./services/TemplateExportService");
-const { templateImportUpload, handleUpload } = require("./lib/uploadMiddleware");
+const { templateImportUpload, coaImportUpload, handleUpload } = require("./lib/uploadMiddleware");
 const COAImportService = require("./services/COAImportService");
 const GenLibImportService = require("./services/GenLibImportService");
 const GLBeginningBalanceService = require("./services/GLBeginningBalanceService");
@@ -779,11 +779,19 @@ app.get("/api/coa/template", authenticateToken, authorizePermission("FILESETUP.C
   }
 });
 
+// Read-only preview: parses + validates the uploaded file (same
+// COAImportService.parseAndValidateRows() the real import route uses) but
+// never calls insertCOARows - zero database writes happen here. The
+// frontend shows this result, and only on explicit user confirmation does
+// it resubmit the SAME file to POST /api/coa/import below. Re-parsing on
+// confirm (rather than trusting a client-echoed "ready" row list) means
+// the import is always re-validated against the database's actual current
+// state at write time, not a possibly-stale preview from moments earlier.
 app.post(
-  "/api/coa/import",
+  "/api/coa/import/preview",
   authenticateToken,
   authorizePermission("FILESETUP.COA", "CREATE"),
-  handleUpload(templateImportUpload.single("file")),
+  handleUpload(coaImportUpload.single("file")),
   async (req, res) => {
     try {
       if (!req.file) {
@@ -804,12 +812,66 @@ app.post(
         });
       }
 
-      const imported = await COAImportService.insertCOARows(ready, syncBankCodeForAccount);
+      res.json({
+        success: true,
+        totalRows: ready.length + skipped.length,
+        readyCount: ready.length,
+        skipped,
+        warnings,
+      });
+    } catch (err) {
+      console.error("COA IMPORT PREVIEW ERROR:", err);
+      res.status(500).json({ message: "Failed to read the file. Please check its format and try again." });
+    }
+  }
+);
+
+app.post(
+  "/api/coa/import",
+  authenticateToken,
+  authorizePermission("FILESETUP.COA", "CREATE"),
+  handleUpload(coaImportUpload.single("file")),
+  async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ message: "No file uploaded" });
+      }
+
+      const { headers, ready, skipped, warnings, missingRequiredColumns } =
+        await COAImportService.parseAndValidateRows(req.file.buffer, req.file.originalname);
+
+      if (headers.length === 0) {
+        return res.status(400).json({ message: "The file appears to be empty" });
+      }
+
+      if (missingRequiredColumns) {
+        return res.status(400).json({
+          message: "Could not find required Code and Title columns in the file",
+          headers,
+        });
+      }
+
+      let imported;
+      try {
+        imported = await COAImportService.insertCOARows(ready, syncBankCodeForAccount);
+      } catch (insertErr) {
+        // insertCOARows rolls back its own single batch transaction before
+        // this throw - zero rows from THIS request were committed. Detailed
+        // error stays server-side; the user gets an accurate, actionable
+        // summary instead of a raw DB/library message.
+        console.error("COA IMPORT - BATCH INSERT FAILED, ROLLED BACK:", insertErr);
+        return res.status(500).json({
+          success: false,
+          message: "Import failed and was rolled back. No accounts were imported from this file. Please try again.",
+          skipped,
+          warnings,
+        });
+      }
 
       res.json({ success: true, imported, skipped, warnings });
     } catch (err) {
       console.error("COA IMPORT ERROR:", err);
-      res.status(500).json({ message: "Failed to import chart of accounts", error: err.message });
+      res.status(500).json({ message: "Failed to import chart of accounts. Please check the file and try again." });
     }
   }
 );
