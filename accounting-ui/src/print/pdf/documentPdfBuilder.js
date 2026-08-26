@@ -68,6 +68,92 @@ function computeColumnLayout(configuredColumns, colDefs, defaultColumns, default
   });
 }
 
+// Phase 3C: the exact same canonical list printTemplateService.js's own
+// SECTION_ORDER_WHITELIST validates against - deliberately NOT including
+// "footer" (signatures + system notice + compliance block + page footer),
+// since that key doesn't exist in the Phase 2 schema. Rather than silently
+// broadening the backend whitelist, the footer stays a fixed, always-last
+// epilogue that is never part of sectionOrder at all - see the Phase 3C
+// audit note in the Builder UI for the same decision on the frontend side.
+// Exported so the Builder UI (PrintTemplateList.jsx) can build its Layout
+// section's Move Up/Down list from this SAME list, rather than keeping a
+// second, independently-maintained copy in the frontend - this file is
+// already frontend-only code (bundled into the browser, imported directly
+// by the Builder for buildDocumentPdf), so this is a single source of
+// truth within the client, not a new duplication. The backend's own
+// SECTION_ORDER_WHITELIST in printTemplateService.js is necessarily a
+// separate (but must stay byte-identical) list, since backend/frontend
+// share no common module in this project - the same unavoidable split
+// MODULE_META above already lives with.
+export const ALL_SECTION_KEYS = ["header", "meta", "party", "appliedInvoices", "table", "summary"];
+
+// Must stay byte-identical to printTemplateService.js's builtInDefaultConfig()
+// own sectionOrder values (and therefore to the sequence this function drew
+// before Phase 3C existed) - this IS the "current production order" section 7
+// requires be preserved. appliedInvoices is only ever a required section for
+// "or" (invoice has no such data at all, so forcing it into the invoice
+// fallback would be meaningless).
+export const DEFAULT_SECTION_ORDER = {
+  invoice: ["header", "meta", "party", "table", "summary"],
+  or: ["header", "meta", "party", "appliedInvoices", "table", "summary"],
+};
+
+// Friendly labels for the Builder's Layout section (Move Up/Down list) -
+// exported alongside the keys themselves so the UI never has to invent or
+// duplicate its own copy of "which sections exist."
+export const SECTION_LABELS = {
+  header: "Header",
+  meta: "Transaction Details",
+  party: "Customer / Received From",
+  appliedInvoices: "Applied Invoices",
+  table: "Main Table",
+  summary: "Summary",
+};
+
+// Client-side defense in depth - by the time templateConfig reaches this
+// function it should already be validator-clean (every path that produces
+// it - create/update, preview, built-in - runs through
+// printTemplateService.mergeAndValidateConfig() first), but this function
+// has no way to know that for certain (a stale cached blob, a manually
+// edited row, a future caller) and must never crash or drop content
+// because of it. Duplicates and keys outside the whitelist are silently
+// dropped rather than thrown - this is a rendering fallback, not a second
+// validation layer; the real validation/rejection already happened
+// server-side. Any section REQUIRED for this transaction type that ends up
+// missing (a genuinely legacy/partial config) is appended in its normal
+// default position, so a partial config never causes lost content - only
+// section 3's requirement that nothing disappears merely because a config
+// predates this feature.
+function normalizeSectionOrder(rawOrder, transactionType) {
+  const fallback = DEFAULT_SECTION_ORDER[transactionType] || DEFAULT_SECTION_ORDER.invoice;
+  if (!Array.isArray(rawOrder) || rawOrder.length === 0) return fallback;
+
+  const seen = new Set();
+  const cleaned = [];
+  for (const key of rawOrder) {
+    if (!ALL_SECTION_KEYS.includes(key)) continue;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    cleaned.push(key);
+  }
+  for (const key of fallback) {
+    if (!seen.has(key)) cleaned.push(key);
+  }
+  return cleaned.length ? cleaned : fallback;
+}
+
+// Phase 3C spacing/alignment presets. "normal"/"left" are defined as an
+// exact ZERO-delta/unchanged-position no-op specifically so the default
+// (no template, or a template that never touched layout) reproduces
+// byte-identical output to every prior checkpoint - see section 7's own
+// requirement. Only "compact"/"relaxed" and "center" actually move
+// anything, and only at the handful of points documented at each call
+// site below (inter-section gaps, table/meta row spacing, one
+// heading-to-content gap, and the header title/subtitle line) - never
+// font sizes, never numeric/accounting columns.
+const SPACING_SECTION_DELTA = { compact: -6, normal: 0, relaxed: 10 };
+const SPACING_ROW_DELTA = { compact: -1, normal: 0, relaxed: 2 };
+
 // Builds one transaction document PDF - "without entries" (customer/
 // supplier-facing, description + amount only) or "with entries" (adds the
 // Accounting Entries section: account code/title, debit, credit, balanced
@@ -90,7 +176,7 @@ function computeColumnLayout(configuredColumns, colDefs, defaultColumns, default
 // in Phase 2's scope) or a config that omits a field reproduces the
 // original hardcoded behavior exactly. Only presentation is ever read
 // from it - accounting values (doc.totalDebit, doc.currency, line.amount,
-// etc.) are never touched here, only WHETHER/HOW they're drawn.
+// etc.) are never touched here, only WHETHER/HOW/WHERE they're drawn.
 export async function buildDocumentPdf({
   transactionType,
   doc,
@@ -116,10 +202,17 @@ export async function buildDocumentPdf({
   const metaCfg = cfg.meta || {};
   const tableCfg = cfg.table || {};
   const summaryCfg = cfg.summary || {};
+  const layoutCfg = cfg.layout || {};
 
   const documentLabel = headerCfg.documentTitle || moduleMeta.documentLabel;
   const documentSubtitle = headerCfg.subtitle || null;
   const partyRoleLabel = partyCfg.sectionLabel !== undefined && partyCfg.sectionLabel !== null ? partyCfg.sectionLabel : moduleMeta.partyRoleLabel;
+
+  const spacingPreset = SPACING_SECTION_DELTA[layoutCfg.spacingPreset] !== undefined ? layoutCfg.spacingPreset : "normal";
+  const sectionGapDelta = SPACING_SECTION_DELTA[spacingPreset];
+  const rowGapDelta = SPACING_ROW_DELTA[spacingPreset];
+  const alignmentPreset = layoutCfg.alignmentPreset === "center" ? "center" : "left";
+  const sectionOrder = normalizeSectionOrder(layoutCfg.sectionOrder, transactionType);
 
   // Phase 1 print-completeness checkpoint: doc.currency is now ALWAYS
   // populated when the module has currency support at all (see
@@ -144,6 +237,22 @@ export async function buildDocumentPdf({
   const contentWidth = pageWidth - marginX * 2;
   const rightEdge = marginX + contentWidth;
   const copyCount = Math.min(Math.max(Number(copies) || 1, 1), MAX_COPIES);
+
+  // Declared here (before first use) rather than down by the section-drawer
+  // functions themselves - the drawer functions are hoisted `function`
+  // declarations (safe to reference from anywhere in this scope), but this
+  // is a `const` object, which is NOT hoisted the same way. drawOneCopy()
+  // is called by the loop immediately below, so SECTION_DRAWERS must exist
+  // before that point or every reference inside drawOneCopy() throws a
+  // temporal-dead-zone ReferenceError.
+  const SECTION_DRAWERS = {
+    header: drawHeaderBlock,
+    meta: drawMetaBlock,
+    party: drawPartyBlock,
+    appliedInvoices: drawAppliedInvoicesBlock,
+    table: drawTableBlock,
+    summary: drawSummaryBlock,
+  };
 
   for (let copyIndex = 0; copyIndex < copyCount; copyIndex++) {
     if (copyIndex > 0) kit.forcePageBreak();
@@ -194,7 +303,9 @@ export async function buildDocumentPdf({
 
     kit.ensureRoom(40);
     kit.drawText("Applied Invoice(s)", marginX, { size: 9, bold: true, color: COLORS.grey });
-    kit.moveDown(14);
+    // Heading-to-content gap (section 5's "heading-to-content spacing") -
+    // 14 is the original, unchanged base value; only compact/relaxed move it.
+    kit.moveDown(14 + rowGapDelta);
 
     function drawAppHeader() {
       kit.drawRect({ x: marginX, w: contentWidth, h: 18, color: COLORS.lightGrey, yPos: kit.getY() - 13 });
@@ -236,7 +347,8 @@ export async function buildDocumentPdf({
 
       kit.moveDown(rowHeight);
       kit.drawLine({ x1: marginX, x2: rightEdge, color: COLORS.border });
-      kit.moveDown(3);
+      // Row-to-row gap ("row padding") - 3 is the original base value.
+      kit.moveDown(Math.max(0, 3 + rowGapDelta));
     }
 
     const lastAmountCol = [...cols].reverse().find((c) => c.key === "amountPaid") || cols[cols.length - 1];
@@ -246,22 +358,42 @@ export async function buildDocumentPdf({
     kit.moveDown(18);
   }
 
-  // One full copy of the document - called copyCount times above, each
-  // starting on its own fresh page via forcePageBreak().
-  function drawOneCopy() {
-    // ---- Header: two independently-flowing columns reconciled at the end,
-    // so neither can overlap the other regardless of how many lines either
-    // side needs (long company address vs. short one, long title vs. short). ----
+  // ==========================================================================
+  // Phase 3C: each major block extracted into its own closure, dispatched
+  // through sectionOrder below - this is a REORGANIZATION, not a rewrite.
+  // Every line of drawing logic inside each function is unchanged from
+  // before Phase 3C; only the WHICH-BLOCK-RUNS-WHEN decision moved out of a
+  // single hardcoded sequence and into normalizeSectionOrder()'s output.
+  // ==========================================================================
+
+  // ---- Header: two independently-flowing columns reconciled at the end,
+  // so neither can overlap the other regardless of how many lines either
+  // side needs (long company address vs. short one, long title vs. short). ----
+  function drawHeaderBlock() {
     const headerTopY = kit.getY();
 
     // Right column: copy badge -> title -> (subtitle) -> (accounting-copy
     // qualifier) -> voucher number.
     if (headerCfg.showCopyBadge ?? true) kit.drawCopyBadge(copyType, { topY: headerTopY });
     let rightY = headerTopY - ((headerCfg.showCopyBadge ?? true) ? COPY_BADGE_HEIGHT : 0) - 17;
-    kit.drawRight(documentLabel, rightEdge, { bold: true, size: 16, y: rightY });
+    // alignmentPreset only ever touches the title/subtitle text itself -
+    // copy badge, "ACCOUNTING COPY" qualifier, and voucher number keep
+    // their fixed right-aligned position regardless, since centering those
+    // has no clear meaning and isn't what section 6 asked for.
+    if (alignmentPreset === "center") {
+      const titleWidth = kit.boldFont.widthOfTextAtSize(documentLabel, 16);
+      kit.drawText(documentLabel, marginX + (contentWidth - titleWidth) / 2, { bold: true, size: 16, y: rightY });
+    } else {
+      kit.drawRight(documentLabel, rightEdge, { bold: true, size: 16, y: rightY });
+    }
     rightY -= 18;
     if (documentSubtitle) {
-      kit.drawRight(documentSubtitle, rightEdge, { size: 9, color: COLORS.grey, y: rightY });
+      if (alignmentPreset === "center") {
+        const subtitleWidth = kit.font.widthOfTextAtSize(documentSubtitle, 9);
+        kit.drawText(documentSubtitle, marginX + (contentWidth - subtitleWidth) / 2, { size: 9, color: COLORS.grey, y: rightY });
+      } else {
+        kit.drawRight(documentSubtitle, rightEdge, { size: 9, color: COLORS.grey, y: rightY });
+      }
       rightY -= 13;
     }
     if (withEntries) {
@@ -294,8 +426,10 @@ export async function buildDocumentPdf({
     kit.setY(Math.min(leftColumnBottomY, rightColumnBottomY) - 14);
     kit.drawLine({ x1: marginX, x2: rightEdge, thickness: 1, color: COLORS.accent });
     kit.moveDown(18);
+  }
 
-    // ---- Document info: clean two-column grid ----
+  // ---- Document info: clean two-column grid ----
+  function drawMetaBlock() {
     const metaPairs = [];
     if (metaCfg.showDate ?? true) metaPairs.push(["Date", doc.transactionDate || "-"]);
     if (doc.dueDate) metaPairs.push(["Due Date", doc.dueDate]);
@@ -339,58 +473,65 @@ export async function buildDocumentPdf({
         kit.setY(rowTop);
         linesUsed2 = drawWrappedBlock(pair2[1], marginX + metaColWidth, { size: 10, maxWidth: metaColWidth - metaColGap, lineHeight: 13 });
       }
-      kit.setY(rowTop - Math.max(linesUsed1, linesUsed2, 1) * 13 - 6);
+      // Metadata row-to-row gap ("metadata block spacing") - 6 is the
+      // original base value.
+      kit.setY(rowTop - Math.max(linesUsed1, linesUsed2, 1) * 13 - Math.max(0, 6 + rowGapDelta));
     }
     kit.moveDown(6);
+  }
 
-    // ---- Party block (Bill To / Pay To / Payee / Received From) - full
-    // width below the date grid, skipped entirely for modules with no
-    // party role (JV), or when a template overrides the section label to
-    // an empty value (rejected server-side, so this can't actually happen
-    // via a stored template - kept as a defensive guard only). ----
-    if (partyRoleLabel) {
-      kit.drawText(partyRoleLabel, marginX, { size: 8, bold: true, color: COLORS.grey });
-      kit.moveDown(13);
-      if (partyCfg.showName ?? true) {
-        drawWrappedBlock(party?.name || doc.partyName || "-", marginX, { size: 11, bold: true, lineHeight: 13 });
-        kit.moveDown(2);
-      }
-      if (party) {
-        if (partyCfg.showAddress ?? true) {
-          const addressParts = [party.address1, party.address2, party.address3].filter(Boolean);
-          for (const part of addressParts) {
-            drawWrappedBlock(part, marginX, { size: 9, color: COLORS.grey, lineHeight: 11 });
-          }
-        }
-        if ((partyCfg.showTin ?? true) && party.tin) {
-          kit.drawText(`TIN: ${party.tin}`, marginX, { size: 9, color: COLORS.grey });
-          kit.moveDown(12);
-        }
-        const contact = party.telephone || party.mobile || party.email;
-        if (contact) {
-          kit.drawText(contact, marginX, { size: 9, color: COLORS.grey });
-          kit.moveDown(12);
-        }
-      }
-      kit.moveDown(8);
+  // ---- Party block (Bill To / Pay To / Payee / Received From) - full
+  // width below the date grid, skipped entirely for modules with no
+  // party role (JV), or when a template overrides the section label to
+  // an empty value (rejected server-side, so this can't actually happen
+  // via a stored template - kept as a defensive guard only). ----
+  function drawPartyBlock() {
+    if (!partyRoleLabel) return;
+    kit.drawText(partyRoleLabel, marginX, { size: 8, bold: true, color: COLORS.grey });
+    kit.moveDown(13);
+    if (partyCfg.showName ?? true) {
+      drawWrappedBlock(party?.name || doc.partyName || "-", marginX, { size: 11, bold: true, lineHeight: 13 });
+      kit.moveDown(2);
     }
+    if (party) {
+      if (partyCfg.showAddress ?? true) {
+        const addressParts = [party.address1, party.address2, party.address3].filter(Boolean);
+        for (const part of addressParts) {
+          drawWrappedBlock(part, marginX, { size: 9, color: COLORS.grey, lineHeight: 11 });
+        }
+      }
+      if ((partyCfg.showTin ?? true) && party.tin) {
+        kit.drawText(`TIN: ${party.tin}`, marginX, { size: 9, color: COLORS.grey });
+        kit.moveDown(12);
+      }
+      const contact = party.telephone || party.mobile || party.email;
+      if (contact) {
+        kit.drawText(contact, marginX, { size: 9, color: COLORS.grey });
+        kit.moveDown(12);
+      }
+    }
+    kit.moveDown(8);
+  }
 
-    // ---- Applied Invoices (OR settlement breakdown) - only drawn when
-    // this OR actually settles one or more Invoices AND the template
-    // hasn't turned the block off. A direct OR (the common case) has an
-    // empty appliedInvoices array and this block draws nothing at all -
-    // no empty fake table, the layout falls straight through to the
-    // normal line-items table exactly as before Phase 1/2. ----
+  // ---- Applied Invoices (OR settlement breakdown) - only drawn when
+  // this OR actually settles one or more Invoices AND the template
+  // hasn't turned the block off. A direct OR (the common case) has an
+  // empty appliedInvoices array and this block draws nothing at all -
+  // no empty fake table, the layout falls straight through to whatever
+  // section comes next. Phase 1 print-completeness checkpoint. ----
+  function drawAppliedInvoicesBlock() {
     if ((summaryCfg.showAppliedInvoices ?? true) && Array.isArray(appliedInvoices) && appliedInvoices.length > 0) {
       drawAppliedInvoicesTable(appliedInvoices);
     }
+  }
 
-    // ---- Line items table - column set/order/labels are template-
-    // configurable (Phase 2) ONLY for the customer/supplier-facing
-    // "without entries" copy. The internal "with entries" accounting copy
-    // keeps its account-code/debit/credit shape completely fixed
-    // regardless of any template - that IS the accounting truth, never a
-    // presentation choice (section 5's boundary). ----
+  // ---- Line items table - column set/order/labels are template-
+  // configurable (Phase 2) ONLY for the customer/supplier-facing
+  // "without entries" copy. The internal "with entries" accounting copy
+  // keeps its account-code/debit/credit shape completely fixed
+  // regardless of any template - that IS the accounting truth, never a
+  // presentation choice (section 5's boundary). ----
+  function drawTableBlock() {
     const mainCols = withEntries
       ? null
       : computeColumnLayout(tableCfg.columns, MAIN_TABLE_COL_DEFS, DEFAULT_MAIN_TABLE_COLUMNS, { description: "Description", amount: "Amount" }, contentWidth, marginX);
@@ -471,11 +612,24 @@ export async function buildDocumentPdf({
 
       kit.moveDown(rowHeight);
       kit.drawLine({ x1: marginX, x2: rightEdge, color: COLORS.border });
-      kit.moveDown(4);
+      // Row-to-row gap ("row padding") - 4 is the original base value.
+      // Numeric amount cells themselves are never touched by spacing - only
+      // the vertical gap AFTER the row's own border line.
+      kit.moveDown(Math.max(0, 4 + rowGapDelta));
     }
 
     kit.moveDown(10);
+  }
 
+  // ---- Summary bundle: totals, paid/balance, amount-in-words, remarks,
+  // withholding tax, and (with-entries only) the accounting entries
+  // summary - all kept together as ONE reorderable unit, in their existing
+  // relative order, exactly as before Phase 3C. Only the bundle's position
+  // relative to header/meta/party/appliedInvoices/table can move; nothing
+  // inside it is reordered independently (see the Phase 3C audit note on
+  // why "summary" is the correct granularity per the existing Phase 2
+  // whitelist). ----
+  function drawSummaryBlock() {
     // ---- Totals - dedicated right-aligned block ----
     kit.ensureRoom(100);
     const totalsLabelRight = marginX + contentWidth * 0.72;
@@ -611,8 +765,41 @@ export async function buildDocumentPdf({
       });
       kit.moveDown(26);
     }
+  }
 
-    // ---- Signatures - equal-width 3-column grid ----
+  // One full copy of the document - called copyCount times above, each
+  // starting on its own fresh page via forcePageBreak(). Dispatches the six
+  // reorderable sections through sectionOrder (Phase 3C), then always draws
+  // signatures + the compliance footer last and unconditionally - neither
+  // is part of the Phase 2 sectionOrder whitelist (see the ALL_SECTION_KEYS
+  // comment above), so they can never be reordered, matching "follow the
+  // existing canonical list rather than inventing alternate names."
+  function drawOneCopy() {
+    sectionOrder.forEach((key, idx) => {
+      SECTION_DRAWERS[key]?.();
+      // Inter-section gap (section 5's "vertical gap between sections") -
+      // zero for "normal", so default output is byte-identical to every
+      // prior checkpoint. Never applied after the last reorderable section,
+      // since drawSignatures already opens with its own generous ensureRoom/
+      // spacing.
+      if (idx < sectionOrder.length - 1 && sectionGapDelta !== 0) {
+        kit.moveDown(Math.max(0, sectionGapDelta));
+      }
+    });
+
+    drawSignatures();
+    drawComplianceFooter(company?.compliance);
+
+    // ---- Page footer ("Page X of Y - Generated by...") - drawn once per
+    // document (not per copy) inside kit.finish(), see the call site below
+    // buildDocumentPdf's drawOneCopy loop. Its visibility is threaded
+    // through as `showPageFooter` on the finish() options so every
+    // copy/page agrees, rather than being decided again per copy. ----
+  }
+
+  // ---- Signatures - equal-width 3-column grid - always last, never
+  // reorderable (see drawOneCopy's own comment). ----
+  function drawSignatures() {
     kit.ensureRoom(70);
     const sigGap = 15;
     const sigWidth = (contentWidth - sigGap * 2) / 3;
@@ -624,34 +811,18 @@ export async function buildDocumentPdf({
       kit.drawText(label, x, { size: 8, color: COLORS.grey, y: sigTopY - 12 });
     });
     kit.moveDown(40);
-
-    // ---- System-generated notice + BIR compliance footer block - Phase 1
-    // print-completeness checkpoint, template-gated in Phase 2. Flows
-    // normally via ensureRoom/moveDown like every other block in this
-    // function - never a forced page break, so it only spills to a second
-    // page when the content genuinely doesn't fit, unlike the E-Invoicing
-    // reference PDFs' own fixed-position footer. No BIR Permit/ATP/PTU/
-    // Approved-Serial-Number field exists anywhere in this system's schema
-    // today (confirmed - company_profile has none) - this deliberately
-    // draws ONLY the fields it's given; passing nothing (as every caller
-    // does today) omits the BIR-specific lines entirely rather than
-    // inventing placeholder values, per the approved scope. This IS the
-    // reusable infrastructure a later checkpoint wires real data into -
-    // not a stub to be rewritten.
-    drawComplianceFooter(company?.compliance);
-
-    // ---- Page footer ("Page X of Y - Generated by...") - drawn once per
-    // document (not per copy) inside kit.finish(), see the call site below
-    // buildDocumentPdf's drawOneCopy loop. Its visibility is threaded
-    // through as `showPageFooter` on the finish() options so every
-    // copy/page agrees, rather than being decided again per copy. ----
   }
 
   // Draws nothing at all (not even the horizontal rule) when the template
   // has turned off both the system-generated notice AND the compliance
   // block - a template that wants neither shouldn't get an orphaned line
   // with blank space under it. Otherwise draws the rule, then whichever
-  // of the two sub-blocks is individually still enabled.
+  // of the two sub-blocks is individually still enabled. No BIR Permit/
+  // ATP/PTU/Approved-Serial-Number field exists anywhere in this system's
+  // schema today (confirmed - company_profile has none) - this
+  // deliberately draws ONLY the fields it's given; passing nothing (as
+  // every caller does today) omits the BIR-specific lines entirely rather
+  // than inventing placeholder values, per the approved scope.
   function drawComplianceFooter(compliance) {
     const showNotice = summaryCfg.showSystemGeneratedNotice ?? true;
     const showCompliance = summaryCfg.showComplianceFooter ?? true;

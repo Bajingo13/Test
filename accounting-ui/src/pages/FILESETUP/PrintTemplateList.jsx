@@ -1,8 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import usePermissions from "../../hooks/usePermissions";
-import { buildDocumentPdf } from "../../print/pdf/documentPdfBuilder";
+import { buildDocumentPdf, DEFAULT_SECTION_ORDER, SECTION_LABELS } from "../../print/pdf/documentPdfBuilder";
 import "./FileSetupPages.css";
 import "./PrintTemplateList.css";
+
+const SPACING_PRESETS = [
+  { value: "compact", label: "Compact" },
+  { value: "normal", label: "Normal" },
+  { value: "relaxed", label: "Relaxed" },
+];
+const ALIGNMENT_PRESETS = [
+  { value: "left", label: "Left" },
+  { value: "center", label: "Center" },
+];
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
 const MODULE_KEY = "PRINT.DOCUMENT_TEMPLATES";
@@ -100,6 +110,14 @@ function emptyConfigForm(moduleType) {
     showSystemGeneratedNotice: true,
     showComplianceFooter: true,
     showPageFooter: true,
+    // Phase 3C. Left empty here rather than pre-filled with a hardcoded
+    // duplicate of the module's default order - loadPreviewData() seeds
+    // this from the real built-in config (the single source of truth)
+    // the moment it loads, for "add" mode; edit mode reads it straight
+    // from the template's own stored config in configToForm() below.
+    sectionOrder: [],
+    spacingPreset: "normal",
+    alignmentPreset: "left",
   };
 }
 
@@ -136,6 +154,11 @@ function configToForm(config, moduleType) {
     showSystemGeneratedNotice: config.summary?.showSystemGeneratedNotice ?? d.showSystemGeneratedNotice,
     showComplianceFooter: config.summary?.showComplianceFooter ?? d.showComplianceFooter,
     showPageFooter: config.summary?.showPageFooter ?? d.showPageFooter,
+    sectionOrder: Array.isArray(config.layout?.sectionOrder) && config.layout.sectionOrder.length
+      ? config.layout.sectionOrder
+      : (DEFAULT_SECTION_ORDER[moduleType] || []),
+    spacingPreset: config.layout?.spacingPreset || d.spacingPreset,
+    alignmentPreset: config.layout?.alignmentPreset || d.alignmentPreset,
   };
 }
 
@@ -177,6 +200,16 @@ function buildConfigPayload(form, moduleType) {
       showSystemGeneratedNotice: form.showSystemGeneratedNotice,
       showComplianceFooter: form.showComplianceFooter,
       showPageFooter: form.showPageFooter,
+    },
+    layout: {
+      spacingPreset: form.spacingPreset,
+      alignmentPreset: form.alignmentPreset,
+      // Never send an empty array - the backend validator requires
+      // sectionOrder be non-empty when the key is present at all. If the
+      // built-in seed genuinely hasn't loaded yet, omit the key entirely
+      // so the server's own merge-onto-default fills it in instead of
+      // rejecting the save outright.
+      ...(form.sectionOrder && form.sectionOrder.length ? { sectionOrder: form.sectionOrder } : {}),
     },
   };
 }
@@ -259,7 +292,7 @@ export default function PrintTemplateList({ moduleType }) {
   // and TRANSACTIONS.INVOICE/OR.VIEW are independent permissions) degrades
   // to the "no transaction available" empty state rather than an error,
   // since editing/saving a template must still work either way.
-  async function loadPreviewData() {
+  async function loadPreviewData(isNewTemplate) {
     setPreviewTransactions([]);
     setPreviewTransactionId("");
     setPreviewTransactionsError("");
@@ -289,6 +322,14 @@ export default function PrintTemplateList({ moduleType }) {
       if (builtInRes.ok) {
         const builtInData = await builtInRes.json();
         setBuiltInConfig(builtInData.config);
+        // Phase 3C: a brand-new template's Layout section starts from the
+        // REAL built-in order (fetched here, the single source of truth),
+        // never a hardcoded frontend duplicate. Guarded so it never
+        // clobbers an order the user may have already started customizing
+        // in the brief window before this fetch resolves.
+        if (isNewTemplate && Array.isArray(builtInData.config?.layout?.sectionOrder)) {
+          setConfigForm((prev) => (prev.sectionOrder.length ? prev : { ...prev, sectionOrder: builtInData.config.layout.sectionOrder }));
+        }
       }
     } catch (err) {
       console.error("LOAD PREVIEW DATA ERROR:", err);
@@ -408,7 +449,7 @@ export default function PrintTemplateList({ moduleType }) {
     setFormError("");
     setDirty(false);
     setShowFormModal(true);
-    loadPreviewData();
+    loadPreviewData(true);
   }
 
   function openEditOrView(template) {
@@ -453,7 +494,21 @@ export default function PrintTemplateList({ moduleType }) {
     }
     if (!meta.variants.some((v) => v.value === form.documentVariant)) return "Select a valid document variant.";
     if (!configForm.partySectionLabel.trim()) return "Party Section Label is required.";
+    if (!configForm.sectionOrder || configForm.sectionOrder.length === 0) {
+      return "Please wait for the template configuration to finish loading before saving.";
+    }
     return null;
+  }
+
+  // Phase 3C: swaps two adjacent entries in the working sectionOrder array.
+  // No drag-and-drop, no arbitrary positions - a section can only ever
+  // trade places with its immediate neighbor, one step at a time.
+  function moveSection(index, direction) {
+    const target = index + direction;
+    if (target < 0 || target >= configForm.sectionOrder.length) return;
+    const next = [...configForm.sectionOrder];
+    [next[index], next[target]] = [next[target], next[index]];
+    updateConfig("sectionOrder", next);
   }
 
   async function handleSave() {
@@ -802,6 +857,75 @@ export default function PrintTemplateList({ moduleType }) {
                 <Toggle label="Show System-Generated Notice" checked={configForm.showSystemGeneratedNotice} onChange={(v) => updateConfig("showSystemGeneratedNotice", v)} disabled={readOnly} />
                 <Toggle label="Show Compliance Footer" checked={configForm.showComplianceFooter} onChange={(v) => updateConfig("showComplianceFooter", v)} disabled={readOnly} />
                 <Toggle label="Show Page Footer" checked={configForm.showPageFooter} onChange={(v) => updateConfig("showPageFooter", v)} disabled={readOnly} />
+              </ConfigSection>
+
+              <ConfigSection title="Layout">
+                <div className="fs-field">
+                  <label>Spacing</label>
+                  <select
+                    value={configForm.spacingPreset}
+                    onChange={(e) => updateConfig("spacingPreset", e.target.value)}
+                    disabled={readOnly}
+                  >
+                    {SPACING_PRESETS.map((p) => (
+                      <option key={p.value} value={p.value}>{p.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="fs-field">
+                  <label>Header Alignment</label>
+                  <select
+                    value={configForm.alignmentPreset}
+                    onChange={(e) => updateConfig("alignmentPreset", e.target.value)}
+                    disabled={readOnly}
+                  >
+                    {ALIGNMENT_PRESETS.map((p) => (
+                      <option key={p.value} value={p.value}>{p.label}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="ptl-section-order-wrap">
+                  <label className="ptl-section-order-label">Section Order</label>
+                  {configForm.sectionOrder.length === 0 ? (
+                    <p className="ptl-hint">Loading section order…</p>
+                  ) : (
+                    <ol className="ptl-section-order-list">
+                      {configForm.sectionOrder.map((key, idx) => (
+                        <li key={key} className="ptl-section-order-row">
+                          <span className="ptl-section-order-name">{SECTION_LABELS[key] || key}</span>
+                          <div className="ptl-section-order-actions">
+                            <button
+                              type="button"
+                              className="ptl-btn-secondary ptl-btn-sm"
+                              onClick={() => moveSection(idx, -1)}
+                              disabled={readOnly || idx === 0}
+                              aria-label={`Move ${SECTION_LABELS[key] || key} up`}
+                            >
+                              ↑
+                            </button>
+                            <button
+                              type="button"
+                              className="ptl-btn-secondary ptl-btn-sm"
+                              onClick={() => moveSection(idx, 1)}
+                              disabled={readOnly || idx === configForm.sectionOrder.length - 1}
+                              aria-label={`Move ${SECTION_LABELS[key] || key} down`}
+                            >
+                              ↓
+                            </button>
+                          </div>
+                        </li>
+                      ))}
+                      <li className="ptl-section-order-row ptl-section-order-fixed">
+                        <span className="ptl-section-order-name">Footer (signatures &amp; compliance notice — always last)</span>
+                      </li>
+                    </ol>
+                  )}
+                  <p className="ptl-future-hint">
+                    Sections can only be moved up or down one step at a time. Visibility is controlled by each
+                    section's own Show/Hide settings above, not by this list.
+                  </p>
+                </div>
               </ConfigSection>
 
               <ConfigSection title="Not Yet Available" muted>
