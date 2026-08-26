@@ -29,6 +29,7 @@ let tokenA, tokenB, adminAId, adminBId;
 let cashA, arA, revA;
 let custAId;
 let invoiceAId;
+let orWithAppliedInvoiceAId;
 
 const TEST_COMPANY_NAME_PATTERN = "TEST Print Layout%";
 const TEST_USERNAME_PATTERN = "test_ptlayout%";
@@ -40,6 +41,16 @@ async function cleanupAllStaleFixtures() {
 
   if (staleCompanyIds.length) {
     await pool.query("DELETE FROM document_print_templates WHERE company_id IN (?)", [staleCompanyIds]);
+    await pool.query(
+      "DELETE FROM transaction_applications WHERE applied_type = 'OR' AND applied_id IN (SELECT id FROM or_headers WHERE company_id IN (?))",
+      [staleCompanyIds]
+    );
+    await pool.query("DELETE FROM or_lines WHERE or_id IN (SELECT id FROM or_headers WHERE company_id IN (?))", [staleCompanyIds]);
+    await pool.query(
+      "DELETE FROM transaction_currency_snapshots WHERE transaction_type = 'OR' AND transaction_id IN (SELECT id FROM or_headers WHERE company_id IN (?))",
+      [staleCompanyIds]
+    );
+    await pool.query("DELETE FROM or_headers WHERE company_id IN (?)", [staleCompanyIds]);
     await pool.query("DELETE FROM invoice_lines WHERE invoice_id IN (SELECT id FROM invoice_headers WHERE company_id IN (?))", [staleCompanyIds]);
     await pool.query(
       "DELETE FROM transaction_currency_snapshots WHERE transaction_type = 'INV' AND transaction_id IN (SELECT id FROM invoice_headers WHERE company_id IN (?))",
@@ -133,6 +144,30 @@ beforeAll(async () => {
     totalDebit: 6600, totalCredit: 6600, currency: { companyId: companyAId },
   });
   invoiceAId = invRes.body.id;
+
+  // A settlement OR for the standalone OR Applied-Invoice overlap fix's
+  // accounting-equality coverage (test 12 below) - a second source invoice
+  // plus an OR that applies it, so appliedInvoices is genuinely populated.
+  const invForOrRes = await request(app).post("/api/invoices").set("Authorization", `Bearer ${tokenA}`).send({
+    voucherNo: "TESTPTLAYOUT-INV-2", customerId: custAId, customerName: "x", transactionDate: "2026-08-01", dueDate: "2026-08-08",
+    status: "Posted",
+    lines: [
+      { accountId: arA, accountCode: "TESTPTLAYOUTAR", accountTitle: "AR", particulars: "x", debit: 4200, credit: 0 },
+      { accountId: revA, accountCode: "TESTPTLAYOUTREV", accountTitle: "Revenue", particulars: "x", debit: 0, credit: 4200 },
+    ],
+    totalDebit: 4200, totalCredit: 4200, currency: { companyId: companyAId },
+  });
+  const orRes = await request(app).post("/api/or").set("Authorization", `Bearer ${tokenA}`).send({
+    voucherNo: "TESTPTLAYOUT-OR-1", customerId: custAId, customerName: "x", transactionDate: "2026-08-10",
+    status: "Posted", paymentMethod: "Cash",
+    lines: [
+      { accountId: cashA, accountCode: "TESTPTLAYOUTCASH", accountTitle: "Cash", particulars: "x", debit: 4200, credit: 0 },
+      { accountId: arA, accountCode: "TESTPTLAYOUTAR", accountTitle: "AR", particulars: "x", debit: 0, credit: 4200 },
+    ],
+    totalDebit: 4200, totalCredit: 4200, currency: { companyId: companyAId },
+    invoiceApplications: [{ sourceId: invForOrRes.body.id, amount: 4200, applicationDate: "2026-08-10" }],
+  });
+  orWithAppliedInvoiceAId = orRes.body.id;
 });
 
 afterAll(async () => {
@@ -280,6 +315,35 @@ describe("10: layout changes never affect accounting values", () => {
     expect(withLayout.body.lines).toEqual(withoutLayout.body.lines);
     // Only the presentation layer differs.
     expect(withLayout.body.templateConfig.layout).not.toEqual(withoutLayout.body.templateConfig.layout);
+  });
+});
+
+describe("12: OR Applied-Invoice trailing-clearance fix - accounting equality", () => {
+  // Standalone fix for drawAppliedInvoicesTable()'s pre-existing trailing
+  // vertical-clearance bug (documentPdfBuilder.js). The fix itself is
+  // purely presentational Y-position bookkeeping in frontend PDF-drawing
+  // code and, per this file's header note, isn't practical to unit-test
+  // under Jest (pdf-lib/ESM). What IS backend-testable, and what matters
+  // most for a print-layout fix, is that the appliedInvoices payload and
+  // every accounting value stay byte-identical no matter which layout is
+  // requested - covered here for the exact OR+appliedInvoices scenario the
+  // bug lived in (test 10 above only exercises Invoice, which has no
+  // appliedInvoices block at all).
+  test("appliedInvoices + accounting payload unchanged between default and reordered/relaxed OR layout", async () => {
+    const withoutLayout = await request(app).post("/api/print-templates/preview").set("Authorization", `Bearer ${tokenA}`).send({
+      moduleType: "or", transactionId: orWithAppliedInvoiceAId, config: {},
+    });
+    const withLayout = await request(app).post("/api/print-templates/preview").set("Authorization", `Bearer ${tokenA}`).send({
+      moduleType: "or", transactionId: orWithAppliedInvoiceAId,
+      config: { layout: { sectionOrder: ["header", "appliedInvoices", "meta", "party", "table", "summary"], spacingPreset: "relaxed", alignmentPreset: "left" } },
+    });
+    expect(withLayout.status).toBe(200);
+    expect(withLayout.body.appliedInvoices).toEqual(withoutLayout.body.appliedInvoices);
+    expect(withLayout.body.appliedInvoices?.length).toBeGreaterThan(0);
+    expect(withLayout.body.doc.totalDebit).toBe(withoutLayout.body.doc.totalDebit);
+    expect(withLayout.body.doc.totalCredit).toBe(withoutLayout.body.doc.totalCredit);
+    expect(withLayout.body.doc.voucherNo).toBe(withoutLayout.body.doc.voucherNo);
+    expect(withLayout.body.lines).toEqual(withoutLayout.body.lines);
   });
 });
 

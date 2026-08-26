@@ -354,7 +354,17 @@ export async function buildDocumentPdf({
     const lastAmountCol = [...cols].reverse().find((c) => c.key === "amountPaid") || cols[cols.length - 1];
     kit.moveDown(4);
     kit.drawRight("Total Applied", lastAmountCol.x + lastAmountCol.width - 4, { size: 8.5, bold: true, color: COLORS.grey });
-    kit.drawRight(`${baseSymbol} ${formatMoney(totalApplied)}`, lastAmountCol.x + lastAmountCol.width - 4, { size: 9.5, bold: true, y: kit.getY() - 12 });
+    const amountLineY = kit.getY() - 12;
+    kit.drawRight(`${baseSymbol} ${formatMoney(totalApplied)}`, lastAmountCol.x + lastAmountCol.width - 4, { size: 9.5, bold: true, y: amountLineY });
+    // The amount line is drawn 12pt below the cursor via an explicit `y`
+    // override, but drawRight/drawText never move the cursor itself - the
+    // old moveDown(18) below was measured from the label's baseline (before
+    // that -12 offset), not the amount line actually rendered on the page,
+    // so the real trailing clearance was only ~6pt and the next section's
+    // heading could visually collide with this total. Sync the cursor to
+    // where the amount line actually sits first, then apply the same
+    // intended clearance.
+    kit.setY(amountLineY);
     kit.moveDown(18);
   }
 
