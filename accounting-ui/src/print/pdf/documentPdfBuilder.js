@@ -38,10 +38,19 @@ const MAIN_TABLE_COL_DEFS = {
 };
 const DEFAULT_MAIN_TABLE_COLUMNS = [{ key: "description" }, { key: "amount" }];
 
+// invoiceNo carries `wrap: true` (standalone fix) - a real voucher number
+// can be longer than this column's allocated width, and unlike free-text
+// descriptions it's typically ONE hyphenated token with no spaces, so it
+// needs wrapText()'s character-level fallback (see pdfKit.js) rather than
+// its normal word-boundary wrapping. widthRatio bumped 0.16 -> 0.20 (with
+// description correspondingly 0.36 -> 0.32, sum unchanged) so a typical
+// voucher number needs to wrap less often in the first place - wrapping
+// alone already guarantees no overflow regardless of width, this just
+// reduces how often it's needed for the common case.
 const APPLIED_TABLE_COL_DEFS = {
-  invoiceNo: { align: "left", widthRatio: 0.16, value: (a) => a.invoiceNo || "-" },
+  invoiceNo: { align: "left", widthRatio: 0.20, value: (a) => a.invoiceNo || "-", wrap: true },
   invoiceDate: { align: "left", widthRatio: 0.13, value: (a) => a.invoiceDate || "-" },
-  description: { align: "left", widthRatio: 0.36, value: (a) => a.description || "-", wrap: true },
+  description: { align: "left", widthRatio: 0.32, value: (a) => a.description || "-", wrap: true },
   invoiceAmount: { align: "right", widthRatio: 0.175, value: (a, baseSymbol) => `${baseSymbol} ${formatMoney(a.invoiceAmount)}` },
   amountPaid: { align: "right", widthRatio: 0.175, value: (a, baseSymbol) => `${baseSymbol} ${formatMoney(a.amountPaid)}` },
 };
@@ -340,19 +349,33 @@ export async function buildDocumentPdf({
     kit.ensureRoom(28);
     drawAppHeader();
 
-    const descCol = cols.find((c) => c.key === "description");
+    // Standalone fix: wraps EVERY column flagged `wrap: true` (currently
+    // description and invoiceNo), not just description - a column's own
+    // widest-needed row drives the row's height, so a long invoiceNo can
+    // never overflow into invoiceDate/description regardless of which
+    // columns are visible, reordered, or relabeled (Phase 3D's column
+    // editor only ever changes which/where columns are, never this
+    // per-row wrapping, which is keyed by the resolved `cols` array either
+    // way).
+    const wrapCols = cols.filter((c) => c.wrap);
     let totalApplied = 0;
     for (const app of applications) {
       totalApplied += Number(app.amountPaid) || 0;
-      const descLines = descCol ? wrapText(descCol.value(app, baseSymbol), kit.font, 8, descCol.width - 6) : [];
-      const rowHeight = Math.max(14, descLines.length * 10 + 4);
+      const linesByKey = {};
+      let maxLineCount = 1;
+      wrapCols.forEach((c) => {
+        const lines = wrapText(c.value(app, baseSymbol), kit.font, 8, c.width - 6);
+        linesByKey[c.key] = lines;
+        maxLineCount = Math.max(maxLineCount, lines.length);
+      });
+      const rowHeight = Math.max(14, maxLineCount * 10 + 4);
 
       if (kit.ensureRoom(rowHeight + 4)) drawAppHeader();
 
       const rowTopY = kit.getY();
       cols.forEach((col) => {
-        if (col.key === "description") {
-          descLines.forEach((dl, idx) => kit.drawText(dl, col.x + 4, { size: 8, y: rowTopY - 10 - idx * 10 }));
+        if (col.wrap) {
+          linesByKey[col.key].forEach((dl, idx) => kit.drawText(dl, col.x + 4, { size: 8, y: rowTopY - 10 - idx * 10 }));
           return;
         }
         const text = col.value(app, baseSymbol);

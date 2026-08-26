@@ -149,6 +149,25 @@ export async function createPdfKit({ pageSize = A4, marginX = 40, marginTop = 40
 
 // Simple word-wrap for long particulars/description cells - returns an
 // array of lines that each fit within maxWidth at the given font/size.
+// A single "word" (whitespace-delimited token) that is STILL wider than
+// maxWidth on its own - e.g. a long hyphenated voucher/invoice number with
+// no spaces to break on - previously had no fallback and was returned as
+// one overflowing line. hardBreakToken() below chunks such a token at a
+// safe character boundary so it always fits, without changing wrapping
+// behavior for any text that already wrapped correctly on word boundaries.
+function hardBreakToken(token, font, size, maxWidth) {
+  const pieces = [];
+  let rest = token;
+  while (font.widthOfTextAtSize(rest, size) > maxWidth && rest.length > 1) {
+    let cut = rest.length - 1;
+    while (cut > 1 && font.widthOfTextAtSize(rest.slice(0, cut), size) > maxWidth) cut--;
+    pieces.push(rest.slice(0, cut));
+    rest = rest.slice(cut);
+  }
+  pieces.push(rest);
+  return pieces;
+}
+
 export function wrapText(text, font, size, maxWidth) {
   const words = String(text ?? "").split(/\s+/).filter(Boolean);
   const lines = [];
@@ -161,6 +180,11 @@ export function wrapText(text, font, size, maxWidth) {
       current = word;
     } else {
       current = candidate;
+    }
+    if (font.widthOfTextAtSize(current, size) > maxWidth) {
+      const chunks = hardBreakToken(current, font, size, maxWidth);
+      lines.push(...chunks.slice(0, -1));
+      current = chunks[chunks.length - 1];
     }
   }
   if (current) lines.push(current);

@@ -27,6 +27,7 @@ let invoiceAId;
 let orWithAppliedInvoiceAId;
 let orDirectAId;
 let orLongInvoiceNoAId;
+let orMultiLongInvoiceNoAId;
 
 const TEST_COMPANY_NAME_PATTERN = "TEST Print Columns%";
 const TEST_USERNAME_PATTERN = "test_ptcol%";
@@ -201,6 +202,36 @@ beforeAll(async () => {
     invoiceApplications: [{ sourceId: invLongRes.body.id, amount: 2200, applicationDate: "2026-08-12" }],
   });
   orLongInvoiceNoAId = orLongRes.body.id;
+
+  // Standalone wrap fix: multiple long invoice numbers applied to one OR,
+  // for the "multiple long Invoice numbers" data-level regression check.
+  const longSources = [];
+  let longMultiTotal = 0;
+  for (let i = 1; i <= 3; i++) {
+    const amt = 1000 * i;
+    longMultiTotal += amt;
+    const r = await request(app).post("/api/invoices").set("Authorization", `Bearer ${tokenA}`).send({
+      voucherNo: `TESTPTCOL-VERY-LONG-INVOICE-NUMBER-MULTI-${i}-0001`, customerId: custAId, customerName: "x",
+      transactionDate: "2026-08-01", dueDate: "2026-08-08", status: "Posted",
+      lines: [
+        { accountId: arA, accountCode: "TESTPTCOLAR", accountTitle: "AR", particulars: "x", debit: amt, credit: 0 },
+        { accountId: revA, accountCode: "TESTPTCOLREV", accountTitle: "Revenue", particulars: "x", debit: 0, credit: amt },
+      ],
+      totalDebit: amt, totalCredit: amt, currency: { companyId: companyAId },
+    });
+    longSources.push({ id: r.body.id, amt });
+  }
+  const orMultiLongRes = await request(app).post("/api/or").set("Authorization", `Bearer ${tokenA}`).send({
+    voucherNo: "TESTPTCOL-OR-MULTILONG-1", customerId: custAId, customerName: "x", transactionDate: "2026-08-13",
+    status: "Posted", paymentMethod: "Cash",
+    lines: [
+      { accountId: cashA, accountCode: "TESTPTCOLCASH", accountTitle: "Cash", particulars: "x", debit: longMultiTotal, credit: 0 },
+      { accountId: arA, accountCode: "TESTPTCOLAR", accountTitle: "AR", particulars: "x", debit: 0, credit: longMultiTotal },
+    ],
+    totalDebit: longMultiTotal, totalCredit: longMultiTotal, currency: { companyId: companyAId },
+    invoiceApplications: longSources.map((s) => ({ sourceId: s.id, amount: s.amt, applicationDate: "2026-08-13" })),
+  });
+  orMultiLongInvoiceNoAId = orMultiLongRes.body.id;
 });
 
 afterAll(async () => {
@@ -457,7 +488,71 @@ describe("16: long invoice-number stress case (data level)", () => {
   });
 });
 
-describe("17: company isolation for column-bearing templates", () => {
+describe("17: standalone invoiceNo wrap fix - data-level regression coverage", () => {
+  // The wrap/width fix itself (documentPdfBuilder.js's row-drawing loop and
+  // pdfKit.js's wrapText hard-break fallback) is pure frontend/pdf-lib
+  // rendering code - untestable under Jest per this file's header note, and
+  // proven separately via live Playwright + rasterized-PDF visual
+  // inspection (default, reordered, hidden-column, relabeled, Compact,
+  // Relaxed, and a 6-row multi-long-invoice page-break case, all clean).
+  // What's genuinely backend-testable is that none of this ever touches
+  // the DATA the renderer consumes, regardless of how the column config
+  // asks it to be laid out.
+
+  test("multiple long invoice numbers all pass through the print payload complete and in order", async () => {
+    const res = await preview(tokenA, "or", orMultiLongInvoiceNoAId, {});
+    expect(res.status).toBe(200);
+    expect(res.body.appliedInvoices).toHaveLength(3);
+    expect(res.body.appliedInvoices.map((a) => a.invoiceNo)).toEqual([
+      "TESTPTCOL-VERY-LONG-INVOICE-NUMBER-MULTI-1-0001",
+      "TESTPTCOL-VERY-LONG-INVOICE-NUMBER-MULTI-2-0001",
+      "TESTPTCOL-VERY-LONG-INVOICE-NUMBER-MULTI-3-0001",
+    ]);
+    expect(res.body.appliedInvoices.map((a) => a.amountPaid)).toEqual([1000, 2000, 3000]);
+  });
+
+  test("a long invoiceNo survives reordering, hiding invoiceDate, relabeling, and Compact spacing together, with accounting values unchanged", async () => {
+    const withoutCfg = await preview(tokenA, "or", orLongInvoiceNoAId, {});
+    const withCfg = await preview(tokenA, "or", orLongInvoiceNoAId, {
+      layout: { spacingPreset: "compact", alignmentPreset: "left", sectionOrder: ["header", "meta", "party", "appliedInvoices", "table", "summary"] },
+      table: {
+        appliedInvoiceColumns: [
+          { key: "description", label: "Description" },
+          { key: "invoiceAmount", label: "Invoice Amount" },
+          { key: "amountPaid", label: "Amount Paid" },
+          { key: "invoiceNo", label: "Ref. No." },
+        ],
+      },
+    });
+    expect(withCfg.status).toBe(200);
+    // Data is untouched by the layout/column config.
+    expect(withCfg.body.appliedInvoices[0].invoiceNo).toBe("TESTPTCOL-VERY-LONG-INVOICE-NUMBER-0001");
+    expect(withCfg.body.appliedInvoices).toEqual(withoutCfg.body.appliedInvoices);
+    expect(withCfg.body.doc.totalDebit).toBe(withoutCfg.body.doc.totalDebit);
+    expect(withCfg.body.doc.totalCredit).toBe(withoutCfg.body.doc.totalCredit);
+    expect(withCfg.body.lines).toEqual(withoutCfg.body.lines);
+    // The column config itself DID round-trip as requested (hidden
+    // invoiceDate, reordered, relabeled) - proves the fix's compatibility
+    // with Phase 3D column configuration, not just that data is inert.
+    expect(withCfg.body.templateConfig.table.appliedInvoiceColumns.map((c) => c.key)).toEqual([
+      "description", "invoiceAmount", "amountPaid", "invoiceNo",
+    ]);
+    expect(withCfg.body.templateConfig.table.appliedInvoiceColumns.find((c) => c.key === "invoiceDate")).toBeUndefined();
+    expect(withCfg.body.templateConfig.table.appliedInvoiceColumns.find((c) => c.key === "invoiceNo").label).toBe("Ref. No.");
+  });
+
+  test("Relaxed spacing with a long invoiceNo leaves accounting values unchanged", async () => {
+    const withoutCfg = await preview(tokenA, "or", orLongInvoiceNoAId, {});
+    const withCfg = await preview(tokenA, "or", orLongInvoiceNoAId, {
+      layout: { spacingPreset: "relaxed", alignmentPreset: "left", sectionOrder: ["header", "meta", "party", "appliedInvoices", "table", "summary"] },
+    });
+    expect(withCfg.status).toBe(200);
+    expect(withCfg.body.appliedInvoices).toEqual(withoutCfg.body.appliedInvoices);
+    expect(withCfg.body.doc.totalDebit).toBe(withoutCfg.body.doc.totalDebit);
+  });
+});
+
+describe("18: company isolation for column-bearing templates", () => {
   test("Company B cannot read Company A's custom-column template", async () => {
     const created = await createTemplate(tokenA, {
       moduleType: "invoice", templateCode: "ptcol-isolation", templateName: "Isolation Check",
