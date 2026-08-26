@@ -269,6 +269,14 @@
   align-items: start;
 }
 
+/* Phase 3D: a third panel (the column editor) only ever appears alongside
+   the other two, never replacing them - Left: Builder controls, Center:
+   live preview, Right: column editor, matching the checkpoint's preferred
+   desktop layout. */
+.ptl-builder-columns-with-editor {
+  grid-template-columns: minmax(340px, 420px) 1fr minmax(260px, 320px);
+}
+
 .ptl-builder-config-col {
   min-width: 0;
 }
@@ -388,12 +396,85 @@
   padding: 4px 8px;
 }
 
+/* ---- Phase 3D: column editor (right panel) ---- */
+
+.ptl-column-editor-hint {
+  grid-column: 1 / -1;
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.ptl-builder-column-editor-col {
+  position: sticky;
+  top: 0;
+  min-width: 0;
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 14px 16px;
+  background: var(--bg-surface-muted);
+}
+
+.ptl-column-editor-list {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ptl-column-editor-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-surface);
+}
+
+.ptl-column-editor-row-hidden {
+  opacity: 0.55;
+}
+
+.ptl-column-editor-visibility input {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.ptl-column-editor-label-input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--border-color-strong);
+  border-radius: 8px;
+  padding: 6px 8px;
+  font-size: 12.5px;
+  color: var(--text-primary);
+  background: var(--bg-surface);
+}
+
+@media (max-width: 1150px) {
+  .ptl-builder-columns-with-editor {
+    grid-template-columns: minmax(380px, 460px) 1fr;
+  }
+
+  .ptl-builder-column-editor-col {
+    grid-column: 1 / -1;
+    position: static;
+  }
+}
+
 @media (max-width: 900px) {
-  .ptl-builder-columns {
+  .ptl-builder-columns,
+  .ptl-builder-columns-with-editor {
     grid-template-columns: 1fr;
   }
 
-  .ptl-builder-preview-col {
+  .ptl-builder-preview-col,
+  .ptl-builder-column-editor-col {
     position: static;
   }
 }

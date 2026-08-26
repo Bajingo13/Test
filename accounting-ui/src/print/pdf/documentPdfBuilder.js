@@ -49,6 +49,24 @@ const DEFAULT_APPLIED_TABLE_COLUMNS = [
   { key: "invoiceNo" }, { key: "invoiceDate" }, { key: "description" }, { key: "invoiceAmount" }, { key: "amountPaid" },
 ];
 
+// Phase 3D: default labels, single source of truth reused both by the two
+// computeColumnLayout() call sites below (removes the previous inline
+// duplication) and exported for the Builder UI's column editor. Whitelists
+// are DERIVED from the *_COL_DEFS objects above rather than re-listing the
+// keys a second time - MAIN_TABLE_COL_DEFS already IS the canonical key set
+// (matches printTemplateService.js's MAIN_TABLE_COLUMN_WHITELIST, audited
+// byte-identical for both modules today), so there is exactly one place a
+// new column key would ever need to be added, not two.
+export const MAIN_TABLE_COLUMN_LABELS = { description: "Description", amount: "Amount" };
+export const APPLIED_INVOICE_COLUMN_LABELS = {
+  invoiceNo: "Invoice No.", invoiceDate: "Date", description: "Description", invoiceAmount: "Invoice Amount", amountPaid: "Amount Paid",
+};
+export const MAIN_TABLE_COLUMN_WHITELIST = {
+  invoice: Object.keys(MAIN_TABLE_COL_DEFS),
+  or: Object.keys(MAIN_TABLE_COL_DEFS),
+};
+export const APPLIED_INVOICE_COLUMN_WHITELIST = Object.keys(APPLIED_TABLE_COL_DEFS);
+
 // Resolves an ordered list of {key,label} (from template config, or the
 // module's own default order/labels when no config/columns were given)
 // into concrete x/width pixel positions - renormalized so however many
@@ -296,7 +314,7 @@ export async function buildDocumentPdf({
       tableCfg.appliedInvoiceColumns,
       APPLIED_TABLE_COL_DEFS,
       DEFAULT_APPLIED_TABLE_COLUMNS,
-      { invoiceNo: "Invoice No.", invoiceDate: "Date", description: "Description", invoiceAmount: "Invoice Amount", amountPaid: "Amount Paid" },
+      APPLIED_INVOICE_COLUMN_LABELS,
       contentWidth,
       marginX
     );
@@ -544,7 +562,7 @@ export async function buildDocumentPdf({
   function drawTableBlock() {
     const mainCols = withEntries
       ? null
-      : computeColumnLayout(tableCfg.columns, MAIN_TABLE_COL_DEFS, DEFAULT_MAIN_TABLE_COLUMNS, { description: "Description", amount: "Amount" }, contentWidth, marginX);
+      : computeColumnLayout(tableCfg.columns, MAIN_TABLE_COL_DEFS, DEFAULT_MAIN_TABLE_COLUMNS, MAIN_TABLE_COLUMN_LABELS, contentWidth, marginX);
 
     const col = withEntries
       ? {

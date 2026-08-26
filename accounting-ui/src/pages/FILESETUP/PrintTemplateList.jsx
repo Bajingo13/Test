@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import usePermissions from "../../hooks/usePermissions";
-import { buildDocumentPdf, DEFAULT_SECTION_ORDER, SECTION_LABELS } from "../../print/pdf/documentPdfBuilder";
+import {
+  buildDocumentPdf,
+  DEFAULT_SECTION_ORDER,
+  SECTION_LABELS,
+  MAIN_TABLE_COLUMN_WHITELIST,
+  MAIN_TABLE_COLUMN_LABELS,
+  APPLIED_INVOICE_COLUMN_WHITELIST,
+  APPLIED_INVOICE_COLUMN_LABELS,
+} from "../../print/pdf/documentPdfBuilder";
 import "./FileSetupPages.css";
 import "./PrintTemplateList.css";
 
@@ -118,7 +126,37 @@ function emptyConfigForm(moduleType) {
     sectionOrder: [],
     spacingPreset: "normal",
     alignmentPreset: "left",
+    // Phase 3D. Same "seeded from the real built-in config, never a
+    // hardcoded duplicate" pattern as sectionOrder above. Each entry is
+    // { key, label, visible } for EVERY whitelisted column (visible and
+    // hidden alike) so Move Up/Down and re-showing a hidden column both
+    // keep working from one single ordered list - see buildColumnFormList().
+    tableColumns: [],
+    appliedInvoiceColumns: [],
   };
+}
+
+// Turns a saved/built-in `{key,label}[]` (visible columns only, in their
+// print order) into the full ordered editor list the Column Editor needs:
+// every whitelisted key, visible ones first in their configured order,
+// then any whitelisted key NOT in that array appended as hidden - so a
+// column the user hides keeps its place in the list (just dimmed) rather
+// than disappearing, and can be re-shown without losing its label.
+function buildColumnFormList(configuredColumns, whitelist, labels) {
+  const list = [];
+  const seen = new Set();
+  if (Array.isArray(configuredColumns)) {
+    for (const c of configuredColumns) {
+      if (c && whitelist.includes(c.key) && !seen.has(c.key)) {
+        list.push({ key: c.key, label: (c.label && c.label.trim()) || labels[c.key] || c.key, visible: true });
+        seen.add(c.key);
+      }
+    }
+  }
+  for (const key of whitelist) {
+    if (!seen.has(key)) list.push({ key, label: labels[key] || key, visible: false });
+  }
+  return list;
 }
 
 // Reverse of buildConfigPayload() below - loads an existing template's
@@ -159,6 +197,10 @@ function configToForm(config, moduleType) {
       : (DEFAULT_SECTION_ORDER[moduleType] || []),
     spacingPreset: config.layout?.spacingPreset || d.spacingPreset,
     alignmentPreset: config.layout?.alignmentPreset || d.alignmentPreset,
+    tableColumns: buildColumnFormList(config.table?.columns, MAIN_TABLE_COLUMN_WHITELIST[moduleType], MAIN_TABLE_COLUMN_LABELS),
+    appliedInvoiceColumns: moduleType === "or"
+      ? buildColumnFormList(config.table?.appliedInvoiceColumns, APPLIED_INVOICE_COLUMN_WHITELIST, APPLIED_INVOICE_COLUMN_LABELS)
+      : [],
   };
 }
 
@@ -201,6 +243,21 @@ function buildConfigPayload(form, moduleType) {
       showComplianceFooter: form.showComplianceFooter,
       showPageFooter: form.showPageFooter,
     },
+    table: {
+      // Same "omit the key entirely while the seed hasn't loaded yet, so
+      // the server's own merge-onto-default fills it in" rule sectionOrder
+      // already follows below - never send an empty array (the backend
+      // validator requires a non-empty columns array whenever the key is
+      // present at all). Hidden columns are simply the whitelist keys NOT
+      // present here, in visible order - the backend never sees a
+      // "visible" flag at all, only the columns that ARE visible.
+      ...(form.tableColumns && form.tableColumns.length
+        ? { columns: form.tableColumns.filter((c) => c.visible).map((c) => ({ key: c.key, label: c.label.trim() })) }
+        : {}),
+      ...(isOr && form.appliedInvoiceColumns && form.appliedInvoiceColumns.length
+        ? { appliedInvoiceColumns: form.appliedInvoiceColumns.filter((c) => c.visible).map((c) => ({ key: c.key, label: c.label.trim() })) }
+        : {}),
+    },
     layout: {
       spacingPreset: form.spacingPreset,
       alignmentPreset: form.alignmentPreset,
@@ -241,6 +298,9 @@ export default function PrintTemplateList({ moduleType }) {
   const [formError, setFormError] = useState("");
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
+  // Phase 3D: null | "tableColumns" | "appliedInvoiceColumns" - which
+  // column editor (if any) occupies the third Builder panel right now.
+  const [activeColumnEditor, setActiveColumnEditor] = useState(null);
 
   const [confirmAction, setConfirmAction] = useState(null); // { type: "set-default" | "deactivate", template }
   const [confirmBusy, setConfirmBusy] = useState(false);
@@ -329,6 +389,16 @@ export default function PrintTemplateList({ moduleType }) {
         // in the brief window before this fetch resolves.
         if (isNewTemplate && Array.isArray(builtInData.config?.layout?.sectionOrder)) {
           setConfigForm((prev) => (prev.sectionOrder.length ? prev : { ...prev, sectionOrder: builtInData.config.layout.sectionOrder }));
+        }
+        // Phase 3D: same seed-from-built-in, guarded-against-clobbering
+        // pattern, for the two column editors.
+        if (isNewTemplate && Array.isArray(builtInData.config?.table?.columns)) {
+          const seeded = buildColumnFormList(builtInData.config.table.columns, MAIN_TABLE_COLUMN_WHITELIST[moduleType], MAIN_TABLE_COLUMN_LABELS);
+          setConfigForm((prev) => (prev.tableColumns.length ? prev : { ...prev, tableColumns: seeded }));
+        }
+        if (isNewTemplate && moduleType === "or" && Array.isArray(builtInData.config?.table?.appliedInvoiceColumns)) {
+          const seeded = buildColumnFormList(builtInData.config.table.appliedInvoiceColumns, APPLIED_INVOICE_COLUMN_WHITELIST, APPLIED_INVOICE_COLUMN_LABELS);
+          setConfigForm((prev) => (prev.appliedInvoiceColumns.length ? prev : { ...prev, appliedInvoiceColumns: seeded }));
         }
       }
     } catch (err) {
@@ -448,6 +518,7 @@ export default function PrintTemplateList({ moduleType }) {
     setFormMode("add");
     setFormError("");
     setDirty(false);
+    setActiveColumnEditor(null);
     setShowFormModal(true);
     loadPreviewData(true);
   }
@@ -464,6 +535,7 @@ export default function PrintTemplateList({ moduleType }) {
     setFormMode(canEdit ? "edit" : "view");
     setFormError("");
     setDirty(false);
+    setActiveColumnEditor(null);
     setShowFormModal(true);
     loadPreviewData();
   }
@@ -497,6 +569,26 @@ export default function PrintTemplateList({ moduleType }) {
     if (!configForm.sectionOrder || configForm.sectionOrder.length === 0) {
       return "Please wait for the template configuration to finish loading before saving.";
     }
+    if (!configForm.tableColumns || configForm.tableColumns.length === 0) {
+      return "Please wait for the template configuration to finish loading before saving.";
+    }
+    if (!configForm.tableColumns.some((c) => c.visible)) {
+      return "At least one Main Table column must remain visible.";
+    }
+    if (configForm.tableColumns.some((c) => c.visible && !c.label.trim())) {
+      return "Main Table column labels cannot be blank.";
+    }
+    if (moduleType === "or") {
+      if (!configForm.appliedInvoiceColumns || configForm.appliedInvoiceColumns.length === 0) {
+        return "Please wait for the template configuration to finish loading before saving.";
+      }
+      if (!configForm.appliedInvoiceColumns.some((c) => c.visible)) {
+        return "At least one Applied Invoice column must remain visible.";
+      }
+      if (configForm.appliedInvoiceColumns.some((c) => c.visible && !c.label.trim())) {
+        return "Applied Invoice column labels cannot be blank.";
+      }
+    }
     return null;
   }
 
@@ -509,6 +601,39 @@ export default function PrintTemplateList({ moduleType }) {
     const next = [...configForm.sectionOrder];
     [next[index], next[target]] = [next[target], next[index]];
     updateConfig("sectionOrder", next);
+  }
+
+  // Phase 3D. `field` is "tableColumns" or "appliedInvoiceColumns" - the
+  // editor list holds EVERY whitelisted column (visible and hidden alike,
+  // see buildColumnFormList), so Move Up/Down swaps adjacent entries in
+  // that full list regardless of visibility. Same one-step-at-a-time rule
+  // as moveSection above - no drag-and-drop, no arbitrary positions.
+  function moveColumn(field, index, direction) {
+    const list = configForm[field];
+    const target = index + direction;
+    if (target < 0 || target >= list.length) return;
+    const next = [...list];
+    [next[index], next[target]] = [next[target], next[index]];
+    updateConfig(field, next);
+  }
+
+  // Blocks hiding the LAST visible column client-side, before the backend
+  // ever sees it - "Do not allow a table with zero visible columns to
+  // render silently" (the backend's own validateColumnArray also rejects
+  // an empty columns array, but this keeps the UI itself from ever
+  // reaching that state in the first place).
+  function toggleColumnVisible(field, index) {
+    const list = configForm[field];
+    const col = list[index];
+    if (col.visible && list.filter((c) => c.visible).length <= 1) return;
+    const next = list.map((c, i) => (i === index ? { ...c, visible: !c.visible } : c));
+    updateConfig(field, next);
+  }
+
+  function updateColumnLabel(field, index, value) {
+    const list = configForm[field];
+    const next = list.map((c, i) => (i === index ? { ...c, label: value } : c));
+    updateConfig(field, next);
   }
 
   async function handleSave() {
@@ -731,7 +856,7 @@ export default function PrintTemplateList({ moduleType }) {
                 </div>
               )}
 
-            <div className="ptl-builder-columns">
+            <div className={`ptl-builder-columns${activeColumnEditor ? " ptl-builder-columns-with-editor" : ""}`}>
             <div className="ptl-builder-config-col">
               <div className="fs-grid ptl-main-fields">
                 <div className="fs-field">
@@ -845,6 +970,37 @@ export default function PrintTemplateList({ moduleType }) {
                 )}
               </ConfigSection>
 
+              <ConfigSection title="Main Table">
+                <p className="ptl-column-editor-hint">
+                  Choose which columns print, their labels, and their order. Quantity, unit price, discount, and VAT
+                  breakdown are not supported - only Description and Amount exist in the real print data.
+                </p>
+                <button
+                  type="button"
+                  className="ptl-btn-secondary ptl-btn-sm"
+                  onClick={() => setActiveColumnEditor(activeColumnEditor === "tableColumns" ? null : "tableColumns")}
+                  disabled={readOnly || configForm.tableColumns.length === 0}
+                >
+                  {activeColumnEditor === "tableColumns" ? "Close Column Editor" : "Edit Columns"}
+                </button>
+              </ConfigSection>
+
+              {moduleType === "or" && (
+                <ConfigSection title="Applied Invoices Table">
+                  <p className="ptl-column-editor-hint">
+                    Choose which columns print, their labels, and their order for the settlement breakdown table.
+                  </p>
+                  <button
+                    type="button"
+                    className="ptl-btn-secondary ptl-btn-sm"
+                    onClick={() => setActiveColumnEditor(activeColumnEditor === "appliedInvoiceColumns" ? null : "appliedInvoiceColumns")}
+                    disabled={readOnly || configForm.appliedInvoiceColumns.length === 0}
+                  >
+                    {activeColumnEditor === "appliedInvoiceColumns" ? "Close Column Editor" : "Edit Columns"}
+                  </button>
+                </ConfigSection>
+              )}
+
               <ConfigSection title="Summary">
                 <Toggle label="Show EWT" checked={configForm.showEwt} onChange={(v) => updateConfig("showEwt", v)} disabled={readOnly} />
                 <Toggle label="Show Total" checked={configForm.showTotal} onChange={(v) => updateConfig("showTotal", v)} disabled={readOnly} />
@@ -936,6 +1092,67 @@ export default function PrintTemplateList({ moduleType }) {
                 </p>
               </ConfigSection>
             </div>
+
+            {activeColumnEditor && (
+              <div className="ptl-builder-column-editor-col">
+                <h3 className="ptl-section-title">
+                  {activeColumnEditor === "tableColumns" ? "Main Table Columns" : "Applied Invoice Columns"}
+                </h3>
+                <ol className="ptl-column-editor-list">
+                  {configForm[activeColumnEditor].map((col, idx, arr) => (
+                    <li
+                      key={col.key}
+                      className={`ptl-column-editor-row${col.visible ? "" : " ptl-column-editor-row-hidden"}`}
+                    >
+                      <label className="ptl-column-editor-visibility" title={col.visible ? "Visible - uncheck to hide" : "Hidden - check to show"}>
+                        <input
+                          type="checkbox"
+                          checked={col.visible}
+                          onChange={() => toggleColumnVisible(activeColumnEditor, idx)}
+                          disabled={readOnly}
+                          aria-label={`${col.visible ? "Hide" : "Show"} ${MAIN_TABLE_COLUMN_LABELS[col.key] || APPLIED_INVOICE_COLUMN_LABELS[col.key] || col.key}`}
+                        />
+                      </label>
+                      <input
+                        className="ptl-column-editor-label-input"
+                        value={col.label}
+                        onChange={(e) => updateColumnLabel(activeColumnEditor, idx, e.target.value)}
+                        disabled={readOnly}
+                        maxLength={60}
+                        aria-label={`Label for ${col.key}`}
+                      />
+                      <div className="ptl-section-order-actions">
+                        <button
+                          type="button"
+                          className="ptl-btn-secondary ptl-btn-sm"
+                          onClick={() => moveColumn(activeColumnEditor, idx, -1)}
+                          disabled={readOnly || idx === 0}
+                          aria-label={`Move ${col.label || col.key} up`}
+                        >
+                          ↑
+                        </button>
+                        <button
+                          type="button"
+                          className="ptl-btn-secondary ptl-btn-sm"
+                          onClick={() => moveColumn(activeColumnEditor, idx, 1)}
+                          disabled={readOnly || idx === arr.length - 1}
+                          aria-label={`Move ${col.label || col.key} down`}
+                        >
+                          ↓
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ol>
+                <p className="ptl-future-hint">
+                  Hidden columns are omitted from the printed table and the remaining columns automatically fill the
+                  row width. At least one column must stay visible.
+                </p>
+                <button type="button" className="ptl-btn-secondary ptl-btn-sm" onClick={() => setActiveColumnEditor(null)}>
+                  Close
+                </button>
+              </div>
+            )}
 
             <div className="ptl-builder-preview-col">
               <div className="ptl-preview-toolbar">
