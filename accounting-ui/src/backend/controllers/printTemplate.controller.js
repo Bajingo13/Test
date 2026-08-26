@@ -2,6 +2,8 @@ const pool = require("../db");
 const { logAudit, requestMeta } = require("../lib/audit");
 const Service = require("../services/printTemplateService");
 const CurrencyService = require("../services/currencyService");
+const DataService = require("../services/transactionPrintDataService");
+const { HttpError } = require("../lib/httpError");
 
 async function resolveCompanyId(req) {
   return CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId || req.body?.companyId);
@@ -118,6 +120,66 @@ exports.activate = async (req, res) => {
   } catch (err) {
     console.error("PRINT TEMPLATE ACTIVATE ERROR:", err);
     res.status(err.statusCode || 500).json({ message: err.message || "Failed to activate print template" });
+  }
+};
+
+// Phase 3B: read-only preview of an UNSAVED template config against a real
+// transaction's real accounting data. Never writes anything - no template
+// row, no transaction change. Config is validated through the exact same
+// mergeAndValidateConfig() create/update already use, so a preview can
+// never accept a shape create/update would reject (and can never be used
+// to smuggle a wider config surface in through a side door). Accounting
+// data comes entirely from DataService.getTransactionDocument() - the same
+// read-only path the real /api/print/:type/:id endpoint uses - so nothing
+// in the response's doc/lines/entriesSummary/appliedInvoices/currency was
+// ever influenced by the client-supplied config.
+exports.preview = async (req, res) => {
+  try {
+    const { moduleType, transactionId, config } = req.body || {};
+    if (!transactionId) {
+      throw new HttpError(400, "transactionId is required.");
+    }
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.body?.companyId);
+
+    const normalizedConfig = Service.mergeAndValidateConfig(moduleType, config);
+    const result = await DataService.getTransactionDocument(moduleType, transactionId, { withEntries: false, companyId });
+
+    result.templateConfig = normalizedConfig;
+    result.templateMeta = { source: "preview", templateId: null, templateName: null };
+
+    await logAudit(pool, {
+      module: "PRINT.DOCUMENT_TEMPLATES",
+      entityType: moduleType.toUpperCase(),
+      entityId: Number(transactionId),
+      action: "PREVIEW",
+      description: `Previewed unsaved ${moduleType} print template config against ${moduleType} #${result.doc.voucherNo}`,
+      user: req.user,
+      ...requestMeta(req),
+    });
+
+    res.json(result);
+  } catch (err) {
+    console.error("PRINT TEMPLATE PREVIEW ERROR:", err);
+    res.status(err.statusCode || 500).json({ message: err.message || "Failed to generate preview" });
+  }
+};
+
+// Phase 3B: exposes printTemplateService's own builtInDefaultConfig() -
+// the exact same function resolveEffectiveConfig() falls back to when no
+// DB template exists - so the Builder's "Reset to System Default" and
+// built-in preview can never drift from what an unconfigured company
+// actually gets printed today. Never a second copy of this object.
+exports.getBuiltIn = async (req, res) => {
+  try {
+    const moduleType = req.query.moduleType;
+    if (!Service.SUPPORTED_MODULE_TYPES.includes(moduleType)) {
+      throw new HttpError(400, `Unsupported print-template module type: ${moduleType}. Supported: ${Service.SUPPORTED_MODULE_TYPES.join(", ")}.`);
+    }
+    const config = Service.builtInDefaultConfig(moduleType);
+    res.json({ moduleType, config, source: "built_in", templateId: null, templateName: null });
+  } catch (err) {
+    console.error("PRINT TEMPLATE BUILT-IN ERROR:", err);
+    res.status(err.statusCode || 500).json({ message: err.message || "Failed to load built-in default" });
   }
 };
 

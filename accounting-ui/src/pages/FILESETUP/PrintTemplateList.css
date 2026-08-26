@@ -98,6 +98,10 @@
   width: min(440px, 92vw);
 }
 
+.ptl-modal-wide {
+  width: min(1280px, 96vw);
+}
+
 .ptl-modal-header {
   display: flex;
   align-items: flex-start;
@@ -248,5 +252,95 @@
 @media (max-width: 640px) {
   .ptl-section-body .fs-field {
     grid-column: span 1;
+  }
+}
+
+/* ---- Phase 3B: two-column Builder layout ---- */
+
+.ptl-builder-body {
+  display: flex;
+  flex-direction: column;
+}
+
+.ptl-builder-columns {
+  display: grid;
+  grid-template-columns: minmax(380px, 460px) 1fr;
+  gap: 20px;
+  align-items: start;
+}
+
+.ptl-builder-config-col {
+  min-width: 0;
+}
+
+.ptl-builder-preview-col {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.ptl-preview-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.ptl-preview-tx-select {
+  flex: 1;
+  min-width: 180px;
+  border: 1px solid var(--border-color-strong);
+  border-radius: 10px;
+  padding: 9px 10px;
+  font-size: 13px;
+}
+
+.ptl-preview-builtin-toggle {
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+/* A4-proportioned preview area (210:297) so the iframe reads as an actual
+   printed page, not an arbitrary rectangle. */
+.ptl-preview-frame-wrap {
+  width: 100%;
+  aspect-ratio: 210 / 297;
+  max-height: 62vh;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-surface);
+  overflow: hidden;
+  display: flex;
+}
+
+.ptl-preview-frame {
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
+.ptl-preview-placeholder {
+  margin: auto;
+  padding: 24px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.ptl-reset-builtin-btn {
+  margin-bottom: 14px;
+}
+
+@media (max-width: 900px) {
+  .ptl-builder-columns {
+    grid-template-columns: 1fr;
+  }
+
+  .ptl-builder-preview-col {
+    position: static;
   }
 }
