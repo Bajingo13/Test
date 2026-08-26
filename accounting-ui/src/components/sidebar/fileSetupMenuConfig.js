@@ -19,6 +19,7 @@ import {
   ClipboardList,
   ArrowDownToLine,
   ArrowUpFromLine,
+  FileStack,
 } from "lucide-react";
 
 export const FILE_SETUP_MENU = [
@@ -43,6 +44,14 @@ export const FILE_SETUP_MENU = [
   { id: "currency-file-setup", label: "Currency File Setup", icon: Coins, path: "/currency-file-setup" },
   { id: "additional-file-setup", label: "Additional File Setup", icon: FilePlus, path: "/additional-file-setup" },
   { id: "tax-file-setup", label: "Tax File Setup", icon: Percent, path: "/tax-file-setup" },
+  {
+    id: "print-templates",
+    label: "Print Template Setup",
+    children: [
+      { id: "invoice-print-templates", label: "Invoice Templates", icon: FileStack, path: "/filesetup/print-templates/invoice" },
+      { id: "or-print-templates", label: "OR Templates", icon: FileStack, path: "/filesetup/print-templates/or" },
+    ],
+  },
   { id: "ewt-library", label: "EWT Library", icon: Library, path: "/ewt-library" },
   { id: "fixed-asset-setup", label: "Fixed Asset Setup", icon: Boxes, path: "/fixed-asset-setup" },
   { id: "prepaid-account-setup", label: "Prepaid Account Setup", icon: Wallet, path: "/prepaid-account-setup" },

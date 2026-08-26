@@ -1,0 +1,252 @@
+/* Print Template List (Phase 3A) - reuses FileSetupPages.css for the outer
+   page/table/toolbar shell (same convention as every other FILESETUP
+   module) and mirrors CurrencySetup.css's overlay/modal/badge visual
+   language for the Create/Edit and confirm modals - copied, not imported,
+   matching the established pattern where every FILESETUP page owns a
+   fully self-contained stylesheet. All colors come from the existing --*
+   CSS custom properties, so light/dark mode is inherited automatically -
+   nothing here is a hardcoded color. */
+
+.ptl-banner {
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+
+.ptl-banner-success {
+  background: var(--success-bg, #e6f7ee);
+  color: var(--success-text, #1a7f4b);
+}
+
+.ptl-banner-error {
+  background: var(--danger-bg);
+  color: var(--danger-text, var(--danger-hover));
+}
+
+.ptl-banner-info {
+  background: var(--bg-surface-muted);
+  color: var(--text-secondary);
+}
+
+.ptl-error-text {
+  color: var(--danger-hover, var(--danger-text));
+}
+
+.ptl-badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.ptl-badge-default {
+  background: var(--accent-blue);
+  color: white;
+}
+
+.ptl-badge-active {
+  background: var(--success-bg, #e6f7ee);
+  color: var(--success-text, #1a7f4b);
+}
+
+.ptl-badge-inactive {
+  background: var(--bg-surface-muted);
+  color: var(--text-secondary);
+}
+
+.ptl-actions-cell {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ptl-btn-sm {
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+/* ---- Modal ---- */
+
+.ptl-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(var(--shadow-rgb), 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 1200;
+}
+
+.ptl-modal {
+  width: min(760px, 96vw);
+  max-height: 92vh;
+  background: var(--bg-surface);
+  border-radius: 18px;
+  box-shadow: 0 28px 70px rgba(var(--shadow-rgb), 0.32);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.ptl-modal-narrow {
+  width: min(440px, 92vw);
+}
+
+.ptl-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 22px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.ptl-modal-header h2 {
+  margin: 0;
+  font-size: 19px;
+  color: var(--text-primary);
+}
+
+.ptl-close {
+  border: none;
+  background: var(--bg-surface-muted);
+  color: var(--text-primary);
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  font-size: 20px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.ptl-modal-body {
+  padding: 20px 22px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.ptl-modal-body p {
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+
+.ptl-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 16px 22px;
+  border-top: 1px solid var(--border-color);
+  background: var(--bg-surface-muted);
+}
+
+.ptl-btn-secondary,
+.ptl-btn-primary {
+  height: 40px;
+  padding: 0 16px;
+  border-radius: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.ptl-btn-secondary {
+  border: 1px solid var(--border-color-strong);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+
+.ptl-btn-primary {
+  border: 1px solid var(--dark-btn-bg);
+  background: var(--dark-btn-bg);
+  color: var(--dark-btn-text);
+}
+
+.ptl-btn-secondary:disabled,
+.ptl-btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ---- Config form ---- */
+
+.ptl-main-fields {
+  margin-bottom: 4px;
+}
+
+.ptl-hint {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  margin: 0 0 16px;
+}
+
+.ptl-variant-warning {
+  margin-top: -4px;
+}
+
+.ptl-section {
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+  background: var(--bg-surface-muted);
+}
+
+.ptl-section-muted {
+  opacity: 0.75;
+}
+
+.ptl-section-title {
+  margin: 0 0 12px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.ptl-section-body {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 10px 16px;
+}
+
+.ptl-section-body .fs-field {
+  grid-column: span 2;
+}
+
+.ptl-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.ptl-toggle input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.ptl-toggle input:disabled {
+  cursor: not-allowed;
+}
+
+.ptl-future-hint {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+@media (max-width: 640px) {
+  .ptl-section-body .fs-field {
+    grid-column: span 1;
+  }
+}

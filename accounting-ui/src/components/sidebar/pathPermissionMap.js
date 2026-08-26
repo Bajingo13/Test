@@ -23,6 +23,8 @@ const PATH_PERMISSIONS = {
   "/prepaid-account-setup": ["FILESETUP.PREPAID_ACCOUNTS", "VIEW"],
   "/company-profile": ["FILESETUP.COMPANY_SETUP", "VIEW"],
   "/currency-file-setup": ["FILESETUP.CURRENCY_SETUP", "VIEW"],
+  "/filesetup/print-templates/invoice": ["PRINT.DOCUMENT_TEMPLATES", "VIEW"],
+  "/filesetup/print-templates/or": ["PRINT.DOCUMENT_TEMPLATES", "VIEW"],
 
   "/transactions/invoice": ["TRANSACTIONS.INVOICE", "VIEW"],
   "/transactions/recurring": ["RECURRING.TRANSACTIONS", "VIEW"],

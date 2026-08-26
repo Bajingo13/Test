@@ -34,6 +34,7 @@ import FixedAssetSetup from "./pages/FILESETUP/FixedAssetSetup";
 import PrepaidAccountSetup from "./pages/FILESETUP/PrepaidAccountSetup";
 import CompanyProfile from "./pages/FILESETUP/CompanyProfile";
 import CurrencySetup from "./pages/FILESETUP/CurrencySetup";
+import PrintTemplateList from "./pages/FILESETUP/PrintTemplateList";
 
 
 // TRANSACTIONS
@@ -151,6 +152,8 @@ function AppLayout() {
           <Route path="/prepaid-account-setup" element={<PrepaidAccountSetup />} />
           <Route path="/company-profile" element={<CompanyProfile />} />
           <Route path="/currency-file-setup" element={<CurrencySetup />} />
+          <Route path="/filesetup/print-templates/invoice" element={<PrintTemplateList moduleType="invoice" />} />
+          <Route path="/filesetup/print-templates/or" element={<PrintTemplateList moduleType="or" />} />
 
           <Route path="/transactions/invoice" element={<Invoice />} />
           <Route path="/transactions/recurring" element={<RecurringTransactions />} />
