@@ -163,6 +163,63 @@
   margin-top: 4px;
 }
 
+/* Phase 6A: Tax File Setup management hub - read-only summary cards,
+   no form fields, so intentionally styled distinctly from fs-field/
+   fs-grid (which imply an editable form this page no longer has). */
+.tax-hub-card-title {
+  margin: 0 0 4px;
+  font-size: 16px;
+  color: var(--text-primary);
+}
+
+.tax-hub-card-subtitle {
+  margin: 0 0 16px;
+  font-size: 13.5px;
+  color: var(--text-secondary);
+}
+
+.tax-hub-stat-grid {
+  display: flex;
+  gap: 24px;
+  margin-bottom: 18px;
+}
+
+.tax-hub-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tax-hub-stat-value {
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.tax-hub-stat-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.tax-hub-status-note {
+  font-size: 13.5px;
+  color: var(--text-secondary);
+  margin-bottom: 16px;
+}
+
+.tax-hub-status-error {
+  color: var(--danger-hover, var(--danger-text));
+}
+
+.tax-hub-info-list {
+  margin: 0 0 12px;
+  padding-left: 20px;
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 1.8;
+}
+
 .fs-banner-error {
   background: var(--danger-bg);
   color: var(--danger-text, var(--danger-hover));
