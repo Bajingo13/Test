@@ -63,6 +63,38 @@ const MODULE_META = {
 // backend remains the authoritative check either way.
 const TEMPLATE_CODE_PATTERN = /^[a-z0-9][a-z0-9_-]{1,58}[a-z0-9]$/;
 
+// Phase 3E: turns arbitrary text into a TEMPLATE_CODE_PATTERN-safe slug,
+// used only to seed a SUGGESTED code for Duplicate flows - the user still
+// sees and can edit the field before Save, and the backend remains the
+// final authority either way (a colliding code surfaces as a normal 409
+// through the existing save-error banner, same as manual entry).
+function slugify(text) {
+  return String(text || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 55);
+}
+
+// Appends "-copy" (then "-copy-2", "-copy-3", ...) to a base code, trimming
+// the base so the result never exceeds the backend's 60-char limit, and
+// skipping any suffix that would collide with a code already visible in
+// the currently loaded template list - a courtesy only, since the backend
+// re-checks uniqueness on Save regardless (companies can have templates
+// this client hasn't fetched, e.g. a stale list).
+function suggestTemplateCode(baseCode, existingCodes) {
+  const maxLen = 60;
+  const taken = new Set(existingCodes || []);
+  let n = 1;
+  while (true) {
+    const suffix = n === 1 ? "-copy" : `-copy-${n}`;
+    const trimmedBase = baseCode.length + suffix.length > maxLen ? baseCode.slice(0, maxLen - suffix.length) : baseCode;
+    const candidate = `${trimmedBase}${suffix}`;
+    if (!taken.has(candidate)) return candidate;
+    n++;
+  }
+}
+
 function authHeaders() {
   const token = localStorage.getItem("token");
   return token ? { Authorization: `Bearer ${token}` } : {};
@@ -540,8 +572,111 @@ export default function PrintTemplateList({ moduleType }) {
     loadPreviewData();
   }
 
+  // Phase 3E: opens Create mode pre-filled from an EXISTING DB template's
+  // already-loaded row (the list endpoint already returns full config per
+  // row - see printTemplateService.js's mapRow/listTemplates - so no extra
+  // GET is needed). Reuses openAdd's exact "add" formMode/save path, so a
+  // duplicate is created through the same existing POST endpoint and can
+  // never accidentally become the default (the add-mode payload never
+  // sends isDefault - see handleSave) or copy the source's id/timestamps
+  // (only templateName/documentVariant/config are read from it here).
+  function openDuplicate(template) {
+    // Only prompt when a modal is genuinely open and dirty right now - these
+    // three actions are also reachable from the closed list (System
+    // Default / template-row buttons), where a stale `dirty` flag left
+    // over from a previously-discarded session must NOT trigger a false
+    // "discard unsaved changes?" prompt for a session that already ended.
+    if (showFormModal && dirty && !window.confirm("Discard unsaved changes to this template?")) return;
+    setForm({
+      templateName: `${template.templateName} (Copy)`,
+      templateCode: suggestTemplateCode(template.templateCode, templates.map((t) => t.templateCode)),
+      documentVariant: template.documentVariant,
+    });
+    setConfigForm(configToForm(template.config, moduleType));
+    setEditingTemplate(null);
+    setOriginalVariant(null);
+    setFormMode("add");
+    setFormError("");
+    setDirty(false);
+    setActiveColumnEditor(null);
+    setShowFormModal(true);
+    loadPreviewData(false);
+  }
+
+  // Phase 3E: same idea, seeded from the built-in config instead of a DB
+  // row - fetches it fresh from the existing Phase 3B /built-in endpoint
+  // (falling back to whatever's already cached in builtInConfig state if
+  // that fetch fails) rather than adding a new backend call shape. The
+  // documented safe variant default (sales_invoice / official_receipt) is
+  // simply this module's own variants[0] - both MODULE_META lists already
+  // start with that exact value, so there's no second place it could drift.
+  async function openDuplicateBuiltIn() {
+    // Only prompt when a modal is genuinely open and dirty right now - these
+    // three actions are also reachable from the closed list (System
+    // Default / template-row buttons), where a stale `dirty` flag left
+    // over from a previously-discarded session must NOT trigger a false
+    // "discard unsaved changes?" prompt for a session that already ended.
+    if (showFormModal && dirty && !window.confirm("Discard unsaved changes to this template?")) return;
+    let builtIn = builtInConfig;
+    try {
+      const res = await fetch(`${API_BASE}/api/print-templates/built-in?moduleType=${moduleType}`, { headers: authHeaders() });
+      if (res.ok) {
+        const data = await res.json();
+        builtIn = data.config;
+      }
+    } catch (err) {
+      console.error("LOAD BUILT-IN FOR DUPLICATE ERROR:", err);
+    }
+    setForm({
+      templateName: "System Default (Customized)",
+      templateCode: suggestTemplateCode(slugify(`${moduleType}-system-default`), templates.map((t) => t.templateCode)),
+      documentVariant: meta.variants[0].value,
+    });
+    setConfigForm(builtIn ? configToForm(builtIn, moduleType) : emptyConfigForm(moduleType));
+    setEditingTemplate(null);
+    setOriginalVariant(null);
+    setFormMode("add");
+    setFormError("");
+    setDirty(false);
+    setActiveColumnEditor(null);
+    setShowFormModal(true);
+    loadPreviewData(true);
+  }
+
+  // Phase 3E: opens the same Builder modal shell in a dedicated read-only
+  // mode that shows only the live preview (rendered from the real
+  // built-in config, through the real PDF pipeline, via the same
+  // /preview endpoint and previewingBuiltIn flag Phase 3B already built) -
+  // never creates or touches a template row. previewingBuiltIn is set
+  // AFTER loadPreviewData resolves because loadPreviewData itself resets
+  // it to false at the start of every call (see its own comment).
+  async function openPreviewBuiltIn() {
+    // Only prompt when a modal is genuinely open and dirty right now - these
+    // three actions are also reachable from the closed list (System
+    // Default / template-row buttons), where a stale `dirty` flag left
+    // over from a previously-discarded session must NOT trigger a false
+    // "discard unsaved changes?" prompt for a session that already ended.
+    if (showFormModal && dirty && !window.confirm("Discard unsaved changes to this template?")) return;
+    setForm(emptyMainForm(moduleType));
+    setConfigForm(emptyConfigForm(moduleType));
+    setEditingTemplate(null);
+    setOriginalVariant(null);
+    setFormMode("view-builtin");
+    setFormError("");
+    setDirty(false);
+    setActiveColumnEditor(null);
+    setShowFormModal(true);
+    await loadPreviewData(false);
+    setPreviewingBuiltIn(true);
+  }
+
   function requestCloseModal() {
-    if (dirty && !window.confirm("Discard unsaved changes to this template?")) return;
+    // Only prompt when a modal is genuinely open and dirty right now - these
+    // three actions are also reachable from the closed list (System
+    // Default / template-row buttons), where a stale `dirty` flag left
+    // over from a previously-discarded session must NOT trigger a false
+    // "discard unsaved changes?" prompt for a session that already ended.
+    if (showFormModal && dirty && !window.confirm("Discard unsaved changes to this template?")) return;
     setShowFormModal(false);
   }
 
@@ -754,7 +889,17 @@ export default function PrintTemplateList({ moduleType }) {
     : templates.find((t) => t.isDefault);
 
   const variantChanged = formMode === "edit" && originalVariant && form.documentVariant !== originalVariant;
-  const readOnly = formMode === "view";
+  const readOnly = formMode === "view" || formMode === "view-builtin";
+
+  // Phase 3E: one concise, state-derived line - never guessed - showing
+  // which template actually governs printing right now. isDefault can only
+  // ever be true on an active row (deactivating a default template clears
+  // is_default server-side too - see printTemplateService.js), so no extra
+  // isActive check is needed here.
+  const effectiveDefaultTemplate = templates.find((t) => t.isDefault);
+  const effectiveDefaultLabel = effectiveDefaultTemplate
+    ? `${meta.variants.find((v) => v.value === effectiveDefaultTemplate.documentVariant)?.label || effectiveDefaultTemplate.documentVariant} — ${effectiveDefaultTemplate.templateName}`
+    : "System Default";
 
   return (
     <div className="fs-page">
@@ -769,6 +914,12 @@ export default function PrintTemplateList({ moduleType }) {
           </button>
         )}
       </div>
+
+      {!loading && !loadError && (
+        <p className="ptl-effective-default">
+          Effective print template: <strong>{effectiveDefaultLabel}</strong>
+        </p>
+      )}
 
       {banner && <div className={`ptl-banner ptl-banner-${banner.type}`}>{banner.message}</div>}
 
@@ -794,43 +945,63 @@ export default function PrintTemplateList({ moduleType }) {
               <tr>
                 <td colSpan="7" className="fs-empty ptl-error-text">{loadError}</td>
               </tr>
-            ) : sortedTemplates.length === 0 ? (
-              <tr>
-                <td colSpan="7" className="fs-empty">
-                  No custom templates yet. Every {meta.singularNoun} prints using the built-in default layout
-                  until you create one.
-                  {canCreate ? ' Click "+ New Template" to get started.' : ""}
-                </td>
-              </tr>
             ) : (
-              sortedTemplates.map((t) => (
-                <tr key={t.id}>
-                  <td>{t.templateName}</td>
+              <>
+                <tr className="ptl-row-builtin">
+                  <td>System Default</td>
                   <td>{moduleType === "or" ? "OR" : "Invoice"}</td>
-                  <td>{meta.variants.find((v) => v.value === t.documentVariant)?.label || t.documentVariant}</td>
-                  <td>{t.isDefault ? <span className="ptl-badge ptl-badge-default">DEFAULT</span> : "—"}</td>
-                  <td>
-                    <span className={`ptl-badge ${t.isActive ? "ptl-badge-active" : "ptl-badge-inactive"}`}>
-                      {t.isActive ? "Active" : "Inactive"}
-                    </span>
-                  </td>
-                  <td>{formatDateTime(t.updatedAt)}</td>
+                  <td>—</td>
+                  <td>—</td>
+                  <td><span className="ptl-badge ptl-badge-builtin">Built-in</span></td>
+                  <td>—</td>
                   <td className="ptl-actions-cell">
-                    <button className="fs-btn ptl-btn-sm" onClick={() => openEditOrView(t)}>
-                      {canEdit ? "Edit" : "View"}
-                    </button>
-                    {t.isActive && canSetDefault && !t.isDefault && (
-                      <button className="fs-btn ptl-btn-sm" onClick={() => requestSetDefault(t)}>Set Default</button>
-                    )}
-                    {t.isActive && canDeactivate && (
-                      <button className="fs-btn ptl-btn-sm" onClick={() => requestDeactivate(t)}>Deactivate</button>
-                    )}
-                    {!t.isActive && canActivate && (
-                      <button className="fs-btn ptl-btn-sm" onClick={() => handleActivate(t)} disabled={confirmBusy}>Activate</button>
+                    <button className="fs-btn ptl-btn-sm" onClick={openPreviewBuiltIn}>Preview</button>
+                    {canCreate && (
+                      <button className="fs-btn ptl-btn-sm" onClick={openDuplicateBuiltIn}>Duplicate to Customize</button>
                     )}
                   </td>
                 </tr>
-              ))
+                {sortedTemplates.length === 0 ? (
+                  <tr>
+                    <td colSpan="7" className="fs-empty">
+                      No custom templates yet. The system is currently using the built-in print layout above.
+                      {canCreate ? ' Click "+ New Template" to get started.' : ""}
+                    </td>
+                  </tr>
+                ) : (
+                  sortedTemplates.map((t) => (
+                    <tr key={t.id}>
+                      <td>{t.templateName}</td>
+                      <td>{moduleType === "or" ? "OR" : "Invoice"}</td>
+                      <td>{meta.variants.find((v) => v.value === t.documentVariant)?.label || t.documentVariant}</td>
+                      <td>{t.isDefault ? <span className="ptl-badge ptl-badge-default">DEFAULT</span> : "—"}</td>
+                      <td>
+                        <span className={`ptl-badge ${t.isActive ? "ptl-badge-active" : "ptl-badge-inactive"}`}>
+                          {t.isActive ? "Active" : "Inactive"}
+                        </span>
+                      </td>
+                      <td>{formatDateTime(t.updatedAt)}</td>
+                      <td className="ptl-actions-cell">
+                        <button className="fs-btn ptl-btn-sm" onClick={() => openEditOrView(t)}>
+                          {canEdit ? "Edit" : "View"}
+                        </button>
+                        {canCreate && (
+                          <button className="fs-btn ptl-btn-sm" onClick={() => openDuplicate(t)}>Duplicate</button>
+                        )}
+                        {t.isActive && canSetDefault && !t.isDefault && (
+                          <button className="fs-btn ptl-btn-sm" onClick={() => requestSetDefault(t)}>Set Default</button>
+                        )}
+                        {t.isActive && canDeactivate && (
+                          <button className="fs-btn ptl-btn-sm" onClick={() => requestDeactivate(t)}>Deactivate</button>
+                        )}
+                        {!t.isActive && canActivate && (
+                          <button className="fs-btn ptl-btn-sm" onClick={() => handleActivate(t)} disabled={confirmBusy}>Activate</button>
+                        )}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </>
             )}
           </tbody>
         </table>
@@ -841,7 +1012,8 @@ export default function PrintTemplateList({ moduleType }) {
           <div className="ptl-modal ptl-modal-wide">
             <div className="ptl-modal-header">
               <h2>
-                {formMode === "add" ? `New ${meta.title.replace(" Templates", "")} Template`
+                {formMode === "view-builtin" ? `${meta.singularNoun} — System Default Preview`
+                  : formMode === "add" ? `New ${meta.title.replace(" Templates", "")} Template`
                   : formMode === "view" ? `View "${form.templateName}"`
                   : `Edit "${form.templateName}"`}
               </h2>
@@ -850,13 +1022,32 @@ export default function PrintTemplateList({ moduleType }) {
 
             <div className="ptl-modal-body ptl-builder-body">
               {formError && <div className="ptl-banner ptl-banner-error">{formError}</div>}
-              {readOnly && (
+              {formMode === "view" && (
                 <div className="ptl-banner ptl-banner-info">
                   You have view-only access to print templates. Editing requires the EDIT permission.
                 </div>
               )}
+              {formMode === "view-builtin" && (
+                <div className="ptl-banner ptl-banner-info">
+                  This is the built-in System Default layout - the code-based fallback used whenever no active
+                  default template exists. It is not stored as a template and cannot be edited here.
+                </div>
+              )}
 
             <div className={`ptl-builder-columns${activeColumnEditor ? " ptl-builder-columns-with-editor" : ""}`}>
+            {formMode === "view-builtin" ? (
+            <div className="ptl-builder-config-col ptl-builtin-info-panel">
+              <p className="ptl-hint">
+                Preview how {meta.singularNoun} documents print today, using the built-in layout, before any
+                custom template is created.
+              </p>
+              {canCreate && (
+                <button type="button" className="ptl-btn-primary ptl-btn-sm" onClick={openDuplicateBuiltIn}>
+                  Duplicate to Customize
+                </button>
+              )}
+            </div>
+            ) : (
             <div className="ptl-builder-config-col">
               <div className="fs-grid ptl-main-fields">
                 <div className="fs-field">
@@ -876,6 +1067,15 @@ export default function PrintTemplateList({ moduleType }) {
                     placeholder="e.g. standard-sales-invoice"
                     disabled={formMode !== "add"}
                   />
+                  {formMode === "add" ? (
+                    <p className="ptl-hint">
+                      3-60 characters: lowercase letters, digits, underscore, or hyphen only. Cannot start or end
+                      with a separator. This is permanent once saved and cannot be changed later - review it
+                      before saving.
+                    </p>
+                  ) : (
+                    <p className="ptl-hint">Template codes are permanent and cannot be changed after creation.</p>
+                  )}
                 </div>
                 <div className="fs-field">
                   <label>Document Variant</label>
@@ -1092,8 +1292,9 @@ export default function PrintTemplateList({ moduleType }) {
                 </p>
               </ConfigSection>
             </div>
+            )}
 
-            {activeColumnEditor && (
+            {formMode !== "view-builtin" && activeColumnEditor && (
               <div className="ptl-builder-column-editor-col">
                 <h3 className="ptl-section-title">
                   {activeColumnEditor === "tableColumns" ? "Main Table Columns" : "Applied Invoice Columns"}
@@ -1180,15 +1381,17 @@ export default function PrintTemplateList({ moduleType }) {
                 >
                   {previewLoading ? "Refreshing…" : "Refresh Preview"}
                 </button>
-                <label className="ptl-toggle ptl-preview-builtin-toggle">
-                  <input
-                    type="checkbox"
-                    checked={previewingBuiltIn}
-                    onChange={(e) => setPreviewingBuiltIn(e.target.checked)}
-                    disabled={!builtInConfig || !previewTransactionId}
-                  />
-                  <span>Preview built-in default instead</span>
-                </label>
+                {formMode !== "view-builtin" && (
+                  <label className="ptl-toggle ptl-preview-builtin-toggle">
+                    <input
+                      type="checkbox"
+                      checked={previewingBuiltIn}
+                      onChange={(e) => setPreviewingBuiltIn(e.target.checked)}
+                      disabled={!builtInConfig || !previewTransactionId}
+                    />
+                    <span>Preview built-in default instead</span>
+                  </label>
+                )}
               </div>
 
               {previewTransactionsError && <div className="ptl-banner ptl-banner-info">{previewTransactionsError}</div>}
@@ -1217,6 +1420,16 @@ export default function PrintTemplateList({ moduleType }) {
               <button className="ptl-btn-secondary" onClick={requestCloseModal} disabled={saving}>
                 {readOnly ? "Close" : "Cancel"}
               </button>
+              {(formMode === "edit" || formMode === "view") && editingTemplate && canCreate && (
+                <button
+                  className="ptl-btn-secondary"
+                  onClick={() => openDuplicate(editingTemplate)}
+                  disabled={saving}
+                  title="Open a new template pre-filled from this one - does not change this template."
+                >
+                  Duplicate
+                </button>
+              )}
               {!readOnly && (
                 <button className="ptl-btn-primary" onClick={handleSave} disabled={saving}>
                   {saving ? "Saving…" : formMode === "add" ? "Save Template" : "Update Template"}

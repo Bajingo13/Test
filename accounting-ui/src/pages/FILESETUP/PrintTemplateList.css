@@ -59,6 +59,44 @@
   color: var(--text-secondary);
 }
 
+/* Phase 3E: neutral, deliberately distinct from ptl-badge-default (blue,
+   "this DB row is the active default") and ptl-badge-active (green,
+   "this DB row is currently active") - Built-in is neither of those, it's
+   the code-level fallback that always exists regardless of any DB row. */
+.ptl-badge-builtin {
+  background: var(--bg-surface-muted);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color-strong);
+}
+
+.ptl-row-builtin td {
+  font-style: italic;
+  color: var(--text-secondary);
+  background: var(--bg-surface-muted);
+}
+
+.ptl-row-builtin td:first-child {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.ptl-effective-default {
+  margin: -4px 0 14px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.ptl-effective-default strong {
+  color: var(--text-primary);
+}
+
+.ptl-builtin-info-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+}
+
 .ptl-actions-cell {
   display: flex;
   flex-wrap: wrap;
