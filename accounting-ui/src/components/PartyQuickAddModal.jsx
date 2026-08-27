@@ -52,6 +52,12 @@ export default function PartyQuickAddModal({ open, partyType, onClose, onCreated
   const [saving, setSaving] = useState(false);
   const [serverError, setServerError] = useState("");
   const [success, setSuccess] = useState(false);
+  // Phase 4: true the moment the user changes ANY field - a fresh/untouched
+  // modal (including the auto-generated code and default startDate/status,
+  // which are set programmatically below, not by the user) can close
+  // without a prompt; anything the user actually typed cannot be discarded
+  // silently. Reset to false whenever the modal is (re)opened.
+  const [dirty, setDirty] = useState(false);
   const nameInputRef = useRef(null);
 
   useEffect(() => {
@@ -63,6 +69,7 @@ export default function PartyQuickAddModal({ open, partyType, onClose, onCreated
     setErrors({});
     setServerError("");
     setSuccess(false);
+    setDirty(false);
 
     // Fetch a fresh copy of the table to compute an accurate next code -
     // the same generateNextCode() GenLib.jsx uses, over the same live data,
@@ -91,21 +98,34 @@ export default function PartyQuickAddModal({ open, partyType, onClose, onCreated
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, partyType]);
 
+  // Phase 4: the single guarded exit point for every close path (backdrop,
+  // X, Cancel, Escape) - a dirty form always confirms before discarding,
+  // matching this app's existing "discard unsaved changes?" pattern used
+  // elsewhere (e.g. the Print Template Builder's own dirty guard).
+  function requestClose() {
+    if (dirty && !window.confirm(`You have unsaved ${label.toLowerCase()} information. Discard changes?`)) {
+      return;
+    }
+    onClose();
+  }
+
   useEffect(() => {
     if (!open) return;
 
     function handleKeyDown(e) {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") requestClose();
     }
 
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [open, onClose]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, dirty]);
 
   if (!open) return null;
 
   function updateField(key, value) {
     setForm((prev) => ({ ...prev, [key]: value }));
+    setDirty(true);
   }
 
   function validate() {
@@ -157,11 +177,11 @@ export default function PartyQuickAddModal({ open, partyType, onClose, onCreated
     (partyType === "BOTH" ? form.type : partyType) === "SUPPLIER" ? "Supplier" : "Customer";
 
   return (
-    <div className="pqam-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
+    <div className="pqam-overlay" onClick={(e) => e.target === e.currentTarget && requestClose()}>
       <div className="pqam-modal" role="dialog" aria-modal="true" aria-label={`Add New ${label}`}>
         <div className="pqam-header">
           <h2>Add New {label}</h2>
-          <button type="button" className="pqam-close" onClick={onClose} aria-label="Close">
+          <button type="button" className="pqam-close" onClick={requestClose} aria-label="Close">
             &times;
           </button>
         </div>
@@ -257,7 +277,7 @@ export default function PartyQuickAddModal({ open, partyType, onClose, onCreated
           </div>
 
           <div className="pqam-footer">
-            <button type="button" className="pqam-btn-secondary" onClick={onClose} disabled={saving}>
+            <button type="button" className="pqam-btn-secondary" onClick={requestClose} disabled={saving}>
               Cancel
             </button>
             <button type="submit" className="pqam-btn-primary" disabled={saving}>

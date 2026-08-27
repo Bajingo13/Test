@@ -8156,6 +8156,48 @@ app.get("/api/reports/prepaid-subsidiary", authenticateToken, authorizePermissio
 
 // ===================== EWT LIBRARY API =====================
 
+// Phase 4: field-length limits mirror ewt_library's actual DDL exactly
+// (000_baseline_schema_migration.sql) - atc_code varchar(20), description
+// varchar(255), rate decimal(6,3) (max magnitude 999.999). Never silently
+// truncated - a too-long value is rejected with a clear message instead.
+const EWT_ATC_CODE_MAX_LEN = 20;
+const EWT_DESCRIPTION_MAX_LEN = 255;
+const EWT_RATE_MAX_VALUE = 999.999;
+
+function validateEwtPayload(body) {
+  const atcCode = String(body.atcCode ?? "").trim();
+  const description = String(body.description ?? "").trim();
+  const rateRaw = body.rate;
+
+  if (!atcCode) return { error: "EWT Code is required." };
+  if (atcCode.length > EWT_ATC_CODE_MAX_LEN) {
+    return { error: `EWT Code must be at most ${EWT_ATC_CODE_MAX_LEN} characters.` };
+  }
+  if (!description) return { error: "Nature of Income Payment is required." };
+  if (description.length > EWT_DESCRIPTION_MAX_LEN) {
+    return { error: `Nature of Income Payment must be at most ${EWT_DESCRIPTION_MAX_LEN} characters.` };
+  }
+  if (rateRaw === undefined || rateRaw === null || rateRaw === "") {
+    return { error: "Tax Rate is required." };
+  }
+  const rate = Number(rateRaw);
+  if (!Number.isFinite(rate) || rate < 0) {
+    return { error: "Tax Rate must be a valid non-negative number." };
+  }
+  if (rate > EWT_RATE_MAX_VALUE) {
+    return { error: `Tax Rate must be at most ${EWT_RATE_MAX_VALUE}.` };
+  }
+
+  return {
+    atcCode,
+    description,
+    taxType: body.taxType || "EWT",
+    rate,
+    birForm: body.birForm || "",
+    status: body.status || "ACTIVE",
+  };
+}
+
 app.get("/api/ewt-library", authenticateToken, authorizePermission("FILESETUP.TAX_SETUP", "VIEW"), async (req, res) => {
   try {
     const [rows] = await pool.execute(`
@@ -8166,7 +8208,9 @@ app.get("/api/ewt-library", authenticateToken, authorizePermission("FILESETUP.TA
         tax_type AS taxType,
         rate,
         bir_form AS birForm,
-        status
+        status,
+        created_at AS createdAt,
+        updated_at AS updatedAt
       FROM ewt_library
       ORDER BY atc_code ASC
     `);
@@ -8180,19 +8224,24 @@ app.get("/api/ewt-library", authenticateToken, authorizePermission("FILESETUP.TA
 
 app.post("/api/ewt-library", authenticateToken, authorizePermission("FILESETUP.TAX_SETUP", "CONFIGURE"), async (req, res) => {
   try {
-    const { atcCode, description, taxType, rate, birForm, status } = req.body;
+    const validated = validateEwtPayload(req.body);
+    if (validated.error) return res.status(400).json({ message: validated.error });
+    const { atcCode, description, taxType, rate, birForm, status } = validated;
+
+    // ewt_library has no UNIQUE constraint on atc_code (confirmed against
+    // the actual DDL) - this is an app-level duplicate check, not a DB
+    // constraint, since adding one would be a migration. The column's
+    // collation (utf8mb4_0900_ai_ci) is already case-insensitive, so a
+    // plain "=" comparison already catches e.g. "wi158" vs "WI158".
+    const [dupRows] = await pool.execute("SELECT id FROM ewt_library WHERE atc_code = ?", [atcCode]);
+    if (dupRows.length) {
+      return res.status(409).json({ message: `An EWT/ATC code "${atcCode}" already exists.` });
+    }
 
     const [result] = await pool.execute(
       `INSERT INTO ewt_library (atc_code, description, tax_type, rate, bir_form, status)
        VALUES (?, ?, ?, ?, ?, ?)`,
-      [
-        atcCode || "",
-        description || "",
-        taxType || "EWT",
-        Number(rate) || 0,
-        birForm || "",
-        status || "ACTIVE",
-      ]
+      [atcCode, description, taxType, rate, birForm, status]
     );
 
     res.json({ success: true, message: "EWT code saved successfully", id: result.insertId });
@@ -8205,21 +8254,20 @@ app.post("/api/ewt-library", authenticateToken, authorizePermission("FILESETUP.T
 app.put("/api/ewt-library/:id", authenticateToken, authorizePermission("FILESETUP.TAX_SETUP", "CONFIGURE"), async (req, res) => {
   try {
     const { id } = req.params;
-    const { atcCode, description, taxType, rate, birForm, status } = req.body;
+    const validated = validateEwtPayload(req.body);
+    if (validated.error) return res.status(400).json({ message: validated.error });
+    const { atcCode, description, taxType, rate, birForm, status } = validated;
+
+    const [dupRows] = await pool.execute("SELECT id FROM ewt_library WHERE atc_code = ? AND id != ?", [atcCode, id]);
+    if (dupRows.length) {
+      return res.status(409).json({ message: `An EWT/ATC code "${atcCode}" already exists.` });
+    }
 
     await pool.execute(
       `UPDATE ewt_library SET
         atc_code = ?, description = ?, tax_type = ?, rate = ?, bir_form = ?, status = ?
       WHERE id = ?`,
-      [
-        atcCode || "",
-        description || "",
-        taxType || "EWT",
-        Number(rate) || 0,
-        birForm || "",
-        status || "ACTIVE",
-        id,
-      ]
+      [atcCode, description, taxType, rate, birForm, status, id]
     );
 
     res.json({ success: true, message: "EWT code updated successfully" });

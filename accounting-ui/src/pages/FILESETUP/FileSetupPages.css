@@ -118,3 +118,41 @@
   gap: 10px;
   margin-top: 18px;
 }
+
+/* Phase 4: EWT Library validation + date-filter additions - reuses the
+   existing fs-field/fs-toolbar input styling, not a new visual language. */
+.fs-filter-date-label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.fs-filter-date-label input {
+  border: 1px solid var(--border-color-strong);
+  border-radius: 10px;
+  padding: 9px 10px;
+  font-size: 14px;
+}
+
+.fs-input-error {
+  border-color: var(--danger-hover, var(--danger-text)) !important;
+}
+
+.fs-field-error {
+  color: var(--danger-hover, var(--danger-text));
+  font-size: 12.5px;
+  margin-top: 4px;
+}
+
+.fs-banner-error {
+  background: var(--danger-bg);
+  color: var(--danger-text, var(--danger-hover));
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
