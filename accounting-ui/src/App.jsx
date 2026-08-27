@@ -30,6 +30,7 @@ import TransactionSetup from "./pages/FILESETUP/TransactionSetup";
 import AdditionalFileSetup from "./pages/FILESETUP/AdditionalFileSetup";
 import TaxFileSetup from "./pages/FILESETUP/TaxFileSetup";
 import EWTLibrary from "./pages/FILESETUP/EWTLibrary";
+import VatRateLibrary from "./pages/FILESETUP/VatRateLibrary";
 import FixedAssetSetup from "./pages/FILESETUP/FixedAssetSetup";
 import PrepaidAccountSetup from "./pages/FILESETUP/PrepaidAccountSetup";
 import CompanyProfile from "./pages/FILESETUP/CompanyProfile";
@@ -148,6 +149,7 @@ function AppLayout() {
           <Route path="/additional-file-setup" element={<AdditionalFileSetup />} />
           <Route path="/tax-file-setup" element={<TaxFileSetup />} />
           <Route path="/ewt-library" element={<EWTLibrary />} />
+          <Route path="/vat-rate-library" element={<VatRateLibrary />} />
           <Route path="/fixed-asset-setup" element={<FixedAssetSetup />} />
           <Route path="/prepaid-account-setup" element={<PrepaidAccountSetup />} />
           <Route path="/company-profile" element={<CompanyProfile />} />

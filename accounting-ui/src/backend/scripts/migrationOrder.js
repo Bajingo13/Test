@@ -76,6 +76,10 @@ const MIGRATION_ORDER = [
   // to anything else), depends only on companies/permissions/roles
   // already existing in the baseline.
   "document_print_templates_migration.sql",
+  // Phase 6D - purely additive (one new standalone table, no ALTERs to
+  // anything else), no dependency on any table above beyond the baseline
+  // existing at all.
+  "vat_rate_library_migration.sql",
 ];
 
 module.exports = { MIGRATION_ORDER };

@@ -140,6 +140,11 @@ export default function TransactionFormLayout({
   const [sourcePoNo, setSourcePoNo] = useState("");
 
   const [ewtCodes, setEwtCodes] = useState([]);
+  // Phase 6D: reference-only VAT catalog, loaded once for INV/APV only
+  // (mirrors ewtCodes above exactly) and passed down to VatEntryModal.
+  // LegacyVatEntryModal (OR/CV/PO) never receives this - those three
+  // modules gain no new API dependency, per the explicit non-scope.
+  const [vatRateCodes, setVatRateCodes] = useState([]);
   const [atcCode, setAtcCode] = useState("");
   const [taxWithheldAmount, setTaxWithheldAmount] = useState("");
   // Tracks whether the user has typed over the auto-suggested EWT amount, so
@@ -234,6 +239,12 @@ export default function TransactionFormLayout({
       loadEwtCodes();
     }
 
+    // Phase 6D: Invoice/APV only - see the explicit OR/CV/PO non-scope
+    // (LegacyVatEntryModal.jsx is untouched and gains no new API call).
+    if (["INV", "APV"].includes(code)) {
+      loadVatRateCodes();
+    }
+
     if (CURRENCY_ELIGIBLE) {
       loadCurrencies();
     }
@@ -284,6 +295,32 @@ export default function TransactionFormLayout({
     } catch (err) {
       console.error("LOAD EWT LIBRARY ERROR:", err);
       setEwtCodes([]);
+    }
+  }
+
+  // Phase 6D: same shape/fallback as loadEwtCodes() above - any failure
+  // (network error, non-200, empty catalog) leaves vatRateCodes as [],
+  // which VatEntryModal treats as "no picker, fall back to manual entry"
+  // (section 15's deployment-safety rule) rather than blocking anything.
+  async function loadVatRateCodes() {
+    try {
+      const res = await fetch(`${API_BASE}/api/vat-rate-codes?activeOnly=true`, {
+        credentials: "include",
+        headers: authHeaders(),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        handleAuthError(res.status);
+        setVatRateCodes([]);
+        return;
+      }
+
+      setVatRateCodes(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.error("LOAD VAT RATE LIBRARY ERROR:", err);
+      setVatRateCodes([]);
     }
   }
 
@@ -3094,6 +3131,7 @@ if (code === "OR") {
               partyLabel={partyLabel}
               partyOptions={partyOptions}
               accountOptions={accountOptions}
+              vatRateCodes={vatRateCodes}
               defaultDate={form.date}
               existingEntry={editingTaxLineId ? lines.find((l) => l.id === editingTaxLineId)?.taxEntry : null}
               onConfirm={handleVatEntryConfirm}

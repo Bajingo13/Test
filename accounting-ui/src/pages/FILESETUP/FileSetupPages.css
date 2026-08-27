@@ -229,3 +229,10 @@
   font-weight: 600;
   margin-bottom: 16px;
 }
+
+/* Phase 6D: VAT Rate Library's row actions - Edit + Activate/Deactivate,
+   no Delete (see the migration file's header comment for why). */
+.vat-rate-actions {
+  display: flex;
+  gap: 8px;
+}

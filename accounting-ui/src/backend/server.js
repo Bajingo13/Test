@@ -8288,6 +8288,146 @@ app.delete("/api/ewt-library/:id", authenticateToken, authorizePermission("FILES
   }
 });
 
+// ===================== VAT RATE LIBRARY API =====================
+// Phase 6D: reference-only VAT catalog (Code/Description/Applies To/Rate/
+// Status) - see the Phase 6B/6C/6D architecture reports. Owns none of:
+// account mapping, calculation mode, zero-rated/exempt treatment,
+// purchase classification, BIR form, or effective dating - all explicitly
+// out of scope. No DELETE route exists anywhere on this table (Active/
+// Inactive only), a deliberate improvement over ewt_library's own
+// unconditional hard-delete (see the migration file's header comment).
+
+const VAT_CODE_MAX_LEN = 20;
+const VAT_DESCRIPTION_MAX_LEN = 255;
+const VAT_RATE_MAX_VALUE = 999.999;
+const VAT_APPLIES_TO_OPTIONS = ["INPUT", "OUTPUT", "BOTH"];
+const VAT_STATUS_OPTIONS = ["ACTIVE", "INACTIVE"];
+
+function validateVatRatePayload(body) {
+  const code = String(body.code ?? "").trim();
+  const description = String(body.description ?? "").trim();
+  const appliesTo = String(body.appliesTo ?? "BOTH").trim().toUpperCase();
+  const status = String(body.status ?? "ACTIVE").trim().toUpperCase();
+  const rateRaw = body.rate;
+
+  if (!code) return { error: "VAT Code is required." };
+  if (code.length > VAT_CODE_MAX_LEN) {
+    return { error: `VAT Code must be at most ${VAT_CODE_MAX_LEN} characters.` };
+  }
+  if (description.length > VAT_DESCRIPTION_MAX_LEN) {
+    return { error: `Description must be at most ${VAT_DESCRIPTION_MAX_LEN} characters.` };
+  }
+  if (!VAT_APPLIES_TO_OPTIONS.includes(appliesTo)) {
+    return { error: `Applies To must be one of: ${VAT_APPLIES_TO_OPTIONS.join(", ")}.` };
+  }
+  if (rateRaw === undefined || rateRaw === null || rateRaw === "") {
+    return { error: "Rate is required." };
+  }
+  const rate = Number(rateRaw);
+  if (!Number.isFinite(rate) || rate < 0) {
+    return { error: "Rate must be a valid non-negative number." };
+  }
+  if (rate > VAT_RATE_MAX_VALUE) {
+    return { error: `Rate must be at most ${VAT_RATE_MAX_VALUE}.` };
+  }
+  if (!VAT_STATUS_OPTIONS.includes(status)) {
+    return { error: `Status must be one of: ${VAT_STATUS_OPTIONS.join(", ")}.` };
+  }
+
+  return { code, description, appliesTo, rate, status };
+}
+
+app.get("/api/vat-rate-codes", authenticateToken, authorizePermission("FILESETUP.TAX_SETUP", "VIEW"), async (req, res) => {
+  try {
+    const activeOnly = String(req.query.activeOnly || "").toLowerCase() === "true";
+    const [rows] = await pool.execute(`
+      SELECT
+        id,
+        code,
+        description,
+        applies_to AS appliesTo,
+        rate,
+        status,
+        created_at AS createdAt,
+        updated_at AS updatedAt
+      FROM vat_rate_codes
+      ${activeOnly ? "WHERE status = 'ACTIVE'" : ""}
+      ORDER BY code ASC
+    `);
+
+    res.json(rows);
+  } catch (err) {
+    console.error("GET VAT RATE CODES ERROR:", err);
+    res.status(500).json({ message: "Failed to load VAT Rate Library" });
+  }
+});
+
+app.post("/api/vat-rate-codes", authenticateToken, authorizePermission("FILESETUP.TAX_SETUP", "CONFIGURE"), async (req, res) => {
+  try {
+    const validated = validateVatRatePayload(req.body);
+    if (validated.error) return res.status(400).json({ message: validated.error });
+    const { code, description, appliesTo, rate, status } = validated;
+
+    // Real DB UNIQUE key exists on `code` (unlike ewt_library's atc_code) -
+    // this app-level check exists only to return a clean 409 instead of an
+    // opaque DB exception; the catch block below is the authoritative
+    // backstop against a race between the two. Collation is
+    // utf8mb4_0900_ai_ci (case-insensitive), so a plain "=" already
+    // catches "standard_vat" vs "STANDARD_VAT".
+    const [dupRows] = await pool.execute("SELECT id FROM vat_rate_codes WHERE code = ?", [code]);
+    if (dupRows.length) {
+      return res.status(409).json({ message: `A VAT code "${code}" already exists.` });
+    }
+
+    const [result] = await pool.execute(
+      `INSERT INTO vat_rate_codes (code, description, applies_to, rate, status)
+       VALUES (?, ?, ?, ?, ?)`,
+      [code, description || null, appliesTo, rate, status]
+    );
+
+    res.json({ success: true, message: "VAT code saved successfully", id: result.insertId });
+  } catch (err) {
+    if (err.code === "ER_DUP_ENTRY") {
+      return res.status(409).json({ message: `A VAT code "${req.body.code}" already exists.` });
+    }
+    console.error("CREATE VAT RATE CODE ERROR:", err);
+    res.status(500).json({ message: "Failed to save VAT code" });
+  }
+});
+
+app.put("/api/vat-rate-codes/:id", authenticateToken, authorizePermission("FILESETUP.TAX_SETUP", "CONFIGURE"), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const validated = validateVatRatePayload(req.body);
+    if (validated.error) return res.status(400).json({ message: validated.error });
+    const { code, description, appliesTo, rate, status } = validated;
+
+    const [dupRows] = await pool.execute("SELECT id FROM vat_rate_codes WHERE code = ? AND id != ?", [code, id]);
+    if (dupRows.length) {
+      return res.status(409).json({ message: `A VAT code "${code}" already exists.` });
+    }
+
+    await pool.execute(
+      `UPDATE vat_rate_codes SET
+        code = ?, description = ?, applies_to = ?, rate = ?, status = ?
+      WHERE id = ?`,
+      [code, description || null, appliesTo, rate, status, id]
+    );
+
+    res.json({ success: true, message: "VAT code updated successfully" });
+  } catch (err) {
+    if (err.code === "ER_DUP_ENTRY") {
+      return res.status(409).json({ message: `A VAT code "${req.body.code}" already exists.` });
+    }
+    console.error("UPDATE VAT RATE CODE ERROR:", err);
+    res.status(500).json({ message: "Failed to update VAT code" });
+  }
+});
+
+// No DELETE route on this table by design (Phase 6C section 7) - Active/
+// Inactive status via the PUT route above is the only supported way to
+// retire a VAT code.
+
 // ====================== TAX ALPHALIST REPORTS ======================
 // Aggregates APV records that captured withholding tax (atc_code + tax_type)
 // within a given month, grouped by payee -- the standard monthly

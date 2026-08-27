@@ -20,6 +20,7 @@ export default function VatEntryModal({
   partyLabel, // "Supplier" | "Customer"
   partyOptions,
   accountOptions,
+  vatRateCodes, // Phase 6D: reference-only catalog, already ACTIVE-filtered by the parent - [] is a valid, expected state (empty catalog / fetch failed), not an error
   defaultDate,
   existingEntry, // pre-fill when editing an already-added tax entry
   onConfirm, // ({ accountId, partyId, partyName, partyTin, partyAddress, transactionDate, grossAmount, netAmount, vatRate, vatAmount, purchaseClassification }) => void
@@ -41,6 +42,18 @@ export default function VatEntryModal({
   const [classification, setClassification] = useState(CLASSIFICATIONS[0]);
   const [accountId, setAccountId] = useState("");
 
+  // Phase 6D: picker/override state. `selectedVatCodeId` "" means manual
+  // entry - the rate field behaves exactly as it always has. Neither of
+  // these is included in onConfirm's payload (section 17 - reference/UI
+  // context only, never persisted as transaction_tax_entries.vat_code).
+  const [selectedVatCodeId, setSelectedVatCodeId] = useState("");
+  const [rateOverridden, setRateOverridden] = useState(false);
+
+  const applicableVatCodes = (vatRateCodes || []).filter(
+    (c) => c.appliesTo === "BOTH" || c.appliesTo === (isInput ? "INPUT" : "OUTPUT")
+  );
+  const selectedVatCode = applicableVatCodes.find((c) => String(c.id) === selectedVatCodeId);
+
   useEffect(() => {
     if (!open) return;
     if (existingEntry) {
@@ -53,6 +66,11 @@ export default function VatEntryModal({
       setVatRate(existingEntry.vatRate != null ? String(existingEntry.vatRate) : String(DEFAULT_VAT_RATE));
       setClassification(existingEntry.purchaseClassification || CLASSIFICATIONS[0]);
       setAccountId(existingEntry.accountId ? String(existingEntry.accountId) : "");
+      // An existing entry never recorded which catalog code (if any) it
+      // came from - always reopen in manual/free-entry state, never
+      // guess a code from the rate alone.
+      setSelectedVatCodeId("");
+      setRateOverridden(false);
     } else {
       setParty("");
       setPartyId(null);
@@ -62,6 +80,8 @@ export default function VatEntryModal({
       setGrossAmount("");
       setVatRate(String(DEFAULT_VAT_RATE));
       setClassification(CLASSIFICATIONS[0]);
+      setSelectedVatCodeId("");
+      setRateOverridden(false);
       // Same heuristic keyword-default TransactionFormLayout already uses
       // for the (now-legacy, OR/CV/PO-only) VAT account picker - preserves
       // the existing "no hard-coded account id" mechanism (spec section 10).
@@ -72,6 +92,23 @@ export default function VatEntryModal({
   }, [open, existingEntry]);
 
   if (!open) return null;
+
+  function handleSelectVatCode(id) {
+    setSelectedVatCodeId(id);
+    setRateOverridden(false);
+    if (!id) return; // switched to manual entry - leave whatever rate is already typed
+    const chosen = applicableVatCodes.find((c) => String(c.id) === id);
+    if (chosen) setVatRate(String(chosen.rate));
+  }
+
+  function handleRateChange(value) {
+    setVatRate(value);
+    // Optional auto-clear (section 16): if the user has overridden but
+    // types the exact catalog value back, treat it as no longer overridden.
+    if (selectedVatCode && rateOverridden && Number(value) === Number(selectedVatCode.rate)) {
+      setRateOverridden(false);
+    }
+  }
 
   function handlePartySelect(name) {
     setParty(name);
@@ -157,9 +194,53 @@ export default function VatEntryModal({
               <input type="number" min="0" step="0.01" value={grossAmount} onChange={(e) => setGrossAmount(e.target.value)} placeholder="0.00" className="transaction-input" />
             </div>
 
+            {applicableVatCodes.length > 0 && (
+              <div className="transaction-field">
+                <label className="transaction-label">VAT Code</label>
+                <select
+                  value={selectedVatCodeId}
+                  onChange={(e) => handleSelectVatCode(e.target.value)}
+                  className="transaction-input"
+                >
+                  <option value="">-- Manual Entry --</option>
+                  {applicableVatCodes.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.code} — {c.description} ({Number(c.rate)}%)
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
             <div className="transaction-field">
               <label className="transaction-label">VAT Rate (%)</label>
-              <input type="number" min="0" step="0.01" value={vatRate} onChange={(e) => setVatRate(e.target.value)} className="transaction-input" />
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={vatRate}
+                onChange={(e) => handleRateChange(e.target.value)}
+                readOnly={Boolean(selectedVatCode) && !rateOverridden}
+                className="transaction-input"
+              />
+              {selectedVatCode && !rateOverridden && (
+                <p className="tax-entry-vat-rate-note">
+                  Source: {selectedVatCode.code} ({Number(selectedVatCode.rate)}%){" "}
+                  <button type="button" className="tax-entry-override-link" onClick={() => setRateOverridden(true)}>
+                    Override Rate
+                  </button>
+                </p>
+              )}
+              {selectedVatCode && rateOverridden && (
+                <p className="tax-entry-vat-rate-note tax-entry-vat-rate-overridden">
+                  Overridden from {selectedVatCode.code} ({Number(selectedVatCode.rate)}%)
+                </p>
+              )}
+              {!selectedVatCode && applicableVatCodes.length === 0 && (
+                <p className="tax-entry-vat-rate-note">
+                  VAT Rate Library unavailable — enter rate manually.
+                </p>
+              )}
             </div>
 
             {isInput && (

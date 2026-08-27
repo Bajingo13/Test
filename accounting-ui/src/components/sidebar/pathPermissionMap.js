@@ -19,6 +19,7 @@ const PATH_PERMISSIONS = {
   "/bank-codes": ["FILESETUP.BANK_CODES", "VIEW"],
   "/tax-file-setup": ["FILESETUP.TAX_SETUP", "VIEW"],
   "/ewt-library": ["FILESETUP.TAX_SETUP", "VIEW"],
+  "/vat-rate-library": ["FILESETUP.TAX_SETUP", "VIEW"],
   "/fixed-asset-setup": ["FILESETUP.FIXED_ASSETS", "VIEW"],
   "/prepaid-account-setup": ["FILESETUP.PREPAID_ACCOUNTS", "VIEW"],
   "/company-profile": ["FILESETUP.COMPANY_SETUP", "VIEW"],
