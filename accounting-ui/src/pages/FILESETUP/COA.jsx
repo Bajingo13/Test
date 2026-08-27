@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
+import { matchesDateRange } from "../../utils/dateRangeFilter.mjs";
 import "./COA.css";
 import "../../components/RecurringTemplateModal.css";
 
@@ -44,6 +45,12 @@ export default function COA() {
   const [selectedId, setSelectedId] = useState(null);
   const [mode, setMode] = useState("view");
   const [search, setSearch] = useState("");
+  // Phase 5: filters the account's own account_date (a required, genuine
+  // business field on chart_of_accounts - NOT a technical created_at/
+  // updated_at timestamp - see the Phase 5 audit note in the Final Report
+  // for why this is the correct field, not an invented one).
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
   const [form, setForm] = useState(EMPTY_FORM);
   const [loading, setLoading] = useState(false);
   const [groupCode, setGroupCode] = useState("");
@@ -128,15 +135,17 @@ export default function COA() {
 
   const filteredAccounts = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return accounts;
 
-    return accounts.filter((account) =>
-      [account.code, account.title, account.accountClass]
-        .join(" ")
-        .toLowerCase()
-        .includes(q)
-    );
-  }, [accounts, search]);
+    return accounts.filter((account) => {
+      const matchesText =
+        !q ||
+        [account.code, account.title, account.accountClass]
+          .join(" ")
+          .toLowerCase()
+          .includes(q);
+      return matchesText && matchesDateRange(account.date, { from: dateFrom, to: dateTo });
+    });
+  }, [accounts, search, dateFrom, dateTo]);
 
   const currentIndex = accounts.findIndex((item) => item.id === selectedId);
   const isEditing = mode === "add" || mode === "edit";
@@ -527,6 +536,19 @@ export default function COA() {
                   onChange={(e) => setSearch(e.target.value)}
                   className="coa-picker-search"
                 />
+                <label className="coa-picker-date-label">
+                  From
+                  <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} aria-label="Filter from account date" />
+                </label>
+                <label className="coa-picker-date-label">
+                  To
+                  <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} aria-label="Filter to account date" />
+                </label>
+                {(dateFrom || dateTo) && (
+                  <button type="button" className="coa-picker-date-clear" onClick={() => { setDateFrom(""); setDateTo(""); }}>
+                    Clear Dates
+                  </button>
+                )}
                 <button
                   type="button"
                   className="coa-picker-close"
@@ -544,12 +566,13 @@ export default function COA() {
                       <th>Code</th>
                       <th>Title</th>
                       <th>Class</th>
+                      <th>Date</th>
                     </tr>
                   </thead>
                   <tbody>
                     {loading ? (
                       <tr>
-                        <td colSpan={3} className="empty-cell">Loading accounts...</td>
+                        <td colSpan={4} className="empty-cell">Loading accounts...</td>
                       </tr>
                     ) : filteredAccounts.length > 0 ? (
                       filteredAccounts.map((account) => (
@@ -561,11 +584,12 @@ export default function COA() {
                           <td>{account.code}</td>
                           <td>{account.title}</td>
                           <td>{account.accountClass}</td>
+                          <td>{account.date}</td>
                         </tr>
                       ))
                     ) : (
                       <tr>
-                        <td colSpan={3} className="empty-cell">No accounts found.</td>
+                        <td colSpan={4} className="empty-cell">No accounts found.</td>
                       </tr>
                     )}
                   </tbody>

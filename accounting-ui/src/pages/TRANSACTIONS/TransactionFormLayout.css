@@ -419,6 +419,21 @@
   max-width: 280px;
 }
 
+/* Phase 5: shared date-range filter - same visual language as the
+   search/status controls already in this toolbar, not a new pattern. */
+.transaction-date-filter-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.transaction-date-filter-label .transaction-input {
+  max-width: 160px;
+}
+
 .transaction-empty {
   text-align: center;
   padding: 40px 12px;

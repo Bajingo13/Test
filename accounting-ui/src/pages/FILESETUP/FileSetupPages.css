@@ -137,6 +137,22 @@
   font-size: 14px;
 }
 
+/* Phase 5: matches the Clear-Dates affordance now shared by the
+   Invoice/OR list toolbar and the COA picker - same "outlined, only
+   shown once a date filter is active" pattern, not a new one. */
+.fs-filter-date-clear {
+  align-self: flex-end;
+  border: 1px solid var(--border-color-strong);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  border-radius: 10px;
+  padding: 9px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
 .fs-input-error {
   border-color: var(--danger-hover, var(--danger-text)) !important;
 }

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
+import { matchesDateRange } from "../../utils/dateRangeFilter.mjs";
 import "./FileSetupPages.css";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
@@ -45,20 +46,12 @@ export default function EWTLibrary() {
 
   const filteredRecords = useMemo(() => {
     const q = search.trim().toLowerCase();
-    // createdAt filtering compares plain "YYYY-MM-DD" string prefixes
-    // against the <input type="date"> values, avoiding a timezone-shifted
-    // Date object comparison for what's meant to be a whole-day range.
-    const fromKey = dateFrom || null;
-    const toKey = dateTo || null;
 
     return records.filter((item) => {
       const matchesSearch =
         !q || [item.atcCode, item.description, String(item.rate ?? "")].join(" ").toLowerCase().includes(q);
       const matchesType = !typeFilter || item.taxType === typeFilter;
-      const createdDateKey = item.createdAt ? String(item.createdAt).slice(0, 10) : null;
-      const matchesFrom = !fromKey || (createdDateKey && createdDateKey >= fromKey);
-      const matchesTo = !toKey || (createdDateKey && createdDateKey <= toKey);
-      return matchesSearch && matchesType && matchesFrom && matchesTo;
+      return matchesSearch && matchesType && matchesDateRange(item.createdAt, { from: dateFrom, to: dateTo });
     });
   }, [records, search, typeFilter, dateFrom, dateTo]);
 
@@ -236,6 +229,18 @@ export default function EWTLibrary() {
             Created To
             <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
           </label>
+          {(dateFrom || dateTo) && (
+            <button
+              type="button"
+              className="fs-filter-date-clear"
+              onClick={() => {
+                setDateFrom("");
+                setDateTo("");
+              }}
+            >
+              Clear Dates
+            </button>
+          )}
         </div>
 
         <table className="fs-table">

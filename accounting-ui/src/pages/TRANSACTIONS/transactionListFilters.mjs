@@ -15,6 +15,16 @@
 // state before this filter ever runs - so filtering that same in-memory
 // array client-side adds no new network cost and no new large-dataset
 // risk beyond what already existed.
+//
+// Phase 5: date-range filtering reuses the exact same architecture - the
+// shared matchesDateRange() helper (utils/dateRangeFilter.js) is applied
+// to each transaction's own `date` field (already normalized per-module to
+// mean "Invoice Date" / "Receipt Date" / etc. by TransactionFormLayout.jsx's
+// loadTransactions() mapping, itself sourced from each list route's own
+// DATE_FORMAT(...,'%Y-%m-%d') column - see that file for why this is
+// timezone-safe).
+
+import { matchesDateRange } from "../../utils/dateRangeFilter.mjs";
 
 export function matchesSearch(transaction, searchQuery) {
   if (!searchQuery || !searchQuery.trim()) return true;
@@ -31,9 +41,12 @@ export function matchesStatus(transaction, statusFilter) {
   return String(transaction.status || "") === statusFilter;
 }
 
-export function filterTransactions(transactions, { searchQuery, statusFilter }) {
+export function filterTransactions(transactions, { searchQuery, statusFilter, dateFrom, dateTo }) {
   return (transactions || []).filter(
-    (t) => matchesSearch(t, searchQuery) && matchesStatus(t, statusFilter)
+    (t) =>
+      matchesSearch(t, searchQuery) &&
+      matchesStatus(t, statusFilter) &&
+      matchesDateRange(t.date, { from: dateFrom, to: dateTo })
   );
 }
 

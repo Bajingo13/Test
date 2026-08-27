@@ -94,6 +94,13 @@ export default function TransactionFormLayout({
   const [mode, setMode] = useState("list");
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("All Status");
+  // Phase 5: filters this module's own document date (Invoice: "Invoice
+  // Date", OR: "Receipt Date", etc.) - each already normalized to `date` on
+  // every transaction row by loadTransactions() below. Independent of
+  // search/status - "Clear" here only ever resets these two, never the
+  // other filters (see the toolbar JSX).
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
   // Phase 7B: "view" opens a read-only voucher (the new default when
   // clicking View from the list); "edit" restores the pre-7B fully
   // editable form. Only meaningful while mode === "form".
@@ -1215,8 +1222,8 @@ setError("");
   // so Previous/Next (below) can share it and stay in sync with whatever
   // subset the user is currently looking at (spec sections 16/30-G).
   const filteredTransactions = useMemo(
-    () => filterTransactions(transactions, { searchQuery, statusFilter }),
-    [transactions, searchQuery, statusFilter]
+    () => filterTransactions(transactions, { searchQuery, statusFilter, dateFrom, dateTo }),
+    [transactions, searchQuery, statusFilter, dateFrom, dateTo]
   );
   const statusFilterOptions = useMemo(() => deriveStatusOptions(transactions), [transactions]);
 
@@ -2175,6 +2182,36 @@ if (code === "OR") {
                     </option>
                   ))}
                 </select>
+
+                <label className="transaction-date-filter-label">
+                  From
+                  <input
+                    type="date"
+                    className="transaction-input"
+                    value={dateFrom}
+                    onChange={(e) => setDateFrom(e.target.value)}
+                    aria-label="Filter from date"
+                  />
+                </label>
+                <label className="transaction-date-filter-label">
+                  To
+                  <input
+                    type="date"
+                    className="transaction-input"
+                    value={dateTo}
+                    onChange={(e) => setDateTo(e.target.value)}
+                    aria-label="Filter to date"
+                  />
+                </label>
+                {(dateFrom || dateTo) && (
+                  <button
+                    type="button"
+                    className="transaction-secondary-button"
+                    onClick={() => { setDateFrom(""); setDateTo(""); }}
+                  >
+                    Clear Dates
+                  </button>
+                )}
               </div>
 
               <div className="transaction-table-container">

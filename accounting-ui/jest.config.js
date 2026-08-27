@@ -15,5 +15,9 @@ module.exports = {
     // test/test:integration npm scripts - not a new dependency) can load it
     // directly, with no babel/transform step and no new package installed.
     "<rootDir>/src/print/pdf/__tests__/**/*.test.js",
+    // Phase 5: shared pure-function utilities (dateRangeFilter.mjs) reused
+    // across multiple pages (TRANSACTIONS, FILESETUP) - same real-ESM
+    // dynamic-import pattern as transactionListFilters.test.js above.
+    "<rootDir>/src/utils/__tests__/**/*.test.js",
   ],
 };

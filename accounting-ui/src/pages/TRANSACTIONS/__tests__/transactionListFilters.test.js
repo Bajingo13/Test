@@ -9,9 +9,9 @@ beforeAll(async () => {
 });
 
 const sample = [
-  { id: 1, referenceNo: "INV-000001", party: "Acme Corp", status: "Draft", form: { description: "Sales invoice" } },
-  { id: 2, referenceNo: "INV-000002", party: "Beta Industries", status: "Posted", form: { description: "Consulting services" } },
-  { id: 3, referenceNo: "INV-000003", party: "Acme Corp", status: "Paid", form: { description: "" } },
+  { id: 1, referenceNo: "INV-000001", party: "Acme Corp", status: "Draft", date: "2026-08-01", form: { description: "Sales invoice" } },
+  { id: 2, referenceNo: "INV-000002", party: "Beta Industries", status: "Posted", date: "2026-08-15", form: { description: "Consulting services" } },
+  { id: 3, referenceNo: "INV-000003", party: "Acme Corp", status: "Paid", date: "2026-08-31", form: { description: "" } },
 ];
 
 describe("matchesSearch", () => {
@@ -78,6 +78,60 @@ describe("filterTransactions", () => {
   test("handles an empty transactions array safely", () => {
     expect(filterTransactions([], { searchQuery: "x", statusFilter: "All Status" })).toEqual([]);
     expect(filterTransactions(undefined, { searchQuery: "x", statusFilter: "All Status" })).toEqual([]);
+  });
+
+  // Phase 5: date-range composition - the date filter must combine with
+  // search/status (AND), never silently override or clear them.
+  describe("date-range composition (Phase 5)", () => {
+    test("no date filter preserves current search/status results", () => {
+      const result = filterTransactions(sample, { searchQuery: "acme", statusFilter: "All Status" });
+      expect(result.map((t) => t.id)).toEqual([1, 3]);
+    });
+
+    test("dateFrom only", () => {
+      const result = filterTransactions(sample, { statusFilter: "All Status", dateFrom: "2026-08-15" });
+      expect(result.map((t) => t.id)).toEqual([2, 3]);
+    });
+
+    test("dateTo only", () => {
+      const result = filterTransactions(sample, { statusFilter: "All Status", dateTo: "2026-08-15" });
+      expect(result.map((t) => t.id)).toEqual([1, 2]);
+    });
+
+    test("dateFrom + dateTo range", () => {
+      const result = filterTransactions(sample, { statusFilter: "All Status", dateFrom: "2026-08-05", dateTo: "2026-08-20" });
+      expect(result.map((t) => t.id)).toEqual([2]);
+    });
+
+    test("same-day From/To range matches only that day", () => {
+      const result = filterTransactions(sample, { statusFilter: "All Status", dateFrom: "2026-08-15", dateTo: "2026-08-15" });
+      expect(result.map((t) => t.id)).toEqual([2]);
+    });
+
+    test("record exactly on From boundary is included (inclusive)", () => {
+      const result = filterTransactions(sample, { statusFilter: "All Status", dateFrom: "2026-08-01" });
+      expect(result.map((t) => t.id)).toContain(1);
+    });
+
+    test("record exactly on To boundary is included (inclusive)", () => {
+      const result = filterTransactions(sample, { statusFilter: "All Status", dateTo: "2026-08-31" });
+      expect(result.map((t) => t.id)).toContain(3);
+    });
+
+    test("From later than To yields a safe empty result, not a thrown error", () => {
+      const result = filterTransactions(sample, { statusFilter: "All Status", dateFrom: "2026-08-31", dateTo: "2026-08-01" });
+      expect(result).toEqual([]);
+    });
+
+    test("date filter composes with search AND status (all three at once)", () => {
+      const result = filterTransactions(sample, { searchQuery: "acme", statusFilter: "Paid", dateFrom: "2026-08-01" });
+      expect(result.map((t) => t.id)).toEqual([3]);
+    });
+
+    test("date filter does not clear or override an unrelated status filter", () => {
+      const result = filterTransactions(sample, { statusFilter: "Draft", dateFrom: "2026-01-01", dateTo: "2026-12-31" });
+      expect(result.map((t) => t.id)).toEqual([1]);
+    });
   });
 });
 
