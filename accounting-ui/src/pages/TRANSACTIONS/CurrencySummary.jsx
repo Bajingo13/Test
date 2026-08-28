@@ -31,6 +31,17 @@ export default function CurrencySummary({
   submitOverride,
   viewOnly = false,
   totals,
+  // Phase 7F: Invoice-only compact composition (see InvoiceSummaryPanel.jsx).
+  // When true, this renders WITHOUT its own card wrapper and WITHOUT the
+  // Currency <select>/headline - those now live in the compact top panel's
+  // own grid, sourced from these exact same props (no second Currency
+  // control, no second rate-resolution implementation). Everything else -
+  // subtext, rateError, the rate meta line, Refresh/Override buttons and
+  // forms - is the SAME JSX/logic as the normal card, just unwrapped so it
+  // merges into the parent panel instead of forming a second card below it.
+  // Default false: every non-Invoice caller (OR/APV/CV/PO/JV) is completely
+  // unaffected.
+  compact = false,
 }) {
   // Phase 7B read-only summary (section 25 of the spec): Currency / Rate /
   // Rate Date / <Base> Equivalent. `lines` (and therefore `totals`,
@@ -73,25 +84,27 @@ export default function CurrencySummary({
     );
   }
 
-  return (
-    <div className="transaction-card">
-      <div className="transaction-grid">
-        <div className="transaction-field">
-          <label className="transaction-label">Currency</label>
-          <select
-            value={selectedCurrencyId}
-            onChange={(e) => handleCurrencyChange(e.target.value)}
-            disabled={currencySnapshot?.rateLocked}
-            className="transaction-input"
-          >
-            {currencyOptions.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.currencySymbol} {c.currencyCode} — {c.currencyName}{c.isBaseCurrency ? " (Base)" : ""}
-              </option>
-            ))}
-          </select>
+  const content = (
+    <>
+      {!compact && (
+        <div className="transaction-grid">
+          <div className="transaction-field">
+            <label className="transaction-label">Currency</label>
+            <select
+              value={selectedCurrencyId}
+              onChange={(e) => handleCurrencyChange(e.target.value)}
+              disabled={currencySnapshot?.rateLocked}
+              className="transaction-input"
+            >
+              {currencyOptions.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.currencySymbol} {c.currencyCode} — {c.currencyName}{c.isBaseCurrency ? " (Base)" : ""}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
-      </div>
+      )}
 
       {currencySnapshot?.rateLocked ? (
         <p className="transaction-section-subtext">
@@ -111,10 +124,14 @@ export default function CurrencySummary({
             <p>Resolving exchange rate…</p>
           ) : currencySnapshot ? (
             <>
-              <div className="transaction-rate-headline">
-                1 {currencyOptions.find((c) => String(c.id) === String(selectedCurrencyId))?.currencyCode} ={" "}
-                {Number(currencySnapshot.exchangeRate).toFixed(6)} {baseCurrency?.currencyCode}
-              </div>
+              {/* compact: InvoiceSummaryPanel's own grid cell already shows
+                  the resolved rate value - skip repeating the headline. */}
+              {!compact && (
+                <div className="transaction-rate-headline">
+                  1 {currencyOptions.find((c) => String(c.id) === String(selectedCurrencyId))?.currencyCode} ={" "}
+                  {Number(currencySnapshot.exchangeRate).toFixed(6)} {baseCurrency?.currencyCode}
+                </div>
+              )}
               <div className="transaction-rate-meta">
                 <span>Source: <strong>{currencySnapshot.rateSource || "—"}</strong></span>
                 {currencySnapshot.rateBasis && <span>Basis: <strong>{currencySnapshot.rateBasis}</strong></span>}
@@ -188,6 +205,12 @@ export default function CurrencySummary({
           )}
         </div>
       )}
-    </div>
+    </>
+  );
+
+  return compact ? (
+    <div className="transaction-currency-compact">{content}</div>
+  ) : (
+    <div className="transaction-card">{content}</div>
   );
 }

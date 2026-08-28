@@ -1135,33 +1135,60 @@
   color: #5b21b6;
 }
 
-/* Phase 7A: Invoice-only compact upper-right summary (Invoice No. / Date /
-   Currency / Exchange Rate / Due Date). The wrap right-aligns a narrower,
-   compact card instead of the usual full-width .transaction-card, so it
-   reads as a summary box rather than another full section - the rest of
-   the form (Party/Memo/Currency/etc.) continues in normal full-width flow
-   beneath it. */
+/* Phase 7F: Invoice-only compact top section - Customer/Transaction Type/
+   Description (left, ~58%) and the Invoice summary panel (right, ~42%)
+   render as two real grid columns instead of stacking as separate
+   full-width cards, per the checkpoint's "left content ~55-60% / right
+   Invoice summary ~40-45%" proportions. `align-items: start` keeps each
+   card at its own natural height - the shorter card never stretches to
+   match the taller one. Only rendered for code === "INV"; every other
+   module's TransactionVoucherHeader renders standalone as before, so this
+   rule has zero effect on OR/APV/CV/PO/JV. */
+.invoice-top-section {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+  margin-bottom: 20px;
+}
+
+.invoice-top-section .transaction-card {
+  margin-bottom: 0;
+}
+
+/* Phase 7A: Invoice-only compact summary card (Invoice No. / Date /
+   Currency / Due Date / Exchange Rate / Invoice Type). Previously a
+   right-aligned, width-capped block sitting in its own full-width row
+   above the rest of the form; now it fills its column inside
+   .invoice-top-section instead, so no right-alignment or width cap is
+   needed. */
 .invoice-summary-panel-wrap {
-  display: flex;
-  justify-content: flex-end;
+  width: 100%;
 }
 
 .invoice-summary-panel {
   width: 100%;
-  max-width: 420px;
 }
 
 .invoice-summary-grid {
   grid-template-columns: repeat(2, 1fr);
 }
 
-@media (max-width: 900px) {
-  .invoice-summary-panel-wrap {
-    justify-content: stretch;
-  }
+/* Phase 7F: CurrencySummary's `compact` mode (rate meta/Refresh/Override,
+   no card wrapper of its own - see CurrencySummary.jsx) merges visually
+   into the Invoice summary panel instead of forming a second card below
+   it. */
+.transaction-currency-compact {
+  margin-top: 14px;
+}
 
-  .invoice-summary-panel {
-    max-width: 100%;
+.transaction-currency-compact:empty {
+  margin-top: 0;
+}
+
+@media (max-width: 900px) {
+  .invoice-top-section {
+    grid-template-columns: 1fr;
   }
 }
 

@@ -2608,46 +2608,90 @@ if (code === "OR") {
               <h2 className="transaction-view-section-title">Voucher Information</h2>
             )}
 
-            {/* Phase 7A: Invoice-only compact upper-right summary (Invoice
-                No. / Date / Currency / Exchange Rate / Due Date). See
-                InvoiceSummaryPanel.jsx's own header comment for why these
-                fields are MOVED here (not duplicated) and why Currency/
-                Exchange Rate are a read-only reflection of CurrencySummary's
-                real values rather than a second currency implementation. */}
-            {code === "INV" && (
-              <InvoiceSummaryPanel
+            {/* Phase 7F: Invoice-only compact top section - left (Customer/
+                Transaction Type/Description, via the unchanged
+                TransactionVoucherHeader) and right (Invoice No./Date/
+                Currency/Due Date/Exchange Rate/Invoice Type, via
+                InvoiceSummaryPanel) render side by side in one 2-column
+                grid instead of stacking as separate full-width cards -
+                Currency and Invoice Type are MOVED here (not duplicated),
+                so no separate CurrencySummary or "Invoice Type" card
+                renders for code === "INV" below. Every other module keeps
+                the original stacked layout untouched. */}
+            {code === "INV" ? (
+              <div className="invoice-top-section">
+                <TransactionVoucherHeader
+                  viewOnly={formMode === "view"}
+                  code={code}
+                  title={title}
+                  partyLabel={partyLabel}
+                  partyType={partyType}
+                  showCheckNo={showCheckNo}
+                  form={form}
+                  updateForm={updateForm}
+                  handlePartyChange={handlePartyChange}
+                  partyOptions={partyOptions}
+                  showPartyModal={showPartyModal}
+                  setShowPartyModal={setShowPartyModal}
+                  handlePartyCreated={handlePartyCreated}
+                  hideDateAndReference
+                />
+
+                <InvoiceSummaryPanel
+                  viewOnly={formMode === "view"}
+                  form={form}
+                  updateForm={updateForm}
+                  dueDate={dueDate}
+                  onDateChange={handleInvoiceDateChange}
+                  onDueDateChange={handleDueDateChange}
+                  currencyEligible={CURRENCY_ELIGIBLE}
+                  currencyOptions={currencyOptions}
+                  selectedCurrencyId={selectedCurrencyId}
+                  baseCurrency={baseCurrency}
+                  currencySnapshot={currencySnapshot}
+                  handleCurrencyChange={handleCurrencyChange}
+                  rateError={rateError}
+                  rateResolving={rateResolving}
+                  pendingRateAction={pendingRateAction}
+                  handleRefreshRateClick={handleRefreshRateClick}
+                  canCurrency={can}
+                  currencyModuleKey={CURRENCY_MODULE_KEY}
+                  showOverrideForm={showOverrideForm}
+                  setShowOverrideForm={setShowOverrideForm}
+                  refreshPreview={refreshPreview}
+                  setRefreshPreview={setRefreshPreview}
+                  confirmRefresh={confirmRefresh}
+                  overrideRateValue={overrideRateValue}
+                  setOverrideRateValue={setOverrideRateValue}
+                  overrideReason={overrideReason}
+                  setOverrideReason={setOverrideReason}
+                  submitOverride={submitOverride}
+                  totals={totals}
+                  invoiceType={invoiceType}
+                  setInvoiceType={setInvoiceType}
+                  recurrenceFrequency={recurrenceFrequency}
+                  setRecurrenceFrequency={setRecurrenceFrequency}
+                />
+              </div>
+            ) : (
+              <TransactionVoucherHeader
                 viewOnly={formMode === "view"}
+                code={code}
+                title={title}
+                partyLabel={partyLabel}
+                partyType={partyType}
+                showCheckNo={showCheckNo}
                 form={form}
                 updateForm={updateForm}
-                dueDate={dueDate}
-                onDateChange={handleInvoiceDateChange}
-                onDueDateChange={handleDueDateChange}
-                currencyEligible={CURRENCY_ELIGIBLE}
-                currencyOptions={currencyOptions}
-                selectedCurrencyId={selectedCurrencyId}
-                baseCurrency={baseCurrency}
-                currencySnapshot={currencySnapshot}
+                handlePartyChange={handlePartyChange}
+                partyOptions={partyOptions}
+                showPartyModal={showPartyModal}
+                setShowPartyModal={setShowPartyModal}
+                handlePartyCreated={handlePartyCreated}
               />
             )}
 
-            <TransactionVoucherHeader
-              viewOnly={formMode === "view"}
-              code={code}
-              title={title}
-              partyLabel={partyLabel}
-              partyType={partyType}
-              showCheckNo={showCheckNo}
-              form={form}
-              updateForm={updateForm}
-              handlePartyChange={handlePartyChange}
-              partyOptions={partyOptions}
-              showPartyModal={showPartyModal}
-              setShowPartyModal={setShowPartyModal}
-              handlePartyCreated={handlePartyCreated}
-              hideDateAndReference={code === "INV"}
-            />
-
-            {CURRENCY_ELIGIBLE && (
+            {CURRENCY_ELIGIBLE && code !== "INV" && (
               <CurrencySummary
                 currencySnapshot={currencySnapshot}
                 selectedCurrencyId={selectedCurrencyId}
@@ -2673,60 +2717,6 @@ if (code === "OR") {
                 viewOnly={formMode === "view"}
                 totals={totals}
               />
-            )}
-
-            {code === "INV" && (
-              <div className="transaction-card">
-                <div className="transaction-section-header">
-                  <div>
-                    <h2 className="transaction-section-title">Invoice Type</h2>
-                    {formMode === "edit" && (
-                      <p className="transaction-section-subtext">
-                        Recurring invoices are for billing the same customer on a repeating schedule.
-                      </p>
-                    )}
-                  </div>
-                </div>
-
-                {formMode === "view" ? (
-                  <div className="transaction-view-grid">
-                    <ViewField label="Type" value={invoiceType} />
-                    {invoiceType === "Recurring" && (
-                      <ViewField label="Recurrence" value={recurrenceFrequency} />
-                    )}
-                  </div>
-                ) : (
-                  <div className="transaction-grid">
-                    <div className="transaction-field">
-                      <label className="transaction-label">Type</label>
-                      <select
-                        className="transaction-input"
-                        value={invoiceType}
-                        onChange={(e) => setInvoiceType(e.target.value)}
-                      >
-                        <option value="Standard">Standard</option>
-                        <option value="Recurring">Recurring</option>
-                      </select>
-                    </div>
-
-                    {invoiceType === "Recurring" && (
-                      <div className="transaction-field">
-                        <label className="transaction-label">Recurrence</label>
-                        <select
-                          className="transaction-input"
-                          value={recurrenceFrequency}
-                          onChange={(e) => setRecurrenceFrequency(e.target.value)}
-                        >
-                          <option value="Weekly">Weekly</option>
-                          <option value="Monthly">Monthly</option>
-                          <option value="Quarterly">Quarterly</option>
-                          <option value="Annually">Annually</option>
-                        </select>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
             )}
 
             {/* Transaction-entry UI standardization: in edit mode this card
