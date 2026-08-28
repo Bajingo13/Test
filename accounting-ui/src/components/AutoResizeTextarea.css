@@ -1,0 +1,40 @@
+/*
+ * Shared styling for auto-growing description-style text fields.
+ *
+ * The look is deliberately the same as a normal File Setup <input>: same
+ * border, radius, padding, font and focus treatment, using the existing
+ * AstreaBlue theme tokens. Only the mechanics differ - it is a <textarea>
+ * that has no manual resize grip and no scrollbar until the JS-managed
+ * max height is reached.
+ *
+ * Page-level rules such as `.fs-field textarea` / `.field textarea` are more
+ * specific and still win where a page already defines them, so this class is
+ * safe to drop onto any form without changing that page's established look.
+ */
+.auto-resize-textarea {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 44px;
+  border: 1px solid var(--border-color-strong);
+  border-radius: 10px;
+  padding: 11px 12px;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  resize: none;
+  overflow-y: hidden;
+}
+
+.auto-resize-textarea:focus {
+  outline: none;
+  border-color: var(--accent-blue);
+}
+
+.auto-resize-textarea:disabled {
+  background: var(--bg-surface-muted);
+  color: var(--text-secondary);
+  cursor: not-allowed;
+}

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
+import AutoResizeTextarea from "../../components/AutoResizeTextarea";
 import "./GroupCodes.css";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
@@ -179,7 +180,7 @@ export default function GroupCodes() {
             />
 
             <label>Group Description</label>
-            <input
+            <AutoResizeTextarea
               value={form.groupDescription}
               onChange={(e) => updateField("groupDescription", e.target.value)}
               placeholder="Example: Cash and Cash Equivalents"

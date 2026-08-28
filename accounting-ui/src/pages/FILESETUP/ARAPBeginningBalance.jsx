@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import BeginningBalanceImportModal from "../../components/BeginningBalanceImportModal";
+import AutoResizeTextarea from "../../components/AutoResizeTextarea";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
 import "./ARAPBeginningBalance.css";
 
@@ -419,7 +420,7 @@ export default function ARAPBeginningBalance({ balanceType }) {
 
           <div>
             <label>Remarks</label>
-            <input
+            <AutoResizeTextarea
               value={header.remarks}
               onChange={(e) =>
                 setHeader({ ...header, remarks: e.target.value })

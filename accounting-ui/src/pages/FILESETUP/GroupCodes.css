@@ -84,6 +84,7 @@
 
 .group-form input:focus,
 .group-form select:focus,
+.group-form .auto-resize-textarea:focus,
 .group-list-header input:focus {
   border-color: var(--accent-teal);
 }

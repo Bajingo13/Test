@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
 import { matchesDateRange } from "../../utils/dateRangeFilter.mjs";
+import AutoResizeTextarea from "../../components/AutoResizeTextarea";
 import "./FileSetupPages.css";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
@@ -305,7 +306,7 @@ export default function EWTLibrary() {
 
           <div className="fs-field">
             <label>Nature of Income Payment</label>
-            <input
+            <AutoResizeTextarea
               value={form.description}
               onChange={(e) => updateField("description", e.target.value)}
               placeholder="Professional Fees"

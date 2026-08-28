@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
+import AutoResizeTextarea from "../../components/AutoResizeTextarea";
 import "./GroupCodes.css";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
@@ -116,7 +117,7 @@ export default function CompanyProfile() {
               />
 
               <label>Registered Address</label>
-              <input
+              <AutoResizeTextarea
                 value={form.payorAddress}
                 onChange={(e) => updateField("payorAddress", e.target.value)}
                 placeholder="Complete registered address"

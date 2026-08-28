@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
+import AutoResizeTextarea from "../../components/AutoResizeTextarea";
 import "./GroupCodes.css";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
@@ -183,7 +184,7 @@ export default function PrepaidAccountSetup() {
             />
 
             <label>Description</label>
-            <input
+            <AutoResizeTextarea
               value={form.description}
               onChange={(e) => updateField("description", e.target.value)}
               placeholder="Example: 1-Year Office Insurance"
