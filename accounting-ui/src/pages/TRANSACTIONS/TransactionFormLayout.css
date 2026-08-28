@@ -1135,16 +1135,18 @@
   color: #5b21b6;
 }
 
-/* Phase 7F: Invoice-only compact top section - Customer/Transaction Type/
-   Description (left, ~58%) and the Invoice summary panel (right, ~42%)
-   render as two real grid columns instead of stacking as separate
-   full-width cards, per the checkpoint's "left content ~55-60% / right
-   Invoice summary ~40-45%" proportions. `align-items: start` keeps each
-   card at its own natural height - the shorter card never stretches to
-   match the taller one. Only rendered for code === "INV"; every other
-   module's TransactionVoucherHeader renders standalone as before, so this
-   rule has zero effect on OR/APV/CV/PO/JV. */
-.invoice-top-section {
+/* Phase 7G: compact top section, generalized from Phase 7F's Invoice-only
+   version to every module in COMPACT_HEADER_MODULES (INV/OR/APV/CV/PO/JV -
+   see TransactionFormLayout.jsx). Left (Customer/Supplier/Payee +
+   Transaction Type or Check No. + Description, ~58%) and the transaction
+   summary panel (right, ~42%) render as two real grid columns instead of
+   stacking as separate full-width cards, per the checkpoint's "left
+   content ~55-60% / right summary ~40-45%" proportions. `align-items:
+   start` keeps each card at its own natural height - the shorter card
+   never stretches to match the taller one. Modules NOT in that set (PCV/
+   DM/CM) render TransactionVoucherHeader standalone as before, so this
+   rule has zero effect on them. */
+.transaction-top-section {
   display: grid;
   grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
   gap: 20px;
@@ -1152,32 +1154,32 @@
   margin-bottom: 20px;
 }
 
-.invoice-top-section .transaction-card {
+.transaction-top-section .transaction-card {
   margin-bottom: 0;
 }
 
-/* Phase 7A: Invoice-only compact summary card (Invoice No. / Date /
-   Currency / Due Date / Exchange Rate / Invoice Type). Previously a
-   right-aligned, width-capped block sitting in its own full-width row
-   above the rest of the form; now it fills its column inside
-   .invoice-top-section instead, so no right-alignment or width cap is
-   needed. */
-.invoice-summary-panel-wrap {
+/* Phase 7A/7F/7G: compact summary card (Reference No. / Date / Currency /
+   Due Date / Exchange Rate / Invoice Type - fields gated per-module by
+   TransactionSummaryPanel's own props). Previously a right-aligned,
+   width-capped block sitting in its own full-width row above the rest of
+   the form; now it fills its column inside .transaction-top-section
+   instead, so no right-alignment or width cap is needed. */
+.transaction-summary-panel-wrap {
   width: 100%;
 }
 
-.invoice-summary-panel {
+.transaction-summary-panel {
   width: 100%;
 }
 
-.invoice-summary-grid {
+.transaction-summary-grid {
   grid-template-columns: repeat(2, 1fr);
 }
 
 /* Phase 7F: CurrencySummary's `compact` mode (rate meta/Refresh/Override,
    no card wrapper of its own - see CurrencySummary.jsx) merges visually
-   into the Invoice summary panel instead of forming a second card below
-   it. */
+   into the transaction summary panel instead of forming a second card
+   below it. */
 .transaction-currency-compact {
   margin-top: 14px;
 }
@@ -1187,13 +1189,13 @@
 }
 
 @media (max-width: 900px) {
-  .invoice-top-section {
+  .transaction-top-section {
     grid-template-columns: 1fr;
   }
 }
 
 @media (max-width: 640px) {
-  .invoice-summary-grid {
+  .transaction-summary-grid {
     grid-template-columns: 1fr;
   }
 }

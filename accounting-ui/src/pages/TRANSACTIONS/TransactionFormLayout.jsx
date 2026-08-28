@@ -8,7 +8,7 @@ import { getTransactionModuleConfig } from "./transactionModuleConfig";
 import { getVoucherToolbarVisibility } from "./voucherToolbarRules.mjs";
 import { formatMoney } from "./transactionFormUtils";
 import TransactionVoucherHeader from "./TransactionVoucherHeader";
-import InvoiceSummaryPanel from "./InvoiceSummaryPanel";
+import TransactionSummaryPanel from "./TransactionSummaryPanel";
 import CurrencySummary from "./CurrencySummary";
 import AccountingEntriesGrid from "./AccountingEntriesGrid";
 import EntryTotals from "./EntryTotals";
@@ -26,6 +26,14 @@ import { authHeaders, handleAuthError } from "../../utils/authSession";
 import "./TransactionFormLayout.css";
 
 const CURRENCY_MODULE_KEY = "FILESETUP.CURRENCY_SETUP";
+
+// Phase 7G: explicit whitelist, not "every currency-eligible module" -
+// PCV/DM/CM are currency-eligible too (transactionModuleConfig.js) but were
+// never named in this checkpoint's scope, so they deliberately keep the
+// original stacked layout (TransactionVoucherHeader + a separate
+// CurrencySummary card) untouched. A Set, not an array, purely so the
+// several `.has(code)` checks below read as a plain membership test.
+const COMPACT_HEADER_MODULES = new Set(["INV", "OR", "APV", "CV", "PO", "JV"]);
 
 function getCurrentUser() {
   try {
@@ -1726,9 +1734,10 @@ if (code === "OR" || code === "CV") {
   }
 
   // Phase 7A: Invoice-only Date/Due Date interaction (see the dueDate
-  // state's own comment for the full rule). Only InvoiceSummaryPanel's
-  // Date input calls this - every other module's Date input still calls
-  // plain updateForm("date", ...) via TransactionVoucherHeader, untouched.
+  // state's own comment for the full rule). Only passed as TransactionSummaryPanel's
+  // onDateChange for code === "INV" (see the compact-header wiring below);
+  // every other compact-header module passes plain updateForm("date", ...)
+  // instead, since none of them show/edit a Due Date.
   function handleInvoiceDateChange(value) {
     updateForm("date", value);
     if (!dueDateTouched) {
@@ -2608,18 +2617,22 @@ if (code === "OR") {
               <h2 className="transaction-view-section-title">Voucher Information</h2>
             )}
 
-            {/* Phase 7F: Invoice-only compact top section - left (Customer/
-                Transaction Type/Description, via the unchanged
-                TransactionVoucherHeader) and right (Invoice No./Date/
+            {/* Phase 7G: compact top section, generalized from Phase 7F's
+                Invoice-only version to every module in COMPACT_HEADER_MODULES
+                (INV/OR/APV/CV/PO/JV - see that constant's own comment).
+                Left (Customer or Supplier or Payee/Transaction Type or
+                Check No./Description, via the unchanged
+                TransactionVoucherHeader) and right (Reference No./Date/
                 Currency/Due Date/Exchange Rate/Invoice Type, via
-                InvoiceSummaryPanel) render side by side in one 2-column
-                grid instead of stacking as separate full-width cards -
-                Currency and Invoice Type are MOVED here (not duplicated),
-                so no separate CurrencySummary or "Invoice Type" card
-                renders for code === "INV" below. Every other module keeps
+                TransactionSummaryPanel) render side by side in one
+                2-column grid instead of stacking as separate full-width
+                cards. Currency (and, for Invoice only, Due Date/Invoice
+                Type) is MOVED here (not duplicated), so no separate
+                CurrencySummary card renders below for any module in this
+                set. PCV/DM/CM (currency-eligible but NOT in this set) keep
                 the original stacked layout untouched. */}
-            {code === "INV" ? (
-              <div className="invoice-top-section">
+            {COMPACT_HEADER_MODULES.has(code) ? (
+              <div className="transaction-top-section">
                 <TransactionVoucherHeader
                   viewOnly={formMode === "view"}
                   code={code}
@@ -2637,13 +2650,15 @@ if (code === "OR") {
                   hideDateAndReference
                 />
 
-                <InvoiceSummaryPanel
+                <TransactionSummaryPanel
+                  code={code}
                   viewOnly={formMode === "view"}
                   form={form}
                   updateForm={updateForm}
                   dueDate={dueDate}
-                  onDateChange={handleInvoiceDateChange}
+                  onDateChange={code === "INV" ? handleInvoiceDateChange : (value) => updateForm("date", value)}
                   onDueDateChange={handleDueDateChange}
+                  showDueDate={code === "INV"}
                   currencyEligible={CURRENCY_ELIGIBLE}
                   currencyOptions={currencyOptions}
                   selectedCurrencyId={selectedCurrencyId}
@@ -2667,6 +2682,7 @@ if (code === "OR") {
                   setOverrideReason={setOverrideReason}
                   submitOverride={submitOverride}
                   totals={totals}
+                  showInvoiceType={code === "INV"}
                   invoiceType={invoiceType}
                   setInvoiceType={setInvoiceType}
                   recurrenceFrequency={recurrenceFrequency}
@@ -2691,7 +2707,7 @@ if (code === "OR") {
               />
             )}
 
-            {CURRENCY_ELIGIBLE && code !== "INV" && (
+            {CURRENCY_ELIGIBLE && !COMPACT_HEADER_MODULES.has(code) && (
               <CurrencySummary
                 currencySnapshot={currencySnapshot}
                 selectedCurrencyId={selectedCurrencyId}

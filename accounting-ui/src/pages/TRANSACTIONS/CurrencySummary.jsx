@@ -31,16 +31,17 @@ export default function CurrencySummary({
   submitOverride,
   viewOnly = false,
   totals,
-  // Phase 7F: Invoice-only compact composition (see InvoiceSummaryPanel.jsx).
-  // When true, this renders WITHOUT its own card wrapper and WITHOUT the
-  // Currency <select>/headline - those now live in the compact top panel's
-  // own grid, sourced from these exact same props (no second Currency
-  // control, no second rate-resolution implementation). Everything else -
-  // subtext, rateError, the rate meta line, Refresh/Override buttons and
-  // forms - is the SAME JSX/logic as the normal card, just unwrapped so it
-  // merges into the parent panel instead of forming a second card below it.
-  // Default false: every non-Invoice caller (OR/APV/CV/PO/JV) is completely
-  // unaffected.
+  // Phase 7F/7G: compact composition, used by every module in
+  // TransactionFormLayout.jsx's COMPACT_HEADER_MODULES set (see
+  // TransactionSummaryPanel.jsx). When true, this renders WITHOUT its own
+  // card wrapper and WITHOUT the Currency <select>/headline - those now
+  // live in the compact top panel's own grid, sourced from these exact
+  // same props (no second Currency control, no second rate-resolution
+  // implementation). Everything else - subtext, rateError, the rate meta
+  // line, Refresh/Override buttons and forms - is the SAME JSX/logic as
+  // the normal card, just unwrapped so it merges into the parent panel
+  // instead of forming a second card below it. Default false: every
+  // caller outside that set (PCV/DM/CM) is completely unaffected.
   compact = false,
 }) {
   // Phase 7B read-only summary (section 25 of the spec): Currency / Rate /

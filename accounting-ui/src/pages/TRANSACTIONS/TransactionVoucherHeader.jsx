@@ -21,11 +21,13 @@ export default function TransactionVoucherHeader({
   setShowPartyModal,
   handlePartyCreated,
   viewOnly = false,
-  // Phase 7A: Invoice-only. Date and Reference No./"Invoice No." move into
-  // InvoiceSummaryPanel for code === "INV" - this is an explicit prop
-  // (not an internal `code === "INV"` check) so this component stays
-  // decoupled from any one module's layout decision; every other module
-  // passes nothing here and renders exactly as before, unchanged.
+  // Phase 7A/7G: Date and Reference No./"{code} No." move into
+  // TransactionSummaryPanel for every module in COMPACT_HEADER_MODULES
+  // (TransactionFormLayout.jsx) - this is an explicit prop (not an
+  // internal `code === "INV"`/module-code check) so this component stays
+  // fully decoupled from any one module's layout decision; a module
+  // outside that set passes nothing here and renders exactly as before,
+  // unchanged.
   hideDateAndReference = false,
 }) {
   // Phase 7B: a genuine document-like read-only presentation (label/value),

@@ -3,32 +3,45 @@ import ViewField from "./ViewField";
 import CurrencySummary from "./CurrencySummary";
 import "./TransactionFormLayout.css";
 
-// Phase 7A: Invoice-only compact upper-right summary (Invoice No. / Date /
-// Currency / Exchange Rate / Due Date). Invoice No. and Date are MOVED
-// here from TransactionVoucherHeader.jsx (not duplicated - the parent
-// hides them there via hideDateAndReference for code === "INV" only, so
-// every other module's header card is byte-for-byte unchanged).
+// Phase 7A/7F: introduced as the Invoice-only "InvoiceSummaryPanel".
 //
-// Phase 7F: Currency and Invoice Type are now MOVED here too (not
-// duplicated) - the parent no longer renders a separate CurrencySummary
-// card or a separate "Invoice Type" card for code === "INV" (see
-// TransactionFormLayout.jsx's `code === "INV" ?` branch). Currency stays
-// a REAL editable control (same handleCurrencyChange/currencyOptions the
-// old card used) rather than a read-only echo - "reuse, don't duplicate"
-// now applies to state AND to the control itself. The full rate
-// meta/Refresh/Override sub-flow is still 100% owned by CurrencySummary.jsx
-// (rendered here in `compact` mode - no second exchange-rate
-// implementation), just merged into this one card instead of forming a
-// second card below it. Status intentionally stays in transaction-topbar,
-// per the Phase 7A spec's explicit allowance ("Status may remain where it
-// already is").
-export default function InvoiceSummaryPanel({
+// Phase 7G: generalized into a single reusable compact transaction-header
+// panel shared by every module that opts into the compact top section
+// (see TransactionFormLayout.jsx's `COMPACT_HEADER_MODULES` set - INV/OR/
+// APV/CV/PO/JV). Reference No. / Date are MOVED here from
+// TransactionVoucherHeader.jsx for those modules (not duplicated - the
+// parent hides them there via hideDateAndReference, so every module NOT
+// in that set keeps TransactionVoucherHeader byte-for-byte unchanged).
+// Currency stays a REAL editable control (handleCurrencyChange/
+// currencyOptions, same as the old standalone CurrencySummary card),
+// never a read-only echo; the full rate meta/Refresh/Override sub-flow
+// is still 100% owned by CurrencySummary.jsx (rendered here in `compact`
+// mode - no second exchange-rate implementation). Invoice-only extras
+// (Due Date, Invoice Type, Recurrence) are gated by explicit boolean
+// props (`showDueDate`/`showInvoiceType`) rather than an internal
+// `code === "INV"` check, so this component has no Invoice-specific
+// knowledge baked in - any future module could opt into those same
+// extras by passing the same props. Status intentionally stays in
+// transaction-topbar for every module, per the Phase 7A spec's explicit
+// allowance ("Status may remain where it already is").
+const REFERENCE_LABELS = {
+  INV: "Invoice No.",
+  OR: "OR No.",
+  APV: "APV No.",
+  CV: "CV No.",
+  PO: "PO No.",
+  JV: "JV No.",
+};
+
+export default function TransactionSummaryPanel({
+  code,
   viewOnly = false,
   form,
   updateForm,
   dueDate,
   onDateChange,
   onDueDateChange,
+  showDueDate = false,
   currencyEligible,
   currencyOptions,
   selectedCurrencyId,
@@ -52,11 +65,15 @@ export default function InvoiceSummaryPanel({
   setOverrideReason,
   submitOverride,
   totals,
+  showInvoiceType = false,
   invoiceType,
   setInvoiceType,
   recurrenceFrequency,
   setRecurrenceFrequency,
 }) {
+  const referenceLabel = REFERENCE_LABELS[code] || `${code} No.`;
+  const referencePlaceholder = `${code}-000001`;
+
   const currency = currencyOptions?.find((c) => String(c.id) === String(selectedCurrencyId));
   const isBaseCurrency = !currency || String(selectedCurrencyId) === String(baseCurrency?.id || "");
   const currencyLabel = currency ? `${currency.currencyCode}${isBaseCurrency ? " (Base)" : ""}` : "—";
@@ -66,16 +83,16 @@ export default function InvoiceSummaryPanel({
 
   if (viewOnly) {
     return (
-      <div className="invoice-summary-panel-wrap">
-        <div className="transaction-card invoice-summary-panel">
+      <div className="transaction-summary-panel-wrap">
+        <div className="transaction-card transaction-summary-panel">
           <div className="transaction-view-grid">
-            <ViewField label="Invoice No." value={form.referenceNo} />
+            <ViewField label={referenceLabel} value={form.referenceNo} />
             <ViewField label="Date" value={form.date} />
             {currencyEligible && <ViewField label="Currency" value={currencyLabel} />}
-            <ViewField label="Due Date" value={dueDate} />
+            {showDueDate && <ViewField label="Due Date" value={dueDate} />}
             {showRateField && <ViewField label="Exchange Rate" value={rateLabel} />}
-            <ViewField label="Type" value={invoiceType} />
-            {invoiceType === "Recurring" && (
+            {showInvoiceType && <ViewField label="Type" value={invoiceType} />}
+            {showInvoiceType && invoiceType === "Recurring" && (
               <ViewField label="Recurrence" value={recurrenceFrequency} />
             )}
           </div>
@@ -85,16 +102,16 @@ export default function InvoiceSummaryPanel({
   }
 
   return (
-    <div className="invoice-summary-panel-wrap">
-      <div className="transaction-card invoice-summary-panel">
-        <div className="transaction-grid invoice-summary-grid">
+    <div className="transaction-summary-panel-wrap">
+      <div className="transaction-card transaction-summary-panel">
+        <div className="transaction-grid transaction-summary-grid">
           <div className="transaction-field">
-            <label className="transaction-label">Invoice No.</label>
+            <label className="transaction-label">{referenceLabel}</label>
             <input
               type="text"
               value={form.referenceNo}
               onChange={(e) => updateForm("referenceNo", e.target.value)}
-              placeholder="INV-000001"
+              placeholder={referencePlaceholder}
               className="transaction-input"
             />
           </div>
@@ -128,19 +145,25 @@ export default function InvoiceSummaryPanel({
             </div>
           )}
 
-          <div className="transaction-field">
-            <label className="transaction-label">Due Date</label>
-            <input
-              type="date"
-              value={dueDate}
-              onChange={(e) => onDueDateChange(e.target.value)}
-              className="transaction-input"
-            />
-          </div>
+          {/* Invoice-only (showDueDate). Every other module in scope keeps
+              sending dueDate === transactionDate exactly as before this
+              checkpoint (unchanged, non-scope). */}
+          {showDueDate && (
+            <div className="transaction-field">
+              <label className="transaction-label">Due Date</label>
+              <input
+                type="date"
+                value={dueDate}
+                onChange={(e) => onDueDateChange(e.target.value)}
+                className="transaction-input"
+              />
+            </div>
+          )}
 
-          {/* Section 9: when Exchange Rate is hidden (base currency), this
-              cell is simply omitted - CSS grid auto-flow lets Invoice Type
-              occupy the freed slot cleanly, no empty gap. */}
+          {/* When Exchange Rate is hidden (base currency or not currency-
+              eligible), this cell is simply omitted - CSS grid auto-flow
+              lets the next field occupy the freed slot cleanly, no empty
+              gap. */}
           {showRateField && (
             <div className="transaction-field">
               <label className="transaction-label">Exchange Rate</label>
@@ -148,19 +171,24 @@ export default function InvoiceSummaryPanel({
             </div>
           )}
 
-          <div className="transaction-field">
-            <label className="transaction-label">Invoice Type</label>
-            <select
-              className="transaction-input"
-              value={invoiceType}
-              onChange={(e) => setInvoiceType(e.target.value)}
-            >
-              <option value="Standard">Standard</option>
-              <option value="Recurring">Recurring</option>
-            </select>
-          </div>
+          {/* Invoice-only (showInvoiceType) - the same dormant Standard/
+              Recurring cosmetic field this checkpoint's layout-only scope
+              leaves untouched (see the Phase 7C audit's own note on it). */}
+          {showInvoiceType && (
+            <div className="transaction-field">
+              <label className="transaction-label">Invoice Type</label>
+              <select
+                className="transaction-input"
+                value={invoiceType}
+                onChange={(e) => setInvoiceType(e.target.value)}
+              >
+                <option value="Standard">Standard</option>
+                <option value="Recurring">Recurring</option>
+              </select>
+            </div>
+          )}
 
-          {invoiceType === "Recurring" && (
+          {showInvoiceType && invoiceType === "Recurring" && (
             <div className="transaction-field">
               <label className="transaction-label">Recurrence</label>
               <select
@@ -180,7 +208,10 @@ export default function InvoiceSummaryPanel({
         {/* The richer rate meta/Refresh/Override sub-flow - same component,
             same props, same logic as the old standalone Currency card;
             `compact` only changes what it renders (no select, no repeated
-            headline), never how it resolves/refreshes/overrides a rate. */}
+            headline), never how it resolves/refreshes/overrides a rate.
+            Rendered for every currency-eligible module in the compact set
+            (all six today - see transactionModuleConfig.js), not just
+            Invoice. */}
         {currencyEligible && (
           <CurrencySummary
             compact
