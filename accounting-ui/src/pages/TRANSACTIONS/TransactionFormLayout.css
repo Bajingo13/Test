@@ -1121,3 +1121,39 @@
   background: #ede9fe;
   color: #5b21b6;
 }
+
+/* Phase 7A: Invoice-only compact upper-right summary (Invoice No. / Date /
+   Currency / Exchange Rate / Due Date). The wrap right-aligns a narrower,
+   compact card instead of the usual full-width .transaction-card, so it
+   reads as a summary box rather than another full section - the rest of
+   the form (Party/Memo/Currency/etc.) continues in normal full-width flow
+   beneath it. */
+.invoice-summary-panel-wrap {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.invoice-summary-panel {
+  width: 100%;
+  max-width: 420px;
+}
+
+.invoice-summary-grid {
+  grid-template-columns: repeat(2, 1fr);
+}
+
+@media (max-width: 900px) {
+  .invoice-summary-panel-wrap {
+    justify-content: stretch;
+  }
+
+  .invoice-summary-panel {
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 640px) {
+  .invoice-summary-grid {
+    grid-template-columns: 1fr;
+  }
+}

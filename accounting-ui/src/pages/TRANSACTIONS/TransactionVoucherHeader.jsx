@@ -21,6 +21,12 @@ export default function TransactionVoucherHeader({
   setShowPartyModal,
   handlePartyCreated,
   viewOnly = false,
+  // Phase 7A: Invoice-only. Date and Reference No./"Invoice No." move into
+  // InvoiceSummaryPanel for code === "INV" - this is an explicit prop
+  // (not an internal `code === "INV"` check) so this component stays
+  // decoupled from any one module's layout decision; every other module
+  // passes nothing here and renders exactly as before, unchanged.
+  hideDateAndReference = false,
 }) {
   // Phase 7B: a genuine document-like read-only presentation (label/value),
   // not the same inputs with `disabled` - see the Phase 7B spec's "target
@@ -31,8 +37,8 @@ export default function TransactionVoucherHeader({
     return (
       <div className="transaction-card">
         <div className="transaction-view-grid">
-          <ViewField label="Date" value={form.date} />
-          <ViewField label="Reference No." value={form.referenceNo} />
+          {!hideDateAndReference && <ViewField label="Date" value={form.date} />}
+          {!hideDateAndReference && <ViewField label="Reference No." value={form.referenceNo} />}
           <ViewField label={partyLabel} value={form.party} />
           <ViewField
             label={showCheckNo ? "Check No." : "Transaction Type"}
@@ -47,26 +53,30 @@ export default function TransactionVoucherHeader({
   return (
     <div className="transaction-card">
       <div className="transaction-grid">
-        <div className="transaction-field">
-          <label className="transaction-label">Date</label>
-          <input
-            type="date"
-            value={form.date}
-            onChange={(e) => updateForm("date", e.target.value)}
-            className="transaction-input"
-          />
-        </div>
+        {!hideDateAndReference && (
+          <div className="transaction-field">
+            <label className="transaction-label">Date</label>
+            <input
+              type="date"
+              value={form.date}
+              onChange={(e) => updateForm("date", e.target.value)}
+              className="transaction-input"
+            />
+          </div>
+        )}
 
-        <div className="transaction-field">
-          <label className="transaction-label">Reference No.</label>
-          <input
-            type="text"
-            value={form.referenceNo}
-            onChange={(e) => updateForm("referenceNo", e.target.value)}
-            placeholder={`${code}-000001`}
-            className="transaction-input"
-          />
-        </div>
+        {!hideDateAndReference && (
+          <div className="transaction-field">
+            <label className="transaction-label">Reference No.</label>
+            <input
+              type="text"
+              value={form.referenceNo}
+              onChange={(e) => updateForm("referenceNo", e.target.value)}
+              placeholder={`${code}-000001`}
+              className="transaction-input"
+            />
+          </div>
+        )}
 
         <div className="transaction-field">
           <label className="transaction-label">{partyLabel}</label>

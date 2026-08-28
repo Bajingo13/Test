@@ -8,6 +8,7 @@ import { getTransactionModuleConfig } from "./transactionModuleConfig";
 import { getVoucherToolbarVisibility } from "./voucherToolbarRules.mjs";
 import { formatMoney } from "./transactionFormUtils";
 import TransactionVoucherHeader from "./TransactionVoucherHeader";
+import InvoiceSummaryPanel from "./InvoiceSummaryPanel";
 import CurrencySummary from "./CurrencySummary";
 import AccountingEntriesGrid from "./AccountingEntriesGrid";
 import EntryTotals from "./EntryTotals";
@@ -218,6 +219,18 @@ export default function TransactionFormLayout({
     checkNo: "",
     status: "Draft",
   });
+
+  // Phase 7A: Invoice-only Due Date. `dueDateTouched` tracks whether the
+  // user has manually edited Due Date on the CURRENT brand-new, unsaved
+  // Invoice - while untouched, changing the Invoice Date also carries Due
+  // Date along with it (a convenient default, not a hard link); once the
+  // user edits Due Date directly, or once an existing saved Invoice is
+  // loaded (its due_date is already intentional, real accounting data),
+  // Invoice Date changes never overwrite it again. Only ever read/written
+  // for code === "INV" - every other module ignores this state entirely
+  // and keeps sending dueDate === transactionDate exactly as before.
+  const [dueDate, setDueDate] = useState(new Date().toISOString().split("T")[0]);
+  const [dueDateTouched, setDueDateTouched] = useState(false);
 
   const [lines, setLines] = useState(
     defaultLines.map((line) => ({
@@ -1183,6 +1196,12 @@ if (code === "OR") {
       status: "Draft",
     });
 
+    // Phase 7A: only meaningful for Invoice - see the dueDate state's own
+    // comment. Harmless to reset unconditionally for every module since
+    // no other module ever reads it.
+    setDueDate(new Date().toISOString().split("T")[0]);
+    setDueDateTouched(false);
+
     setLines(
       defaultLines.map((line) => ({
         ...line,
@@ -1369,6 +1388,15 @@ setError("");
   status: data.status,
 });
 
+        // Phase 7A: an existing saved Invoice's due_date is already real,
+        // intentional accounting data - never auto-follow Invoice Date
+        // changes for it, hence dueDateTouched = true here (as opposed to
+        // resetForm()'s false for a brand-new, never-saved Invoice).
+        if (code === "INV") {
+          setDueDate(data.dueDate || data.transactionDate || "");
+          setDueDateTouched(true);
+        }
+
         setLines(
           data.lines.map((line) => {
             // Phase 7C: correlates by the line's REAL database id (still
@@ -1553,6 +1581,22 @@ if (code === "OR" || code === "CV") {
 
   function updateForm(field, value) {
     setForm((prev) => ({ ...prev, [field]: value }));
+  }
+
+  // Phase 7A: Invoice-only Date/Due Date interaction (see the dueDate
+  // state's own comment for the full rule). Only InvoiceSummaryPanel's
+  // Date input calls this - every other module's Date input still calls
+  // plain updateForm("date", ...) via TransactionVoucherHeader, untouched.
+  function handleInvoiceDateChange(value) {
+    updateForm("date", value);
+    if (!dueDateTouched) {
+      setDueDate(value);
+    }
+  }
+
+  function handleDueDateChange(value) {
+    setDueDate(value);
+    setDueDateTouched(true);
   }
 
   // optionsOverride lets a caller pass a just-fetched party list instead of
@@ -2007,7 +2051,11 @@ if (code === "OR" || code === "CV") {
         partyType: updatedForm.partyType || null,
 
         transactionDate: updatedForm.date,
-        dueDate: updatedForm.date,
+        // Phase 7A: Invoice sends its real, user-editable Due Date; every
+        // other module keeps sending dueDate === transactionDate exactly
+        // as before this checkpoint (unchanged behavior, per the explicit
+        // non-scope instruction).
+        dueDate: code === "INV" ? (dueDate || updatedForm.date) : updatedForm.date,
         referenceNo: updatedForm.referenceNo,
         description: updatedForm.description,
         remarks: updatedForm.checkNo,
@@ -2396,6 +2444,28 @@ if (code === "OR") {
               <h2 className="transaction-view-section-title">Voucher Information</h2>
             )}
 
+            {/* Phase 7A: Invoice-only compact upper-right summary (Invoice
+                No. / Date / Currency / Exchange Rate / Due Date). See
+                InvoiceSummaryPanel.jsx's own header comment for why these
+                fields are MOVED here (not duplicated) and why Currency/
+                Exchange Rate are a read-only reflection of CurrencySummary's
+                real values rather than a second currency implementation. */}
+            {code === "INV" && (
+              <InvoiceSummaryPanel
+                viewOnly={formMode === "view"}
+                form={form}
+                updateForm={updateForm}
+                dueDate={dueDate}
+                onDateChange={handleInvoiceDateChange}
+                onDueDateChange={handleDueDateChange}
+                currencyEligible={CURRENCY_ELIGIBLE}
+                currencyOptions={currencyOptions}
+                selectedCurrencyId={selectedCurrencyId}
+                baseCurrency={baseCurrency}
+                currencySnapshot={currencySnapshot}
+              />
+            )}
+
             <TransactionVoucherHeader
               viewOnly={formMode === "view"}
               code={code}
@@ -2410,6 +2480,7 @@ if (code === "OR") {
               showPartyModal={showPartyModal}
               setShowPartyModal={setShowPartyModal}
               handlePartyCreated={handlePartyCreated}
+              hideDateAndReference={code === "INV"}
             />
 
             {CURRENCY_ELIGIBLE && (
