@@ -1,11 +1,11 @@
 // transactionListFilters.mjs is real ESM (required for Vite dev-server
 // compatibility - see its header comment); loaded via a dynamic import()
 // in beforeAll, same pattern as voucherToolbarRules.test.js.
-let matchesSearch, matchesStatus, filterTransactions, deriveStatusOptions;
+let matchesSearch, matchesStatus, filterTransactions, deriveStatusOptions, sortTransactions;
 
 beforeAll(async () => {
   const mod = await import("../transactionListFilters.mjs");
-  ({ matchesSearch, matchesStatus, filterTransactions, deriveStatusOptions } = mod);
+  ({ matchesSearch, matchesStatus, filterTransactions, deriveStatusOptions, sortTransactions } = mod);
 });
 
 const sample = [
@@ -147,5 +147,113 @@ describe("deriveStatusOptions", () => {
   test("never fabricates a status value that isn't actually present (e.g. no hardcoded 'Cancelled')", () => {
     const noCancelled = [{ status: "Draft" }, { status: "Posted" }];
     expect(deriveStatusOptions(noCancelled)).not.toContain("Cancelled");
+  });
+});
+
+describe("sortTransactions (Phase 7B)", () => {
+  test("no sortBy returns the array in its ORIGINAL order, unchanged (default order preserved)", () => {
+    const result = sortTransactions(sample, { sortBy: null, sortDirection: "asc" });
+    expect(result.map((t) => t.id)).toEqual([1, 2, 3]);
+  });
+
+  test("unrecognized sortBy also returns original order (safe no-op)", () => {
+    const result = sortTransactions(sample, { sortBy: "nonsense", sortDirection: "asc" });
+    expect(result.map((t) => t.id)).toEqual([1, 2, 3]);
+  });
+
+  test("does not mutate the input array", () => {
+    const copy = [...sample];
+    sortTransactions(sample, { sortBy: "date", sortDirection: "desc" });
+    expect(sample).toEqual(copy);
+  });
+
+  describe("date", () => {
+    test("ascending sorts chronologically via plain 'YYYY-MM-DD' string comparison", () => {
+      const result = sortTransactions(sample, { sortBy: "date", sortDirection: "asc" });
+      expect(result.map((t) => t.date)).toEqual(["2026-08-01", "2026-08-15", "2026-08-31"]);
+    });
+
+    test("descending reverses it", () => {
+      const result = sortTransactions(sample, { sortBy: "date", sortDirection: "desc" });
+      expect(result.map((t) => t.date)).toEqual(["2026-08-31", "2026-08-15", "2026-08-01"]);
+    });
+  });
+
+  describe("amount", () => {
+    const withAmounts = [
+      { id: 1, referenceNo: "INV-1", party: "A", status: "Draft", date: "2026-01-01", amount: 500 },
+      { id: 2, referenceNo: "INV-2", party: "B", status: "Draft", date: "2026-01-02", amount: 50 },
+      { id: 3, referenceNo: "INV-3", party: "C", status: "Draft", date: "2026-01-03", amount: 5000 },
+    ];
+
+    test("ascending sorts numerically, not as strings (50 < 500 < 5000)", () => {
+      const result = sortTransactions(withAmounts, { sortBy: "amount", sortDirection: "asc" });
+      expect(result.map((t) => t.amount)).toEqual([50, 500, 5000]);
+    });
+
+    test("descending reverses it", () => {
+      const result = sortTransactions(withAmounts, { sortBy: "amount", sortDirection: "desc" });
+      expect(result.map((t) => t.amount)).toEqual([5000, 500, 50]);
+    });
+  });
+
+  describe("party (customer/text)", () => {
+    test("ascending is case-insensitive locale-safe", () => {
+      const mixed = [
+        { id: 1, party: "banana" },
+        { id: 2, party: "Apple" },
+        { id: 3, party: "cherry" },
+      ];
+      const result = sortTransactions(mixed, { sortBy: "party", sortDirection: "asc" });
+      expect(result.map((t) => t.id)).toEqual([2, 1, 3]);
+    });
+  });
+
+  describe("status", () => {
+    test("ascending sorts case-insensitively", () => {
+      const result = sortTransactions(sample, { sortBy: "status", sortDirection: "asc" });
+      expect(result.map((t) => t.status)).toEqual(["Draft", "Paid", "Posted"]);
+    });
+  });
+
+  describe("referenceNo (natural comparison)", () => {
+    test("zero-padded numbering sorts correctly with plain comparison too", () => {
+      const result = sortTransactions(sample, { sortBy: "referenceNo", sortDirection: "asc" });
+      expect(result.map((t) => t.referenceNo)).toEqual(["INV-000001", "INV-000002", "INV-000003"]);
+    });
+
+    test("unpadded numbers sort NUMERICALLY, not lexically (INV-2 before INV-10)", () => {
+      const unpadded = [
+        { id: 1, referenceNo: "INV-10" },
+        { id: 2, referenceNo: "INV-2" },
+        { id: 3, referenceNo: "INV-1" },
+      ];
+      const result = sortTransactions(unpadded, { sortBy: "referenceNo", sortDirection: "asc" });
+      expect(result.map((t) => t.referenceNo)).toEqual(["INV-1", "INV-2", "INV-10"]);
+    });
+
+    test("mixed/free-text reference numbers do not throw and produce a stable order", () => {
+      const freeform = [
+        { id: 1, referenceNo: "B-Special" },
+        { id: 2, referenceNo: "" },
+        { id: 3, referenceNo: null },
+        { id: 4, referenceNo: "A-100" },
+      ];
+      expect(() => sortTransactions(freeform, { sortBy: "referenceNo", sortDirection: "asc" })).not.toThrow();
+    });
+  });
+
+  describe("filter + sort composition", () => {
+    test("sorting is applied AFTER filtering - filtered-out rows never appear", () => {
+      const filtered = filterTransactions(sample, { statusFilter: "Draft" });
+      const result = sortTransactions(filtered, { sortBy: "date", sortDirection: "desc" });
+      expect(result.map((t) => t.id)).toEqual([1]);
+    });
+
+    test("changing sort does not remove any row search/status/date filtering already excluded", () => {
+      const filtered = filterTransactions(sample, { searchQuery: "acme" });
+      const sorted = sortTransactions(filtered, { sortBy: "party", sortDirection: "asc" });
+      expect(sorted.map((t) => t.id).sort()).toEqual([1, 3]);
+    });
   });
 });

@@ -21,7 +21,7 @@ import TaxDetailsViewModal from "./TaxDetailsViewModal";
 import LegacyVatEntryModal from "./LegacyVatEntryModal";
 import LegacyEwtEntryModal from "./LegacyEwtEntryModal";
 import CashCheckDetailsModal from "./CashCheckDetailsModal";
-import { filterTransactions, deriveStatusOptions } from "./transactionListFilters.mjs";
+import { filterTransactions, deriveStatusOptions, sortTransactions } from "./transactionListFilters.mjs";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
 import "./TransactionFormLayout.css";
 
@@ -1283,6 +1283,38 @@ setError("");
   );
   const statusFilterOptions = useMemo(() => deriveStatusOptions(transactions), [transactions]);
 
+  // Phase 7B: source -> filters -> sort -> render. sortBy is independent of
+  // search/status/date - changing one never resets the other (spec section
+  // 15). sortBy === null means "unsorted" - sortTransactions() then returns
+  // filteredTransactions completely unchanged, preserving the original
+  // loaded order (spec section 13), not a re-derived default.
+  const [sortBy, setSortBy] = useState(null);
+  const [sortDirection, setSortDirection] = useState("asc");
+
+  const sortedTransactions = useMemo(
+    () => sortTransactions(filteredTransactions, { sortBy, sortDirection }),
+    [filteredTransactions, sortBy, sortDirection]
+  );
+
+  // Three-state cycle per column: unsorted -> ascending -> descending ->
+  // unsorted again (clicking a DIFFERENT column always starts at ascending).
+  function handleSortClick(column) {
+    if (sortBy !== column) {
+      setSortBy(column);
+      setSortDirection("asc");
+    } else if (sortDirection === "asc") {
+      setSortDirection("desc");
+    } else {
+      setSortBy(null);
+      setSortDirection("asc");
+    }
+  }
+
+  function sortIndicator(column) {
+    if (sortBy !== column) return null;
+    return sortDirection === "asc" ? " ↑" : " ↓";
+  }
+
   // Phase 7B Previous/Next (spec sections 15-16): navigates within the
   // already-loaded, module-scoped `transactions` array only - Invoice can
   // never step into APV, since each module fetches from its own endpoint.
@@ -1290,22 +1322,24 @@ setError("");
   // default on handleView. Phase 7E: switched to the filtered list so
   // Previous/Next follows whatever Search/Status subset is active (spec
   // sections 16/30-G) - a transaction filtered out of view is no longer a
-  // valid Previous/Next target.
+  // valid Previous/Next target. Phase 7B (this checkpoint): switched again
+  // to sortedTransactions so Previous/Next always matches the row visually
+  // adjacent in the table exactly as sorted, not the pre-sort order.
   const currentTransactionIndex = selectedTransaction?.id
-    ? filteredTransactions.findIndex((t) => String(t.id) === String(selectedTransaction.id))
+    ? sortedTransactions.findIndex((t) => String(t.id) === String(selectedTransaction.id))
     : -1;
   const hasPreviousTransaction = currentTransactionIndex > 0;
   const hasNextTransaction =
-    currentTransactionIndex >= 0 && currentTransactionIndex < filteredTransactions.length - 1;
+    currentTransactionIndex >= 0 && currentTransactionIndex < sortedTransactions.length - 1;
 
   function handlePreviousTransaction() {
     if (!hasPreviousTransaction) return;
-    handleView(filteredTransactions[currentTransactionIndex - 1]);
+    handleView(sortedTransactions[currentTransactionIndex - 1]);
   }
 
   function handleNextTransaction() {
     if (!hasNextTransaction) return;
-    handleView(filteredTransactions[currentTransactionIndex + 1]);
+    handleView(sortedTransactions[currentTransactionIndex + 1]);
   }
 
   // Phase 7B status/permission gating (spec sections 7-10): PO's Open/
@@ -1523,6 +1557,114 @@ if (code === "OR" || code === "CV") {
     setApvApplications([]);
     setFormMode(targetFormMode);
     setMode("form");
+  }
+
+  // Phase 7B Duplicate (Invoice only). Fetches the full source record
+  // (the list row's own `lines`/tax data is empty - see loadTransactions()
+  // above) then populates a brand-new, NEVER-SAVED form exactly like
+  // handleAddNew() would, pre-filled with the source's business data.
+  // Nothing is written until the user explicitly clicks Save Draft, which
+  // goes through the exact same POST /api/invoices handleSave() already
+  // uses for any new Invoice - no separate duplicate endpoint, no
+  // INSERT...SELECT on the backend.
+  async function handleDuplicate(transaction) {
+    if (moduleConfigError) return;
+
+    try {
+      const endpoint = moduleConfig.endpoint;
+      const res = await fetch(`${API_BASE}/api/${endpoint}/${transaction.id}`, {
+        credentials: "include",
+        headers: authHeaders(),
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        if (handleAuthError(res.status)) return;
+        setError(data.message || "Unable to load source Invoice for duplication.");
+        return;
+      }
+
+      // Same baseline a brand-new Invoice starts from (clears APV/PO/EWT/
+      // currency/etc. state) - then overridden below with the copied
+      // fields. Never touches the source record itself; nothing here is a
+      // write.
+      resetForm();
+
+      const today = new Date().toISOString().split("T")[0];
+
+      setForm({
+        date: today,
+        // Phase 7B: left blank, exactly like any other brand-new Invoice
+        // (this codebase has no real auto-numbering scheme anywhere - every
+        // voucher_no/referenceNo is free-text - so "the existing numbering
+        // flow" for a new Invoice IS the user typing one in; never copies
+        // the source's voucher_no).
+        referenceNo: "",
+        party: data.customerName,
+        partyId: data.customerId,
+        description: data.description,
+        checkNo: "",
+        status: "Draft",
+      });
+
+      setDueDate(today);
+      setDueDateTouched(false);
+
+      setLines(
+        (data.lines || []).map((line) => {
+          const sourceTaxEntry = (data.taxEntries || []).find((te) => te.lineId === line.id);
+          // Reproduce the same user-entered VAT setup (party/rate/amounts/
+          // classification/account) but strip the source's own DB identity
+          // (id, lineId) - those referenced the OLD line's real row. A
+          // fresh transaction_tax_entries row is generated normally by the
+          // existing save path when this duplicate is actually saved.
+          const { id: _teId, lineId: _teLineId, ...taxEntryRest } = sourceTaxEntry || {};
+
+          return {
+            id: crypto.randomUUID(),
+            accountId: line.accountId || "",
+            particulars: line.particulars || "",
+            genRef: line.genRef || "",
+            genName: line.genName || "",
+            debit: (line.foreignDebit ?? line.debit) || "",
+            credit: (line.foreignCredit ?? line.credit) || "",
+            ...(sourceTaxEntry ? { taxEntry: { ...taxEntryRest, transactionDate: today } } : {}),
+          };
+        })
+      );
+
+      // EWT header fields (ATC code/withheld amount/payee TIN) - same
+      // reasoning as the VAT lines above: reproduce the same setup, no DB
+      // identity to strip since these are plain header values, not rows.
+      setAtcCode(data.atcCode || "");
+      setTaxWithheldAmount(data.taxWithheldAmount || "");
+      setTaxWithheldTouched(Boolean(data.atcCode));
+      setPayeeTin(data.payeeTin || "");
+
+      // Currency: preserve the SELECTED currency, but resolve a FRESH rate
+      // for today via the exact same handleCurrencyChange() every other
+      // "pick a currency" moment in this form already uses - never trusts
+      // the source's old, date-stale snapshot. This matches this app's own
+      // established principle (confirmed by reading handleCurrencyChange
+      // itself): a rate is only ever snapshotted at save time, and
+      // re-resolved fresh every time a currency is actively selected
+      // before that. The old snapshot is for a different transaction date
+      // and would be a silently wrong rate to carry forward.
+      if (CURRENCY_ELIGIBLE && data.currency && data.currency.currencyId) {
+        await handleCurrencyChange(String(data.currency.currencyId));
+      }
+
+      // Phase 7B: Invoice attachments - audited, none exist anywhere in
+      // this codebase (no attachment table, no upload route, no UI for
+      // it), so there is nothing to decide whether to copy.
+
+      setSelectedTransaction(null);
+      setFormMode("edit");
+      setMode("form");
+    } catch (err) {
+      console.error("DUPLICATE INVOICE ERROR:", err);
+      setError("Unable to connect to server.");
+    }
   }
 
   // Phase 7B Delete (spec sections 11-13): a compact confirm dialog first
@@ -2303,11 +2445,21 @@ if (code === "OR") {
                 <table className="transaction-table">
                   <thead>
                     <tr>
-                      <th>{code} No.</th>
-                      <th>Date</th>
-                      <th>{partyLabel}</th>
-                      <th className="text-right">Amount</th>
-                      <th>Status</th>
+                      <th className="transaction-sortable-th" onClick={() => handleSortClick("referenceNo")}>
+                        {code} No.{sortIndicator("referenceNo")}
+                      </th>
+                      <th className="transaction-sortable-th" onClick={() => handleSortClick("date")}>
+                        Date{sortIndicator("date")}
+                      </th>
+                      <th className="transaction-sortable-th" onClick={() => handleSortClick("party")}>
+                        {partyLabel}{sortIndicator("party")}
+                      </th>
+                      <th className="text-right transaction-sortable-th" onClick={() => handleSortClick("amount")}>
+                        Amount{sortIndicator("amount")}
+                      </th>
+                      <th className="transaction-sortable-th" onClick={() => handleSortClick("status")}>
+                        Status{sortIndicator("status")}
+                      </th>
                       <th className="text-center">Action</th>
                     </tr>
                   </thead>
@@ -2319,14 +2471,14 @@ if (code === "OR") {
                           No transactions yet. Click Add {code} to create one.
                         </td>
                       </tr>
-                    ) : filteredTransactions.length === 0 ? (
+                    ) : sortedTransactions.length === 0 ? (
                       <tr>
                         <td colSpan="6" className="transaction-empty">
                           No transactions found.
                         </td>
                       </tr>
                     ) : (
-                      filteredTransactions.map((transaction) => (
+                      sortedTransactions.map((transaction) => (
                         <tr key={transaction.id}>
                           <td>
                             {transaction.referenceNo}
@@ -2356,6 +2508,18 @@ if (code === "OR") {
                             >
                               View
                             </button>
+                            {/* Phase 7B: Invoice-only, gated on the existing
+                                CREATE permission - no new permission
+                                invented. Not offered on any other module
+                                (unaudited, out of this checkpoint's scope). */}
+                            {code === "INV" && can(moduleConfig.moduleKey, "CREATE") && (
+                              <button
+                                className="transaction-view-button"
+                                onClick={() => handleDuplicate(transaction)}
+                              >
+                                Duplicate
+                              </button>
+                            )}
                           </td>
                         </tr>
                       ))

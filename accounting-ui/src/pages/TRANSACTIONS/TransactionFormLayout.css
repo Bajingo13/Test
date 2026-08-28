@@ -227,6 +227,19 @@
   border: 1px solid var(--border-color);
 }
 
+/* Phase 7B: clickable sortable list-column headers - same table, no new
+   visual language, just a pointer cursor and a subtle hover so it reads as
+   interactive. Generic across every module using this shared list. */
+.transaction-sortable-th {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.transaction-sortable-th:hover {
+  background: var(--bg-surface-hover, var(--border-color));
+}
+
 .transaction-table td {
   padding: 0;
   border: 1px solid var(--border-color);
