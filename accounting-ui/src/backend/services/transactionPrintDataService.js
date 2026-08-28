@@ -1,6 +1,7 @@
 const pool = require("../db");
 const { HttpError } = require("../lib/httpError");
 const TransactionCurrencyService = require("./transactionCurrencyService");
+const TaxEntryService = require("./taxEntryService");
 
 // Shared and configurable printing framework (Phase 1 = invoice, Phase 2
 // adds or/apv/cv) - one query builder driven by this table/column config
@@ -28,6 +29,10 @@ const MODULE_CONFIG = {
     hasEwt: true,
     hasCurrency: true,
     currencyTxnType: "INV",
+    // Phase 7C1: Invoice-only, deliberately not extended to OR/APV/CV/PO/
+    // JV (see the Phase 7C decision audit) - reads real transaction_tax_
+    // entries OUTPUT_VAT rows for the printed Tax Summary block.
+    hasOutputVat: true,
   },
   or: {
     moduleKey: "TRANSACTIONS.OR",
@@ -191,6 +196,43 @@ async function getCompanyProfile() {
     "SELECT payor_name AS name, payor_tin AS tin, payor_address AS address, payor_zip AS zip FROM company_profile WHERE id = 1"
   );
   return rows[0] || { name: "", tin: "", address: "", zip: "" };
+}
+
+// Phase 7C1: the one authoritative Output VAT source for print - reuses
+// TaxEntryService.loadTaxEntries(), the exact same function GET /api/
+// invoices/:id already uses, so there is no second query shape to drift
+// out of sync with. No GL-account-title heuristics, no query against
+// vat_rate_codes - every value here is the already-validated, already-
+// snapshotted figure recorded at save time (spec section 2/3). Works
+// identically for Draft, Posted, and historical/reprinted Invoices,
+// since saveTaxEntries() is called unconditionally on every save
+// regardless of status (confirmed in the Phase 7C audit) - there is
+// nothing Draft/Posted-specific to special-case here.
+async function getOutputVatSummary(taxEntryTransactionType, transactionId) {
+  const entries = await TaxEntryService.loadTaxEntries(taxEntryTransactionType, transactionId);
+  const outputVatEntries = entries.filter((e) => e.entryType === "OUTPUT_VAT");
+
+  // No fabricated 0.00 - a document with no Output VAT entries gets no
+  // Tax Summary VAT subsection at all (spec section 15), not a summary
+  // implying VAT classification was evaluated and happened to be zero.
+  if (outputVatEntries.length === 0) return null;
+
+  const sum = (field) =>
+    TaxEntryService.roundMoney(outputVatEntries.reduce((total, e) => total + (Number(e[field]) || 0), 0));
+
+  const vatableSales = sum("netAmount");
+  const vatAmount = sum("vatAmount");
+  const grossTaxable = sum("grossAmount");
+
+  // Accounting consistency check (spec section 5) - grossTaxable should
+  // equal vatableSales + vatAmount by the same "VAT is the remainder"
+  // identity vatCalculationService.js's own formula guarantees at save
+  // time. This never rewrites stored rows - it only flags a mismatch
+  // beyond ordinary centavo rounding so a genuine legacy-data discrepancy
+  // can be surfaced safely instead of silently trusted or hidden.
+  const reconciles = Math.abs(grossTaxable - (vatableSales + vatAmount)) < 0.01;
+
+  return { vatableSales, vatAmount, grossTaxable, entryCount: outputVatEntries.length, reconciles };
 }
 
 // Phase 1 print-completeness checkpoint: resolves the applied-Invoice
@@ -445,7 +487,18 @@ async function getTransactionDocument(transactionType, id, { withEntries, compan
 
   const company = await getCompanyProfile();
 
-  return { doc, lines, entriesSummary, party, bankAccount, company, appliedInvoices };
+  // Phase 7C1: Invoice-only (gated by cfg.hasOutputVat, true only for the
+  // invoice module config above) - reuses cfg.currencyTxnType as the
+  // polymorphic transaction-type code ("INV"), the same short code
+  // convention transaction_tax_entries/transaction_currency_snapshots/
+  // transaction_applications all already share across this codebase, not
+  // a new coupling.
+  let outputVat = null;
+  if (cfg.hasOutputVat) {
+    outputVat = await getOutputVatSummary(cfg.currencyTxnType, id);
+  }
+
+  return { doc, lines, entriesSummary, party, bankAccount, company, appliedInvoices, outputVat };
 }
 
 // grouping: "number" | "date" | "due_date" | "check_number" | "reference"

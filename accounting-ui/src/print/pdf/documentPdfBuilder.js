@@ -218,6 +218,13 @@ export async function buildDocumentPdf({
   copies = 1,
   appliedInvoices = null,
   templateConfig = null,
+  // Phase 7C1: Invoice-only, aggregated server-side by
+  // transactionPrintDataService.js's getOutputVatSummary() from real
+  // transaction_tax_entries OUTPUT_VAT rows - never computed here, never
+  // re-queried against vat_rate_codes. null for every module other than
+  // invoice (see MODULE_CONFIG's hasOutputVat), so the Tax Summary block
+  // below simply never renders for OR/APV/CV/PO/JV.
+  outputVat = null,
 }) {
   const moduleMeta = MODULE_META[transactionType] || { documentLabel: "TRANSACTION", partyRoleLabel: "Party", ewtDirection: null };
   const { ewtDirection } = moduleMeta;
@@ -722,6 +729,55 @@ export async function buildDocumentPdf({
       kit.moveDown(10);
     }
 
+    // ---- Tax Summary (Phase 7C1) - the one authoritative Output VAT
+    // presentation on this document, sourced entirely from outputVat
+    // (already aggregated server-side from real transaction_tax_entries
+    // OUTPUT_VAT rows - see transactionPrintDataService.js's
+    // getOutputVatSummary()). Invoice-only (outputVat is null for every
+    // other module) and only rendered when this Invoice actually has at
+    // least one Output VAT entry - never a fabricated 0.00 row implying
+    // VAT classification was evaluated when it wasn't (spec sections
+    // 15/16). Intentionally NOT gated by summaryCfg/the Print Template
+    // Builder's section whitelist this phase - a minimal-risk, always-
+    // rendered-when-applicable Invoice-standard section, per the Phase
+    // 7C1 spec's explicit "prefer minimal risk" instruction; a
+    // configurable toggle is a reported future builder enhancement, not
+    // built here. ----
+    if (transactionType === "invoice" && outputVat) {
+      kit.ensureRoom(90);
+      kit.drawLine({ x1: marginX, x2: rightEdge, thickness: 1, color: COLORS.accent });
+      kit.moveDown(18);
+      kit.drawText("Tax Summary", marginX, { size: 10, bold: true });
+      kit.moveDown(18);
+
+      const tsRow = (label, value, opts = {}) => {
+        kit.drawText(label, marginX, { size: 9.5, color: COLORS.grey, ...opts });
+        kit.drawRight(value, rightEdge, { size: 9.5, ...opts });
+        kit.moveDown(16);
+      };
+
+      tsRow("VATable Sales", `${baseSymbol} ${formatMoney(outputVat.vatableSales)}`);
+      tsRow("VAT Amount", `${baseSymbol} ${formatMoney(outputVat.vatAmount)}`);
+
+      // Less: Withholding Tax only appears when THIS document also has a
+      // real EWT figure to subtract (spec section 16 - VAT-only Invoices
+      // show no withholding line at all) - reuses the exact same stored
+      // doc.taxWithheldAmount the Withholding Tax block below prints,
+      // never a second EWT source.
+      if (ewtDirection && doc.atcCode && doc.taxWithheldAmount != null) {
+        tsRow("Less: Withholding Tax", `${baseSymbol} ${formatMoney(doc.taxWithheldAmount)}`);
+      }
+
+      // Total Amount Due reuses the SAME balanceAmount/totalDebit figure
+      // "Balance Due" above already printed - a concise restatement to
+      // close out the Tax Summary box (a standard convention on
+      // BIR-facing invoices), never a second total calculation.
+      const totalDue = doc.balanceAmount != null ? Number(doc.balanceAmount) : Number(doc.totalDebit) || 0;
+      tsRow("Total Amount Due", `${baseSymbol} ${formatMoney(totalDue)}`, { bold: true, size: 10.5 });
+
+      kit.moveDown(6);
+    }
+
     // ---- Amount in Words (OR only, per the approved Phase 1 scope) -
     // formats the SAME already-printed total (never recomputed) - base
     // amount for a base-currency OR, foreign amount for a foreign one,
@@ -749,9 +805,13 @@ export async function buildDocumentPdf({
     // ---- Withholding tax - printed straight from the stored, backend-
     // validated columns (taxableBase/taxWithheldAmount), never recomputed
     // here. Only shown when an ATC code was actually recorded on save (AND
-    // the template hasn't turned the section off). VAT amount is derived
-    // as gross - taxableBase for display only (both are already-stored
-    // numbers, not a re-derivation of the tax itself). ----
+    // the template hasn't turned the section off). Phase 7C1: this block
+    // used to also show a "VAT Amount" derived as gross - taxableBase -
+    // that was never real Output VAT (taxableBase is EWT's own taxable
+    // base, unrelated to any VAT entry), just a byproduct of the EWT
+    // math mislabeled as VAT. Removed - real Output VAT now has its own
+    // correctly-sourced Tax Summary block above (see outputVat). This
+    // block keeps only genuine EWT-specific figures. ----
     if (ewtDirection && doc.atcCode && (summaryCfg.showEwt ?? true)) {
       kit.ensureRoom(90);
       kit.drawLine({ x1: marginX, x2: rightEdge, thickness: 1, color: COLORS.accent });
@@ -765,7 +825,6 @@ export async function buildDocumentPdf({
 
       const gross = Number(doc.totalDebit) || 0;
       const taxableBase = doc.taxableBase != null ? Number(doc.taxableBase) : gross;
-      const vatAmount = Math.max(gross - taxableBase, 0);
       const ewtAmount = Number(doc.taxWithheldAmount) || 0;
       const netLabel = ewtDirection === "outbound" ? "Net Payable" : "Net Receivable";
 
@@ -779,8 +838,8 @@ export async function buildDocumentPdf({
       };
 
       wtRow(
-        ["VAT-Exclusive Base", "VAT Amount", "EWT Code / Rate"],
-        [`${baseSymbol} ${formatMoney(taxableBase)}`, `${baseSymbol} ${formatMoney(vatAmount)}`, `${doc.atcCode} (${formatMoney(doc.taxRate)}%)`]
+        ["Taxable Base", "EWT Code / Rate"],
+        [`${baseSymbol} ${formatMoney(taxableBase)}`, `${doc.atcCode} (${formatMoney(doc.taxRate)}%)`]
       );
       wtRow(
         ["EWT Amount", netLabel],
