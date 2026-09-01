@@ -143,7 +143,7 @@ afterAll(async () => {
   await pool.end();
 });
 
-describe("Output VAT report - company isolation (Checkpoint 7F)", () => {
+describe("Output VAT report - company isolation + Phase 7F normalized shape", () => {
   test("Company A: only Company A's Invoice + direct OR Output VAT entries are visible", async () => {
     await createInvoice({ companyId: companyA, customerId: custAId, customerName: "Company A Customer", voucherNo: "INV-A-1", date: "2026-08-05", gross: 11200, vatAmount: 1200, status: "Posted" });
     await createDirectOr({ companyId: companyA, customerId: custAId, customerName: "Company A Customer", voucherNo: "OR-A-1", date: "2026-08-06", gross: 5600, vatAmount: 600, status: "Posted" });
@@ -157,12 +157,16 @@ describe("Output VAT report - company isolation (Checkpoint 7F)", () => {
       .query({ from: "2026-08-01", to: "2026-08-31", accountCode: "PH7F-OUTVAT", companyId: companyA });
 
     expect(res.status).toBe(200);
-    const refs = res.body.map((r) => r.reference_no);
+    const refs = res.body.rows.map((r) => r.docRef);
     expect(refs).toEqual(expect.arrayContaining(["INV-A-1", "OR-A-1"]));
     expect(refs).not.toEqual(expect.arrayContaining(["INV-B-1", "OR-B-1"]));
 
-    const totalVat = res.body.reduce((sum, r) => sum + Number(r.credit || 0), 0);
-    expect(totalVat).toBeCloseTo(1200 + 600, 2);
+    // These invoices/ORs carry a plain GL Output VAT line (no taxEntry), so
+    // every row is the GL-fallback path.
+    expect(res.body.rows.every((r) => r.source === "gl")).toBe(true);
+    expect(res.body.totals.vatAmount).toBeCloseTo(1200 + 600, 2);
+    // GL rows cannot report a net/base bucket - totals stay 0 there.
+    expect(res.body.totals.vatableSales).toBe(0);
   });
 
   test("Company B: only Company B's entries are visible (same account code as Company A)", async () => {
@@ -172,12 +176,10 @@ describe("Output VAT report - company isolation (Checkpoint 7F)", () => {
       .query({ from: "2026-08-01", to: "2026-08-31", accountCode: "PH7F-OUTVAT", companyId: companyB });
 
     expect(res.status).toBe(200);
-    const refs = res.body.map((r) => r.reference_no);
+    const refs = res.body.rows.map((r) => r.docRef);
     expect(refs).toEqual(expect.arrayContaining(["INV-B-1", "OR-B-1"]));
     expect(refs).not.toEqual(expect.arrayContaining(["INV-A-1", "OR-A-1"]));
-
-    const totalVat = res.body.reduce((sum, r) => sum + Number(r.credit || 0), 0);
-    expect(totalVat).toBeCloseTo(2400 + 360, 2);
+    expect(res.body.totals.vatAmount).toBeCloseTo(2400 + 360, 2);
   });
 
   test("Date-range filtering: Company A August query excludes Company A September and Company B August", async () => {
@@ -189,13 +191,13 @@ describe("Output VAT report - company isolation (Checkpoint 7F)", () => {
       .query({ from: "2026-08-01", to: "2026-08-31", accountCode: "PH7F-OUTVAT", companyId: companyA });
 
     expect(res.status).toBe(200);
-    const refs = res.body.map((r) => r.reference_no);
+    const refs = res.body.rows.map((r) => r.docRef);
     expect(refs).not.toContain("INV-A-SEP");
     expect(refs).not.toContain("INV-B-1");
     expect(refs).toEqual(expect.arrayContaining(["INV-A-1", "OR-A-1"]));
   });
 
-  test("Draft transactions are excluded (Posted-only policy, previously missing entirely)", async () => {
+  test("Draft transactions are excluded (Posted-only policy)", async () => {
     await createInvoice({ companyId: companyA, customerId: custAId, customerName: "Company A Customer", voucherNo: "INV-A-DRAFT", date: "2026-08-07", gross: 1120, vatAmount: 120, status: "Draft" });
 
     const res = await request(app)
@@ -204,7 +206,7 @@ describe("Output VAT report - company isolation (Checkpoint 7F)", () => {
       .query({ from: "2026-08-01", to: "2026-08-31", accountCode: "PH7F-OUTVAT", companyId: companyA });
 
     expect(res.status).toBe(200);
-    const refs = res.body.map((r) => r.reference_no);
+    const refs = res.body.rows.map((r) => r.docRef);
     expect(refs).not.toContain("INV-A-DRAFT");
   });
 
@@ -220,7 +222,7 @@ describe("Output VAT report - company isolation (Checkpoint 7F)", () => {
       .query({ from: "2026-08-01", to: "2026-08-31", accountCode: "PH7F-OUTVAT", companyId: companyA });
 
     expect(res.status).toBe(200);
-    const refs = res.body.map((r) => r.reference_no);
+    const refs = res.body.rows.map((r) => r.docRef);
     expect(refs).not.toEqual(expect.arrayContaining(["INV-B-1", "OR-B-1"]));
   });
 
@@ -244,24 +246,32 @@ describe("Output VAT report - company isolation (Checkpoint 7F)", () => {
     expect(res.status).not.toBe(200);
   });
 
-  test("Response shape is unchanged: same columns, running_balance still computed", async () => {
+  test("Phase 7F normalized shape: { inclusionRule, rows[], totals{} } with treatment buckets", async () => {
     const res = await request(app)
       .get("/api/reports/output-vat")
       .set("Authorization", `Bearer ${token}`)
       .query({ from: "2026-08-01", to: "2026-08-31", accountCode: "PH7F-OUTVAT", companyId: companyA });
 
     expect(res.status).toBe(200);
-    expect(Array.isArray(res.body)).toBe(true);
-    const row = res.body[0];
-    expect(row).toHaveProperty("transaction_date");
-    expect(row).toHaveProperty("source_type");
-    expect(row).toHaveProperty("reference_no");
-    expect(row).toHaveProperty("transaction_id");
-    expect(row).toHaveProperty("account_code");
-    expect(row).toHaveProperty("account_title");
-    expect(row).toHaveProperty("particulars");
-    expect(row).toHaveProperty("debit");
-    expect(row).toHaveProperty("credit");
-    expect(row).toHaveProperty("running_balance");
+    expect(res.body.inclusionRule).toBe("POSTED transactions only");
+    expect(Array.isArray(res.body.rows)).toBe(true);
+    const row = res.body.rows[0];
+    for (const k of ["date", "sourceType", "docRef", "customer", "tin", "vatableSales", "zeroRatedSales", "exemptSales", "vatAmount", "grossAmount", "source"]) {
+      expect(row).toHaveProperty(k);
+    }
+    for (const k of ["vatableSales", "zeroRatedSales", "exemptSales", "vatAmount", "grossAmount"]) {
+      expect(res.body.totals).toHaveProperty(k);
+    }
+    // report totals reconcile with the rows
+    const sumVat = res.body.rows.reduce((s, r) => s + (Number(r.vatAmount) || 0), 0);
+    expect(res.body.totals.vatAmount).toBeCloseTo(sumVat, 2);
+  });
+
+  test("from/to are required (400 without them)", async () => {
+    const res = await request(app)
+      .get("/api/reports/output-vat")
+      .set("Authorization", `Bearer ${token}`)
+      .query({ accountCode: "PH7F-OUTVAT", companyId: companyA });
+    expect(res.status).toBe(400);
   });
 });

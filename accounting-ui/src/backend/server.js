@@ -34,6 +34,7 @@ const TrialBalanceDifferenceService = require("./services/trialBalanceDifference
 const { computeEwtTaxableBase, computeEwtAmount } = require("./services/ewtCalculationService");
 const CurrencyService = require("./services/currencyService");
 const { postedOnlySql } = require("./services/reportRecognitionService");
+const OutputVatReportService = require("./services/outputVatReportService");
 const TransactionCurrencyService = require("./services/transactionCurrencyService");
 const AgingReportService = require("./services/agingReportService");
 const AccountingPeriodService = require("./services/accountingPeriodService");
@@ -7038,87 +7039,21 @@ app.get("/api/reports/cash-flow-statement", authenticateToken, authorizePermissi
 app.get("/api/reports/output-vat", authenticateToken, authorizePermission("REPORTS.BIR_COMPLIANCE", "VIEW"), async (req, res) => {
   try {
     const { from, to, accountCode } = req.query;
-
-    if (!accountCode) {
-      return res.status(400).json({ message: "Account code is required" });
+    if (!from || !to) {
+      return res.status(400).json({ message: "from and to dates are required" });
     }
 
-    // Checkpoint 7F: this query previously had NO company_id filter at all on
-    // either UNION branch (found during the Checkpoint 7 pre-deployment
-    // review) - the same class of cross-company leak Checkpoint 6A fixed for
-    // Income Statement. Resolved the same established way every other report
-    // in this file does. Also found: no Posted-only predicate existed here,
-    // unlike every other financial report (Checkpoint 6B's postedOnlySql) -
-    // Draft invoices/ORs were leaking into a report that must reflect only
-    // financially-recognized transactions. Both are fixed together since the
-    // second is a clear, pre-existing violation of the already-approved
-    // Posted-only policy, not a scope expansion.
+    // Phase 7F: structured-first (transaction_tax_entries OUTPUT_VAT rows,
+    // classified by the Phase 7E vat_treatment snapshot) with a GL fallback
+    // for historical Invoices and every OR (which never write structured
+    // entries) - see outputVatReportService.js. Posted-only + company-scoped
+    // are enforced inside the service the same way every other report is.
+    // accountCode is still used, but only for the GL fallback path (the
+    // structured path identifies Output VAT by entry_type, not by account).
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
-    const params = [accountCode, from, to, companyId, accountCode, from, to, companyId];
-
-    const [rows] = await pool.execute(
-      `
-      SELECT
-        transaction_date,
-        source_type,
-        reference_no,
-        transaction_id,
-        account_code,
-        account_title,
-        particulars,
-        debit,
-        credit,
-        SUM(debit - credit) OVER (
-          ORDER BY transaction_date, sort_order, id
-        ) AS running_balance
-      FROM (
-        SELECT
-          l.id,
-          DATE_FORMAT(h.transaction_date, '%Y-%m-%d') AS transaction_date,
-          'INV' AS source_type,
-          h.voucher_no AS reference_no,
-          h.id AS transaction_id,
-          l.account_code,
-          l.account_title,
-          COALESCE(l.particulars, h.description, '') AS particulars,
-          COALESCE(l.debit, 0) AS debit,
-          COALESCE(l.credit, 0) AS credit,
-          1 AS sort_order
-        FROM invoice_lines l
-        JOIN invoice_headers h ON h.id = l.invoice_id
-        WHERE l.account_code = ?
-          AND h.transaction_date BETWEEN ? AND ?
-          AND h.company_id = ?
-          AND ${postedOnlySql("h")}
-
-        UNION ALL
-
-        SELECT
-          l.id,
-          DATE_FORMAT(h.transaction_date, '%Y-%m-%d') AS transaction_date,
-          'OR' AS source_type,
-          h.voucher_no AS reference_no,
-          h.id AS transaction_id,
-          l.account_code,
-          l.account_title,
-          COALESCE(l.particulars, h.description, '') AS particulars,
-          COALESCE(l.debit, 0) AS debit,
-          COALESCE(l.credit, 0) AS credit,
-          2 AS sort_order
-        FROM or_lines l
-        JOIN or_headers h ON h.id = l.or_id
-        WHERE l.account_code = ?
-          AND h.transaction_date BETWEEN ? AND ?
-          AND h.company_id = ?
-          AND ${postedOnlySql("h")}
-      ) ov
-      ORDER BY transaction_date, sort_order, id
-      `,
-      params
-    );
-
-    res.json(rows);
+    const report = await OutputVatReportService.getOutputVatReport({ companyId, from, to, accountCode });
+    res.json(report);
   } catch (err) {
     console.error("OUTPUT VAT REPORT ERROR:", err.message);
     res.status(500).json({

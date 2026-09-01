@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import "./AccountAnalysis.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
@@ -8,12 +8,22 @@ function authHeaders() {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+const EMPTY_TOTALS = {
+  vatableSales: 0,
+  zeroRatedSales: 0,
+  exemptSales: 0,
+  vatAmount: 0,
+  grossAmount: 0,
+};
+
 export default function OutputVAT() {
   const [fromDate, setFromDate] = useState("2026-01-01");
   const [toDate, setToDate] = useState(new Date().toISOString().slice(0, 10));
   const [accounts, setAccounts] = useState([]);
   const [accountCode, setAccountCode] = useState("");
   const [rows, setRows] = useState([]);
+  const [totals, setTotals] = useState(EMPTY_TOTALS);
+  const [inclusionRule, setInclusionRule] = useState("");
   const [loading, setLoading] = useState(false);
   const [generated, setGenerated] = useState(false);
 
@@ -28,12 +38,19 @@ export default function OutputVAT() {
       const list = Array.isArray(data) ? data : [];
       setAccounts(list);
 
-      const defaultAccount = list.find((acc) =>
+      // Phase 7F: the GL fallback path needs an Output VAT account to scan
+      // for historical (pre-structured) rows. Prefer an account explicitly
+      // tagged with the OUTPUT VAT validation rule (Phase d77eb31); fall
+      // back to a title match only if no account carries that validation.
+      const validated = list.find((acc) =>
+        (acc.validations || []).some((v) => String(v).trim().toUpperCase() === "OUTPUT VAT")
+      );
+      const byTitle = list.find((acc) =>
         (acc.title || "").toLowerCase().includes("output vat") ||
         (acc.title || "").toLowerCase().includes("output tax")
       );
-
-      if (defaultAccount) setAccountCode(defaultAccount.code);
+      const chosen = validated || byTitle;
+      if (chosen) setAccountCode(chosen.code);
     } catch (err) {
       console.error("Failed to load COA:", err);
     }
@@ -41,41 +58,38 @@ export default function OutputVAT() {
 
   const selectedAccount = accounts.find((acc) => acc.code === accountCode);
 
-  const totals = useMemo(() => {
-    const debit = rows.reduce((sum, row) => sum + Number(row.debit || 0), 0);
-    const credit = rows.reduce((sum, row) => sum + Number(row.credit || 0), 0);
-    return { debit, credit, net: credit - debit };
-  }, [rows]);
-
   const formatMoney = (amount) =>
     Number(amount || 0).toLocaleString("en-PH", {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     });
 
+  // "—" for a GL-fallback row's unknown bucket (net/base was never recorded),
+  // a formatted number otherwise.
+  const cell = (value) => (value === null || value === undefined ? "—" : formatMoney(value));
+
   async function generateReport() {
-    if (!accountCode) {
-      alert("Please select the Output VAT account first.");
-      return;
-    }
-
     setLoading(true);
-
     try {
-      const res = await fetch(
-        `${API_URL}/api/reports/output-vat?from=${fromDate}&to=${toDate}&accountCode=${accountCode}`,
-        { credentials: "include", headers: authHeaders() }
-      );
+      const params = new URLSearchParams({ from: fromDate, to: toDate });
+      if (accountCode) params.set("accountCode", accountCode);
+      const res = await fetch(`${API_URL}/api/reports/output-vat?${params.toString()}`, {
+        credentials: "include",
+        headers: authHeaders(),
+      });
 
       if (!res.ok) throw new Error("Failed to generate Output VAT report");
 
       const data = await res.json();
-      setRows(Array.isArray(data) ? data : []);
+      setRows(Array.isArray(data.rows) ? data.rows : []);
+      setTotals(data.totals || EMPTY_TOTALS);
+      setInclusionRule(data.inclusionRule || "");
       setGenerated(true);
     } catch (err) {
       console.error(err);
       alert("Failed to generate Output VAT Report. Please check backend/server.");
       setRows([]);
+      setTotals(EMPTY_TOTALS);
       setGenerated(true);
     } finally {
       setLoading(false);
@@ -103,9 +117,9 @@ export default function OutputVAT() {
           </div>
 
           <div>
-            <label>Output VAT Account</label>
+            <label>Output VAT Account (historical GL fallback)</label>
             <select value={accountCode} onChange={(e) => setAccountCode(e.target.value)}>
-              <option value="">Select Account</option>
+              <option value="">None (structured entries only)</option>
               {accounts.map((acc) => (
                 <option key={acc.id} value={acc.code}>
                   {acc.code} - {acc.title}
@@ -124,6 +138,7 @@ export default function OutputVAT() {
             className="secondary"
             onClick={() => {
               setRows([]);
+              setTotals(EMPTY_TOTALS);
               setGenerated(false);
             }}
           >
@@ -140,10 +155,11 @@ export default function OutputVAT() {
         <div className="aa-report-card">
           <div className="aa-report-title">
             <h2>OUTPUT VAT REPORT</h2>
-            <h3>
-              {accountCode} - {selectedAccount?.title || ""}
-            </h3>
+            {selectedAccount ? (
+              <h3>GL fallback account: {accountCode} - {selectedAccount.title}</h3>
+            ) : null}
             <p>Period: {fromDate} to {toDate}</p>
+            {inclusionRule ? <p>{inclusionRule}</p> : null}
           </div>
 
           <table className="aa-table">
@@ -152,26 +168,37 @@ export default function OutputVAT() {
                 <th>DATE</th>
                 <th>SOURCE</th>
                 <th>DOC REF</th>
-                <th>PARTICULARS</th>
-                <th>DEBIT</th>
-                <th>CREDIT</th>
+                <th>CUSTOMER</th>
+                <th>TIN</th>
+                <th className="amount">VATABLE SALES</th>
+                <th className="amount">ZERO-RATED SALES</th>
+                <th className="amount">VAT-EXEMPT SALES</th>
+                <th className="amount">VAT AMOUNT</th>
+                <th className="amount">GROSS / TOTAL</th>
               </tr>
             </thead>
 
             <tbody>
               {rows.length === 0 ? (
                 <tr>
-                  <td colSpan="6" className="empty">No data found.</td>
+                  <td colSpan="10" className="empty">No data found.</td>
                 </tr>
               ) : (
                 rows.map((row, index) => (
                   <tr key={index}>
-                    <td>{row.transaction_date}</td>
-                    <td>{row.source_type}</td>
-                    <td>{row.reference_no}</td>
-                    <td>{row.particulars}</td>
-                    <td className="amount">{Number(row.debit) > 0 ? formatMoney(row.debit) : ""}</td>
-                    <td className="amount">{Number(row.credit) > 0 ? formatMoney(row.credit) : ""}</td>
+                    <td>{row.date}</td>
+                    <td>
+                      {row.sourceType}
+                      {row.source === "gl" ? " (GL)" : ""}
+                    </td>
+                    <td>{row.docRef}</td>
+                    <td>{row.customer}</td>
+                    <td>{row.tin || ""}</td>
+                    <td className="amount">{cell(row.vatableSales)}</td>
+                    <td className="amount">{cell(row.zeroRatedSales)}</td>
+                    <td className="amount">{cell(row.exemptSales)}</td>
+                    <td className="amount">{formatMoney(row.vatAmount)}</td>
+                    <td className="amount">{formatMoney(row.grossAmount)}</td>
                   </tr>
                 ))
               )}
@@ -179,13 +206,12 @@ export default function OutputVAT() {
 
             <tfoot>
               <tr>
-                <td colSpan="4" style={{ textAlign: "center" }}>TOTAL</td>
-                <td className="amount">{formatMoney(totals.debit)}</td>
-                <td className="amount">{formatMoney(totals.credit)}</td>
-              </tr>
-              <tr>
-                <td colSpan="5" style={{ textAlign: "right" }}><b>TOTAL OUTPUT VAT</b></td>
-                <td className="amount"><b>{formatMoney(totals.net)}</b></td>
+                <td colSpan="5" style={{ textAlign: "right" }}><b>TOTALS</b></td>
+                <td className="amount"><b>{formatMoney(totals.vatableSales)}</b></td>
+                <td className="amount"><b>{formatMoney(totals.zeroRatedSales)}</b></td>
+                <td className="amount"><b>{formatMoney(totals.exemptSales)}</b></td>
+                <td className="amount"><b>{formatMoney(totals.vatAmount)}</b></td>
+                <td className="amount"><b>{formatMoney(totals.grossAmount)}</b></td>
               </tr>
             </tfoot>
           </table>
