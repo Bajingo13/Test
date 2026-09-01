@@ -35,6 +35,7 @@ const { computeEwtTaxableBase, computeEwtAmount } = require("./services/ewtCalcu
 const CurrencyService = require("./services/currencyService");
 const { postedOnlySql } = require("./services/reportRecognitionService");
 const OutputVatReportService = require("./services/outputVatReportService");
+const { assertVoucherNoUnique, handleVoucherDupError, normalizeVoucherNo } = require("./services/voucherNumberService");
 const TransactionCurrencyService = require("./services/transactionCurrencyService");
 const AgingReportService = require("./services/agingReportService");
 const AccountingPeriodService = require("./services/accountingPeriodService");
@@ -1144,6 +1145,7 @@ app.post("/api/invoices", authenticateToken, authorizePermission("TRANSACTIONS.I
     });
 
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
+    await assertVoucherNoUnique(conn, { module: "INV", companyId, voucherNo });
     await AccountingPeriodService.assertPeriodOpen({
       companyId, transactionDate, operation: "CREATE", user: req.user,
     }, conn);
@@ -1191,7 +1193,7 @@ app.post("/api/invoices", authenticateToken, authorizePermission("TRANSACTIONS.I
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         companyId,
-        voucherNo,
+        normalizeVoucherNo(voucherNo),
         customerId || null,
         customerName || "",
         transactionDate || null,
@@ -1318,9 +1320,7 @@ app.post("/api/invoices", authenticateToken, authorizePermission("TRANSACTIONS.I
     await conn.rollback();
     console.error("CREATE INVOICE ERROR:", err);
 
-    if (err.code === "ER_DUP_ENTRY") {
-      return res.status(400).json({ message: "Invoice number already exists" });
-    }
+    if (handleVoucherDupError(err, res)) return;
 
     res.status(err.statusCode || 500).json({ message: err.message || "Failed to save invoice", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   } finally {
@@ -1369,6 +1369,7 @@ app.put("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACTION
     });
 
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
+    await assertVoucherNoUnique(conn, { module: "INV", companyId, voucherNo, excludeId: id });
     // atc_code is fetched alongside the existing ownership/status columns
     // (Phase 7C.1's existingAtcCode - see reconcileEwtTaxEntry's own
     // comment for why comparing against this exact stored value is what
@@ -1429,7 +1430,7 @@ app.put("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACTION
         currency_id = ?
       WHERE id = ? AND company_id = ?`,
       [
-        voucherNo,
+        normalizeVoucherNo(voucherNo),
         customerId || null,
         customerName || "",
         transactionDate || null,
@@ -1546,9 +1547,7 @@ app.put("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACTION
     await conn.rollback();
     console.error("UPDATE INVOICE ERROR:", err);
 
-    if (err.code === "ER_DUP_ENTRY") {
-      return res.status(400).json({ message: "Invoice number already exists" });
-    }
+    if (handleVoucherDupError(err, res)) return;
 
     res.status(err.statusCode || 500).json({ message: err.message || "Failed to update invoice", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   } finally {
@@ -1687,6 +1686,7 @@ app.post("/api/or", authenticateToken, authorizePermission("TRANSACTIONS.OR", "C
     });
 
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
+    await assertVoucherNoUnique(conn, { module: "OR", companyId, voucherNo });
     // Locked on the OR's OWN accounting date only - an OR settling an
     // older closed-period Invoice is normal and must remain allowed (the
     // accounting effect happens in the OR's period, not the Invoice's -
@@ -1725,7 +1725,7 @@ app.post("/api/or", authenticateToken, authorizePermission("TRANSACTIONS.OR", "C
       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         companyId,
-        voucherNo || "",
+        (normalizeVoucherNo(voucherNo) || ""),
         finalCustomerId,
         finalCustomerName,
         transactionDate || null,
@@ -1830,6 +1830,7 @@ app.post("/api/or", authenticateToken, authorizePermission("TRANSACTIONS.OR", "C
     await conn.rollback();
     console.error("CREATE OR ERROR:", err);
 
+    if (handleVoucherDupError(err, res)) return;
     res.status(err.statusCode || 500).json({
       message: err.message || "Failed to save OR",
       ...(err.statusCode && err.code ? { code: err.code } : {}),
@@ -1968,6 +1969,7 @@ app.put("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
     const isPosting = String(finalStatus).toUpperCase() === "POSTED";
 
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
+    await assertVoucherNoUnique(conn, { module: "OR", companyId, voucherNo, excludeId: id });
 
     await conn.beginTransaction();
 
@@ -2134,7 +2136,7 @@ app.put("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
          currency_id = ?
        WHERE id = ? AND company_id = ?`,
       [
-        voucherNo || "",
+        (normalizeVoucherNo(voucherNo) || ""),
         customerId || null,
         customerName || "",
         transactionDate || null,
@@ -2248,11 +2250,7 @@ app.put("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
 
     console.error("UPDATE OR ERROR:", err);
 
-    if (err.code === "ER_DUP_ENTRY") {
-      return res.status(400).json({
-        message: "Official Receipt number already exists",
-      });
-    }
+    if (handleVoucherDupError(err, res)) return;
 
     res.status(err.statusCode || 500).json({
       message: err.message || "Failed to update Official Receipt",
@@ -2580,6 +2578,7 @@ app.post("/api/apv", authenticateToken, authorizePermission("TRANSACTIONS.APV", 
     });
 
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
+    await assertVoucherNoUnique(conn, { module: "APV", companyId, voucherNo });
     await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate, operation: "CREATE", user: req.user }, conn);
     const currencyResult = await TransactionCurrencyService.resolveTransactionCurrency({
       user: req.user, companyId, transactionType: "APV", transactionId: null, currencyPayload: currency,
@@ -2621,7 +2620,7 @@ app.post("/api/apv", authenticateToken, authorizePermission("TRANSACTIONS.APV", 
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         companyId,
-        voucherNo,
+        normalizeVoucherNo(voucherNo),
         supplierId || null,
         supplierName || "",
         transactionDate || null,
@@ -2744,9 +2743,7 @@ app.post("/api/apv", authenticateToken, authorizePermission("TRANSACTIONS.APV", 
     await conn.rollback();
     console.error("CREATE APV ERROR:", err);
 
-    if (err.code === "ER_DUP_ENTRY") {
-      return res.status(400).json({ message: "APV voucher number already exists" });
-    }
+    if (handleVoucherDupError(err, res)) return;
 
     res.status(err.statusCode || 500).json({ message: err.message || "Failed to save APV", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   } finally {
@@ -2796,6 +2793,7 @@ app.put("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV
     });
 
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
+    await assertVoucherNoUnique(conn, { module: "APV", companyId, voucherNo, excludeId: id });
     // atc_code fetched alongside for Phase 7C.1's existingAtcCode - see the
     // identical comment in PUT /api/invoices/:id above.
     const [ownerRows] = await conn.execute("SELECT company_id, transaction_date, status, atc_code FROM apv_headers WHERE id = ?", [id]);
@@ -2846,7 +2844,7 @@ app.put("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV
         currency_id = ?
       WHERE id = ? AND company_id = ?`,
       [
-        voucherNo,
+        normalizeVoucherNo(voucherNo),
         supplierId || null,
         supplierName || "",
         transactionDate || null,
@@ -2961,9 +2959,7 @@ app.put("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV
     await conn.rollback();
     console.error("UPDATE APV ERROR:", err);
 
-    if (err.code === "ER_DUP_ENTRY") {
-      return res.status(400).json({ message: "APV voucher number already exists" });
-    }
+    if (handleVoucherDupError(err, res)) return;
 
     res.status(err.statusCode || 500).json({ message: err.message || "Failed to update APV", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   } finally {
@@ -3210,6 +3206,7 @@ app.post("/api/purchase-orders", authenticateToken, authorizePermission("TRANSAC
     await conn.beginTransaction();
 
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
+    await assertVoucherNoUnique(conn, { module: "PO", companyId, voucherNo });
     // PO never affects the ledger (see above), so this is a backdating/
     // audit-trail consistency control rather than a ledger-protection one
     // (Checkpoint 5 section 24 - documented decision, not an oversight).
@@ -3243,7 +3240,7 @@ app.post("/api/purchase-orders", authenticateToken, authorizePermission("TRANSAC
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         companyId,
-        voucherNo,
+        normalizeVoucherNo(voucherNo),
         supplierId || null,
         supplierName || "",
         transactionDate || null,
@@ -3315,9 +3312,7 @@ app.post("/api/purchase-orders", authenticateToken, authorizePermission("TRANSAC
     await conn.rollback();
     console.error("CREATE PURCHASE ORDER ERROR:", err);
 
-    if (err.code === "ER_DUP_ENTRY") {
-      return res.status(400).json({ message: "Purchase Order number already exists" });
-    }
+    if (handleVoucherDupError(err, res)) return;
 
     res.status(err.statusCode || 500).json({ message: err.message || "Failed to save Purchase Order", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   } finally {
@@ -3362,6 +3357,7 @@ app.put("/api/purchase-orders/:id", authenticateToken, authorizePermission("TRAN
     });
 
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
+    await assertVoucherNoUnique(conn, { module: "PO", companyId, voucherNo, excludeId: id });
 
     await conn.beginTransaction();
 
@@ -3403,7 +3399,7 @@ app.put("/api/purchase-orders/:id", authenticateToken, authorizePermission("TRAN
         currency_id = ?
       WHERE id = ? AND company_id = ?`,
       [
-        voucherNo,
+        normalizeVoucherNo(voucherNo),
         supplierId || null,
         supplierName || "",
         transactionDate || null,
@@ -3475,6 +3471,7 @@ app.put("/api/purchase-orders/:id", authenticateToken, authorizePermission("TRAN
   } catch (err) {
     await conn.rollback();
     console.error("UPDATE PURCHASE ORDER ERROR:", err);
+    if (handleVoucherDupError(err, res)) return;
     res.status(err.statusCode || 500).json({ message: err.message || "Failed to update Purchase Order", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   } finally {
     conn.release();
@@ -4402,6 +4399,7 @@ app.post("/api/cv", authenticateToken, authorizePermission("TRANSACTIONS.CV", "C
     });
 
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
+    await assertVoucherNoUnique(conn, { module: "CV", companyId, voucherNo });
     await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate, operation: "CREATE", user: req.user }, conn);
     const currencyResult = await TransactionCurrencyService.resolveTransactionCurrency({
       user: req.user, companyId, transactionType: "CV", transactionId: null, currencyPayload: currency,
@@ -4436,7 +4434,7 @@ app.post("/api/cv", authenticateToken, authorizePermission("TRANSACTIONS.CV", "C
       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         companyId,
-        voucherNo || "",
+        (normalizeVoucherNo(voucherNo) || ""),
         finalPayeeId,
         finalPayeeName,
         transactionDate || null,
@@ -4537,6 +4535,7 @@ app.post("/api/cv", authenticateToken, authorizePermission("TRANSACTIONS.CV", "C
     await conn.rollback();
     console.error("CREATE CV ERROR:", err);
 
+    if (handleVoucherDupError(err, res)) return;
     res.status(err.statusCode || 500).json({
       message: err.message || "Failed to save CV",
       ...(err.statusCode && err.code ? { code: err.code } : {}),
@@ -4677,6 +4676,7 @@ app.put("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
     const isPosting = String(finalStatus).toUpperCase() === "POSTED";
 
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
+    await assertVoucherNoUnique(conn, { module: "CV", companyId, voucherNo, excludeId: id });
 
     await conn.beginTransaction();
 
@@ -4795,7 +4795,7 @@ app.put("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
          currency_id = ?
        WHERE id = ? AND company_id = ?`,
       [
-        voucherNo || "",
+        (normalizeVoucherNo(voucherNo) || ""),
         finalPayeeId,
         finalPayeeName,
         transactionDate || null,
@@ -4897,9 +4897,7 @@ app.put("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
     await conn.rollback();
     console.error("UPDATE CV ERROR:", err);
 
-    if (err.code === "ER_DUP_ENTRY") {
-      return res.status(400).json({ message: "CV number already exists" });
-    }
+    if (handleVoucherDupError(err, res)) return;
 
     res.status(err.statusCode || 500).json({ message: err.message || "Failed to update CV", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   } finally {
@@ -4973,6 +4971,7 @@ app.post("/api/jv", authenticateToken, authorizePermission("TRANSACTIONS.JV", "C
     await conn.beginTransaction();
 
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
+    await assertVoucherNoUnique(conn, { module: "JV", companyId, voucherNo });
     await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate, operation: "CREATE", user: req.user }, conn);
     const currencyResult = await TransactionCurrencyService.resolveTransactionCurrency({
       user: req.user, companyId, transactionType: "JV", transactionId: null, currencyPayload: currency,
@@ -4999,7 +4998,7 @@ app.post("/api/jv", authenticateToken, authorizePermission("TRANSACTIONS.JV", "C
       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         companyId,
-        voucherNo || "",
+        (normalizeVoucherNo(voucherNo) || ""),
         transactionDate || null,
         referenceNo || "",
         preparedFor,
@@ -5085,9 +5084,7 @@ app.post("/api/jv", authenticateToken, authorizePermission("TRANSACTIONS.JV", "C
     await conn.rollback();
     console.error("CREATE JV ERROR:", err);
 
-    if (err.code === "ER_DUP_ENTRY") {
-      return res.status(400).json({ message: "JV number already exists" });
-    }
+    if (handleVoucherDupError(err, res)) return;
 
     res.status(err.statusCode || 500).json({ message: err.message || "Failed to save JV", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   } finally {
@@ -5175,6 +5172,7 @@ app.put("/api/jv/:id", authenticateToken, authorizePermission("TRANSACTIONS.JV",
     } = req.body;
 
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
+    await assertVoucherNoUnique(conn, { module: "JV", companyId, voucherNo, excludeId: id });
 
     const [existing] = await conn.execute(
       "SELECT status, posted_by, posted_at, company_id AS companyId, transaction_date AS transactionDate FROM jv_headers WHERE id = ?",
@@ -5236,7 +5234,7 @@ app.put("/api/jv/:id", authenticateToken, authorizePermission("TRANSACTIONS.JV",
         currency_id = ?
       WHERE id = ? AND company_id = ?`,
       [
-        voucherNo || "",
+        (normalizeVoucherNo(voucherNo) || ""),
         transactionDate || null,
         referenceNo || "",
         preparedFor,
@@ -5324,9 +5322,7 @@ app.put("/api/jv/:id", authenticateToken, authorizePermission("TRANSACTIONS.JV",
     await conn.rollback();
     console.error("UPDATE JV ERROR:", err);
 
-    if (err.code === "ER_DUP_ENTRY") {
-      return res.status(400).json({ message: "JV number already exists" });
-    }
+    if (handleVoucherDupError(err, res)) return;
 
     res.status(err.statusCode || 500).json({ message: err.message || "Failed to update JV", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   } finally {
@@ -5461,6 +5457,7 @@ app.post("/api/petty-cash", authenticateToken, authorizePermission("TRANSACTIONS
     await conn.beginTransaction();
 
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
+    await assertVoucherNoUnique(conn, { module: "PCV", companyId, voucherNo });
     await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate, operation: "CREATE", user: req.user }, conn);
     const currencyResult = await TransactionCurrencyService.resolveTransactionCurrency({
       user: req.user, companyId, transactionType: "PETTY_CASH", transactionId: null, currencyPayload: currency,
@@ -5474,7 +5471,7 @@ app.post("/api/petty-cash", authenticateToken, authorizePermission("TRANSACTIONS
         description, remarks, total_debit, total_credit, status, created_by, posted_by, posted_at, currency_id
       ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
-        companyId, voucherNo || "", payeeId ?? null, payeeName || "", transactionDate || null, referenceNo || "",
+        companyId, (normalizeVoucherNo(voucherNo) || ""), payeeId ?? null, payeeName || "", transactionDate || null, referenceNo || "",
         description || "", remarks || "", currencyResult.baseTotalDebit, currencyResult.baseTotalCredit, finalStatus,
         userId, isPosting ? userId : null, isPosting ? new Date() : null, currencyResult.currencyId,
       ]
@@ -5524,9 +5521,7 @@ app.post("/api/petty-cash", authenticateToken, authorizePermission("TRANSACTIONS
     await conn.rollback();
     console.error("CREATE PETTY CASH ERROR:", err);
 
-    if (err.code === "ER_DUP_ENTRY") {
-      return res.status(400).json({ message: "Petty Cash voucher number already exists" });
-    }
+    if (handleVoucherDupError(err, res)) return;
 
     res.status(err.statusCode || 500).json({ message: err.message || "Failed to save Petty Cash Voucher", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   } finally {
@@ -5582,6 +5577,7 @@ app.put("/api/petty-cash/:id", authenticateToken, authorizePermission("TRANSACTI
     const { voucherNo, payeeId, payeeName, transactionDate, referenceNo, description, remarks, status, lines = [], currency } = req.body;
 
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
+    await assertVoucherNoUnique(conn, { module: "PCV", companyId, voucherNo, excludeId: id });
 
     const [existing] = await conn.execute(
       "SELECT status, posted_by, posted_at, company_id AS companyId, transaction_date AS transactionDate FROM petty_cash_headers WHERE id = ?",
@@ -5626,7 +5622,7 @@ app.put("/api/petty-cash/:id", authenticateToken, authorizePermission("TRANSACTI
         posted_by = ?, posted_at = ?, currency_id = ?
       WHERE id = ? AND company_id = ?`,
       [
-        voucherNo || "", payeeId ?? null, payeeName || "", transactionDate || null, referenceNo || "",
+        (normalizeVoucherNo(voucherNo) || ""), payeeId ?? null, payeeName || "", transactionDate || null, referenceNo || "",
         description || "", remarks || "", currencyResult.baseTotalDebit, currencyResult.baseTotalCredit, finalStatus,
         nextPostedBy, nextPostedAt, currencyResult.currencyId, id, companyId,
       ]
@@ -5679,9 +5675,7 @@ app.put("/api/petty-cash/:id", authenticateToken, authorizePermission("TRANSACTI
     await conn.rollback();
     console.error("UPDATE PETTY CASH ERROR:", err);
 
-    if (err.code === "ER_DUP_ENTRY") {
-      return res.status(400).json({ message: "Petty Cash voucher number already exists" });
-    }
+    if (handleVoucherDupError(err, res)) return;
 
     res.status(err.statusCode || 500).json({ message: err.message || "Failed to update Petty Cash Voucher", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   } finally {
@@ -5811,6 +5805,7 @@ function registerMemoRoutes(memoType, urlPrefix, permissionModule, label) {
       await conn.beginTransaction();
 
       const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
+      await assertVoucherNoUnique(conn, { module: memoType === "DEBIT" ? "DM" : "CM", companyId, voucherNo });
       await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate, operation: "CREATE", user: req.user }, conn);
 
       // A source Invoice/APV, if given, must belong to the same company -
@@ -5836,7 +5831,7 @@ function registerMemoRoutes(memoType, urlPrefix, permissionModule, label) {
           description, remarks, total_debit, total_credit, status, source_type, source_id, created_by, posted_by, posted_at, currency_id
         ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         [
-          companyId, voucherNo || "", memoType, partyId ?? null, partyName || "", partyType || null,
+          companyId, (normalizeVoucherNo(voucherNo) || ""), memoType, partyId ?? null, partyName || "", partyType || null,
           transactionDate || null, referenceNo || "", description || "", remarks || "",
           currencyResult.baseTotalDebit, currencyResult.baseTotalCredit, finalStatus,
           finalSourceType, finalSourceId, userId, isPosting ? userId : null, isPosting ? new Date() : null, currencyResult.currencyId,
@@ -5887,9 +5882,7 @@ function registerMemoRoutes(memoType, urlPrefix, permissionModule, label) {
       await conn.rollback();
       console.error(`CREATE ${label} ERROR:`, err);
 
-      if (err.code === "ER_DUP_ENTRY") {
-        return res.status(400).json({ message: `${label} number already exists` });
-      }
+      if (handleVoucherDupError(err, res)) return;
 
       res.status(err.statusCode || 500).json({ message: err.message || `Failed to save ${label}`, ...(err.statusCode && err.code ? { code: err.code } : {}) });
     } finally {
@@ -5949,6 +5942,7 @@ function registerMemoRoutes(memoType, urlPrefix, permissionModule, label) {
       } = req.body;
 
       const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
+      await assertVoucherNoUnique(conn, { module: memoType === "DEBIT" ? "DM" : "CM", companyId, voucherNo, excludeId: id });
 
       const [existing] = await conn.execute(
         "SELECT status, posted_by, posted_at, company_id AS companyId, transaction_date AS transactionDate FROM memo_headers WHERE id = ? AND memo_type = ?",
@@ -6003,7 +5997,7 @@ function registerMemoRoutes(memoType, urlPrefix, permissionModule, label) {
           source_type = ?, source_id = ?, posted_by = ?, posted_at = ?, currency_id = ?
         WHERE id = ? AND company_id = ? AND memo_type = ?`,
         [
-          voucherNo || "", partyId ?? null, partyName || "", partyType || null, transactionDate || null, referenceNo || "",
+          (normalizeVoucherNo(voucherNo) || ""), partyId ?? null, partyName || "", partyType || null, transactionDate || null, referenceNo || "",
           description || "", remarks || "", currencyResult.baseTotalDebit, currencyResult.baseTotalCredit, finalStatus,
           finalSourceType, finalSourceId, nextPostedBy, nextPostedAt, currencyResult.currencyId, id, companyId, memoType,
         ]
@@ -6056,9 +6050,7 @@ function registerMemoRoutes(memoType, urlPrefix, permissionModule, label) {
       await conn.rollback();
       console.error(`UPDATE ${label} ERROR:`, err);
 
-      if (err.code === "ER_DUP_ENTRY") {
-        return res.status(400).json({ message: `${label} number already exists` });
-      }
+      if (handleVoucherDupError(err, res)) return;
 
       res.status(err.statusCode || 500).json({ message: err.message || `Failed to update ${label}`, ...(err.statusCode && err.code ? { code: err.code } : {}) });
     } finally {

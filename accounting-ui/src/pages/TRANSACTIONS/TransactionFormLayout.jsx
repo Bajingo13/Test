@@ -2357,6 +2357,13 @@ if (code === "OR" || code === "CV") {
       if (!res.ok) {
         if (handleAuthError(res.status)) return;
         alert(data.message || "Failed to save transaction.");
+        // Phase 7G: a per-company duplicate voucher number (409) - surface
+        // it in the form's error box too and leave every field as typed so
+        // the user can just change the number and Save again.
+        if (res.status === 409 && data.code === "DUPLICATE_VOUCHER_NO") {
+          setError(data.message);
+          return;
+        }
         // Phase 7B (spec section 33): if someone else posted this record
         // in the meantime, the Phase 7A.1 backend guard now rejects this
         // save with 409 TRANSACTION_ALREADY_POSTED - continuing to edit a

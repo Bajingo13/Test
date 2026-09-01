@@ -86,6 +86,12 @@ const MIGRATION_ORDER = [
   // vat_rate_library_migration.sql (owns vat_rate_codes) and
   // phase7c_tax_schedule_migration.sql (owns transaction_tax_entries).
   "phase7e_vat_treatment_migration.sql",
+  // Phase 7G - index-only: swap each header table's global UNIQUE(voucher_no)
+  // for a composite UNIQUE(company_id, voucher_no) (memo_headers also keys
+  // on memo_type). Guarded by information_schema; re-run is a no-op. Must
+  // run after 000_baseline (jv), checkpoint4h (company_id on inv/apv/or/cv/
+  // po), and petty_cash_and_memo_migration.sql.
+  "phase7g_voucher_no_company_scope_migration.sql",
 ];
 
 module.exports = { MIGRATION_ORDER };
