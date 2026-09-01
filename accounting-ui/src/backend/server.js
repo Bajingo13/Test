@@ -3504,13 +3504,21 @@ app.delete("/api/purchase-orders/:id", authenticateToken, authorizePermission("T
 
 // ===================== QUOTATION API =====================
 
-async function generateQuotationNo(conn) {
+// Phase 7H: the next quotation number is scoped to `companyId` (and the
+// year, which the SQ<yy>- prefix already resets) - never a global MAX
+// across companies. The DB UNIQUE(company_id, quotation_no) is the
+// concurrency-safe backstop against a MAX+1 race; no reservation table.
+async function generateQuotationNo(conn, companyId) {
   const yy = String(new Date().getFullYear()).slice(-2);
   const prefix = `SQ${yy}-`;
 
+  // Only well-formed SQ<yy>-<digits> numbers for THIS company drive the
+  // sequence - a non-standard legacy/imported value never derails it.
   const [rows] = await conn.execute(
-    `SELECT quotation_no FROM quotation_headers WHERE quotation_no LIKE ? ORDER BY id DESC LIMIT 1`,
-    [`${prefix}%`]
+    `SELECT quotation_no FROM quotation_headers
+     WHERE company_id = ? AND quotation_no REGEXP '^SQ[0-9][0-9]-[0-9]+$' AND quotation_no LIKE ?
+     ORDER BY CAST(SUBSTRING_INDEX(quotation_no, '-', -1) AS UNSIGNED) DESC LIMIT 1`,
+    [companyId, `${prefix}%`]
   );
 
   let seq = 1;
@@ -3524,6 +3532,8 @@ async function generateQuotationNo(conn) {
 
 app.get("/api/quotations", authenticateToken, authorizePermission("TRANSACTIONS.QUOTATION", "VIEW"), async (req, res) => {
   try {
+    // Phase 7H: company-scoped, same pattern as every other transaction list.
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
     const [rows] = await pool.execute(`
       SELECT
         id,
@@ -3541,19 +3551,23 @@ app.get("/api/quotations", authenticateToken, authorizePermission("TRANSACTIONS.
         created_at AS createdAt,
         updated_at AS updatedAt
       FROM quotation_headers
+      WHERE company_id = ?
       ORDER BY id DESC
-    `);
+    `, [companyId]);
 
     res.json(rows);
   } catch (err) {
     console.error("GET QUOTATIONS ERROR:", err);
-    res.status(500).json({ message: "Failed to load Quotations" });
+    res.status(err.statusCode || 500).json({ message: err.statusCode ? err.message : "Failed to load Quotations" });
   }
 });
 
 app.get("/api/quotations/:id", authenticateToken, authorizePermission("TRANSACTIONS.QUOTATION", "VIEW"), async (req, res) => {
   try {
     const { id } = req.params;
+    // Phase 7H: id + authorized company - a Company A user must not fetch
+    // Company B's quotation by guessing the id (returns the same 404).
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
     const [headers] = await pool.execute(
       `SELECT
@@ -3572,8 +3586,8 @@ app.get("/api/quotations/:id", authenticateToken, authorizePermission("TRANSACTI
         created_at AS createdAt,
         updated_at AS updatedAt
       FROM quotation_headers
-      WHERE id = ?`,
-      [id]
+      WHERE id = ? AND company_id = ?`,
+      [id, companyId]
     );
 
     if (headers.length === 0) {
@@ -3608,7 +3622,7 @@ app.get("/api/quotations/:id", authenticateToken, authorizePermission("TRANSACTI
     });
   } catch (err) {
     console.error("GET QUOTATION DETAILS ERROR:", err);
-    res.status(500).json({ message: "Failed to load Quotation details" });
+    res.status(err.statusCode || 500).json({ message: err.statusCode ? err.message : "Failed to load Quotation details" });
   }
 });
 
@@ -3629,12 +3643,19 @@ app.post("/api/quotations", authenticateToken, authorizePermission("TRANSACTIONS
       lines,
     } = req.body;
 
+    // Phase 7H: create is bound to the caller's authorized company - an
+    // arbitrary body companyId for a company the user cannot access is
+    // rejected by resolveCompanyIdForWrite.
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.body?.companyId);
+
     await conn.beginTransaction();
 
-    const quotationNo = await generateQuotationNo(conn);
+    const quotationNo = await generateQuotationNo(conn, companyId);
+    await assertVoucherNoUnique(conn, { module: "QUOTATION", companyId, voucherNo: quotationNo });
 
     const [result] = await conn.execute(
       `INSERT INTO quotation_headers (
+        company_id,
         quotation_no,
         customer_id,
         customer_name,
@@ -3645,8 +3666,9 @@ app.post("/api/quotations", authenticateToken, authorizePermission("TRANSACTIONS
         status,
         notes,
         total_amount
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
+        companyId,
         quotationNo,
         customerId || null,
         customerName || "",
@@ -3709,7 +3731,8 @@ app.post("/api/quotations", authenticateToken, authorizePermission("TRANSACTIONS
   } catch (err) {
     await conn.rollback();
     console.error("CREATE QUOTATION ERROR:", err);
-    res.status(500).json({ message: "Failed to save Quotation" });
+    if (handleVoucherDupError(err, res)) return;
+    res.status(err.statusCode || 500).json({ message: err.statusCode ? err.message : "Failed to save Quotation", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   } finally {
     conn.release();
   }
@@ -3720,10 +3743,15 @@ app.put("/api/quotations/:id", authenticateToken, authorizePermission("TRANSACTI
 
   try {
     const { id } = req.params;
+    // Phase 7H: edit only within the caller's authorized company. A body
+    // companyId cannot re-home the quotation (the UPDATE never writes
+    // company_id) and cannot reach another company's row (the WHERE below
+    // is id + companyId).
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.body?.companyId);
 
     const [existing] = await conn.execute(
-      "SELECT status FROM quotation_headers WHERE id = ?",
-      [id]
+      "SELECT status FROM quotation_headers WHERE id = ? AND company_id = ?",
+      [id, companyId]
     );
 
     if (existing.length === 0) {
@@ -3762,7 +3790,7 @@ app.put("/api/quotations/:id", authenticateToken, authorizePermission("TRANSACTI
         status = ?,
         notes = ?,
         total_amount = ?
-      WHERE id = ?`,
+      WHERE id = ? AND company_id = ?`,
       [
         customerId || null,
         customerName || "",
@@ -3774,6 +3802,7 @@ app.put("/api/quotations/:id", authenticateToken, authorizePermission("TRANSACTI
         notes || "",
         totalAmount || 0,
         id,
+        companyId,
       ]
     );
 
@@ -3824,7 +3853,8 @@ app.put("/api/quotations/:id", authenticateToken, authorizePermission("TRANSACTI
   } catch (err) {
     await conn.rollback();
     console.error("UPDATE QUOTATION ERROR:", err);
-    res.status(500).json({ message: "Failed to update Quotation" });
+    if (handleVoucherDupError(err, res)) return;
+    res.status(err.statusCode || 500).json({ message: err.statusCode ? err.message : "Failed to update Quotation", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   } finally {
     conn.release();
   }
@@ -3833,8 +3863,17 @@ app.put("/api/quotations/:id", authenticateToken, authorizePermission("TRANSACTI
 app.delete("/api/quotations/:id", authenticateToken, authorizePermission("TRANSACTIONS.QUOTATION", "DELETE"), async (req, res) => {
   try {
     const { id } = req.params;
+    // Phase 7H: a user cannot delete another company's quotation by id.
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId || req.body?.companyId);
 
-    await pool.execute("DELETE FROM quotation_headers WHERE id = ?", [id]);
+    const [result] = await pool.execute(
+      "DELETE FROM quotation_headers WHERE id = ? AND company_id = ?",
+      [id, companyId]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: "Quotation not found" });
+    }
 
     res.json({
       success: true,
@@ -3842,6 +3881,7 @@ app.delete("/api/quotations/:id", authenticateToken, authorizePermission("TRANSA
     });
   } catch (err) {
     console.error("DELETE QUOTATION ERROR:", err);
+    if (err.statusCode) return res.status(err.statusCode).json({ message: err.message });
     res.status(500).json({ message: "Failed to delete Quotation" });
   }
 });
@@ -3855,9 +3895,12 @@ app.post("/api/quotations/:id/convert-to-invoice", authenticateToken, authorizeP
 
     await conn.beginTransaction();
 
+    // Phase 7H: the quotation must belong to the caller's authorized
+    // company - a Company A user cannot convert Company B's quotation, and
+    // the resulting invoice therefore stays within one company.
     const [headers] = await conn.execute(
-      "SELECT * FROM quotation_headers WHERE id = ?",
-      [id]
+      "SELECT * FROM quotation_headers WHERE id = ? AND company_id = ?",
+      [id, companyId]
     );
 
     if (headers.length === 0) {
@@ -3948,6 +3991,8 @@ app.post("/api/quotations/:id/convert-to-invoice", authenticateToken, authorizeP
     const subtotal = Array.from(groups.values()).reduce((sum, g) => sum + g.amount, 0);
     const total = vatAccount ? subtotal + taxTotal : Number(quotation.total_amount) || subtotal + taxTotal;
     const voucherNo = `INV-${quotation.quotation_no}`;
+    // Phase 7G: the generated invoice voucher is company-scoped-unique too.
+    await assertVoucherNoUnique(conn, { module: "INV", companyId, voucherNo });
 
     const [result] = await conn.execute(
       `INSERT INTO invoice_headers (
@@ -4037,11 +4082,9 @@ app.post("/api/quotations/:id/convert-to-invoice", authenticateToken, authorizeP
     await conn.rollback();
     console.error("CONVERT QUOTATION TO INVOICE ERROR:", err);
 
-    if (err.code === "ER_DUP_ENTRY") {
-      return res.status(400).json({ message: "An invoice with this reference already exists" });
-    }
+    if (handleVoucherDupError(err, res)) return;
 
-    res.status(500).json({ message: "Failed to convert Quotation to Invoice" });
+    res.status(err.statusCode || 500).json({ message: err.statusCode ? err.message : "Failed to convert Quotation to Invoice", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   } finally {
     conn.release();
   }

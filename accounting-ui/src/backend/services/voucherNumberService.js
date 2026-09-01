@@ -25,6 +25,11 @@ const MODULE_TABLE = {
   PCV: { table: "petty_cash_headers", label: "Petty Cash Voucher" },
   DM: { table: "memo_headers", label: "Debit Memo", extraCol: "memo_type", extraVal: "DEBIT" },
   CM: { table: "memo_headers", label: "Credit Memo", extraCol: "memo_type", extraVal: "CREDIT" },
+  // Phase 7H: quotation numbers use their own column and are auto-generated,
+  // so this pre-check almost never fires - it exists so the same 409
+  // contract covers a concurrent-generation race alongside the DB
+  // UNIQUE(company_id, quotation_no) backstop.
+  QUOTATION: { table: "quotation_headers", label: "Quotation", numberCol: "quotation_no" },
 };
 
 // The ONE canonical transform, used by BOTH the duplicate pre-check and the
@@ -47,7 +52,8 @@ async function assertVoucherNoUnique(conn, { module, companyId, voucherNo, exclu
   const vno = normalizeVoucherNo(voucherNo);
   if (!vno) return; // null or "" - not a meaningful number, nothing to check
 
-  const where = ["company_id = ?", "voucher_no = ?"];
+  const numberCol = cfg.numberCol || "voucher_no";
+  const where = ["company_id = ?", `${numberCol} = ?`];
   const params = [companyId, vno];
   if (cfg.extraCol) {
     where.push(`${cfg.extraCol} = ?`);

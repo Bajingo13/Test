@@ -92,6 +92,11 @@ const MIGRATION_ORDER = [
   // run after 000_baseline (jv), checkpoint4h (company_id on inv/apv/or/cv/
   // po), and petty_cash_and_memo_migration.sql.
   "phase7g_voucher_no_company_scope_migration.sql",
+  // Phase 7H - adds quotation_headers.company_id (nullable, safe backfill to
+  // the single company when exactly one exists), a company/date index, and
+  // swaps global UNIQUE(quotation_no) for UNIQUE(company_id, quotation_no).
+  // Guarded; re-run is a no-op. Must run after quotation_migration.sql.
+  "phase7h_quotation_company_scope_migration.sql",
 ];
 
 module.exports = { MIGRATION_ORDER };
