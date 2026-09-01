@@ -80,6 +80,12 @@ const MIGRATION_ORDER = [
   // anything else), no dependency on any table above beyond the baseline
   // existing at all.
   "vat_rate_library_migration.sql",
+  // Phase 7E - additive columns only (vat_rate_codes.treatment,
+  // transaction_tax_entries.vat_code/vat_treatment), guarded by
+  // information_schema so a re-run is a no-op. Must run after both
+  // vat_rate_library_migration.sql (owns vat_rate_codes) and
+  // phase7c_tax_schedule_migration.sql (owns transaction_tax_entries).
+  "phase7e_vat_treatment_migration.sql",
 ];
 
 module.exports = { MIGRATION_ORDER };

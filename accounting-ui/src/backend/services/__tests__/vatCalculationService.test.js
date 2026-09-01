@@ -1,4 +1,14 @@
-const { computeVatFromInclusiveGross, roundMoney, DEFAULT_VAT_RATE } = require("../vatCalculationService");
+const {
+  computeVatFromInclusiveGross,
+  computeVatByTreatment,
+  roundMoney,
+  DEFAULT_VAT_RATE,
+  VAT_TREATMENTS,
+  normalizeVatTreatment,
+  isValidVatTreatment,
+  isZeroVatTreatment,
+  isTreatmentRateConsistent,
+} = require("../vatCalculationService");
 
 // Phase 7C spec section 41 - the central VAT-inclusive-gross helper's
 // contract: Net = Gross / (1 + rate/100), VAT = Gross - Net (the
@@ -51,5 +61,76 @@ describe("computeVatFromInclusiveGross", () => {
   test("negative or non-numeric rate is rejected, not silently coerced", () => {
     expect(() => computeVatFromInclusiveGross({ gross: 1000, vatRatePercent: -5 })).toThrow();
     expect(() => computeVatFromInclusiveGross({ gross: 1000, vatRatePercent: "abc" })).toThrow();
+  });
+});
+
+// Phase 7E: VAT treatment classification. ZERO_RATED and EXEMPT must stay
+// distinct from each other and from a genuine 0% STANDARD line, and the
+// treatment is carried as data - never re-derived from the rate.
+describe("VAT treatment (STANDARD / ZERO_RATED / EXEMPT)", () => {
+  test("VAT_TREATMENTS is exactly the three supported values", () => {
+    expect(VAT_TREATMENTS).toEqual(["STANDARD", "ZERO_RATED", "EXEMPT"]);
+  });
+
+  test("normalizeVatTreatment: blank/null/unknown-case -> STANDARD, valid values pass through", () => {
+    expect(normalizeVatTreatment(null)).toBe("STANDARD");
+    expect(normalizeVatTreatment("")).toBe("STANDARD");
+    expect(normalizeVatTreatment("  zero_rated ")).toBe("ZERO_RATED");
+    expect(normalizeVatTreatment("Exempt")).toBe("EXEMPT");
+  });
+
+  test("isValidVatTreatment / isZeroVatTreatment", () => {
+    expect(isValidVatTreatment("STANDARD")).toBe(true);
+    expect(isValidVatTreatment("ZERO_RATED")).toBe(true);
+    expect(isValidVatTreatment("EXEMPT")).toBe(true);
+    expect(isValidVatTreatment("REDUCED")).toBe(false);
+    expect(isZeroVatTreatment("STANDARD")).toBe(false);
+    expect(isZeroVatTreatment("ZERO_RATED")).toBe(true);
+    expect(isZeroVatTreatment("EXEMPT")).toBe(true);
+  });
+
+  test("isTreatmentRateConsistent: STANDARD any rate ok; ZERO_RATED/EXEMPT must be 0", () => {
+    expect(isTreatmentRateConsistent("STANDARD", 12)).toBe(true);
+    expect(isTreatmentRateConsistent("STANDARD", 0)).toBe(true);
+    expect(isTreatmentRateConsistent("ZERO_RATED", 0)).toBe(true);
+    expect(isTreatmentRateConsistent("ZERO_RATED", 12)).toBe(false);
+    expect(isTreatmentRateConsistent("EXEMPT", 0)).toBe(true);
+    expect(isTreatmentRateConsistent("EXEMPT", 5)).toBe(false);
+  });
+
+  test("STANDARD: amount is a VAT-inclusive gross - 1120 @ 12% -> net 1000 / VAT 120 (unchanged)", () => {
+    const r = computeVatByTreatment({ amount: 1120, vatRatePercent: 12, treatment: "STANDARD" });
+    expect(r).toEqual({ grossAmount: 1120, netAmount: 1000, vatAmount: 120, treatment: "STANDARD" });
+  });
+
+  test("ZERO_RATED: amount 1000 -> base/net 1000, VAT 0, treatment preserved", () => {
+    const r = computeVatByTreatment({ amount: 1000, vatRatePercent: 0, treatment: "ZERO_RATED" });
+    expect(r).toEqual({ grossAmount: 1000, netAmount: 1000, vatAmount: 0, treatment: "ZERO_RATED" });
+  });
+
+  test("EXEMPT: amount 1000 -> base/net 1000, VAT 0, treatment preserved", () => {
+    const r = computeVatByTreatment({ amount: 1000, vatRatePercent: 0, treatment: "EXEMPT" });
+    expect(r).toEqual({ grossAmount: 1000, netAmount: 1000, vatAmount: 0, treatment: "EXEMPT" });
+  });
+
+  test("ZERO_RATED and EXEMPT are NOT collapsed into one generic '0% VAT' state", () => {
+    const zr = computeVatByTreatment({ amount: 500, vatRatePercent: 0, treatment: "ZERO_RATED" });
+    const ex = computeVatByTreatment({ amount: 500, vatRatePercent: 0, treatment: "EXEMPT" });
+    expect(zr.vatAmount).toBe(0);
+    expect(ex.vatAmount).toBe(0);
+    expect(zr.treatment).not.toBe(ex.treatment);
+  });
+
+  test("a missing treatment computes as STANDARD (historical rows / EWT entries)", () => {
+    const r = computeVatByTreatment({ amount: 1120, vatRatePercent: 12, treatment: undefined });
+    expect(r.treatment).toBe("STANDARD");
+    expect(r.vatAmount).toBe(120);
+  });
+
+  test("ZERO_RATED / EXEMPT base is rounded to 2dp and gross === net", () => {
+    const r = computeVatByTreatment({ amount: 1234.5, vatRatePercent: 0, treatment: "EXEMPT" });
+    expect(r.netAmount).toBe(1234.5);
+    expect(r.grossAmount).toBe(1234.5);
+    expect(r.vatAmount).toBe(0);
   });
 });

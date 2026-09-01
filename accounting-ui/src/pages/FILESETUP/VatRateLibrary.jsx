@@ -16,12 +16,24 @@ const APPLIES_TO_OPTIONS = ["INPUT", "OUTPUT", "BOTH"];
 const APPLIES_TO_LABELS = { INPUT: "Input VAT", OUTPUT: "Output VAT", BOTH: "Both" };
 const STATUS_OPTIONS = ["ACTIVE", "INACTIVE"];
 
+// Phase 7E: explicit VAT treatment. ZERO_RATED and EXEMPT stay distinct
+// (different reporting meaning) even though both are effectively 0% VAT.
+const TREATMENT_OPTIONS = ["STANDARD", "ZERO_RATED", "EXEMPT"];
+const TREATMENT_LABELS = {
+  STANDARD: "Standard VAT",
+  ZERO_RATED: "Zero-Rated",
+  EXEMPT: "Exempt",
+};
+const ZERO_TREATMENTS = ["ZERO_RATED", "EXEMPT"];
+const isZeroTreatment = (t) => ZERO_TREATMENTS.includes(t);
+
 const EMPTY_FORM = {
   id: null,
   code: "",
   description: "",
   appliesTo: "BOTH",
   rate: "",
+  treatment: "STANDARD",
   status: "ACTIVE",
 };
 
@@ -83,7 +95,18 @@ export default function VatRateLibrary() {
   }
 
   function updateField(key, value) {
-    setForm((prev) => ({ ...prev, [key]: value }));
+    setForm((prev) => {
+      const next = { ...prev, [key]: value };
+      // A ZERO_RATED / EXEMPT code cannot carry a non-zero rate - force the
+      // rate to 0 the instant the treatment switches to one of those, so
+      // treatment and rate can never contradict (spec section 5: cleanest
+      // UX is "force to 0 + disable the field", not "type a bad value then
+      // reject it").
+      if (key === "treatment" && isZeroTreatment(value)) {
+        next.rate = "0";
+      }
+      return next;
+    });
   }
 
   function handleNew() {
@@ -94,7 +117,7 @@ export default function VatRateLibrary() {
   }
 
   function handleEdit(item) {
-    setForm({ ...item });
+    setForm({ ...EMPTY_FORM, ...item, treatment: item.treatment || "STANDARD" });
     setMode("edit");
     setFieldErrors({});
     setFormError("");
@@ -113,12 +136,19 @@ export default function VatRateLibrary() {
 
     if (description.length > DESCRIPTION_MAX_LEN) errors.description = `Description must be at most ${DESCRIPTION_MAX_LEN} characters.`;
 
+    if (!TREATMENT_OPTIONS.includes(form.treatment)) {
+      errors.treatment = `VAT Treatment must be one of: ${TREATMENT_OPTIONS.join(", ")}.`;
+    }
+
     if (form.rate === "" || form.rate === null || form.rate === undefined) {
       errors.rate = "Rate is required.";
     } else {
       const rateNum = Number(form.rate);
       if (!Number.isFinite(rateNum) || rateNum < 0) errors.rate = "Rate must be a valid non-negative number.";
       else if (rateNum > RATE_MAX_VALUE) errors.rate = `Rate must be at most ${RATE_MAX_VALUE}.`;
+      else if (isZeroTreatment(form.treatment) && rateNum !== 0) {
+        errors.rate = `A ${TREATMENT_LABELS[form.treatment]} code must have a rate of 0.`;
+      }
     }
 
     return errors;
@@ -227,6 +257,7 @@ export default function VatRateLibrary() {
               <th>VAT Code</th>
               <th>Description</th>
               <th>Applies To</th>
+              <th>Treatment</th>
               <th>Rate (%)</th>
               <th>Status</th>
               <th>Updated</th>
@@ -237,11 +268,11 @@ export default function VatRateLibrary() {
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan="7">Loading...</td>
+                <td colSpan="8">Loading...</td>
               </tr>
             ) : filteredRecords.length === 0 ? (
               <tr>
-                <td colSpan="7">No VAT codes found.</td>
+                <td colSpan="8">No VAT codes found.</td>
               </tr>
             ) : (
               filteredRecords.map((item) => (
@@ -249,6 +280,7 @@ export default function VatRateLibrary() {
                   <td>{item.code}</td>
                   <td>{item.description}</td>
                   <td>{APPLIES_TO_LABELS[item.appliesTo] || item.appliesTo}</td>
+                  <td>{TREATMENT_LABELS[item.treatment] || item.treatment || "Standard VAT"}</td>
                   <td>{item.rate}%</td>
                   <td>{item.status}</td>
                   <td>{item.updatedAt ? String(item.updatedAt).slice(0, 10) : "—"}</td>
@@ -305,6 +337,20 @@ export default function VatRateLibrary() {
           </div>
 
           <div className="fs-field">
+            <label>VAT Treatment</label>
+            <select
+              value={form.treatment}
+              onChange={(e) => updateField("treatment", e.target.value)}
+              className={fieldErrors.treatment ? "fs-input-error" : ""}
+            >
+              {TREATMENT_OPTIONS.map((t) => (
+                <option key={t} value={t}>{TREATMENT_LABELS[t]}</option>
+              ))}
+            </select>
+            {fieldErrors.treatment && <span className="fs-field-error">{fieldErrors.treatment}</span>}
+          </div>
+
+          <div className="fs-field">
             <label>Rate (%)</label>
             <input
               type="number"
@@ -312,8 +358,15 @@ export default function VatRateLibrary() {
               value={form.rate}
               onChange={(e) => updateField("rate", e.target.value)}
               placeholder="12"
+              readOnly={isZeroTreatment(form.treatment)}
+              disabled={isZeroTreatment(form.treatment)}
               className={fieldErrors.rate ? "fs-input-error" : ""}
             />
+            {isZeroTreatment(form.treatment) ? (
+              <span className="fs-field-hint">
+                {TREATMENT_LABELS[form.treatment]} is effectively 0% VAT — rate is fixed at 0.
+              </span>
+            ) : null}
             {fieldErrors.rate && <span className="fs-field-error">{fieldErrors.rate}</span>}
           </div>
 

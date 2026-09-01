@@ -134,6 +134,62 @@ describe("3: Edit VAT code works", () => {
   });
 });
 
+describe("3E: Phase 7E - VAT treatment (STANDARD / ZERO_RATED / EXEMPT)", () => {
+  test("a new code defaults to STANDARD treatment when none is sent", async () => {
+    const created = await createVat({ code: `${TEST_CODE_PREFIX}TRDEF`, description: "x", appliesTo: "BOTH", rate: 12 });
+    expect(created.status).toBe(200);
+    const list = await request(app).get("/api/vat-rate-codes").set("Authorization", `Bearer ${token}`);
+    expect(list.body.find((r) => r.code === `${TEST_CODE_PREFIX}TRDEF`).treatment).toBe("STANDARD");
+  });
+
+  test("the migration-seeded VAT_ZERO_RATED and VAT_EXEMPT rows load with the right treatment", async () => {
+    const list = await request(app).get("/api/vat-rate-codes").set("Authorization", `Bearer ${token}`);
+    const zr = list.body.find((r) => r.code === "VAT_ZERO_RATED");
+    const ex = list.body.find((r) => r.code === "VAT_EXEMPT");
+    expect(zr && zr.treatment).toBe("ZERO_RATED");
+    expect(Number(zr.rate)).toBe(0);
+    expect(ex && ex.treatment).toBe("EXEMPT");
+    expect(Number(ex.rate)).toBe(0);
+  });
+
+  test("STANDARD accepts a normal rate; ZERO_RATED and EXEMPT accept rate 0", async () => {
+    for (const [suffix, treatment, rate] of [["STD", "STANDARD", 12], ["ZR", "ZERO_RATED", 0], ["EX", "EXEMPT", 0]]) {
+      const res = await createVat({ code: `${TEST_CODE_PREFIX}T${suffix}`, description: "x", appliesTo: "BOTH", rate, treatment });
+      expect(res.status).toBe(200);
+      const list = await request(app).get("/api/vat-rate-codes").set("Authorization", `Bearer ${token}`);
+      expect(list.body.find((r) => r.code === `${TEST_CODE_PREFIX}T${suffix}`).treatment).toBe(treatment);
+    }
+  });
+
+  test("an unknown treatment value is rejected (400)", async () => {
+    const res = await createVat({ code: `${TEST_CODE_PREFIX}TBAD`, description: "x", appliesTo: "BOTH", rate: 0, treatment: "REDUCED" });
+    expect(res.status).toBe(400);
+    expect(res.body.message).toMatch(/treatment/i);
+  });
+
+  test("ZERO_RATED + 12% is rejected as a contradiction (400)", async () => {
+    const res = await createVat({ code: `${TEST_CODE_PREFIX}TZRBAD`, description: "x", appliesTo: "BOTH", rate: 12, treatment: "ZERO_RATED" });
+    expect(res.status).toBe(400);
+    expect(res.body.message).toMatch(/rate of 0/i);
+  });
+
+  test("EXEMPT + 5% is rejected as a contradiction (400)", async () => {
+    const res = await createVat({ code: `${TEST_CODE_PREFIX}TEXBAD`, description: "x", appliesTo: "BOTH", rate: 5, treatment: "EXEMPT" });
+    expect(res.status).toBe(400);
+  });
+
+  test("PUT can change treatment and it round-trips", async () => {
+    const created = await createVat({ code: `${TEST_CODE_PREFIX}TPUT`, description: "x", appliesTo: "BOTH", rate: 12, treatment: "STANDARD" });
+    const id = created.body.id;
+    const updated = await request(app).put(`/api/vat-rate-codes/${id}`).set("Authorization", `Bearer ${token}`).send({
+      code: `${TEST_CODE_PREFIX}TPUT`, description: "x", appliesTo: "BOTH", rate: 0, treatment: "EXEMPT", status: "ACTIVE",
+    });
+    expect(updated.status).toBe(200);
+    const list = await request(app).get("/api/vat-rate-codes").set("Authorization", `Bearer ${token}`);
+    expect(list.body.find((r) => r.code === `${TEST_CODE_PREFIX}TPUT`).treatment).toBe("EXEMPT");
+  });
+});
+
 describe("4: no DELETE route exists", () => {
   test("DELETE /api/vat-rate-codes/:id is not a registered route (404, not 200/403)", async () => {
     const created = await createVat({ code: `${TEST_CODE_PREFIX}NODEL`, description: "x", appliesTo: "BOTH", rate: 1 });

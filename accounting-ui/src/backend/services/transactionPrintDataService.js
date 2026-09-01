@@ -217,22 +217,44 @@ async function getOutputVatSummary(taxEntryTransactionType, transactionId) {
   // implying VAT classification was evaluated and happened to be zero.
   if (outputVatEntries.length === 0) return null;
 
-  const sum = (field) =>
-    TaxEntryService.roundMoney(outputVatEntries.reduce((total, e) => total + (Number(e[field]) || 0), 0));
+  // Phase 7E: split by the stored treatment SNAPSHOT, never re-derived
+  // from the rate. A pre-7E row has no snapshot and counts as STANDARD.
+  const treatmentOf = (e) => {
+    const t = String(e.vatTreatment == null ? "" : e.vatTreatment).trim().toUpperCase();
+    return t === "ZERO_RATED" || t === "EXEMPT" ? t : "STANDARD";
+  };
+  const sumWhere = (field, pred) =>
+    TaxEntryService.roundMoney(
+      outputVatEntries.reduce((total, e) => total + (pred(e) ? Number(e[field]) || 0 : 0), 0)
+    );
 
-  const vatableSales = sum("netAmount");
-  const vatAmount = sum("vatAmount");
-  const grossTaxable = sum("grossAmount");
+  const isStandard = (e) => treatmentOf(e) === "STANDARD";
+  const isZeroRated = (e) => treatmentOf(e) === "ZERO_RATED";
+  const isExempt = (e) => treatmentOf(e) === "EXEMPT";
 
-  // Accounting consistency check (spec section 5) - grossTaxable should
-  // equal vatableSales + vatAmount by the same "VAT is the remainder"
-  // identity vatCalculationService.js's own formula guarantees at save
-  // time. This never rewrites stored rows - it only flags a mismatch
-  // beyond ordinary centavo rounding so a genuine legacy-data discrepancy
-  // can be surfaced safely instead of silently trusted or hidden.
+  // VATable Sales counts only STANDARD net; zero-rated and exempt each get
+  // their own bucket. VAT Amount can only come from STANDARD entries.
+  const vatableSales = sumWhere("netAmount", isStandard);
+  const zeroRatedSales = sumWhere("netAmount", isZeroRated);
+  const exemptSales = sumWhere("netAmount", isExempt);
+  const vatAmount = sumWhere("vatAmount", isStandard);
+  const grossTaxable = sumWhere("grossAmount", isStandard);
+
+  // Accounting consistency check (spec section 5), STANDARD only -
+  // grossTaxable should equal vatableSales + vatAmount by the "VAT is the
+  // remainder" identity. Zero-rated/exempt have no VAT component so they
+  // are excluded from this check. Never rewrites stored rows.
   const reconciles = Math.abs(grossTaxable - (vatableSales + vatAmount)) < 0.01;
 
-  return { vatableSales, vatAmount, grossTaxable, entryCount: outputVatEntries.length, reconciles };
+  return {
+    vatableSales,
+    zeroRatedSales,
+    exemptSales,
+    vatAmount,
+    grossTaxable,
+    entryCount: outputVatEntries.length,
+    reconciles,
+  };
 }
 
 // Phase 1 print-completeness checkpoint: resolves the applied-Invoice

@@ -8302,12 +8302,17 @@ const VAT_DESCRIPTION_MAX_LEN = 255;
 const VAT_RATE_MAX_VALUE = 999.999;
 const VAT_APPLIES_TO_OPTIONS = ["INPUT", "OUTPUT", "BOTH"];
 const VAT_STATUS_OPTIONS = ["ACTIVE", "INACTIVE"];
+// Phase 7E: explicit VAT treatment. ZERO_RATED and EXEMPT stay distinct
+// (different reporting meaning) even though both compute VAT = 0.
+const VAT_TREATMENT_OPTIONS = ["STANDARD", "ZERO_RATED", "EXEMPT"];
+const VAT_ZERO_TREATMENTS = ["ZERO_RATED", "EXEMPT"];
 
 function validateVatRatePayload(body) {
   const code = String(body.code ?? "").trim();
   const description = String(body.description ?? "").trim();
   const appliesTo = String(body.appliesTo ?? "BOTH").trim().toUpperCase();
   const status = String(body.status ?? "ACTIVE").trim().toUpperCase();
+  const treatment = String(body.treatment ?? "STANDARD").trim().toUpperCase();
   const rateRaw = body.rate;
 
   if (!code) return { error: "VAT Code is required." };
@@ -8320,6 +8325,9 @@ function validateVatRatePayload(body) {
   if (!VAT_APPLIES_TO_OPTIONS.includes(appliesTo)) {
     return { error: `Applies To must be one of: ${VAT_APPLIES_TO_OPTIONS.join(", ")}.` };
   }
+  if (!VAT_TREATMENT_OPTIONS.includes(treatment)) {
+    return { error: `VAT Treatment must be one of: ${VAT_TREATMENT_OPTIONS.join(", ")}.` };
+  }
   if (rateRaw === undefined || rateRaw === null || rateRaw === "") {
     return { error: "Rate is required." };
   }
@@ -8330,11 +8338,17 @@ function validateVatRatePayload(body) {
   if (rate > VAT_RATE_MAX_VALUE) {
     return { error: `Rate must be at most ${VAT_RATE_MAX_VALUE}.` };
   }
+  // A ZERO_RATED / EXEMPT code with a non-zero rate is a contradiction
+  // (spec section 15). The UI also forces the rate to 0 and disables the
+  // field for these treatments; this is the authoritative backstop.
+  if (VAT_ZERO_TREATMENTS.includes(treatment) && rate !== 0) {
+    return { error: `A ${treatment} VAT code must have a rate of 0 (got ${rate}).` };
+  }
   if (!VAT_STATUS_OPTIONS.includes(status)) {
     return { error: `Status must be one of: ${VAT_STATUS_OPTIONS.join(", ")}.` };
   }
 
-  return { code, description, appliesTo, rate, status };
+  return { code, description, appliesTo, rate, treatment, status };
 }
 
 app.get("/api/vat-rate-codes", authenticateToken, authorizePermission("FILESETUP.TAX_SETUP", "VIEW"), async (req, res) => {
@@ -8347,6 +8361,7 @@ app.get("/api/vat-rate-codes", authenticateToken, authorizePermission("FILESETUP
         description,
         applies_to AS appliesTo,
         rate,
+        treatment,
         status,
         created_at AS createdAt,
         updated_at AS updatedAt
@@ -8366,7 +8381,7 @@ app.post("/api/vat-rate-codes", authenticateToken, authorizePermission("FILESETU
   try {
     const validated = validateVatRatePayload(req.body);
     if (validated.error) return res.status(400).json({ message: validated.error });
-    const { code, description, appliesTo, rate, status } = validated;
+    const { code, description, appliesTo, rate, treatment, status } = validated;
 
     // Real DB UNIQUE key exists on `code` (unlike ewt_library's atc_code) -
     // this app-level check exists only to return a clean 409 instead of an
@@ -8380,9 +8395,9 @@ app.post("/api/vat-rate-codes", authenticateToken, authorizePermission("FILESETU
     }
 
     const [result] = await pool.execute(
-      `INSERT INTO vat_rate_codes (code, description, applies_to, rate, status)
-       VALUES (?, ?, ?, ?, ?)`,
-      [code, description || null, appliesTo, rate, status]
+      `INSERT INTO vat_rate_codes (code, description, applies_to, rate, treatment, status)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [code, description || null, appliesTo, rate, treatment, status]
     );
 
     res.json({ success: true, message: "VAT code saved successfully", id: result.insertId });
@@ -8400,7 +8415,7 @@ app.put("/api/vat-rate-codes/:id", authenticateToken, authorizePermission("FILES
     const { id } = req.params;
     const validated = validateVatRatePayload(req.body);
     if (validated.error) return res.status(400).json({ message: validated.error });
-    const { code, description, appliesTo, rate, status } = validated;
+    const { code, description, appliesTo, rate, treatment, status } = validated;
 
     const [dupRows] = await pool.execute("SELECT id FROM vat_rate_codes WHERE code = ? AND id != ?", [code, id]);
     if (dupRows.length) {
@@ -8409,9 +8424,9 @@ app.put("/api/vat-rate-codes/:id", authenticateToken, authorizePermission("FILES
 
     await pool.execute(
       `UPDATE vat_rate_codes SET
-        code = ?, description = ?, applies_to = ?, rate = ?, status = ?
+        code = ?, description = ?, applies_to = ?, rate = ?, treatment = ?, status = ?
       WHERE id = ?`,
-      [code, description || null, appliesTo, rate, status, id]
+      [code, description || null, appliesTo, rate, treatment, status, id]
     );
 
     res.json({ success: true, message: "VAT code updated successfully" });

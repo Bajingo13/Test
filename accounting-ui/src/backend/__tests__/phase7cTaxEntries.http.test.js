@@ -283,6 +283,116 @@ describe("Phase 7C - Output VAT (Invoice) tax entry persistence", () => {
   });
 });
 
+describe("Phase 7E - VAT treatment snapshot (STANDARD / ZERO_RATED / EXEMPT)", () => {
+  function invoiceWith(taxEntryExtra, { amount = 5000, voucher }) {
+    return {
+      voucherNo: voucher, customerId: custId, customerName: "PH7C Customer Original",
+      transactionDate: "2026-08-10", referenceNo: voucher, description: "Sale", status: "Draft",
+      lines: [
+        { accountId: arId, accountCode: "PH7CAR", accountTitle: "Accounts Receivable", particulars: "AR", genRef: "PH7C-CUST", genName: "PH7C Customer Original", debit: amount, credit: 0 },
+        { accountId: revId, accountCode: "PH7CREV", accountTitle: "Sales Revenue", particulars: "Revenue", genRef: "", genName: "", debit: 0, credit: amount },
+        {
+          accountId: outputVatId, accountCode: "PH7COVAT", accountTitle: "Output VAT Payable",
+          particulars: "Output VAT", genRef: "", genName: "PH7C Customer Original", debit: 0, credit: 0,
+          taxEntry: {
+            entryType: "OUTPUT_VAT", accountId: outputVatId,
+            partyId: custId, partyName: "PH7C Customer Original", partyTin: "111-222-333-000", partyAddress: "Manila",
+            transactionDate: "2026-08-10", grossAmount: amount, netAmount: amount, vatRate: 0, vatAmount: 0,
+            ...taxEntryExtra,
+          },
+        },
+      ],
+      totalDebit: amount, totalCredit: amount,
+    };
+  }
+
+  test("a ZERO_RATED Output VAT entry persists treatment='ZERO_RATED', VAT 0, base recorded", async () => {
+    const res = await request(app).post("/api/invoices").set("Authorization", `Bearer ${token}`)
+      .send(invoiceWith({ vatTreatment: "ZERO_RATED", vatCode: "VAT_ZERO_RATED" }, { voucher: "PH7E-INV-ZR" }));
+    expect(res.status).toBe(200);
+    const [rows] = await pool.query("SELECT * FROM transaction_tax_entries WHERE transaction_type = 'INV' AND transaction_id = ?", [res.body.id]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].vat_treatment).toBe("ZERO_RATED");
+    expect(rows[0].vat_code).toBe("VAT_ZERO_RATED");
+    expect(Number(rows[0].vat_amount)).toBe(0);
+    expect(Number(rows[0].net_amount)).toBe(5000);
+  });
+
+  test("an EXEMPT entry persists treatment='EXEMPT' - distinct from zero-rated", async () => {
+    const res = await request(app).post("/api/invoices").set("Authorization", `Bearer ${token}`)
+      .send(invoiceWith({ vatTreatment: "EXEMPT", vatCode: "VAT_EXEMPT" }, { voucher: "PH7E-INV-EX" }));
+    expect(res.status).toBe(200);
+    const [rows] = await pool.query("SELECT vat_treatment FROM transaction_tax_entries WHERE transaction_type = 'INV' AND transaction_id = ?", [res.body.id]);
+    expect(rows[0].vat_treatment).toBe("EXEMPT");
+  });
+
+  test("a STANDARD entry with no treatment sent is stored as STANDARD (backward compatible)", async () => {
+    const gross = 1120, net = 1000, vat = 120;
+    const res = await request(app).post("/api/invoices").set("Authorization", `Bearer ${token}`).send({
+      voucherNo: "PH7E-INV-STD", customerId: custId, customerName: "PH7C Customer Original",
+      transactionDate: "2026-08-10", referenceNo: "PH7E-INV-STD", description: "Sale", status: "Draft",
+      lines: [
+        { accountId: arId, accountCode: "PH7CAR", accountTitle: "AR", particulars: "AR", genRef: "PH7C-CUST", genName: "PH7C Customer Original", debit: gross, credit: 0 },
+        { accountId: revId, accountCode: "PH7CREV", accountTitle: "Rev", particulars: "Rev", genRef: "", genName: "", debit: 0, credit: net },
+        {
+          accountId: outputVatId, accountCode: "PH7COVAT", accountTitle: "Output VAT", particulars: "Output VAT (12%)",
+          genRef: "", genName: "PH7C Customer Original", debit: 0, credit: vat,
+          taxEntry: {
+            entryType: "OUTPUT_VAT", accountId: outputVatId, partyId: custId, partyName: "PH7C Customer Original",
+            partyTin: "111", partyAddress: "Manila", transactionDate: "2026-08-10",
+            grossAmount: gross, netAmount: net, vatRate: 12, vatAmount: vat,
+          },
+        },
+      ],
+      totalDebit: gross, totalCredit: gross,
+    });
+    expect(res.status).toBe(200);
+    const [rows] = await pool.query("SELECT vat_treatment FROM transaction_tax_entries WHERE transaction_type = 'INV' AND transaction_id = ?", [res.body.id]);
+    expect(rows[0].vat_treatment).toBe("STANDARD");
+  });
+
+  test("a ZERO_RATED entry that also carries a non-zero VAT amount is rejected (400)", async () => {
+    const res = await request(app).post("/api/invoices").set("Authorization", `Bearer ${token}`)
+      .send(invoiceWith({ vatTreatment: "ZERO_RATED", vatRate: 0, vatAmount: 123 }, { voucher: "PH7E-INV-BADZR", amount: 5000 }));
+    // the journal line credit stays 0 but the taxEntry claims vatAmount 123
+    expect([400, 422]).toContain(res.status);
+  });
+
+  test("edit reload preserves the stored ZERO_RATED treatment (no reclassification from the library)", async () => {
+    const create = await request(app).post("/api/invoices").set("Authorization", `Bearer ${token}`)
+      .send(invoiceWith({ vatTreatment: "ZERO_RATED", vatCode: "VAT_ZERO_RATED" }, { voucher: "PH7E-INV-RELOAD", amount: 5000 }));
+    expect(create.status).toBe(200);
+    const id = create.body.id;
+
+    // The UI reloads structured entries from getRes.body.taxEntries (same
+    // as the existing multi-entry regression test), then re-sends each on
+    // the next save spread into the line's taxEntry.
+    const detail = await request(app).get(`/api/invoices/${id}`).set("Authorization", `Bearer ${token}`);
+    expect(detail.body.taxEntries).toHaveLength(1);
+    const reloadedTax = detail.body.taxEntries[0];
+    expect(reloadedTax.entryType).toBe("OUTPUT_VAT");
+    expect(reloadedTax.vatTreatment).toBe("ZERO_RATED"); // stored snapshot, not re-derived from the library
+
+    const resave = await request(app).put(`/api/invoices/${id}`).set("Authorization", `Bearer ${token}`).send({
+      voucherNo: "PH7E-INV-RELOAD", customerId: custId, customerName: "PH7C Customer Original",
+      transactionDate: "2026-08-10", referenceNo: "PH7E-INV-RELOAD", description: "Sale", status: "Draft",
+      lines: [
+        { accountId: arId, accountCode: "PH7CAR", accountTitle: "AR", particulars: "AR", genRef: "PH7C-CUST", genName: "PH7C Customer Original", debit: 5000, credit: 0 },
+        { accountId: revId, accountCode: "PH7CREV", accountTitle: "Rev", particulars: "Rev", genRef: "", genName: "", debit: 0, credit: 5000 },
+        {
+          accountId: outputVatId, accountCode: "PH7COVAT", accountTitle: "Output VAT Payable",
+          particulars: "Zero-Rated Sales", genRef: "", genName: "PH7C Customer Original", debit: 0, credit: 0,
+          taxEntry: { entryType: "OUTPUT_VAT", ...reloadedTax },
+        },
+      ],
+      totalDebit: 5000, totalCredit: 5000,
+    });
+    expect(resave.status).toBe(200);
+    const [rows] = await pool.query("SELECT vat_treatment FROM transaction_tax_entries WHERE transaction_type = 'INV' AND transaction_id = ?", [id]);
+    expect(rows[0].vat_treatment).toBe("ZERO_RATED");
+  });
+});
+
 describe("Phase 7C - Edit test (spec section 43)", () => {
   test("editing Gross Purchase and re-saving updates the line and schedule with no duplicate", async () => {
     const first = apvInputVatLine({ gross: 3360 });

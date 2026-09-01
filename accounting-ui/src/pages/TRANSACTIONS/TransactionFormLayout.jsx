@@ -1101,9 +1101,19 @@ if (code === "OR") {
     const isOutput = vatEntryDirection === "OUTPUT";
     const selectedPartyForRef = partyOptions.find((p) => p.id === entry.partyId);
 
+    // Phase 7E: a ZERO_RATED / EXEMPT entry has VAT 0 - its journal line
+    // documents the classification (and carries the base in taxEntry), it
+    // is never a "fake 0% standard VAT" line.
+    const treatment = String(entry.vatTreatment || "STANDARD").toUpperCase();
+    const isZeroTreatment = treatment === "ZERO_RATED" || treatment === "EXEMPT";
+    const kindLabel = isOutput ? "Output VAT" : "Input VAT";
+    const particulars = isZeroTreatment
+      ? `${treatment === "ZERO_RATED" ? "Zero-Rated" : "VAT-Exempt"} ${isOutput ? "Sales" : "Purchase"}`
+      : `${kindLabel} (${entry.vatRate}%)`;
+
     const lineData = {
       accountId: entry.accountId,
-      particulars: `${isOutput ? "Output VAT" : "Input VAT"} (${entry.vatRate}%)`,
+      particulars,
       genRef: selectedPartyForRef?.code || "",
       genName: entry.partyName || "",
       debit: isOutput ? "" : String(entry.vatAmount),

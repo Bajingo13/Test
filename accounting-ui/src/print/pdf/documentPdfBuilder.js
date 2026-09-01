@@ -757,6 +757,17 @@ export async function buildDocumentPdf({
       };
 
       tsRow("VATable Sales", `${baseSymbol} ${formatMoney(outputVat.vatableSales)}`);
+      // Phase 7E: Zero-Rated / VAT-Exempt sales are shown as their OWN
+      // lines, and only when this document actually has such an entry -
+      // never a fabricated 0.00 row implying a classification that wasn't
+      // used (spec sections 12/16). Sourced from the stored treatment
+      // snapshot, never derived from the VAT rate.
+      if (Number(outputVat.zeroRatedSales) > 0) {
+        tsRow("Zero-Rated Sales", `${baseSymbol} ${formatMoney(outputVat.zeroRatedSales)}`);
+      }
+      if (Number(outputVat.exemptSales) > 0) {
+        tsRow("VAT-Exempt Sales", `${baseSymbol} ${formatMoney(outputVat.exemptSales)}`);
+      }
       tsRow("VAT Amount", `${baseSymbol} ${formatMoney(outputVat.vatAmount)}`);
 
       // Less: Withholding Tax only appears when THIS document also has a

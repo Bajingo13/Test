@@ -1,6 +1,11 @@
 const pool = require("../db");
 const { HttpError } = require("../lib/httpError");
-const { computeVatFromInclusiveGross } = require("./vatCalculationService");
+const {
+  computeVatByTreatment,
+  normalizeVatTreatment,
+  isValidVatTreatment,
+  isZeroVatTreatment,
+} = require("./vatCalculationService");
 
 // Phase 7C: persistence for the new transaction_tax_entries schedule
 // metadata table (see phase7c_tax_schedule_migration.sql for the
@@ -31,21 +36,50 @@ function roundMoney(value) {
 // already constructed around the client-computed figure. Rejecting with a
 // clear error is safer than silently rewriting a monetary line.
 function validateVatTaxEntry(taxEntry, lineAmount) {
-  const { netAmount, vatAmount } = computeVatFromInclusiveGross({
-    gross: taxEntry.grossAmount,
+  const label = taxEntry.entryType === "INPUT_VAT" ? "Input VAT" : "Output VAT";
+
+  // Phase 7E: the treatment SNAPSHOT on the entry is authoritative. A
+  // missing value (a pre-7E reloaded entry) reads as STANDARD; an
+  // unrecognized value is rejected outright.
+  if (taxEntry.vatTreatment != null && !isValidVatTreatment(taxEntry.vatTreatment)) {
+    throw new HttpError(400, `${label}: unknown VAT treatment "${taxEntry.vatTreatment}".`);
+  }
+  const treatment = normalizeVatTreatment(taxEntry.vatTreatment);
+
+  // A ZERO_RATED / EXEMPT entry that carries a non-zero rate OR a non-zero
+  // VAT amount is a contradiction - reject rather than silently pick one.
+  if (isZeroVatTreatment(treatment) && Number(taxEntry.vatRate || 0) !== 0) {
+    throw new HttpError(
+      400,
+      `${label}: a ${treatment} entry cannot have a non-zero VAT rate (got ${taxEntry.vatRate}%).`
+    );
+  }
+  if (isZeroVatTreatment(treatment) && Math.abs(Number(taxEntry.vatAmount || 0)) > 0.01) {
+    throw new HttpError(
+      400,
+      `${label}: a ${treatment} entry must have a VAT amount of 0 (got ${taxEntry.vatAmount}).`
+    );
+  }
+
+  // STANDARD: amount is the VAT-inclusive gross -> split. ZERO_RATED /
+  // EXEMPT: amount IS the base, VAT is 0, base is still recorded.
+  const { netAmount, vatAmount } = computeVatByTreatment({
+    amount: taxEntry.grossAmount,
     vatRatePercent: taxEntry.vatRate,
+    treatment,
   });
 
   if (Math.abs(vatAmount - Number(lineAmount || 0)) > 0.01) {
     throw new HttpError(
       400,
-      `${taxEntry.entryType === "INPUT_VAT" ? "Input VAT" : "Output VAT"} line amount (${lineAmount}) does not match ` +
-        `the centralized VAT calculation (Gross ${taxEntry.grossAmount} at ${taxEntry.vatRate}% = ${vatAmount}). ` +
-        `Recalculate and try again.`
+      isZeroVatTreatment(treatment)
+        ? `${label} line amount (${lineAmount}) must be 0 for a ${treatment} entry. Recalculate and try again.`
+        : `${label} line amount (${lineAmount}) does not match the centralized VAT calculation ` +
+            `(Gross ${taxEntry.grossAmount} at ${taxEntry.vatRate}% = ${vatAmount}). Recalculate and try again.`
     );
   }
 
-  return { netAmount, vatAmount };
+  return { netAmount, vatAmount, treatment };
 }
 
 // Phase 7C.1: closes the gap Phase 7C's own report flagged - "the legacy
@@ -168,19 +202,30 @@ async function saveTaxEntries(conn, { companyId, transactionType, transactionId,
   );
 
   for (const entry of entries || []) {
+    // Phase 7E: persist the VAT code + treatment as a transaction-time
+    // snapshot for VAT entries. A later edit to the VAT Rate Library must
+    // never reclassify this row. EWT entries carry neither (left NULL).
+    const isVatEntry = entry.entryType === "INPUT_VAT" || entry.entryType === "OUTPUT_VAT";
+    const vatCodeSnapshot = isVatEntry ? entry.vatCode || null : null;
+    const vatTreatmentSnapshot = isVatEntry
+      ? normalizeVatTreatment(entry.vatTreatment)
+      : null;
+
     await conn.execute(
       `INSERT INTO transaction_tax_entries (
         company_id, transaction_type, transaction_id, line_id, entry_type,
         party_id, party_name_snapshot, party_tin_snapshot, party_address_snapshot,
         transaction_date, gross_amount, net_amount, vat_rate, vat_amount, purchase_classification,
+        vat_code, vat_treatment,
         atc_code, tax_type, taxable_base, withheld_amount, account_id, created_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         companyId, transactionType, transactionId, entry.lineId, entry.entryType,
         entry.partyId || null, entry.partyName || null, entry.partyTin || null, entry.partyAddress || null,
         entry.transactionDate || null,
         entry.grossAmount ?? null, entry.netAmount ?? null, entry.vatRate ?? null, entry.vatAmount ?? null,
         entry.purchaseClassification || null,
+        vatCodeSnapshot, vatTreatmentSnapshot,
         entry.atcCode || null, entry.taxType || null, entry.taxableBase ?? null, entry.withheldAmount ?? null,
         entry.accountId || null, userId || null,
       ]
@@ -197,6 +242,7 @@ async function loadTaxEntries(transactionType, transactionId) {
       DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate,
       gross_amount AS grossAmount, net_amount AS netAmount, vat_rate AS vatRate, vat_amount AS vatAmount,
       purchase_classification AS purchaseClassification,
+      vat_code AS vatCode, vat_treatment AS vatTreatment,
       atc_code AS atcCode, tax_type AS taxType, taxable_base AS taxableBase, withheld_amount AS withheldAmount,
       account_id AS accountId
     FROM transaction_tax_entries

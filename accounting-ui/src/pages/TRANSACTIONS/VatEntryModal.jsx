@@ -1,7 +1,18 @@
 import React, { useEffect, useState } from "react";
-import { computeVatFromInclusiveGross, DEFAULT_VAT_RATE } from "../../utils/vatCalculations";
+import {
+  computeVatByTreatment,
+  normalizeVatTreatment,
+  isZeroVatTreatment,
+  DEFAULT_VAT_RATE,
+} from "../../utils/vatCalculations";
 import { defaultTaxAccountId } from "./taxAccountRules.mjs";
 import { formatMoney } from "./transactionFormUtils";
+
+const TREATMENT_LABEL = {
+  STANDARD: "Standard VAT",
+  ZERO_RATED: "Zero-Rated",
+  EXEMPT: "Exempt",
+};
 
 const CLASSIFICATIONS = ["Services", "Capital Goods", "Other than Capital Goods"];
 
@@ -45,6 +56,9 @@ export default function VatEntryModal({
   const [transactionDate, setTransactionDate] = useState(defaultDate || "");
   const [grossAmount, setGrossAmount] = useState("");
   const [vatRate, setVatRate] = useState(String(DEFAULT_VAT_RATE));
+  // Phase 7E: VAT treatment, sourced from the selected VAT code (or the
+  // stored snapshot when editing). Manual entry stays STANDARD.
+  const [treatment, setTreatment] = useState("STANDARD");
   const [classification, setClassification] = useState(CLASSIFICATIONS[0]);
   const [accountId, setAccountId] = useState("");
 
@@ -72,9 +86,13 @@ export default function VatEntryModal({
       setVatRate(existingEntry.vatRate != null ? String(existingEntry.vatRate) : String(DEFAULT_VAT_RATE));
       setClassification(existingEntry.purchaseClassification || CLASSIFICATIONS[0]);
       setAccountId(existingEntry.accountId ? String(existingEntry.accountId) : "");
-      // An existing entry never recorded which catalog code (if any) it
-      // came from - always reopen in manual/free-entry state, never
-      // guess a code from the rate alone.
+      // Phase 7E: the STORED treatment snapshot is authoritative when
+      // editing - never re-derived from the current VAT Rate Library. A
+      // pre-7E entry has no snapshot and reads as STANDARD.
+      setTreatment(normalizeVatTreatment(existingEntry.vatTreatment));
+      // An existing entry reopens in manual/free-entry state for the CODE
+      // picker (it never recorded which catalog id it came from), but its
+      // stored treatment/rate above are preserved.
       setSelectedVatCodeId("");
       setRateOverridden(false);
     } else {
@@ -85,6 +103,7 @@ export default function VatEntryModal({
       setTransactionDate(defaultDate || "");
       setGrossAmount("");
       setVatRate(String(DEFAULT_VAT_RATE));
+      setTreatment("STANDARD");
       setClassification(CLASSIFICATIONS[0]);
       setSelectedVatCodeId("");
       setRateOverridden(false);
@@ -101,9 +120,20 @@ export default function VatEntryModal({
   function handleSelectVatCode(id) {
     setSelectedVatCodeId(id);
     setRateOverridden(false);
-    if (!id) return; // switched to manual entry - leave whatever rate is already typed
+    if (!id) {
+      // Switched to manual entry: leave the typed rate, revert to STANDARD
+      // treatment (manual entry has no classification of its own).
+      setTreatment("STANDARD");
+      return;
+    }
     const chosen = applicableVatCodes.find((c) => String(c.id) === id);
-    if (chosen) setVatRate(String(chosen.rate));
+    if (chosen) {
+      const t = normalizeVatTreatment(chosen.treatment);
+      setTreatment(t);
+      // Zero-rated / exempt: rate is fixed at 0, never the code's stored
+      // rate (which is already 0 anyway) or a typed value.
+      setVatRate(isZeroVatTreatment(t) ? "0" : String(chosen.rate));
+    }
   }
 
   function handleRateChange(value) {
@@ -127,7 +157,13 @@ export default function VatEntryModal({
     }
   }
 
-  const { netAmount, vatAmount } = computeVatFromInclusiveGross({ gross: grossAmount, vatRatePercent: vatRate });
+  const zeroTreatment = isZeroVatTreatment(treatment);
+  const { netAmount, vatAmount } = computeVatByTreatment({
+    amount: grossAmount,
+    vatRatePercent: vatRate,
+    treatment,
+  });
+  const effectiveRate = zeroTreatment ? 0 : Number(vatRate);
 
   function handleConfirm() {
     if (noAccountConfigured) { alert(missingAccountMessage); return; }
@@ -144,8 +180,13 @@ export default function VatEntryModal({
       transactionDate,
       grossAmount: Number(grossAmount),
       netAmount,
-      vatRate: Number(vatRate),
+      vatRate: effectiveRate,
       vatAmount,
+      // Phase 7E: transaction-time snapshot - persisted verbatim to
+      // transaction_tax_entries so a later VAT Rate Library edit can never
+      // reclassify this entry.
+      vatCode: selectedVatCode ? selectedVatCode.code : null,
+      vatTreatment: treatment,
       purchaseClassification: isInput ? classification : null,
     });
   }
@@ -224,17 +265,33 @@ export default function VatEntryModal({
             )}
 
             <div className="transaction-field">
+              <label className="transaction-label">VAT Treatment</label>
+              <input
+                type="text"
+                value={TREATMENT_LABEL[treatment] || treatment}
+                readOnly
+                className="transaction-input transaction-input-readonly"
+              />
+              {zeroTreatment && (
+                <p className="tax-entry-vat-rate-note">
+                  {TREATMENT_LABEL[treatment]}: VAT is 0. The {netLabel.toLowerCase()} is still recorded.
+                </p>
+              )}
+            </div>
+
+            <div className="transaction-field">
               <label className="transaction-label">VAT Rate (%)</label>
               <input
                 type="number"
                 min="0"
                 step="0.01"
-                value={vatRate}
+                value={zeroTreatment ? "0" : vatRate}
                 onChange={(e) => handleRateChange(e.target.value)}
-                readOnly={Boolean(selectedVatCode) && !rateOverridden}
+                readOnly={zeroTreatment || (Boolean(selectedVatCode) && !rateOverridden)}
+                disabled={zeroTreatment}
                 className="transaction-input"
               />
-              {selectedVatCode && !rateOverridden && (
+              {!zeroTreatment && selectedVatCode && !rateOverridden && (
                 <p className="tax-entry-vat-rate-note">
                   Source: {selectedVatCode.code} ({Number(selectedVatCode.rate)}%){" "}
                   <button type="button" className="tax-entry-override-link" onClick={() => setRateOverridden(true)}>
@@ -242,12 +299,12 @@ export default function VatEntryModal({
                   </button>
                 </p>
               )}
-              {selectedVatCode && rateOverridden && (
+              {!zeroTreatment && selectedVatCode && rateOverridden && (
                 <p className="tax-entry-vat-rate-note tax-entry-vat-rate-overridden">
                   Overridden from {selectedVatCode.code} ({Number(selectedVatCode.rate)}%)
                 </p>
               )}
-              {!selectedVatCode && applicableVatCodes.length === 0 && (
+              {!selectedVatCode && !zeroTreatment && applicableVatCodes.length === 0 && (
                 <p className="tax-entry-vat-rate-note">
                   VAT Rate Library unavailable — enter rate manually.
                 </p>

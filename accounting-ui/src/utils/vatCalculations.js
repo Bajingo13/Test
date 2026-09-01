@@ -24,3 +24,26 @@ export function computeVatFromInclusiveGross({ gross, vatRatePercent }) {
 
   return { grossAmount: g, netAmount, vatAmount };
 }
+
+// Phase 7E preview mirror of vatCalculationService.js's treatment logic.
+// STANDARD/ZERO_RATED/EXEMPT stay distinct as data even though the last two
+// both compute VAT = 0. Non-authoritative - the backend re-validates on save.
+export const VAT_TREATMENTS = ["STANDARD", "ZERO_RATED", "EXEMPT"];
+
+export function normalizeVatTreatment(value) {
+  const t = String(value == null ? "" : value).trim().toUpperCase();
+  return t || "STANDARD";
+}
+
+export function isZeroVatTreatment(value) {
+  return normalizeVatTreatment(value) === "ZERO_RATED" || normalizeVatTreatment(value) === "EXEMPT";
+}
+
+export function computeVatByTreatment({ amount, vatRatePercent, treatment }) {
+  const t = normalizeVatTreatment(treatment);
+  if (isZeroVatTreatment(t)) {
+    const base = roundMoney(amount);
+    return { grossAmount: base, netAmount: base, vatAmount: 0, treatment: t };
+  }
+  return { ...computeVatFromInclusiveGross({ gross: amount, vatRatePercent }), treatment: "STANDARD" };
+}
