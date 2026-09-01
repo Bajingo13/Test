@@ -530,7 +530,10 @@
   bottom: auto;
 }
 
-.print-dropdown:hover .print-dropdown-menu {
+/* "+ Add Entry" is click-controlled (see AddEntryMenu.jsx) - the dropdown is
+   shown by the data-open state the component sets, never by hover. No
+   `.print-dropdown:hover` rule: hover must neither open nor close it. */
+.add-entry-menu[data-open="true"] .print-dropdown-menu {
   display: block;
 }
 
