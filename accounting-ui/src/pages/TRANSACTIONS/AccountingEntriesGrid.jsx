@@ -1,5 +1,6 @@
 import React from "react";
 import { formatMoney } from "./transactionFormUtils";
+import { filterSelectableRegularAccounts } from "./taxAccountRules.mjs";
 import "./TransactionFormLayout.css";
 
 // Checkpoint 7A: extracted verbatim from TransactionFormLayout.jsx's
@@ -97,7 +98,19 @@ export default function AccountingEntriesGrid({
       </thead>
 
       <tbody>
-        {lines.map((line) => (
+        {lines.map((line) => {
+          // A Regular Journal Entry row must never be able to select a COA
+          // account carrying a protected tax validation (INPUT VAT /
+          // OUTPUT VAT / EXPANDED TAX / FINAL TAX) - those enter the journal
+          // only through the tax modal workflow. `line.accountId` is passed
+          // as keepAccountId so an already-set value (legacy data, or an
+          // OR/CV/PO legacy-VAT line that carries no taxEntry tag) stays
+          // visible for that row without being re-selectable anywhere else.
+          const selectableAccounts = filterSelectableRegularAccounts(
+            accountOptions,
+            line.accountId
+          );
+          return (
           <tr key={line.id}>
             <td>
               <select
@@ -108,7 +121,7 @@ export default function AccountingEntriesGrid({
                 className="transaction-table-input"
               >
                 <option value="">Select account</option>
-                {accountOptions.map((account) => (
+                {selectableAccounts.map((account) => (
                   <option key={account.id} value={account.id}>
                     {account.code} - {account.title}
                   </option>
@@ -214,7 +227,8 @@ export default function AccountingEntriesGrid({
               </button>
             </td>
           </tr>
-        ))}
+          );
+        })}
       </tbody>
     </>
   );

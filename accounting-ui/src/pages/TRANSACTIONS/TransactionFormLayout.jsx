@@ -22,6 +22,13 @@ import LegacyVatEntryModal from "./LegacyVatEntryModal";
 import LegacyEwtEntryModal from "./LegacyEwtEntryModal";
 import CashCheckDetailsModal from "./CashCheckDetailsModal";
 import { filterTransactions, deriveStatusOptions, sortTransactions } from "./transactionListFilters.mjs";
+import {
+  inputVatAccounts,
+  outputVatAccounts,
+  ewtControlAccounts,
+  defaultTaxAccountId,
+  missingTaxAccountMessage,
+} from "./taxAccountRules.mjs";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
 import "./TransactionFormLayout.css";
 
@@ -284,17 +291,21 @@ export default function TransactionFormLayout({
     }
   }, []);
 
+  // Seed the default VAT control account from the COA "Validation Rules"
+  // (INPUT VAT / OUTPUT VAT assignment in coa_validations, exposed on every
+  // /api/coa row as `account.validations`) - never from the account title.
+  // Auto-selects only when exactly one validated account exists; otherwise
+  // the tax modal forces an explicit pick / shows the missing-config
+  // message (see missingTaxAccountMessage wiring below).
   useEffect(() => {
-    if (vatAccountId || accountOptions.length === 0) return;
-
-    const keyword =
-      code === "INV" || code === "OR" ? "output vat" : "input vat";
-
-    const match = accountOptions.find((acc) =>
-      String(acc.title || "").toLowerCase().includes(keyword)
-    );
-
-    if (match) setVatAccountId(String(match.id));
+    const wantsOutputVat = code === "INV" || code === "OR";
+    const wantsInputVat = code === "APV" || code === "CV" || code === "PO";
+    if (vatAccountId || accountOptions.length === 0 || (!wantsOutputVat && !wantsInputVat)) return;
+    const matches = wantsOutputVat
+      ? outputVatAccounts(accountOptions)
+      : inputVatAccounts(accountOptions);
+    const def = defaultTaxAccountId(matches);
+    if (def) setVatAccountId(def);
   }, [accountOptions]);
 
   async function loadEwtCodes() {
@@ -996,6 +1007,26 @@ if (code === "OR") {
   const ewtOutbound = code === "APV" || code === "CV" || code === "PO";
   const ewtInbound = code === "INV" || code === "OR";
   const ewtEligible = ewtOutbound || ewtInbound;
+
+  // Tax-modal account lists, sourced from the COA "Validation Rules"
+  // (coa_validations -> /api/coa `account.validations`), never from account
+  // title/code text. The Regular Journal Entry dropdown filters these same
+  // accounts OUT (see AccountingEntriesGrid); the tax modals filter them
+  // IN. An empty list is a valid state - the modal then shows the
+  // missing-configuration message instead of falling back to any heuristic.
+  const vatModalAccounts = useMemo(() => {
+    if (vatType === "Output VAT") return outputVatAccounts(accountOptions);
+    if (vatType === "Input VAT") return inputVatAccounts(accountOptions);
+    return [];
+  }, [accountOptions, vatType]);
+  const ewtModalAccounts = useMemo(
+    () => ewtControlAccounts(accountOptions),
+    [accountOptions]
+  );
+  const vatMissingMessage = missingTaxAccountMessage(
+    vatType === "Output VAT" ? "OUTPUT_VAT" : "INPUT_VAT"
+  );
+  const ewtMissingMessage = missingTaxAccountMessage("EWT");
 
   // Phase 7E section 6: Phase 7D's audit conclusively found that OR/CV tax
   // entry can double-recognize tax when the voucher is settling an existing
@@ -3371,7 +3402,8 @@ if (code === "OR") {
               direction={vatEntryDirection}
               partyLabel={partyLabel}
               partyOptions={partyOptions}
-              accountOptions={accountOptions}
+              taxAccountOptions={vatModalAccounts}
+              missingAccountMessage={vatMissingMessage}
               vatRateCodes={vatRateCodes}
               defaultDate={form.date}
               existingEntry={editingTaxLineId ? lines.find((l) => l.id === editingTaxLineId)?.taxEntry : null}
@@ -3394,7 +3426,8 @@ if (code === "OR") {
                   partyOptions.find((p) => p.id === form.partyId)?.address3,
                 ].filter(Boolean).join(", "),
               }}
-              accountOptions={accountOptions}
+              taxAccountOptions={ewtModalAccounts}
+              missingAccountMessage={ewtMissingMessage}
               lines={lines}
               grossAmount={totals.totalCredit}
               vatAccountId={lines.find((l) => l.taxEntry?.entryType === "OUTPUT_VAT" || l.taxEntry?.entryType === "INPUT_VAT")?.accountId}
@@ -3428,7 +3461,8 @@ if (code === "OR") {
           vatRate={vatRate}
           setVatRate={setVatRate}
           vatAmount={vatAmount}
-          accountOptions={accountOptions}
+          accountOptions={vatModalAccounts}
+          missingAccountMessage={vatMissingMessage}
           hasSourceApplications={hasSourceApplications}
           sourceDuplicationWarning={sourceDuplicationWarning}
           onAddLine={handleAddVatLine}

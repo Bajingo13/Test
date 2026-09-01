@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { computeVatFromInclusiveGross, DEFAULT_VAT_RATE } from "../../utils/vatCalculations";
+import { defaultTaxAccountId } from "./taxAccountRules.mjs";
 import { formatMoney } from "./transactionFormUtils";
 
 const CLASSIFICATIONS = ["Services", "Capital Goods", "Other than Capital Goods"];
@@ -19,7 +20,12 @@ export default function VatEntryModal({
   direction, // "INPUT" | "OUTPUT"
   partyLabel, // "Supplier" | "Customer"
   partyOptions,
-  accountOptions,
+  // Accounts carrying the matching COA validation rule (INPUT VAT for
+  // direction INPUT, OUTPUT VAT for direction OUTPUT), pre-filtered by the
+  // parent from /api/coa's `validations` array - never identified by title.
+  taxAccountOptions = [],
+  // Item 10: exact message shown when taxAccountOptions is empty.
+  missingAccountMessage = "",
   vatRateCodes, // Phase 6D: reference-only catalog, already ACTIVE-filtered by the parent - [] is a valid, expected state (empty catalog / fetch failed), not an error
   defaultDate,
   existingEntry, // pre-fill when editing an already-added tax entry
@@ -30,7 +36,7 @@ export default function VatEntryModal({
   const grossLabel = isInput ? "Gross Purchase" : "Gross Sale";
   const netLabel = isInput ? "Net Purchase" : "Net Sale";
   const vatLabel = isInput ? "VAT Paid" : "Output VAT";
-  const accountKeyword = isInput ? "input vat" : "output vat";
+  const noAccountConfigured = (taxAccountOptions || []).length === 0;
 
   const [party, setParty] = useState("");
   const [partyId, setPartyId] = useState(null);
@@ -82,11 +88,10 @@ export default function VatEntryModal({
       setClassification(CLASSIFICATIONS[0]);
       setSelectedVatCodeId("");
       setRateOverridden(false);
-      // Same heuristic keyword-default TransactionFormLayout already uses
-      // for the (now-legacy, OR/CV/PO-only) VAT account picker - preserves
-      // the existing "no hard-coded account id" mechanism (spec section 10).
-      const match = accountOptions.find((acc) => String(acc.title || "").toLowerCase().includes(accountKeyword));
-      setAccountId(match ? String(match.id) : "");
+      // Default from the COA Validation Rules, never from account title:
+      // auto-select when exactly one validated account exists, otherwise
+      // leave blank and force an explicit pick.
+      setAccountId(defaultTaxAccountId(taxAccountOptions));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, existingEntry]);
@@ -125,6 +130,7 @@ export default function VatEntryModal({
   const { netAmount, vatAmount } = computeVatFromInclusiveGross({ gross: grossAmount, vatRatePercent: vatRate });
 
   function handleConfirm() {
+    if (noAccountConfigured) { alert(missingAccountMessage); return; }
     if (!party.trim()) { alert(`${partyLabel} is required.`); return; }
     if (!accountId) { alert(`${title} account is required.`); return; }
     if (!grossAmount || Number(grossAmount) <= 0) { alert(`${grossLabel} must be greater than zero.`); return; }
@@ -156,6 +162,11 @@ export default function VatEntryModal({
         </div>
 
         <div className="tax-entry-modal-body">
+          {noAccountConfigured && (
+            <p className="transaction-tax-duplication-warning" role="alert">
+              ⚠ {missingAccountMessage}
+            </p>
+          )}
           <div className="transaction-grid">
             <div className="transaction-field">
               <label className="transaction-label">{partyLabel}</label>
@@ -254,9 +265,14 @@ export default function VatEntryModal({
 
             <div className="transaction-field">
               <label className="transaction-label">{title} Account</label>
-              <select value={accountId} onChange={(e) => setAccountId(e.target.value)} className="transaction-input">
+              <select
+                value={accountId}
+                onChange={(e) => setAccountId(e.target.value)}
+                className="transaction-input"
+                disabled={noAccountConfigured}
+              >
                 <option value="">Select account</option>
-                {accountOptions.map((account) => (
+                {taxAccountOptions.map((account) => (
                   <option key={account.id} value={account.id}>{account.code} - {account.title}</option>
                 ))}
               </select>
@@ -276,7 +292,7 @@ export default function VatEntryModal({
 
         <div className="apv-modal-footer">
           <button type="button" className="transaction-secondary-button" onClick={onClose}>Cancel</button>
-          <button type="button" className="transaction-primary-button" onClick={handleConfirm}>Confirm</button>
+          <button type="button" className="transaction-primary-button" onClick={handleConfirm} disabled={noAccountConfigured}>Confirm</button>
         </div>
       </div>
     </div>

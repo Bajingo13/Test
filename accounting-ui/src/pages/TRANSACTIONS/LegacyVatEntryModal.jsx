@@ -22,14 +22,22 @@ export default function LegacyVatEntryModal({
   vatRate,
   setVatRate,
   vatAmount,
+  // Accounts carrying the matching COA validation rule (OUTPUT VAT for
+  // OR, INPUT VAT for CV/PO), pre-filtered by the parent from /api/coa's
+  // `validations` array - never identified by title.
   accountOptions,
+  // Item 10: exact message shown when accountOptions is empty.
+  missingAccountMessage = "",
   hasSourceApplications,
   sourceDuplicationWarning,
   onAddLine,
 }) {
   if (!open) return null;
 
+  const noAccountConfigured = (accountOptions || []).length === 0;
+
   function handleAdd() {
+    if (noAccountConfigured) { alert(missingAccountMessage); return; }
     onAddLine();
     onClose();
   }
@@ -49,6 +57,11 @@ export default function LegacyVatEntryModal({
           {hasSourceApplications && (
             <p className="transaction-tax-duplication-warning" role="alert">
               ⚠ {sourceDuplicationWarning}
+            </p>
+          )}
+          {noAccountConfigured && (
+            <p className="transaction-tax-duplication-warning" role="alert">
+              ⚠ {missingAccountMessage}
             </p>
           )}
 
@@ -111,7 +124,7 @@ export default function LegacyVatEntryModal({
 
         <div className="apv-modal-footer">
           <button type="button" className="transaction-secondary-button" onClick={onClose}>Cancel</button>
-          <button type="button" className="transaction-primary-button" onClick={handleAdd}>
+          <button type="button" className="transaction-primary-button" onClick={handleAdd} disabled={noAccountConfigured}>
             + Add {vatType} Line
           </button>
         </div>
