@@ -5,6 +5,8 @@ const {
   normalizeVatTreatment,
   isValidVatTreatment,
   isZeroVatTreatment,
+  normalizeVatEntryMode,
+  isValidVatEntryMode,
 } = require("./vatCalculationService");
 
 // Phase 7C: persistence for the new transaction_tax_entries schedule
@@ -37,6 +39,19 @@ function roundMoney(value) {
 // clear error is safer than silently rewriting a monetary line.
 function validateVatTaxEntry(taxEntry, lineAmount) {
   const label = taxEntry.entryType === "INPUT_VAT" ? "Input VAT" : "Output VAT";
+
+  // Phase 7J: the VAT entry mode is a remembered-input snapshot only
+  // (INCLUSIVE / EXCLUSIVE; null/omitted => INCLUSIVE). It never changes
+  // the calculation below - the modal has already converted an EXCLUSIVE
+  // base into grossAmount before sending - but an unrecognized value is a
+  // client error, rejected here rather than silently coerced or stored.
+  if (!isValidVatEntryMode(taxEntry.vatEntryMode)) {
+    throw new HttpError(
+      400,
+      `${label}: unknown VAT entry mode "${taxEntry.vatEntryMode}". Use INCLUSIVE or EXCLUSIVE.`,
+      "INVALID_VAT_ENTRY_MODE"
+    );
+  }
 
   // Phase 7E: the treatment SNAPSHOT on the entry is authoritative. A
   // missing value (a pre-7E reloaded entry) reads as STANDARD; an
@@ -210,22 +225,29 @@ async function saveTaxEntries(conn, { companyId, transactionType, transactionId,
     const vatTreatmentSnapshot = isVatEntry
       ? normalizeVatTreatment(entry.vatTreatment)
       : null;
+    // Phase 7J: persist the entry-mode snapshot for VAT rows only. A row
+    // whose client payload carried no mode at all (a pre-7J entry echoed
+    // back unchanged on an unrelated edit) is stored as NULL - history is
+    // never rewritten. EWT rows carry no mode.
+    const vatEntryModeSnapshot = isVatEntry
+      ? (entry.vatEntryMode ? normalizeVatEntryMode(entry.vatEntryMode) : null)
+      : null;
 
     await conn.execute(
       `INSERT INTO transaction_tax_entries (
         company_id, transaction_type, transaction_id, line_id, entry_type,
         party_id, party_name_snapshot, party_tin_snapshot, party_address_snapshot,
         transaction_date, gross_amount, net_amount, vat_rate, vat_amount, purchase_classification,
-        vat_code, vat_treatment,
+        vat_code, vat_treatment, vat_entry_mode,
         atc_code, tax_type, taxable_base, withheld_amount, account_id, created_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         companyId, transactionType, transactionId, entry.lineId, entry.entryType,
         entry.partyId || null, entry.partyName || null, entry.partyTin || null, entry.partyAddress || null,
         entry.transactionDate || null,
         entry.grossAmount ?? null, entry.netAmount ?? null, entry.vatRate ?? null, entry.vatAmount ?? null,
         entry.purchaseClassification || null,
-        vatCodeSnapshot, vatTreatmentSnapshot,
+        vatCodeSnapshot, vatTreatmentSnapshot, vatEntryModeSnapshot,
         entry.atcCode || null, entry.taxType || null, entry.taxableBase ?? null, entry.withheldAmount ?? null,
         entry.accountId || null, userId || null,
       ]
@@ -242,7 +264,7 @@ async function loadTaxEntries(transactionType, transactionId) {
       DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate,
       gross_amount AS grossAmount, net_amount AS netAmount, vat_rate AS vatRate, vat_amount AS vatAmount,
       purchase_classification AS purchaseClassification,
-      vat_code AS vatCode, vat_treatment AS vatTreatment,
+      vat_code AS vatCode, vat_treatment AS vatTreatment, vat_entry_mode AS vatEntryMode,
       atc_code AS atcCode, tax_type AS taxType, taxable_base AS taxableBase, withheld_amount AS withheldAmount,
       account_id AS accountId
     FROM transaction_tax_entries

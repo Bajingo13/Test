@@ -1,6 +1,7 @@
 const {
   computeVatFromInclusiveGross,
   computeVatByTreatment,
+  computeVatByMode,
   roundMoney,
   DEFAULT_VAT_RATE,
   VAT_TREATMENTS,
@@ -8,6 +9,9 @@ const {
   isValidVatTreatment,
   isZeroVatTreatment,
   isTreatmentRateConsistent,
+  VAT_ENTRY_MODES,
+  normalizeVatEntryMode,
+  isValidVatEntryMode,
 } = require("../vatCalculationService");
 
 // Phase 7C spec section 41 - the central VAT-inclusive-gross helper's
@@ -132,5 +136,96 @@ describe("VAT treatment (STANDARD / ZERO_RATED / EXEMPT)", () => {
     expect(r.netAmount).toBe(1234.5);
     expect(r.grossAmount).toBe(1234.5);
     expect(r.vatAmount).toBe(0);
+  });
+});
+
+// Phase 7J: VAT entry mode (INCLUSIVE / EXCLUSIVE).
+describe("normalizeVatEntryMode / isValidVatEntryMode", () => {
+  test("VAT_ENTRY_MODES lists exactly the two supported values", () => {
+    expect(VAT_ENTRY_MODES).toEqual(["INCLUSIVE", "EXCLUSIVE"]);
+  });
+
+  test("null / undefined / '' all normalize to INCLUSIVE (historical default)", () => {
+    expect(normalizeVatEntryMode(null)).toBe("INCLUSIVE");
+    expect(normalizeVatEntryMode(undefined)).toBe("INCLUSIVE");
+    expect(normalizeVatEntryMode("")).toBe("INCLUSIVE");
+  });
+
+  test("case-insensitive; EXCLUSIVE recognized, anything unknown falls back to INCLUSIVE", () => {
+    expect(normalizeVatEntryMode("exclusive")).toBe("EXCLUSIVE");
+    expect(normalizeVatEntryMode(" Exclusive ")).toBe("EXCLUSIVE");
+    expect(normalizeVatEntryMode("inclusive")).toBe("INCLUSIVE");
+    expect(normalizeVatEntryMode("banana")).toBe("INCLUSIVE");
+  });
+
+  test("isValidVatEntryMode: null/'' allowed (=> default), INCLUSIVE/EXCLUSIVE allowed, garbage rejected", () => {
+    expect(isValidVatEntryMode(null)).toBe(true);
+    expect(isValidVatEntryMode("")).toBe(true);
+    expect(isValidVatEntryMode("INCLUSIVE")).toBe(true);
+    expect(isValidVatEntryMode("exclusive")).toBe(true);
+    expect(isValidVatEntryMode("INCLUSIVEE")).toBe(false);
+    expect(isValidVatEntryMode("gross")).toBe(false);
+    expect(isValidVatEntryMode("0")).toBe(false);
+  });
+});
+
+describe("computeVatByMode", () => {
+  test("INCLUSIVE STANDARD is identical to computeVatByTreatment (unchanged behavior)", () => {
+    const viaMode = computeVatByMode({ amount: 1120, vatRatePercent: 12, treatment: "STANDARD", mode: "INCLUSIVE" });
+    const viaTreatment = computeVatByTreatment({ amount: 1120, vatRatePercent: 12, treatment: "STANDARD" });
+    expect(viaMode).toEqual(viaTreatment);
+  });
+
+  test("INCLUSIVE 10,000 @ 12% -> net 8,928.57 / VAT 1,071.43 / gross 10,000", () => {
+    const r = computeVatByMode({ amount: 10000, vatRatePercent: 12, treatment: "STANDARD", mode: "INCLUSIVE" });
+    expect(r.grossAmount).toBe(10000);
+    expect(r.netAmount).toBeCloseTo(8928.57, 2);
+    expect(r.vatAmount).toBeCloseTo(1071.43, 2);
+  });
+
+  test("EXCLUSIVE 10,000 @ 12% -> net/base 10,000 / VAT 1,200 / gross 11,200", () => {
+    const r = computeVatByMode({ amount: 10000, vatRatePercent: 12, treatment: "STANDARD", mode: "EXCLUSIVE" });
+    expect(r.netAmount).toBe(10000);
+    expect(r.vatAmount).toBe(1200);
+    expect(r.grossAmount).toBe(11200);
+    expect(r.treatment).toBe("STANDARD");
+  });
+
+  test("EXCLUSIVE keeps net + vat === gross by construction", () => {
+    for (const base of [10000, 333.33, 100.1, 8.33, 4.17, 12.5, 1234.56, 99999.99]) {
+      const r = computeVatByMode({ amount: base, vatRatePercent: 12, treatment: "STANDARD", mode: "EXCLUSIVE" });
+      expect(roundMoney(r.netAmount + r.vatAmount)).toBe(r.grossAmount);
+      expect(r.netAmount).toBe(roundMoney(base));
+    }
+  });
+
+  test("EXCLUSIVE derived gross reconciles with the inclusive split within 0.01 (backend tolerance)", () => {
+    for (const base of [10000, 333.33, 100.1, 8.33, 4.17, 12.5, 1234.56, 7777.77]) {
+      const excl = computeVatByMode({ amount: base, vatRatePercent: 12, treatment: "STANDARD", mode: "EXCLUSIVE" });
+      const recheck = computeVatByTreatment({ amount: excl.grossAmount, vatRatePercent: 12, treatment: "STANDARD" });
+      expect(Math.abs(recheck.vatAmount - excl.vatAmount)).toBeLessThanOrEqual(0.01);
+    }
+  });
+
+  test("EXCLUSIVE + ZERO_RATED: mode has no numeric effect (VAT 0, amount is base)", () => {
+    const r = computeVatByMode({ amount: 5000, vatRatePercent: 0, treatment: "ZERO_RATED", mode: "EXCLUSIVE" });
+    expect(r).toEqual({ grossAmount: 5000, netAmount: 5000, vatAmount: 0, treatment: "ZERO_RATED" });
+  });
+
+  test("EXCLUSIVE + EXEMPT: mode has no numeric effect (VAT 0, amount is base)", () => {
+    const r = computeVatByMode({ amount: 5000, vatRatePercent: 0, treatment: "EXEMPT", mode: "EXCLUSIVE" });
+    expect(r).toEqual({ grossAmount: 5000, netAmount: 5000, vatAmount: 0, treatment: "EXEMPT" });
+  });
+
+  test("missing/garbage mode behaves as INCLUSIVE", () => {
+    const a = computeVatByMode({ amount: 1120, vatRatePercent: 12, treatment: "STANDARD", mode: undefined });
+    const b = computeVatByMode({ amount: 1120, vatRatePercent: 12, treatment: "STANDARD", mode: "banana" });
+    expect(a).toEqual(computeVatByTreatment({ amount: 1120, vatRatePercent: 12, treatment: "STANDARD" }));
+    expect(b).toEqual(a);
+  });
+
+  test("EXCLUSIVE with zero/invalid amount returns all-zero, no NaN", () => {
+    expect(computeVatByMode({ amount: 0, vatRatePercent: 12, treatment: "STANDARD", mode: "EXCLUSIVE" }))
+      .toEqual({ grossAmount: 0, netAmount: 0, vatAmount: 0, treatment: "STANDARD" });
   });
 });

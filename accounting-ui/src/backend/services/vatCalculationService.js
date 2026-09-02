@@ -89,6 +89,58 @@ function computeVatByTreatment({ amount, vatRatePercent, treatment }) {
   return { ...result, treatment: "STANDARD" };
 }
 
+// Phase 7J: VAT entry mode (INCLUSIVE / EXCLUSIVE) - an INPUT-interpretation
+// snapshot only. INCLUSIVE (the historical, until-now-only behavior): the
+// amount the user typed is the VAT-inclusive gross. EXCLUSIVE: the amount
+// is the pre-VAT base and the modal derives gross = base + round(base*rate)
+// before sending the SAME {grossAmount, netAmount, vatAmount, vatRate,
+// vatCode, vatTreatment} payload. NULL / missing / unknown all read as
+// INCLUSIVE (every pre-7J row). This never alters a stored amount, a
+// report figure, or a print value - vatCalculationService's formulas are
+// unchanged; this is metadata the backend validates and persists.
+const VAT_ENTRY_MODES = ["INCLUSIVE", "EXCLUSIVE"];
+
+function normalizeVatEntryMode(value) {
+  const m = String(value == null ? "" : value).trim().toUpperCase();
+  return m === "EXCLUSIVE" ? "EXCLUSIVE" : "INCLUSIVE";
+}
+
+// Strict check for backend validation: only the two canonical strings (or
+// null/empty, which mean "default INCLUSIVE") are acceptable. Anything else
+// is a client error, not silently coerced.
+function isValidVatEntryMode(value) {
+  if (value == null || String(value).trim() === "") return true;
+  const m = String(value).trim().toUpperCase();
+  return m === "INCLUSIVE" || m === "EXCLUSIVE";
+}
+
+// Mirror of utils/vatCalculations.js's computeVatByMode - same
+// non-authoritative-preview relationship the rest of this file already has
+// with its frontend twin. INCLUSIVE delegates to computeVatByTreatment
+// unchanged (amount IS the inclusive gross). EXCLUSIVE + STANDARD: amount
+// is the pre-VAT base -> vat = round(base * rate/100), gross = round(base
+// + vat), net === base, net + vat === gross by construction. EXCLUSIVE +
+// ZERO_RATED/EXEMPT: mode has no numeric effect (VAT 0, amount is the
+// base). The payload shape is identical to the inclusive path, so the
+// route handlers - which recompute from grossAmount - need no change.
+function computeVatByMode({ amount, vatRatePercent, treatment, mode }) {
+  const t = normalizeVatTreatment(treatment);
+  const m = normalizeVatEntryMode(mode);
+
+  if (m === "EXCLUSIVE" && !isZeroVatTreatment(t)) {
+    const base = roundMoney(amount);
+    const rate = Number(vatRatePercent);
+    if (!base || !Number.isFinite(rate) || rate < 0) {
+      return { grossAmount: base || 0, netAmount: 0, vatAmount: 0, treatment: "STANDARD" };
+    }
+    const vatAmount = roundMoney((base * rate) / 100);
+    const grossAmount = roundMoney(base + vatAmount);
+    return { grossAmount, netAmount: base, vatAmount, treatment: "STANDARD" };
+  }
+
+  return computeVatByTreatment({ amount, vatRatePercent, treatment: t });
+}
+
 module.exports = {
   roundMoney,
   computeVatFromInclusiveGross,
@@ -100,4 +152,8 @@ module.exports = {
   isValidVatTreatment,
   isZeroVatTreatment,
   isTreatmentRateConsistent,
+  VAT_ENTRY_MODES,
+  normalizeVatEntryMode,
+  isValidVatEntryMode,
+  computeVatByMode,
 };

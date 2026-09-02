@@ -97,6 +97,14 @@ const MIGRATION_ORDER = [
   // swaps global UNIQUE(quotation_no) for UNIQUE(company_id, quotation_no).
   // Guarded; re-run is a no-op. Must run after quotation_migration.sql.
   "phase7h_quotation_company_scope_migration.sql",
+  // Phase 7J - one additive nullable column
+  // transaction_tax_entries.vat_entry_mode (INCLUSIVE / EXCLUSIVE; NULL =
+  // historical INCLUSIVE). Remembered-input snapshot only - never alters a
+  // calculation. Guarded by information_schema; re-run is a no-op. Must run
+  // after phase7c_tax_schedule_migration.sql (owns transaction_tax_entries)
+  // and phase7e_vat_treatment_migration.sql (adds vat_treatment, which this
+  // column is placed after).
+  "phase7j_vat_entry_mode_migration.sql",
 ];
 
 module.exports = { MIGRATION_ORDER };

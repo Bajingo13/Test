@@ -1114,6 +1114,43 @@
   min-width: 220px;
 }
 
+/* Phase 7J: VAT Inclusive / Exclusive entry-mode toggle inside
+   VatEntryModal - compact segmented control, styled to sit inside a
+   .transaction-field like the other inputs. */
+.tax-entry-mode-toggle {
+  display: flex;
+  gap: 8px;
+}
+
+.tax-entry-mode-option {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color, #d1d5db);
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.tax-entry-mode-option.is-active {
+  border-color: var(--accent-indigo, #4f46e5);
+  background: var(--accent-indigo-soft, rgba(79, 70, 229, 0.08));
+  font-weight: 600;
+}
+
+.tax-entry-mode-option input {
+  margin: 0;
+}
+
+.tax-entry-mode-option:has(input:disabled) {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .tax-entry-badge {
   display: inline-block;
   margin-left: 8px;

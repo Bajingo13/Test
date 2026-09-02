@@ -1,8 +1,10 @@
 import React, { useEffect, useState } from "react";
 import {
-  computeVatByTreatment,
+  computeVatByMode,
   normalizeVatTreatment,
+  normalizeVatEntryMode,
   isZeroVatTreatment,
+  roundMoney,
   DEFAULT_VAT_RATE,
 } from "../../utils/vatCalculations";
 import { defaultTaxAccountId } from "./taxAccountRules.mjs";
@@ -44,9 +46,9 @@ export default function VatEntryModal({
 }) {
   const isInput = direction === "INPUT";
   const title = isInput ? "Input VAT" : "Output VAT";
-  const grossLabel = isInput ? "Gross Purchase" : "Gross Sale";
   const netLabel = isInput ? "Net Purchase" : "Net Sale";
   const vatLabel = isInput ? "VAT Paid" : "Output VAT";
+  const grossTotalLabel = isInput ? "Gross Purchase" : "Gross Total";
   const noAccountConfigured = (taxAccountOptions || []).length === 0;
 
   const [party, setParty] = useState("");
@@ -54,11 +56,16 @@ export default function VatEntryModal({
   const [partyTin, setPartyTin] = useState("");
   const [partyAddress, setPartyAddress] = useState("");
   const [transactionDate, setTransactionDate] = useState(defaultDate || "");
-  const [grossAmount, setGrossAmount] = useState("");
+  // The amount the user types. INCLUSIVE mode: it IS the VAT-inclusive
+  // gross (historical behavior). EXCLUSIVE mode: it is the pre-VAT base.
+  const [amountInput, setAmountInput] = useState("");
   const [vatRate, setVatRate] = useState(String(DEFAULT_VAT_RATE));
   // Phase 7E: VAT treatment, sourced from the selected VAT code (or the
   // stored snapshot when editing). Manual entry stays STANDARD.
   const [treatment, setTreatment] = useState("STANDARD");
+  // Phase 7J: VAT entry mode - INCLUSIVE (default / historical) or
+  // EXCLUSIVE. Remembered on the saved entry; never changes the treatment.
+  const [mode, setMode] = useState("INCLUSIVE");
   const [classification, setClassification] = useState(CLASSIFICATIONS[0]);
   const [accountId, setAccountId] = useState("");
 
@@ -82,7 +89,6 @@ export default function VatEntryModal({
       setPartyTin(existingEntry.partyTin || "");
       setPartyAddress(existingEntry.partyAddress || "");
       setTransactionDate(existingEntry.transactionDate || defaultDate || "");
-      setGrossAmount(existingEntry.grossAmount != null ? String(existingEntry.grossAmount) : "");
       setVatRate(existingEntry.vatRate != null ? String(existingEntry.vatRate) : String(DEFAULT_VAT_RATE));
       setClassification(existingEntry.purchaseClassification || CLASSIFICATIONS[0]);
       setAccountId(existingEntry.accountId ? String(existingEntry.accountId) : "");
@@ -90,6 +96,17 @@ export default function VatEntryModal({
       // editing - never re-derived from the current VAT Rate Library. A
       // pre-7E entry has no snapshot and reads as STANDARD.
       setTreatment(normalizeVatTreatment(existingEntry.vatTreatment));
+      // Phase 7J: the STORED entry-mode snapshot is authoritative when
+      // editing. A pre-7J entry has vatEntryMode = null and reads as
+      // INCLUSIVE. The amount field shows the stored gross for INCLUSIVE,
+      // the stored net/base for EXCLUSIVE - so re-confirming without
+      // changes reproduces the same entry.
+      {
+        const editMode = normalizeVatEntryMode(existingEntry.vatEntryMode);
+        setMode(editMode);
+        const shown = editMode === "EXCLUSIVE" ? existingEntry.netAmount : existingEntry.grossAmount;
+        setAmountInput(shown != null ? String(shown) : "");
+      }
       // An existing entry reopens in manual/free-entry state for the CODE
       // picker (it never recorded which catalog id it came from), but its
       // stored treatment/rate above are preserved.
@@ -101,9 +118,10 @@ export default function VatEntryModal({
       setPartyTin("");
       setPartyAddress("");
       setTransactionDate(defaultDate || "");
-      setGrossAmount("");
+      setAmountInput("");
       setVatRate(String(DEFAULT_VAT_RATE));
       setTreatment("STANDARD");
+      setMode("INCLUSIVE");
       setClassification(CLASSIFICATIONS[0]);
       setSelectedVatCodeId("");
       setRateOverridden(false);
@@ -145,6 +163,25 @@ export default function VatEntryModal({
     }
   }
 
+  // Phase 7J: switching mode CONVERTS the amount so the resulting VAT is
+  // unchanged - it never silently reinterprets the same number. INCLUSIVE
+  // shows the gross; EXCLUSIVE shows the base. Zero-rated / exempt: base
+  // and gross are equal, so the amount is carried across unchanged.
+  function handleModeChange(nextMode) {
+    const m = normalizeVatEntryMode(nextMode);
+    if (m === mode) return;
+    const amt = Number(amountInput);
+    const rate = Number(vatRate);
+    if (Number.isFinite(amt) && amt > 0 && !zeroTreatment && Number.isFinite(rate) && rate >= 0) {
+      if (mode === "INCLUSIVE" && m === "EXCLUSIVE") {
+        setAmountInput(String(roundMoney(amt / (1 + rate / 100))));
+      } else if (mode === "EXCLUSIVE" && m === "INCLUSIVE") {
+        setAmountInput(String(roundMoney(amt * (1 + rate / 100))));
+      }
+    }
+    setMode(m);
+  }
+
   function handlePartySelect(name) {
     setParty(name);
     const selected = partyOptions.find((p) => p.name.toLowerCase() === name.toLowerCase());
@@ -158,18 +195,33 @@ export default function VatEntryModal({
   }
 
   const zeroTreatment = isZeroVatTreatment(treatment);
-  const { netAmount, vatAmount } = computeVatByTreatment({
-    amount: grossAmount,
+  // Phase 7J: one dispatch that honours both the treatment (7E) and the
+  // entry mode (7J). EXCLUSIVE+STANDARD treats amountInput as the base and
+  // derives the gross; everything else is the existing behaviour. The
+  // returned payload shape is identical either way.
+  const { grossAmount: computedGross, netAmount, vatAmount } = computeVatByMode({
+    amount: amountInput,
     vatRatePercent: vatRate,
     treatment,
+    mode,
   });
   const effectiveRate = zeroTreatment ? 0 : Number(vatRate);
+  const amountLabel = zeroTreatment
+    ? (isInput ? "Purchase Amount" : "Sale Amount")
+    : mode === "EXCLUSIVE"
+      ? "VAT-Exclusive Amount"
+      : (isInput ? "Gross Purchase" : "Gross Sale");
+  const amountHelper = zeroTreatment
+    ? `${TREATMENT_LABEL[treatment]}: VAT is 0. The ${netLabel.toLowerCase()} is still recorded.`
+    : mode === "EXCLUSIVE"
+      ? "VAT will be added to this amount."
+      : "Amount already includes VAT.";
 
   function handleConfirm() {
     if (noAccountConfigured) { alert(missingAccountMessage); return; }
     if (!party.trim()) { alert(`${partyLabel} is required.`); return; }
     if (!accountId) { alert(`${title} account is required.`); return; }
-    if (!grossAmount || Number(grossAmount) <= 0) { alert(`${grossLabel} must be greater than zero.`); return; }
+    if (!amountInput || Number(amountInput) <= 0) { alert(`${amountLabel} must be greater than zero.`); return; }
 
     onConfirm({
       accountId,
@@ -178,7 +230,10 @@ export default function VatEntryModal({
       partyTin,
       partyAddress,
       transactionDate,
-      grossAmount: Number(grossAmount),
+      // Always the VAT-INCLUSIVE gross - for EXCLUSIVE entry this is the
+      // derived base + VAT, so the backend path (which recomputes from
+      // grossAmount) is unchanged.
+      grossAmount: Number(computedGross),
       netAmount,
       vatRate: effectiveRate,
       vatAmount,
@@ -187,6 +242,9 @@ export default function VatEntryModal({
       // reclassify this entry.
       vatCode: selectedVatCode ? selectedVatCode.code : null,
       vatTreatment: treatment,
+      // Phase 7J: remembered-input snapshot. Zero-rated / exempt keep
+      // whatever mode is selected but it has no numeric effect.
+      vatEntryMode: mode,
       purchaseClassification: isInput ? classification : null,
     });
   }
@@ -242,8 +300,42 @@ export default function VatEntryModal({
             </div>
 
             <div className="transaction-field">
-              <label className="transaction-label">{grossLabel}</label>
-              <input type="number" min="0" step="0.01" value={grossAmount} onChange={(e) => setGrossAmount(e.target.value)} placeholder="0.00" className="transaction-input" />
+              <label className="transaction-label">VAT Entry Mode</label>
+              <div className="tax-entry-mode-toggle" role="radiogroup" aria-label="VAT entry mode">
+                <label className={`tax-entry-mode-option${mode === "INCLUSIVE" ? " is-active" : ""}`}>
+                  <input
+                    type="radio"
+                    name="vat-entry-mode"
+                    value="INCLUSIVE"
+                    checked={mode === "INCLUSIVE"}
+                    onChange={() => handleModeChange("INCLUSIVE")}
+                    disabled={zeroTreatment}
+                  />
+                  VAT Inclusive
+                </label>
+                <label className={`tax-entry-mode-option${mode === "EXCLUSIVE" ? " is-active" : ""}`}>
+                  <input
+                    type="radio"
+                    name="vat-entry-mode"
+                    value="EXCLUSIVE"
+                    checked={mode === "EXCLUSIVE"}
+                    onChange={() => handleModeChange("EXCLUSIVE")}
+                    disabled={zeroTreatment}
+                  />
+                  VAT Exclusive
+                </label>
+              </div>
+              {zeroTreatment && (
+                <p className="tax-entry-vat-rate-note">
+                  {TREATMENT_LABEL[treatment]}: VAT is 0, so the entry mode has no numeric effect.
+                </p>
+              )}
+            </div>
+
+            <div className="transaction-field">
+              <label className="transaction-label">{amountLabel}</label>
+              <input type="number" min="0" step="0.01" value={amountInput} onChange={(e) => setAmountInput(e.target.value)} placeholder="0.00" className="transaction-input" />
+              <p className="tax-entry-vat-rate-note">{amountHelper}</p>
             </div>
 
             {applicableVatCodes.length > 0 && (
@@ -343,6 +435,11 @@ export default function VatEntryModal({
             <div className="transaction-field">
               <label className="transaction-label">{vatLabel}</label>
               <input type="text" value={formatMoney(vatAmount)} readOnly className="transaction-input transaction-input-readonly" />
+            </div>
+
+            <div className="transaction-field">
+              <label className="transaction-label">{grossTotalLabel}</label>
+              <input type="text" value={formatMoney(computedGross)} readOnly className="transaction-input transaction-input-readonly" />
             </div>
           </div>
         </div>
