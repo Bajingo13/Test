@@ -16,6 +16,7 @@ export default function VoucherToolbar({
   showDelete,
   showCancel,
   showVoid,
+  showReverse,
   showPrint,
   showRecurring,
   showPrevious,
@@ -28,6 +29,7 @@ export default function VoucherToolbar({
   onDelete,
   onCancel,
   onVoid,
+  onReverse,
   onPrint,
   onRecurring,
   onPrevious,
@@ -93,6 +95,12 @@ export default function VoucherToolbar({
         {formMode === "view" && showVoid && (
           <button type="button" className="transaction-danger-button" onClick={onVoid} disabled={deleting}>
             ⦸ Void
+          </button>
+        )}
+
+        {formMode === "view" && showReverse && (
+          <button type="button" className="transaction-danger-button" onClick={onReverse} disabled={deleting}>
+            ↩ Reverse
           </button>
         )}
 

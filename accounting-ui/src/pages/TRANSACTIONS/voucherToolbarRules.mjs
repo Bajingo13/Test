@@ -28,7 +28,7 @@ export function isEditableStatus(statusModel, status) {
 
 // can(moduleKey, action) is hooks/usePermissions.js's lookup - passed in
 // rather than imported so this stays a pure function of its inputs.
-export function getVoucherToolbarVisibility({ moduleConfig, status, can }) {
+export function getVoucherToolbarVisibility({ moduleConfig, status, can, alreadyReversed = false, periodClosed = false }) {
   const moduleKey = moduleConfig?.moduleKey ?? null;
   const editable = isEditableStatus(moduleConfig?.statusModel, status);
   const statusUp = String(status || "Draft").toUpperCase();
@@ -39,21 +39,30 @@ export function getVoucherToolbarVisibility({ moduleConfig, status, can }) {
   const canDelete = !!moduleKey && can(moduleKey, "DELETE");
   const canVoid = !!moduleKey && can(moduleKey, "VOID");
   const canPrint = !!moduleKey && can(moduleKey, "PRINT");
+  const cancelVoid = !!moduleConfig?.cancelVoid;
 
   return {
-    showEdit: editable && canEdit,
+    showEdit: editable && canEdit && !alreadyReversed,
     // OR/CV have no DELETE route at all (moduleConfig.delete === false) -
     // never offered regardless of status/permission. Phase 7K: a module
     // with cancelVoid (APV) hides the physical Delete from the normal
     // toolbar entirely - Cancel is the safe Draft replacement (the backend
     // DELETE route is retained only for legacy/direct callers). Delete
     // stays for INV/JV/PCV/DM/CM which have no Cancel action.
-    showDelete: !!moduleConfig?.delete && !moduleConfig?.cancelVoid && editable && canDelete,
+    showDelete: !!moduleConfig?.delete && !cancelVoid && editable && canDelete,
     // Phase 7K: APV/CV (moduleConfig.cancelVoid) get explicit Cancel on a
     // Draft (authorized by the module's DELETE permission) and Void on a
     // Posted document (new VOID permission).
-    showCancel: !!moduleConfig?.cancelVoid && isDraft && canDelete,
-    showVoid: !!moduleConfig?.cancelVoid && isPosted && canVoid,
+    showCancel: cancelVoid && isDraft && canDelete,
+    // Phase 7K.1: Void is for an OPEN original period. Once the document has
+    // a linked Posted reversal JV it is logically reversed - hide Void.
+    showVoid: cancelVoid && isPosted && canVoid && !alreadyReversed,
+    // Reverse (closed-period path) is only shown when the frontend has
+    // positively determined the original period is closed; otherwise the
+    // Void -> 409 REVERSAL_REQUIRED flow drives it. Never both for the same
+    // document.
+    showReverse: cancelVoid && isPosted && canVoid && !alreadyReversed && !!periodClosed,
     showPrint: canPrint,
+    isReversed: cancelVoid && isPosted && alreadyReversed,
   };
 }

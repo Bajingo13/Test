@@ -107,8 +107,19 @@ async function fetchRawRows(type, asOfDate, companyId) {
       -- Phase 7K: a Cancelled or Void APV is no longer an outstanding
       -- payable. (Existing Draft-inclusion behaviour is deliberately left
       -- unchanged - that is a separate pre-existing question.)
+      -- Phase 7K.1: a closed-period reversal keeps the original Posted but
+      -- links a Posted reversing JV - recognise that here too so a reversed
+      -- APV stops ageing as outstanding. Its payment_status / balance_amount
+      -- header columns are never modified (linkage-based recognition only).
       WHERE h.transaction_date <= ? AND h.company_id = ?
         AND UPPER(h.status) NOT IN ('VOID', 'CANCELLED')
+        AND NOT EXISTS (
+          SELECT 1 FROM jv_headers rev
+           WHERE rev.company_id = h.company_id
+             AND rev.source_module = 'APV_REVERSAL'
+             AND rev.source_reference_id = h.id
+             AND UPPER(rev.status) = 'POSTED'
+        )
 
       UNION ALL
 

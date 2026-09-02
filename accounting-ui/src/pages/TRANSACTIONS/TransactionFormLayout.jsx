@@ -1401,7 +1401,10 @@ setError("");
   // follows the real Draft/Posted rule the Phase 7A.1 backend guard
   // enforces, hiding Edit/Delete once a record is Posted so the frontend
   // stops offering an action the backend will now reject with 409.
-  const toolbarVisibility = getVoucherToolbarVisibility({ moduleConfig, status: form.status, can });
+  const alreadyReversed = !!selectedTransaction?.reversal?.reversed;
+  const toolbarVisibility = getVoucherToolbarVisibility({
+    moduleConfig, status: form.status, can, alreadyReversed,
+  });
 
   // Phase 7B: the old CSV-export/browser-print fallback (only reachable
   // when a module had no printModuleType, or for a brand-new unsaved
@@ -1737,36 +1740,60 @@ if (code === "OR" || code === "CV") {
     setCancelVoidAction(action);
   }
 
+  async function postCancelVoidReverse(action, reason) {
+    const res = await fetch(
+      `${API_BASE}/api/${moduleConfig.endpoint}/${selectedTransaction.id}/${action}`,
+      {
+        method: "POST",
+        credentials: "include",
+        headers: { ...authHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ reason, companyId: selectedTransaction.companyId ?? form.companyId ?? undefined }),
+      }
+    );
+    const data = await res.json().catch(() => ({}));
+    return { res, data };
+  }
+
   async function submitCancelVoid() {
+    // Double-submit / double-click guard: `deleting` is already the button's
+    // disabled flag, but bail here too so a fast second invocation can never
+    // fire a second request (Phase 7K.1 §11).
+    if (deleting) return;
     if (!selectedTransaction?.id || moduleConfigError || !cancelVoidAction) return;
     const reason = cancelVoidReason.trim();
     if (!reason) { alert("A reason is required."); return; }
 
     setDeleting(true);
     try {
-      const res = await fetch(
-        `${API_BASE}/api/${moduleConfig.endpoint}/${selectedTransaction.id}/${cancelVoidAction}`,
-        {
-          method: "POST",
-          credentials: "include",
-          headers: { ...authHeaders(), "Content-Type": "application/json" },
-          body: JSON.stringify({ reason, companyId: selectedTransaction.companyId ?? form.companyId ?? undefined }),
-        }
-      );
-      const data = await res.json().catch(() => ({}));
+      let action = cancelVoidAction;
+      let { res, data } = await postCancelVoidReverse(action, reason);
+
+      // Phase 7K.1: a Void whose ORIGINAL period is closed comes back as
+      // 409 REVERSAL_REQUIRED - retry the same reason as a Reverse (posts a
+      // reversing JV dated today; original stays Posted).
+      if (!res.ok && res.status === 409 && data.code === "REVERSAL_REQUIRED") {
+        action = "reverse";
+        ({ res, data } = await postCancelVoidReverse("reverse", reason));
+      }
+
       if (!res.ok) {
         if (handleAuthError(res.status)) return;
-        alert(data.message || `Failed to ${cancelVoidAction} transaction.`);
+        alert(data.message || `Failed to ${action} transaction.`);
         setCancelVoidAction(null);
         await handleView(selectedTransaction);
         return;
       }
       setCancelVoidAction(null);
-      alert(`${title} ${cancelVoidAction === "void" ? "voided" : "cancelled"} successfully.`);
+      const verb = action === "void" ? "voided" : action === "reverse" ? "reversed" : "cancelled";
+      alert(
+        action === "reverse" && data.reversalVoucher
+          ? `${title} reversed via ${data.reversalVoucher} (dated ${data.reversalDate}). The original stays Posted.`
+          : `${title} ${verb} successfully.`
+      );
       await loadTransactions();
       setMode("list");
     } catch (err) {
-      console.error("CANCEL/VOID TRANSACTION ERROR:", err);
+      console.error("CANCEL/VOID/REVERSE TRANSACTION ERROR:", err);
       alert("Unable to connect to server.");
       setCancelVoidAction(null);
     } finally {
@@ -2686,6 +2713,7 @@ if (code === "OR") {
               showDelete={toolbarVisibility.showDelete}
               showCancel={toolbarVisibility.showCancel}
               showVoid={toolbarVisibility.showVoid}
+              showReverse={toolbarVisibility.showReverse}
               showPrint={!!printModuleType && toolbarVisibility.showPrint}
               showRecurring={!!recurringModuleType}
               showPrevious
@@ -2697,6 +2725,7 @@ if (code === "OR") {
               onDelete={handleDeleteClick}
               onCancel={() => openCancelVoid("cancel")}
               onVoid={() => openCancelVoid("void")}
+              onReverse={() => openCancelVoid("reverse")}
               onPrint={() => setShowPrintOptionsModal(true)}
               onRecurring={() => setShowRecurringModal(true)}
               onPrevious={handlePreviousTransaction}
@@ -2705,6 +2734,15 @@ if (code === "OR") {
               onSaveDraft={() => handleSave("Draft")}
               onPost={handlePostTransactionClick}
             />
+
+            {/* Phase 7K.1: closed-period-reversed APV/CV keeps status Posted
+                but is logically reversed by a linked JV. */}
+            {formMode === "view" && alreadyReversed && (
+              <div className="transaction-tax-duplication-warning" role="status" style={{ margin: "8px 0" }}>
+                ⦸ REVERSED BY {selectedTransaction.reversal.reversedByVoucher}
+                {selectedTransaction.reversal.reversalDate ? ` on ${selectedTransaction.reversal.reversalDate}` : ""} — the original stays Posted; the two net to zero.
+              </div>
+            )}
 
             {/* Phase 7E section 7: view mode reads like a real accounting
                 document with clearly labeled sections (Voucher Information /
@@ -3439,18 +3477,27 @@ if (code === "OR") {
               </div>
             )}
 
-            {/* Phase 7K: APV/CV Cancel (Draft) / Void (Posted) reason modal. */}
+            {/* Phase 7K / 7K.1: APV/CV Cancel (Draft) / Void or Reverse (Posted) reason modal. */}
             {cancelVoidAction && (
               <div className="apv-modal-overlay">
                 <div className="apv-modal confirm-dialog">
                   <div className="apv-modal-header">
                     <div>
-                      <h2>{cancelVoidAction === "void" ? `Void this Posted ${title}?` : `Cancel this Draft ${title}?`}</h2>
+                      <h2>
+                        {cancelVoidAction === "reverse"
+                          ? `Reverse this Posted ${title}?`
+                          : cancelVoidAction === "void"
+                            ? `Void this Posted ${title}?`
+                            : `Cancel this Draft ${title}?`}
+                      </h2>
                       <p>
-                        {cancelVoidAction === "void"
-                          ? `The ${title} is retained for audit but stops being recognized in the ledger.`
-                          : `The ${title} is retained for audit but marked Cancelled.`}
-                        {code === "CV" && " Any payable balances it settled will be reopened and recalculated."}
+                        {cancelVoidAction === "reverse"
+                          ? `The original ${title} stays Posted. A reversing Journal Voucher dated today is created so the two net to zero. If the original period is open, Void is used instead automatically.`
+                          : cancelVoidAction === "void"
+                            ? `The ${title} is retained for audit but stops being recognized in the ledger.`
+                            : `The ${title} is retained for audit but marked Cancelled.`}
+                        {code === "CV" && (cancelVoidAction === "void" || cancelVoidAction === "reverse") &&
+                          " Any payable balances it settled will be reopened and recalculated."}
                       </p>
                     </div>
                     <button type="button" className="apv-modal-close" onClick={() => setCancelVoidAction(null)} aria-label="Close">×</button>
@@ -3464,7 +3511,7 @@ if (code === "OR") {
                         maxLength={500}
                         value={cancelVoidReason}
                         onChange={(e) => setCancelVoidReason(e.target.value)}
-                        placeholder={`Why is this ${title} being ${cancelVoidAction === "void" ? "voided" : "cancelled"}?`}
+                        placeholder={`Why is this ${title} being ${cancelVoidAction === "reverse" ? "reversed" : cancelVoidAction === "void" ? "voided" : "cancelled"}?`}
                       />
                     </div>
                   </div>
@@ -3473,7 +3520,7 @@ if (code === "OR") {
                       Close
                     </button>
                     <button type="button" className="transaction-danger-button" onClick={submitCancelVoid} disabled={deleting || !cancelVoidReason.trim()}>
-                      {deleting ? "Working..." : cancelVoidAction === "void" ? "Void" : "Cancel Draft"}
+                      {deleting ? "Working..." : cancelVoidAction === "reverse" ? "Reverse" : cancelVoidAction === "void" ? "Void" : "Cancel Draft"}
                     </button>
                   </div>
                 </div>

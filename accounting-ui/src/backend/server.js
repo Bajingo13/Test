@@ -43,6 +43,7 @@ const AccountingPeriodService = require("./services/accountingPeriodService");
 const TaxEntryService = require("./services/taxEntryService");
 const EwtReportReconciliationService = require("./services/ewtReportReconciliationService");
 const { assertWriteStatus, assertReason, unwindCvApplications, CANCELLED, VOID } = require("./services/voidCancelService");
+const { findPostedReversalJv, buildReversalLine, buildReversalTaxEntry, reversalVoucherNo } = require("./services/reversalService");
 
 console.log("ENV FILE:", require("path").resolve(".env"));
 console.log("JWT_SECRET loaded:", Boolean(process.env.JWT_SECRET));
@@ -2477,6 +2478,8 @@ app.get("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV
 
     const currencySnapshot = await TransactionCurrencyService.getSnapshot("APV", id);
     const taxEntries = await TaxEntryService.loadTaxEntries("APV", id);
+    // Phase 7K.1: derived reversed-state from the linked Posted reversing JV.
+    const rev = await findPostedReversalJv(pool, { companyId, module: "APV", originalId: Number(id) });
 
     res.json({
       ...headers[0],
@@ -2484,6 +2487,9 @@ app.get("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV
       applications,
       currency: currencySnapshot,
       taxEntries,
+      reversal: rev
+        ? { reversed: true, reversedByVoucher: rev.voucherNo, reversalJvId: rev.id, reversalDate: rev.reversalDate }
+        : { reversed: false },
     });
   } catch (err) {
     console.error("GET APV DETAILS ERROR:", err);
@@ -3178,6 +3184,187 @@ app.post("/api/apv/:id/void", authenticateToken, authorizePermission("TRANSACTIO
     await conn.rollback();
     console.error("VOID APV ERROR:", err);
     res.status(err.statusCode || 500).json({ message: err.statusCode ? err.message : "Failed to void APV", ...(err.statusCode && err.code ? { code: err.code } : {}) });
+  } finally {
+    conn.release();
+  }
+});
+
+// Phase 7K.1: build a Posted reversing JV for an already-loaded Posted
+// APV/CV. Original stays Posted; swapped debit/credit net it to zero in
+// every POSTED-only ledger report. Copies the original FX rate context
+// (no re-resolution). INPUT_VAT structured rows (APV only) are mirrored
+// with negated amounts and the SAME vat_code/treatment/entry_mode. EWT is
+// handled by report exclusion, not negative rows. Caller owns the txn.
+async function performReversal(conn, { module, companyId, original, reason, user, reversalDate }) {
+  const lineTable = module === "APV" ? "apv_lines" : "cv_lines";
+  const fkCol = module === "APV" ? "apv_id" : "cv_id";
+  const sourceModule = module === "APV" ? "APV_REVERSAL" : "CV_REVERSAL";
+  const label = `Reversal of ${module} ${original.voucher_no}`;
+
+  const [origLines] = await conn.execute(
+    `SELECT id, account_id, account_code, account_title, particulars, gen_ref, gen_name,
+            debit, credit, foreign_debit, foreign_credit
+       FROM ${lineTable} WHERE ${fkCol} = ? ORDER BY id ASC`,
+    [original.id]
+  );
+
+  // Phase 7I: the reversal JV must satisfy the zero-line guard exactly like
+  // a real JV. Swapped originals are non-zero and balanced.
+  assertRequiredTransactionLines(
+    origLines.map((ol) => ({ debit: Number(ol.credit) || 0, credit: Number(ol.debit) || 0 }))
+  );
+
+  const snapshot = await TransactionCurrencyService.getSnapshot(module, original.id);
+  const taxEntries =
+    module === "APV"
+      ? (await TaxEntryService.loadTaxEntries("APV", original.id)).filter((e) => e.entryType === "INPUT_VAT")
+      : [];
+
+  const revVoucherNo = reversalVoucherNo(module, original.voucher_no);
+  await assertVoucherNoUnique(conn, { module: "JV", companyId, voucherNo: revVoucherNo });
+
+  const [hdr] = await conn.execute(
+    `INSERT INTO jv_headers
+       (company_id, voucher_no, transaction_date, reference_no, prepared_for, description, remarks,
+        total_debit, total_credit, status, source_module, source_reference_id, created_by, posted_by, posted_at, currency_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Posted', ?, ?, ?, ?, NOW(), ?)`,
+    [
+      companyId, revVoucherNo, reversalDate, original.voucher_no,
+      original.party_name || null,
+      `${label} posted ${AccountingPeriodService.toDateOnly(original.transaction_date)}. Reason: ${reason}`,
+      `Reason: ${reason}`,
+      Number(original.total_credit) || 0, Number(original.total_debit) || 0,
+      sourceModule, original.id, user.id, user.id, original.currency_id || null,
+    ]
+  );
+  const reversalJvId = hdr.insertId;
+
+  const lineIdMap = new Map();
+  for (const ol of origLines) {
+    const rl = buildReversalLine(ol, label);
+    const [lr] = await conn.execute(
+      `INSERT INTO jv_lines (jv_id, account_id, account_code, account_title, particulars, gen_ref, gen_name,
+                             debit, credit, foreign_debit, foreign_credit)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [reversalJvId, rl.accountId, rl.accountCode, rl.accountTitle, rl.particulars, rl.genRef, rl.genName,
+       rl.debit, rl.credit, rl.foreignDebit, rl.foreignCredit]
+    );
+    lineIdMap.set(ol.id, lr.insertId);
+  }
+
+  if (snapshot) {
+    await TransactionCurrencyService.saveSnapshot(conn, {
+      companyId, transactionType: "JV", transactionId: reversalJvId,
+      currencyId: snapshot.currencyId, currencyCode: snapshot.currencyCode,
+      baseCurrencyId: snapshot.baseCurrencyId, baseCurrencyCode: snapshot.baseCurrencyCode,
+      rateInfo: {
+        exchangeRate: snapshot.exchangeRate, rateDate: snapshot.rateDate,
+        rateSource: snapshot.rateSource || "REVERSAL_COPY", rateBasis: snapshot.rateBasis,
+        rateStatus: snapshot.rateStatus, rateRetrievedAt: snapshot.rateRetrievedAt,
+        rateIngestionMethod: snapshot.rateIngestionMethod, systemRate: snapshot.systemRate,
+        overrideRate: snapshot.overrideRate, overrideReason: snapshot.overrideReason,
+        overrideBy: snapshot.overrideBy, overrideAt: snapshot.overrideAt,
+      },
+      foreignTotals: {
+        foreignSubtotal: snapshot.foreignSubtotal, foreignTax: snapshot.foreignTax,
+        foreignEwt: snapshot.foreignEwt, foreignTotal: snapshot.foreignTotal,
+      },
+      baseTotals: {
+        baseSubtotal: snapshot.baseSubtotal, baseTax: snapshot.baseTax,
+        baseEwt: snapshot.baseEwt, baseTotal: snapshot.baseTotal,
+      },
+      userId: user.id, lockNow: true,
+    });
+  }
+
+  if (taxEntries.length) {
+    const entries = [];
+    for (const te of taxEntries) {
+      const revLineId = lineIdMap.get(te.lineId);
+      if (!revLineId) continue;
+      entries.push(buildReversalTaxEntry(te, revLineId));
+    }
+    if (entries.length) {
+      await TaxEntryService.saveTaxEntries(conn, {
+        companyId, transactionType: "JV", transactionId: reversalJvId, entries, userId: user.id,
+      });
+    }
+  }
+
+  return { reversalJvId, reversalVoucherNo: revVoucherNo, reversedLines: origLines.length, reversedTaxRows: taxEntries.length };
+}
+
+// POST /api/apv/:id/reverse - closed-period Posted APV -> a Posted reversing
+// JV dated today. Original APV stays Posted. Requires TRANSACTIONS.APV/VOID.
+app.post("/api/apv/:id/reverse", authenticateToken, authorizePermission("TRANSACTIONS.APV", "VOID"), async (req, res) => {
+  const conn = await pool.getConnection();
+  try {
+    const { id } = req.params;
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId || req.body?.companyId);
+    const reason = assertReason(req.body?.reason);
+
+    await conn.beginTransaction();
+    const [rows] = await conn.execute(
+      "SELECT id, company_id, status, voucher_no, transaction_date, supplier_name AS party_name, currency_id, total_debit, total_credit FROM apv_headers WHERE id = ? FOR UPDATE",
+      [id]
+    );
+    if (!rows.length || rows[0].company_id !== companyId) {
+      await conn.rollback();
+      return res.status(404).json({ message: "APV not found" });
+    }
+    const original = rows[0];
+    const prevUp = String(original.status || "").toUpperCase();
+    if (prevUp === "VOID" || prevUp === "CANCELLED") {
+      await conn.rollback();
+      return res.status(409).json({ message: `A ${original.status} APV cannot be reversed.`, code: "TRANSACTION_NOT_EDITABLE" });
+    }
+    if (prevUp !== "POSTED") {
+      await conn.rollback();
+      return res.status(409).json({ message: "Only a Posted APV can be reversed.", code: "TRANSACTION_NOT_POSTED" });
+    }
+    const existing = await findPostedReversalJv(conn, { companyId, module: "APV", originalId: Number(id) });
+    if (existing) {
+      await conn.rollback();
+      return res.status(409).json({
+        message: `This APV was already reversed by ${existing.voucherNo}.`,
+        code: "TRANSACTION_ALREADY_REVERSED", reversalJvId: existing.id, reversalVoucher: existing.voucherNo,
+      });
+    }
+
+    const [[appRow]] = await conn.execute(
+      `SELECT COUNT(*) AS n FROM transaction_applications ta
+         JOIN cv_headers c ON c.id = ta.applied_id
+        WHERE ta.applied_type = 'CV' AND ta.source_type = 'APV' AND ta.source_id = ?
+          AND UPPER(c.status) NOT IN ('VOID', 'CANCELLED')`,
+      [id]
+    );
+    if (Number(appRow.n) > 0) {
+      await conn.rollback();
+      return res.status(409).json({
+        message: "This APV is settled by one or more active Check Vouchers. Reverse or void those Check Vouchers first.",
+        code: "APV_HAS_ACTIVE_PAYMENTS",
+      });
+    }
+
+    const reversalDate = AccountingPeriodService.toDateOnly(new Date());
+    await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate: reversalDate, operation: "REVERSE", user: req.user }, conn);
+
+    const result = await performReversal(conn, { module: "APV", companyId, original, reason, user: req.user, reversalDate });
+
+    await logAudit(conn, {
+      module: "TRANSACTIONS", entityType: "APV", entityId: Number(id), action: "REVERSE",
+      description: `Reversed APV ${original.voucher_no} via JV ${result.reversalVoucherNo} dated ${reversalDate}. Reason: ${reason}`.slice(0, 500),
+      beforeData: { status: "Posted" },
+      afterData: { status: "Posted", reversalJvId: result.reversalJvId, reversalVoucher: result.reversalVoucherNo, reversalDate, reason },
+      user: { ...req.user, ...requestMeta(req) },
+    });
+    await conn.commit();
+    res.json({ success: true, id: Number(id), status: "Posted", reversalJvId: result.reversalJvId, reversalVoucher: result.reversalVoucherNo, reversalDate });
+  } catch (err) {
+    await conn.rollback();
+    console.error("REVERSE APV ERROR:", err);
+    if (handleVoucherDupError(err, res)) return;
+    res.status(err.statusCode || 500).json({ message: err.statusCode ? err.message : "Failed to reverse APV", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   } finally {
     conn.release();
   }
@@ -4855,12 +5042,17 @@ app.get("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
     );
 
     const currencySnapshot = await TransactionCurrencyService.getSnapshot("CV", id);
+    // Phase 7K.1: derived reversed-state from the linked Posted reversing JV.
+    const rev = await findPostedReversalJv(pool, { companyId, module: "CV", originalId: Number(id) });
 
     res.json({
       ...headers[0],
       lines,
       applications,
       currency: currencySnapshot,
+      reversal: rev
+        ? { reversed: true, reversedByVoucher: rev.voucherNo, reversalJvId: rev.id, reversalDate: rev.reversalDate }
+        : { reversed: false },
     });
   } catch (err) {
     console.error("GET CV DETAILS ERROR:", err);
@@ -5244,6 +5436,74 @@ app.post("/api/cv/:id/void", authenticateToken, authorizePermission("TRANSACTION
     await conn.rollback();
     console.error("VOID CV ERROR:", err);
     res.status(err.statusCode || 500).json({ message: err.statusCode ? err.message : "Failed to void CV", ...(err.statusCode && err.code ? { code: err.code } : {}) });
+  } finally {
+    conn.release();
+  }
+});
+
+// POST /api/cv/:id/reverse - closed-period Posted CV -> a Posted reversing
+// JV dated today, PLUS the settlement is unwound (transaction_applications
+// removed, AP_BEGINNING restored, APV payment status recomputed) in the
+// SAME transaction. Original CV stays Posted. Requires TRANSACTIONS.CV/VOID.
+app.post("/api/cv/:id/reverse", authenticateToken, authorizePermission("TRANSACTIONS.CV", "VOID"), async (req, res) => {
+  const conn = await pool.getConnection();
+  try {
+    const { id } = req.params;
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId || req.body?.companyId);
+    const reason = assertReason(req.body?.reason);
+
+    await conn.beginTransaction();
+    const [rows] = await conn.execute(
+      "SELECT id, company_id, status, voucher_no, transaction_date, payee_name AS party_name, currency_id, total_debit, total_credit FROM cv_headers WHERE id = ? FOR UPDATE",
+      [id]
+    );
+    if (!rows.length || rows[0].company_id !== companyId) {
+      await conn.rollback();
+      return res.status(404).json({ message: "CV not found" });
+    }
+    const original = rows[0];
+    const prevUp = String(original.status || "").toUpperCase();
+    if (prevUp === "VOID" || prevUp === "CANCELLED") {
+      await conn.rollback();
+      return res.status(409).json({ message: `A ${original.status} CV cannot be reversed.`, code: "TRANSACTION_NOT_EDITABLE" });
+    }
+    if (prevUp !== "POSTED") {
+      await conn.rollback();
+      return res.status(409).json({ message: "Only a Posted CV can be reversed.", code: "TRANSACTION_NOT_POSTED" });
+    }
+    const existing = await findPostedReversalJv(conn, { companyId, module: "CV", originalId: Number(id) });
+    if (existing) {
+      await conn.rollback();
+      return res.status(409).json({
+        message: `This CV was already reversed by ${existing.voucherNo}.`,
+        code: "TRANSACTION_ALREADY_REVERSED", reversalJvId: existing.id, reversalVoucher: existing.voucherNo,
+      });
+    }
+
+    const reversalDate = AccountingPeriodService.toDateOnly(new Date());
+    await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate: reversalDate, operation: "REVERSE", user: req.user }, conn);
+
+    const unwind = await unwindCvApplications(conn, Number(id));
+
+    const result = await performReversal(conn, { module: "CV", companyId, original, reason, user: req.user, reversalDate });
+
+    await logAudit(conn, {
+      module: "TRANSACTIONS", entityType: "CV", entityId: Number(id), action: "REVERSE",
+      description: `Reversed CV ${original.voucher_no} via JV ${result.reversalVoucherNo} dated ${reversalDate}. Reason: ${reason}`.slice(0, 500),
+      beforeData: { status: "Posted" },
+      afterData: {
+        status: "Posted", reversalJvId: result.reversalJvId, reversalVoucher: result.reversalVoucherNo,
+        reversalDate, reason, ...unwind,
+      },
+      user: { ...req.user, ...requestMeta(req) },
+    });
+    await conn.commit();
+    res.json({ success: true, id: Number(id), status: "Posted", reversalJvId: result.reversalJvId, reversalVoucher: result.reversalVoucherNo, reversalDate, ...unwind });
+  } catch (err) {
+    await conn.rollback();
+    console.error("REVERSE CV ERROR:", err);
+    if (handleVoucherDupError(err, res)) return;
+    res.status(err.statusCode || 500).json({ message: err.statusCode ? err.message : "Failed to reverse CV", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   } finally {
     conn.release();
   }

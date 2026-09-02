@@ -520,7 +520,24 @@ async function getTransactionDocument(transactionType, id, { withEntries, compan
     outputVat = await getOutputVatSummary(cfg.currencyTxnType, id);
   }
 
-  return { doc, lines, entriesSummary, party, bankAccount, company, appliedInvoices, outputVat };
+  // Phase 7K.1: a closed-period-reversed APV/CV keeps status 'Posted' but is
+  // logically reversed by a linked Posted JV - surface it so the document
+  // can show a "REVERSED BY <voucher>" banner. Header status is unchanged.
+  let reversal = { reversed: false };
+  if (cfg.currencyTxnType === "APV" || cfg.currencyTxnType === "CV") {
+    const [[revRow]] = await pool.execute(
+      `SELECT voucher_no AS voucherNo, DATE_FORMAT(transaction_date, '%Y-%m-%d') AS reversalDate
+         FROM jv_headers
+        WHERE company_id = ? AND source_module = ? AND source_reference_id = ? AND UPPER(status) = 'POSTED'
+        ORDER BY id DESC LIMIT 1`,
+      [companyId, `${cfg.currencyTxnType}_REVERSAL`, id]
+    );
+    if (revRow) {
+      reversal = { reversed: true, reversedByVoucher: revRow.voucherNo, reversalDate: revRow.reversalDate };
+    }
+  }
+
+  return { doc, lines, entriesSummary, party, bankAccount, company, appliedInvoices, outputVat, reversal };
 }
 
 // grouping: "number" | "date" | "due_date" | "check_number" | "reference"

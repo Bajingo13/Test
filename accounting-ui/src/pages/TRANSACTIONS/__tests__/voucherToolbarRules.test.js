@@ -45,7 +45,7 @@ describe("getVoucherToolbarVisibility", () => {
       status: "Draft",
       can: allowAll,
     });
-    expect(result).toEqual({ showEdit: true, showDelete: true, showCancel: false, showVoid: false, showPrint: true });
+    expect(result).toEqual({ showEdit: true, showDelete: true, showCancel: false, showVoid: false, showReverse: false, isReversed: false, showPrint: true });
   });
 
   test("Invoice Posted: Edit/Delete hidden even with full permissions (Phase 7A.1 guard reflected)", () => {
@@ -117,7 +117,47 @@ describe("getVoucherToolbarVisibility", () => {
       status: "Draft",
       can: denyAll,
     });
-    expect(result).toEqual({ showEdit: false, showDelete: false, showCancel: false, showVoid: false, showPrint: false });
+    expect(result).toEqual({ showEdit: false, showDelete: false, showCancel: false, showVoid: false, showReverse: false, isReversed: false, showPrint: false });
+  });
+
+  // Phase 7K.1
+  test("APV Posted + VOID perm + period CLOSED: Reverse visible, Void visible (frontend still offers Void; backend 409s and drives Reverse)", () => {
+    const r = getVoucherToolbarVisibility({ moduleConfig: APV_CV, status: "Posted", can: allowAll, periodClosed: true });
+    expect(r.showReverse).toBe(true);
+    expect(r.showVoid).toBe(true);
+  });
+
+  test("APV Posted + VOID perm, period NOT closed: Reverse hidden (Void->409 flow handles it)", () => {
+    const r = getVoucherToolbarVisibility({ moduleConfig: APV_CV, status: "Posted", can: allowAll });
+    expect(r.showReverse).toBe(false);
+    expect(r.showVoid).toBe(true);
+  });
+
+  test("APV already reversed: Void + Reverse + Edit all hidden; isReversed true", () => {
+    const r = getVoucherToolbarVisibility({ moduleConfig: APV_CV, status: "Posted", can: allowAll, alreadyReversed: true, periodClosed: true });
+    expect(r.showVoid).toBe(false);
+    expect(r.showReverse).toBe(false);
+    expect(r.showEdit).toBe(false);
+    expect(r.isReversed).toBe(true);
+  });
+
+  test("CV Posted + VOID perm + period CLOSED: Reverse visible", () => {
+    const r = getVoucherToolbarVisibility({ moduleConfig: CV_CANCELVOID, status: "Posted", can: allowAll, periodClosed: true });
+    expect(r.showReverse).toBe(true);
+  });
+
+  test("No VOID permission: Reverse hidden even when period closed", () => {
+    const canNoVoid = (mk, a) => a !== "VOID";
+    const r = getVoucherToolbarVisibility({ moduleConfig: APV_CV, status: "Posted", can: canNoVoid, periodClosed: true });
+    expect(r.showReverse).toBe(false);
+  });
+
+  test("modules without cancelVoid never show Reverse", () => {
+    for (const mc of [INV, JV, PCV]) {
+      const r = getVoucherToolbarVisibility({ moduleConfig: mc, status: "Posted", can: allowAll, periodClosed: true });
+      expect(r.showReverse).toBe(false);
+      expect(r.isReversed).toBe(false);
+    }
   });
 
   // Phase 7K

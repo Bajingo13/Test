@@ -64,6 +64,13 @@ async function resolveReportableEwtEvents({ companyId, taxType }) {
   // recognized (same POSTED-only rule reportRecognitionService applies to
   // every ledger report). Historical structured/header EWT snapshots are
   // left intact - the document simply stops being reportable.
+  //
+  // Phase 7K.1: a closed-period reversal keeps the original Posted but
+  // creates a linked Posted reversing JV (source_module 'APV_REVERSAL' /
+  // 'CV_REVERSAL', source_reference_id = original id). Such a reversed
+  // original must ALSO drop out of EWT reporting - excluded here BEFORE
+  // the Phase 7D.1 supersession pass so a reversed CV no longer supersedes
+  // its APV. The original header EWT columns are never touched.
   const [apvRows] = await pool.execute(
     `SELECT id, supplier_id AS partyId, supplier_name AS partyName,
             COALESCE(payee_tin, '') AS tin, atc_code AS atcCode, tax_type AS taxType, tax_rate AS taxRate,
@@ -71,7 +78,14 @@ async function resolveReportableEwtEvents({ companyId, taxType }) {
             DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate
      FROM apv_headers
      WHERE company_id = ? AND tax_type = ? AND tax_withheld_amount > 0
-       AND UPPER(status) = 'POSTED'`,
+       AND UPPER(status) = 'POSTED'
+       AND NOT EXISTS (
+         SELECT 1 FROM jv_headers rev
+          WHERE rev.company_id = apv_headers.company_id
+            AND rev.source_module = 'APV_REVERSAL'
+            AND rev.source_reference_id = apv_headers.id
+            AND UPPER(rev.status) = 'POSTED'
+       )`,
     [companyId, taxType]
   );
 
@@ -82,7 +96,14 @@ async function resolveReportableEwtEvents({ companyId, taxType }) {
             DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate
      FROM cv_headers
      WHERE company_id = ? AND tax_type = ? AND tax_withheld_amount > 0
-       AND UPPER(status) = 'POSTED'`,
+       AND UPPER(status) = 'POSTED'
+       AND NOT EXISTS (
+         SELECT 1 FROM jv_headers rev
+          WHERE rev.company_id = cv_headers.company_id
+            AND rev.source_module = 'CV_REVERSAL'
+            AND rev.source_reference_id = cv_headers.id
+            AND UPPER(rev.status) = 'POSTED'
+       )`,
     [companyId, taxType]
   );
 
