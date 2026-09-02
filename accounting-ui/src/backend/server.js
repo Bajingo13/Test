@@ -36,6 +36,7 @@ const CurrencyService = require("./services/currencyService");
 const { postedOnlySql } = require("./services/reportRecognitionService");
 const OutputVatReportService = require("./services/outputVatReportService");
 const { assertVoucherNoUnique, handleVoucherDupError, normalizeVoucherNo } = require("./services/voucherNumberService");
+const { assertRequiredTransactionLines, assertRequiredQuotationLines } = require("./services/transactionLineValidation");
 const TransactionCurrencyService = require("./services/transactionCurrencyService");
 const AgingReportService = require("./services/agingReportService");
 const AccountingPeriodService = require("./services/accountingPeriodService");
@@ -1149,6 +1150,7 @@ app.post("/api/invoices", authenticateToken, authorizePermission("TRANSACTIONS.I
     await AccountingPeriodService.assertPeriodOpen({
       companyId, transactionDate, operation: "CREATE", user: req.user,
     }, conn);
+    assertRequiredTransactionLines(lines);
     const currencyResult = await TransactionCurrencyService.resolveTransactionCurrency({
       user: req.user, companyId, transactionType: "INV", transactionId: null, currencyPayload: currency,
       lines, grossAmount: total, vatKeyword: "output vat", taxWithheldAmount: ewt.taxWithheldAmount,
@@ -1396,6 +1398,7 @@ app.put("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACTION
     if (transactionDate && transactionDate !== existingDateISO) {
       await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate, operation: "EDIT", user: req.user }, conn);
     }
+    assertRequiredTransactionLines(lines);
     const currencyResult = await TransactionCurrencyService.resolveTransactionCurrency({
       user: req.user, companyId, transactionType: "INV", transactionId: Number(id), currencyPayload: currency,
       lines, grossAmount: foreignGross, vatKeyword: "output vat", taxWithheldAmount: ewt.taxWithheldAmount,
@@ -1692,6 +1695,7 @@ app.post("/api/or", authenticateToken, authorizePermission("TRANSACTIONS.OR", "C
     // accounting effect happens in the OR's period, not the Invoice's -
     // Checkpoint 5 section 16/17).
     await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate, operation: "CREATE", user: req.user }, conn);
+    assertRequiredTransactionLines(lines);
     const currencyResult = await TransactionCurrencyService.resolveTransactionCurrency({
       user: req.user, companyId, transactionType: "OR", transactionId: null, currencyPayload: currency,
       lines, grossAmount: Number(totalDebit) || 0, vatKeyword: "output vat", taxWithheldAmount: ewt.taxWithheldAmount,
@@ -2106,6 +2110,7 @@ app.put("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
       vatKeyword: "output vat",
     });
 
+    assertRequiredTransactionLines(lines);
     const currencyResult = await TransactionCurrencyService.resolveTransactionCurrency({
       user: req.user, companyId, transactionType: "OR", transactionId: Number(id), currencyPayload: currency,
       lines, grossAmount: Number(totalDebit) || 0, vatKeyword: "output vat", taxWithheldAmount: ewt.taxWithheldAmount,
@@ -2580,6 +2585,7 @@ app.post("/api/apv", authenticateToken, authorizePermission("TRANSACTIONS.APV", 
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
     await assertVoucherNoUnique(conn, { module: "APV", companyId, voucherNo });
     await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate, operation: "CREATE", user: req.user }, conn);
+    assertRequiredTransactionLines(lines);
     const currencyResult = await TransactionCurrencyService.resolveTransactionCurrency({
       user: req.user, companyId, transactionType: "APV", transactionId: null, currencyPayload: currency,
       lines, grossAmount: foreignGross, vatKeyword: "input vat", taxWithheldAmount: ewt.taxWithheldAmount,
@@ -2811,6 +2817,7 @@ app.put("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV
     if (transactionDate && transactionDate !== existingDateISO) {
       await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate, operation: "EDIT", user: req.user }, conn);
     }
+    assertRequiredTransactionLines(lines);
     const currencyResult = await TransactionCurrencyService.resolveTransactionCurrency({
       user: req.user, companyId, transactionType: "APV", transactionId: Number(id), currencyPayload: currency,
       lines, grossAmount: foreignGross, vatKeyword: "input vat", taxWithheldAmount: ewt.taxWithheldAmount,
@@ -3211,6 +3218,7 @@ app.post("/api/purchase-orders", authenticateToken, authorizePermission("TRANSAC
     // audit-trail consistency control rather than a ledger-protection one
     // (Checkpoint 5 section 24 - documented decision, not an oversight).
     await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate, operation: "CREATE", user: req.user }, conn);
+    assertRequiredTransactionLines(lines);
     const currencyResult = await TransactionCurrencyService.resolveTransactionCurrency({
       user: req.user, companyId, transactionType: "PO", transactionId: null, currencyPayload: currency,
       lines, grossAmount: foreignGross, vatKeyword: "input vat", taxWithheldAmount: ewt.taxWithheldAmount,
@@ -3372,6 +3380,7 @@ app.put("/api/purchase-orders/:id", authenticateToken, authorizePermission("TRAN
       await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate, operation: "EDIT", user: req.user }, conn);
     }
 
+    assertRequiredTransactionLines(lines);
     const currencyResult = await TransactionCurrencyService.resolveTransactionCurrency({
       user: req.user, companyId, transactionType: "PO", transactionId: Number(id), currencyPayload: currency,
       lines, grossAmount: foreignGross, vatKeyword: "input vat", taxWithheldAmount: ewt.taxWithheldAmount,
@@ -3647,6 +3656,7 @@ app.post("/api/quotations", authenticateToken, authorizePermission("TRANSACTIONS
     // arbitrary body companyId for a company the user cannot access is
     // rejected by resolveCompanyIdForWrite.
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.body?.companyId);
+    assertRequiredQuotationLines(lines);
 
     await conn.beginTransaction();
 
@@ -3776,6 +3786,8 @@ app.put("/api/quotations/:id", authenticateToken, authorizePermission("TRANSACTI
       totalAmount,
       lines,
     } = req.body;
+
+    assertRequiredQuotationLines(lines);
 
     await conn.beginTransaction();
 
@@ -3937,6 +3949,12 @@ app.post("/api/quotations/:id/convert-to-invoice", authenticateToken, authorizeP
        WHERE quotation_id = ? AND line_type = 'item'`,
       [id]
     );
+
+    // Phase 7I: a quotation with no item lines cannot become a valid
+    // Invoice - fail and roll back (quotation stays un-converted).
+    if (itemLines.length === 0) {
+      throw new HttpError(400, "This Quotation has no line items to convert.", "TRANSACTION_LINES_REQUIRED");
+    }
 
     // Lines without an account picked fall back to an auto-detected Sales/Revenue
     // account, same as the original behavior before per-line accounts existed.
@@ -4444,6 +4462,7 @@ app.post("/api/cv", authenticateToken, authorizePermission("TRANSACTIONS.CV", "C
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
     await assertVoucherNoUnique(conn, { module: "CV", companyId, voucherNo });
     await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate, operation: "CREATE", user: req.user }, conn);
+    assertRequiredTransactionLines(lines);
     const currencyResult = await TransactionCurrencyService.resolveTransactionCurrency({
       user: req.user, companyId, transactionType: "CV", transactionId: null, currencyPayload: currency,
       lines, grossAmount: Number(totalCredit) || 0, vatKeyword: "input vat", taxWithheldAmount: ewt.taxWithheldAmount,
@@ -4808,6 +4827,7 @@ app.put("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
       vatKeyword: "input vat",
     });
 
+    assertRequiredTransactionLines(lines);
     const currencyResult = await TransactionCurrencyService.resolveTransactionCurrency({
       user: req.user, companyId, transactionType: "CV", transactionId: Number(id), currencyPayload: currency,
       lines, grossAmount: Number(totalCredit) || 0, vatKeyword: "input vat", taxWithheldAmount: ewt.taxWithheldAmount,
@@ -5009,6 +5029,7 @@ app.post("/api/jv", authenticateToken, authorizePermission("TRANSACTIONS.JV", "C
 
     // Backend authority (section 30/31): the gross total comes from summing
     // the submitted lines, never the client-computed totalDebit/totalCredit.
+    assertRequiredTransactionLines(lines);
     const grossAmount = lines.reduce((sum, line) => sum + (Number(line.debit) || 0), 0);
 
     await conn.beginTransaction();
@@ -5246,6 +5267,7 @@ app.put("/api/jv/:id", authenticateToken, authorizePermission("TRANSACTIONS.JV",
     const nextPostedAt =
       isPosting ? (wasAlreadyPosted ? existing[0].posted_at : new Date()) : null;
 
+    assertRequiredTransactionLines(lines);
     const grossAmount = lines.reduce((sum, line) => sum + (Number(line.debit) || 0), 0);
 
     await conn.beginTransaction();
@@ -5495,6 +5517,7 @@ app.post("/api/petty-cash", authenticateToken, authorizePermission("TRANSACTIONS
     const userId = req.user?.id || null;
     const isPosting = finalStatus === "Posted";
 
+    assertRequiredTransactionLines(lines);
     const grossAmount = lines.reduce((sum, line) => sum + (Number(line.debit) || 0), 0);
 
     await conn.beginTransaction();
@@ -5642,6 +5665,7 @@ app.put("/api/petty-cash/:id", authenticateToken, authorizePermission("TRANSACTI
     const nextPostedBy = isPosting ? (wasAlreadyPosted ? existing[0].posted_by : userId) : null;
     const nextPostedAt = isPosting ? (wasAlreadyPosted ? existing[0].posted_at : new Date()) : null;
 
+    assertRequiredTransactionLines(lines);
     const grossAmount = lines.reduce((sum, line) => sum + (Number(line.debit) || 0), 0);
 
     await conn.beginTransaction();
@@ -5843,6 +5867,7 @@ function registerMemoRoutes(memoType, urlPrefix, permissionModule, label) {
       const finalSourceType = sourceType === "INVOICE" || sourceType === "APV" ? sourceType : null;
       const finalSourceId = finalSourceType ? (Number(sourceId) || null) : null;
 
+      assertRequiredTransactionLines(lines);
       const grossAmount = lines.reduce((sum, line) => sum + (Number(line.debit) || 0), 0);
 
       await conn.beginTransaction();
@@ -6009,6 +6034,7 @@ function registerMemoRoutes(memoType, urlPrefix, permissionModule, label) {
       const finalSourceType = sourceType === "INVOICE" || sourceType === "APV" ? sourceType : null;
       const finalSourceId = finalSourceType ? (Number(sourceId) || null) : null;
 
+      assertRequiredTransactionLines(lines);
       const grossAmount = lines.reduce((sum, line) => sum + (Number(line.debit) || 0), 0);
 
       await conn.beginTransaction();
