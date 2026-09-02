@@ -483,7 +483,8 @@
   color: var(--success-text);
 }
 
-.transaction-status-badge.cancelled {
+.transaction-status-badge.cancelled,
+.transaction-status-badge.void {
   background: var(--danger-bg);
   color: var(--danger-text);
 }

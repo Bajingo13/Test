@@ -26,6 +26,9 @@ beforeAll(async () => {
 const INV = { moduleKey: "TRANSACTIONS.INVOICE", delete: true, statusModel: "DRAFT_POSTED" };
 const OR = { moduleKey: "TRANSACTIONS.OR", delete: false, statusModel: "DRAFT_POSTED" };
 const CV = { moduleKey: "TRANSACTIONS.CV", delete: false, statusModel: "DRAFT_POSTED" };
+// Phase 7K: APV/CV carry cancelVoid; CV still has delete: false (no physical delete route).
+const APV_CV = { moduleKey: "TRANSACTIONS.APV", delete: true, statusModel: "DRAFT_POSTED", cancelVoid: true };
+const CV_CANCELVOID = { moduleKey: "TRANSACTIONS.CV", delete: false, statusModel: "DRAFT_POSTED", cancelVoid: true };
 const JV = { moduleKey: "TRANSACTIONS.JV", delete: true, statusModel: "DRAFT_POSTED" };
 const PO = { moduleKey: "TRANSACTIONS.PURCHASE_ORDER", delete: true, statusModel: "OPEN_CLOSED" };
 const PCV = { moduleKey: "TRANSACTIONS.PETTY_CASH", delete: true, statusModel: "DRAFT_POSTED" };
@@ -42,7 +45,7 @@ describe("getVoucherToolbarVisibility", () => {
       status: "Draft",
       can: allowAll,
     });
-    expect(result).toEqual({ showEdit: true, showDelete: true, showPrint: true });
+    expect(result).toEqual({ showEdit: true, showDelete: true, showCancel: false, showVoid: false, showPrint: true });
   });
 
   test("Invoice Posted: Edit/Delete hidden even with full permissions (Phase 7A.1 guard reflected)", () => {
@@ -114,7 +117,80 @@ describe("getVoucherToolbarVisibility", () => {
       status: "Draft",
       can: denyAll,
     });
-    expect(result).toEqual({ showEdit: false, showDelete: false, showPrint: false });
+    expect(result).toEqual({ showEdit: false, showDelete: false, showCancel: false, showVoid: false, showPrint: false });
+  });
+
+  // Phase 7K
+  test("APV Draft + full perms: Cancel visible, physical Delete HIDDEN, Void hidden", () => {
+    const r = getVoucherToolbarVisibility({ moduleConfig: APV_CV, status: "Draft", can: allowAll });
+    expect(r.showCancel).toBe(true);
+    expect(r.showVoid).toBe(false);
+    // Phase 7K safety correction: the physical Delete action is hidden from
+    // the normal APV toolbar once Cancel is available (backend route retained).
+    expect(r.showDelete).toBe(false);
+  });
+
+  test("APV Draft WITHOUT DELETE permission: Cancel hidden AND Delete hidden", () => {
+    const canNoDelete = (mk, a) => a !== "DELETE";
+    const r = getVoucherToolbarVisibility({ moduleConfig: APV_CV, status: "Draft", can: canNoDelete });
+    expect(r.showCancel).toBe(false);
+    expect(r.showDelete).toBe(false);
+  });
+
+  test("APV Posted: Void visible (with perm), Delete + Cancel hidden", () => {
+    const r = getVoucherToolbarVisibility({ moduleConfig: APV_CV, status: "Posted", can: allowAll });
+    expect(r.showVoid).toBe(true);
+    expect(r.showDelete).toBe(false);
+    expect(r.showCancel).toBe(false);
+  });
+
+  test("INV/JV still show physical Delete on a Draft (no cancelVoid -> unchanged)", () => {
+    for (const mc of [INV, JV]) {
+      const r = getVoucherToolbarVisibility({ moduleConfig: mc, status: "Draft", can: allowAll });
+      expect(r.showDelete).toBe(true);
+      expect(r.showCancel).toBe(false);
+    }
+  });
+
+  test("APV Posted + full perms: Void visible, Cancel hidden, Edit/Delete hidden", () => {
+    const r = getVoucherToolbarVisibility({ moduleConfig: APV_CV, status: "Posted", can: allowAll });
+    expect(r.showVoid).toBe(true);
+    expect(r.showCancel).toBe(false);
+    expect(r.showEdit).toBe(false);
+    expect(r.showDelete).toBe(false);
+  });
+
+  test("CV Draft: Cancel visible (via DELETE perm) even though CV has no physical delete route", () => {
+    const r = getVoucherToolbarVisibility({ moduleConfig: CV_CANCELVOID, status: "Draft", can: allowAll });
+    expect(r.showCancel).toBe(true);
+    expect(r.showDelete).toBe(false);
+  });
+
+  test("CV Posted: Void visible", () => {
+    const r = getVoucherToolbarVisibility({ moduleConfig: CV_CANCELVOID, status: "Posted", can: allowAll });
+    expect(r.showVoid).toBe(true);
+  });
+
+  test("No VOID permission: Void hidden on a Posted APV", () => {
+    const canNoVoid = (mk, a) => a !== "VOID";
+    const r = getVoucherToolbarVisibility({ moduleConfig: APV_CV, status: "Posted", can: canNoVoid });
+    expect(r.showVoid).toBe(false);
+  });
+
+  test("No DELETE permission: Cancel hidden on a Draft APV", () => {
+    const canNoDelete = (mk, a) => a !== "DELETE";
+    const r = getVoucherToolbarVisibility({ moduleConfig: APV_CV, status: "Draft", can: canNoDelete });
+    expect(r.showCancel).toBe(false);
+  });
+
+  test("modules without cancelVoid never show Cancel/Void", () => {
+    for (const mc of [INV, OR, JV, PCV]) {
+      const d = getVoucherToolbarVisibility({ moduleConfig: mc, status: "Draft", can: allowAll });
+      const p = getVoucherToolbarVisibility({ moduleConfig: mc, status: "Posted", can: allowAll });
+      expect(d.showCancel).toBe(false);
+      expect(d.showVoid).toBe(false);
+      expect(p.showVoid).toBe(false);
+    }
   });
 
   describe("PO (OPEN_CLOSED statusModel - no Draft/Posted restriction, per Phase 7A.1)", () => {

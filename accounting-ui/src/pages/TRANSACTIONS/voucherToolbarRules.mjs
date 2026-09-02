@@ -31,16 +31,29 @@ export function isEditableStatus(statusModel, status) {
 export function getVoucherToolbarVisibility({ moduleConfig, status, can }) {
   const moduleKey = moduleConfig?.moduleKey ?? null;
   const editable = isEditableStatus(moduleConfig?.statusModel, status);
+  const statusUp = String(status || "Draft").toUpperCase();
+  const isDraft = statusUp === "DRAFT";
+  const isPosted = statusUp === "POSTED";
 
   const canEdit = !!moduleKey && can(moduleKey, "EDIT");
   const canDelete = !!moduleKey && can(moduleKey, "DELETE");
+  const canVoid = !!moduleKey && can(moduleKey, "VOID");
   const canPrint = !!moduleKey && can(moduleKey, "PRINT");
 
   return {
     showEdit: editable && canEdit,
     // OR/CV have no DELETE route at all (moduleConfig.delete === false) -
-    // never offered regardless of status/permission.
-    showDelete: !!moduleConfig?.delete && editable && canDelete,
+    // never offered regardless of status/permission. Phase 7K: a module
+    // with cancelVoid (APV) hides the physical Delete from the normal
+    // toolbar entirely - Cancel is the safe Draft replacement (the backend
+    // DELETE route is retained only for legacy/direct callers). Delete
+    // stays for INV/JV/PCV/DM/CM which have no Cancel action.
+    showDelete: !!moduleConfig?.delete && !moduleConfig?.cancelVoid && editable && canDelete,
+    // Phase 7K: APV/CV (moduleConfig.cancelVoid) get explicit Cancel on a
+    // Draft (authorized by the module's DELETE permission) and Void on a
+    // Posted document (new VOID permission).
+    showCancel: !!moduleConfig?.cancelVoid && isDraft && canDelete,
+    showVoid: !!moduleConfig?.cancelVoid && isPosted && canVoid,
     showPrint: canPrint,
   };
 }

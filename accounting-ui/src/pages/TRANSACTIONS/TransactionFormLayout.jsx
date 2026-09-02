@@ -127,6 +127,9 @@ export default function TransactionFormLayout({
   const [showRecurringModal, setShowRecurringModal] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  // Phase 7K: APV/CV Cancel (Draft) / Void (Posted) reason modal.
+  const [cancelVoidAction, setCancelVoidAction] = useState(null); // "cancel" | "void" | null
+  const [cancelVoidReason, setCancelVoidReason] = useState("");
 
   const [accountOptions, setAccountOptions] = useState([]);
   const [partyOptions, setPartyOptions] = useState([]);
@@ -1728,6 +1731,49 @@ if (code === "OR" || code === "CV") {
     setShowDeleteConfirm(true);
   }
 
+  // Phase 7K: open the Cancel/Void reason modal for APV/CV.
+  function openCancelVoid(action) {
+    setCancelVoidReason("");
+    setCancelVoidAction(action);
+  }
+
+  async function submitCancelVoid() {
+    if (!selectedTransaction?.id || moduleConfigError || !cancelVoidAction) return;
+    const reason = cancelVoidReason.trim();
+    if (!reason) { alert("A reason is required."); return; }
+
+    setDeleting(true);
+    try {
+      const res = await fetch(
+        `${API_BASE}/api/${moduleConfig.endpoint}/${selectedTransaction.id}/${cancelVoidAction}`,
+        {
+          method: "POST",
+          credentials: "include",
+          headers: { ...authHeaders(), "Content-Type": "application/json" },
+          body: JSON.stringify({ reason, companyId: selectedTransaction.companyId ?? form.companyId ?? undefined }),
+        }
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (handleAuthError(res.status)) return;
+        alert(data.message || `Failed to ${cancelVoidAction} transaction.`);
+        setCancelVoidAction(null);
+        await handleView(selectedTransaction);
+        return;
+      }
+      setCancelVoidAction(null);
+      alert(`${title} ${cancelVoidAction === "void" ? "voided" : "cancelled"} successfully.`);
+      await loadTransactions();
+      setMode("list");
+    } catch (err) {
+      console.error("CANCEL/VOID TRANSACTION ERROR:", err);
+      alert("Unable to connect to server.");
+      setCancelVoidAction(null);
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   function cancelDeleteConfirm() {
     setShowDeleteConfirm(false);
   }
@@ -2638,6 +2684,8 @@ if (code === "OR") {
               code={code}
               showEdit={toolbarVisibility.showEdit}
               showDelete={toolbarVisibility.showDelete}
+              showCancel={toolbarVisibility.showCancel}
+              showVoid={toolbarVisibility.showVoid}
               showPrint={!!printModuleType && toolbarVisibility.showPrint}
               showRecurring={!!recurringModuleType}
               showPrevious
@@ -2647,6 +2695,8 @@ if (code === "OR") {
               showPost
               onEdit={handleEditClick}
               onDelete={handleDeleteClick}
+              onCancel={() => openCancelVoid("cancel")}
+              onVoid={() => openCancelVoid("void")}
               onPrint={() => setShowPrintOptionsModal(true)}
               onRecurring={() => setShowRecurringModal(true)}
               onPrevious={handlePreviousTransaction}
@@ -3383,6 +3433,47 @@ if (code === "OR") {
                       disabled={deleting}
                     >
                       {deleting ? "Deleting..." : "Delete"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Phase 7K: APV/CV Cancel (Draft) / Void (Posted) reason modal. */}
+            {cancelVoidAction && (
+              <div className="apv-modal-overlay">
+                <div className="apv-modal confirm-dialog">
+                  <div className="apv-modal-header">
+                    <div>
+                      <h2>{cancelVoidAction === "void" ? `Void this Posted ${title}?` : `Cancel this Draft ${title}?`}</h2>
+                      <p>
+                        {cancelVoidAction === "void"
+                          ? `The ${title} is retained for audit but stops being recognized in the ledger.`
+                          : `The ${title} is retained for audit but marked Cancelled.`}
+                        {code === "CV" && " Any payable balances it settled will be reopened and recalculated."}
+                      </p>
+                    </div>
+                    <button type="button" className="apv-modal-close" onClick={() => setCancelVoidAction(null)} aria-label="Close">×</button>
+                  </div>
+                  <div className="tax-entry-modal-body">
+                    <div className="transaction-field">
+                      <label className="transaction-label">Reason (required)</label>
+                      <textarea
+                        className="transaction-input"
+                        rows={3}
+                        maxLength={500}
+                        value={cancelVoidReason}
+                        onChange={(e) => setCancelVoidReason(e.target.value)}
+                        placeholder={`Why is this ${title} being ${cancelVoidAction === "void" ? "voided" : "cancelled"}?`}
+                      />
+                    </div>
+                  </div>
+                  <div className="apv-modal-footer">
+                    <button type="button" className="transaction-secondary-button" onClick={() => setCancelVoidAction(null)} disabled={deleting}>
+                      Close
+                    </button>
+                    <button type="button" className="transaction-danger-button" onClick={submitCancelVoid} disabled={deleting || !cancelVoidReason.trim()}>
+                      {deleting ? "Working..." : cancelVoidAction === "void" ? "Void" : "Cancel Draft"}
                     </button>
                   </div>
                 </div>

@@ -60,13 +60,18 @@ function roundMoney(value) {
 // BIR remittance/Form 2307 reports assume PHP"). This function reads
 // those stored values as-is and never re-resolves an exchange rate.
 async function resolveReportableEwtEvents({ companyId, taxType }) {
+  // Phase 7K: a Cancelled or Void APV/CV is no longer financially
+  // recognized (same POSTED-only rule reportRecognitionService applies to
+  // every ledger report). Historical structured/header EWT snapshots are
+  // left intact - the document simply stops being reportable.
   const [apvRows] = await pool.execute(
     `SELECT id, supplier_id AS partyId, supplier_name AS partyName,
             COALESCE(payee_tin, '') AS tin, atc_code AS atcCode, tax_type AS taxType, tax_rate AS taxRate,
             total_credit AS grossAmount, tax_withheld_amount AS taxWithheld,
             DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate
      FROM apv_headers
-     WHERE company_id = ? AND tax_type = ? AND tax_withheld_amount > 0`,
+     WHERE company_id = ? AND tax_type = ? AND tax_withheld_amount > 0
+       AND UPPER(status) = 'POSTED'`,
     [companyId, taxType]
   );
 
@@ -76,7 +81,8 @@ async function resolveReportableEwtEvents({ companyId, taxType }) {
             total_credit AS grossAmount, tax_withheld_amount AS taxWithheld,
             DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate
      FROM cv_headers
-     WHERE company_id = ? AND tax_type = ? AND tax_withheld_amount > 0`,
+     WHERE company_id = ? AND tax_type = ? AND tax_withheld_amount > 0
+       AND UPPER(status) = 'POSTED'`,
     [companyId, taxType]
   );
 

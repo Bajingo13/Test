@@ -105,6 +105,12 @@ const MIGRATION_ORDER = [
   // and phase7e_vat_treatment_migration.sql (adds vat_treatment, which this
   // column is placed after).
   "phase7j_vat_entry_mode_migration.sql",
+  // Phase 7K - DATA/CONFIG ONLY (no DDL): permission catalog rows for the
+  // APV/CV Cancel (reuses DELETE) and Void (new VOID action) endpoints,
+  // plus ADMIN/ACCOUNTANT grants. INSERT IGNORE, re-run is a no-op. Must
+  // run after user_access_control_migration.sql (owns permissions /
+  // role_permissions / roles).
+  "phase7k_void_cancel_permissions_migration.sql",
 ];
 
 module.exports = { MIGRATION_ORDER };

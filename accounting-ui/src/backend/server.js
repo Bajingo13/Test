@@ -42,6 +42,7 @@ const AgingReportService = require("./services/agingReportService");
 const AccountingPeriodService = require("./services/accountingPeriodService");
 const TaxEntryService = require("./services/taxEntryService");
 const EwtReportReconciliationService = require("./services/ewtReportReconciliationService");
+const { assertWriteStatus, assertReason, unwindCvApplications, CANCELLED, VOID } = require("./services/voidCancelService");
 
 console.log("ENV FILE:", require("path").resolve(".env"));
 console.log("JWT_SECRET loaded:", Boolean(process.env.JWT_SECRET));
@@ -2573,6 +2574,7 @@ app.post("/api/apv", authenticateToken, authorizePermission("TRANSACTIONS.APV", 
     await conn.beginTransaction();
 
     const finalStatus = status || "DRAFT";
+    assertWriteStatus(finalStatus); // Phase 7K: Cancelled/Void only via the dedicated endpoints
     const foreignGross = Number(totalCredit || 0);
 
     const ewt = await resolveApvTaxWithholding(conn, {
@@ -2785,6 +2787,7 @@ app.put("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV
     await conn.beginTransaction();
 
     const finalStatus = status || "DRAFT";
+    assertWriteStatus(finalStatus); // Phase 7K
     const foreignGross = Number(totalCredit || 0);
 
     // Recomputed on every explicit edit, same as on create - this is an
@@ -2811,6 +2814,11 @@ app.put("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV
     if (String(ownerRows[0].status).toUpperCase() === "POSTED") {
       await conn.rollback();
       return res.status(409).json({ message: "Posted transactions cannot be edited.", code: "TRANSACTION_ALREADY_POSTED" });
+    }
+    // Phase 7K: a Cancelled or Void APV is terminal - not generally editable.
+    if (["CANCELLED", "VOID"].includes(String(ownerRows[0].status).toUpperCase())) {
+      await conn.rollback();
+      return res.status(409).json({ message: `This APV is ${ownerRows[0].status} and cannot be edited.`, code: "TRANSACTION_NOT_EDITABLE" });
     }
     const existingDateISO = AccountingPeriodService.toDateOnly(ownerRows[0].transaction_date);
     await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate: existingDateISO, operation: "EDIT", user: req.user }, conn);
@@ -2993,6 +3001,14 @@ app.delete("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.
       await conn.rollback();
       return res.status(409).json({ message: "Posted transactions cannot be deleted.", code: "TRANSACTION_ALREADY_POSTED" });
     }
+    // Phase 7K: physical delete is Draft-only. A Cancelled or Void APV is a
+    // retained accounting record (audit trail + its own tax/EWT snapshots) -
+    // it must never be physically removed via this legacy route, even though
+    // the normal toolbar no longer exposes Delete for APV at all.
+    if (["CANCELLED", "VOID"].includes(String(ownerRows[0].status).toUpperCase())) {
+      await conn.rollback();
+      return res.status(409).json({ message: `A ${ownerRows[0].status} APV cannot be deleted.`, code: "TRANSACTION_NOT_EDITABLE" });
+    }
     const delDateISO = AccountingPeriodService.toDateOnly(ownerRows[0].transaction_date);
     await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate: delDateISO, operation: "DELETE", user: req.user }, conn);
 
@@ -3015,6 +3031,153 @@ app.delete("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.
     await conn.rollback();
     console.error("DELETE APV ERROR:", err);
     res.status(err.statusCode || 500).json({ message: err.statusCode ? err.message : "Failed to delete APV", ...(err.statusCode && err.code ? { code: err.code } : {}) });
+  } finally {
+    conn.release();
+  }
+});
+
+// Phase 7K: for a Posted Void, the ORIGINAL transaction's accounting period
+// must allow a VOID. A CLOSED period is never reopened here - the caller is
+// told a reversal is required instead (that is a later subphase). SOFT_CLOSED
+// keeps its existing authorized-user behaviour.
+async function assertVoidPeriodOrReversalRequired(conn, { companyId, transactionDate, user }) {
+  try {
+    await AccountingPeriodService.assertPeriodOpen(
+      { companyId, transactionDate, operation: "VOID", user },
+      conn
+    );
+  } catch (err) {
+    if (err && err.code === "ACCOUNTING_PERIOD_CLOSED") {
+      throw new HttpError(
+        409,
+        "The original accounting period is closed. Void-in-place is not allowed; a reversal transaction is required.",
+        "REVERSAL_REQUIRED"
+      );
+    }
+    throw err;
+  }
+}
+
+// POST /api/apv/:id/cancel  - Draft APV -> Cancelled. Retains header, lines,
+// INPUT_VAT/EWT structured rows, currency snapshot and voucher number.
+// Draft cancellation has no recognized ledger effect, so it is allowed
+// regardless of the original period's lock state (approved Phase 7K policy).
+app.post("/api/apv/:id/cancel", authenticateToken, authorizePermission("TRANSACTIONS.APV", "DELETE"), async (req, res) => {
+  const conn = await pool.getConnection();
+  try {
+    const { id } = req.params;
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId || req.body?.companyId);
+    const reason = assertReason(req.body?.reason);
+
+    await conn.beginTransaction();
+    const [rows] = await conn.execute(
+      "SELECT company_id, status, voucher_no FROM apv_headers WHERE id = ? FOR UPDATE",
+      [id]
+    );
+    if (!rows.length || rows[0].company_id !== companyId) {
+      await conn.rollback();
+      return res.status(404).json({ message: "APV not found" });
+    }
+    const prev = String(rows[0].status || "");
+    const prevUp = prev.toUpperCase();
+    if (prevUp === "CANCELLED") {
+      await conn.rollback();
+      return res.status(409).json({ message: "This APV is already cancelled.", code: "TRANSACTION_ALREADY_CANCELLED" });
+    }
+    if (prevUp === "VOID") {
+      await conn.rollback();
+      return res.status(409).json({ message: "A voided APV cannot be cancelled.", code: "TRANSACTION_NOT_EDITABLE" });
+    }
+    if (prevUp === "POSTED") {
+      await conn.rollback();
+      return res.status(409).json({ message: "A posted APV cannot be cancelled. Use Void instead.", code: "TRANSACTION_ALREADY_POSTED" });
+    }
+
+    await conn.execute("UPDATE apv_headers SET status = ? WHERE id = ? AND company_id = ?", [CANCELLED, id, companyId]);
+    await logAudit(conn, {
+      module: "TRANSACTIONS", entityType: "APV", entityId: Number(id), action: "CANCEL",
+      description: `Cancelled APV ${rows[0].voucher_no || id}. Reason: ${reason}`.slice(0, 500),
+      beforeData: { status: prev }, afterData: { status: CANCELLED, reason },
+      user: { ...req.user, ...requestMeta(req) },
+    });
+    await conn.commit();
+    res.json({ success: true, id: Number(id), status: CANCELLED });
+  } catch (err) {
+    await conn.rollback();
+    console.error("CANCEL APV ERROR:", err);
+    res.status(err.statusCode || 500).json({ message: err.statusCode ? err.message : "Failed to cancel APV", ...(err.statusCode && err.code ? { code: err.code } : {}) });
+  } finally {
+    conn.release();
+  }
+});
+
+// POST /api/apv/:id/void  - Posted APV -> Void. Retains everything; ledger
+// reports stop recognizing it because recognition is POSTED-only. Blocked
+// if an active (non-void, non-cancelled) CV still settles this APV.
+app.post("/api/apv/:id/void", authenticateToken, authorizePermission("TRANSACTIONS.APV", "VOID"), async (req, res) => {
+  const conn = await pool.getConnection();
+  try {
+    const { id } = req.params;
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId || req.body?.companyId);
+    const reason = assertReason(req.body?.reason);
+
+    await conn.beginTransaction();
+    const [rows] = await conn.execute(
+      "SELECT company_id, status, voucher_no, transaction_date FROM apv_headers WHERE id = ? FOR UPDATE",
+      [id]
+    );
+    if (!rows.length || rows[0].company_id !== companyId) {
+      await conn.rollback();
+      return res.status(404).json({ message: "APV not found" });
+    }
+    const prev = String(rows[0].status || "");
+    const prevUp = prev.toUpperCase();
+    if (prevUp === "VOID") {
+      await conn.rollback();
+      return res.status(409).json({ message: "This APV is already void.", code: "TRANSACTION_ALREADY_VOIDED" });
+    }
+    if (prevUp === "CANCELLED") {
+      await conn.rollback();
+      return res.status(409).json({ message: "A cancelled APV cannot be voided.", code: "TRANSACTION_NOT_EDITABLE" });
+    }
+    if (prevUp !== "POSTED") {
+      await conn.rollback();
+      return res.status(409).json({ message: "Only a Posted APV can be voided. Cancel the Draft instead.", code: "TRANSACTION_NOT_POSTED" });
+    }
+
+    // APV settlement protection - do NOT cascade-void the CV.
+    const [[appRow]] = await conn.execute(
+      `SELECT COUNT(*) AS n
+         FROM transaction_applications ta
+         JOIN cv_headers c ON c.id = ta.applied_id
+        WHERE ta.applied_type = 'CV' AND ta.source_type = 'APV' AND ta.source_id = ?
+          AND UPPER(c.status) NOT IN ('VOID', 'CANCELLED')`,
+      [id]
+    );
+    if (Number(appRow.n) > 0) {
+      await conn.rollback();
+      return res.status(409).json({
+        message: "This APV is settled by one or more active Check Vouchers. Void those Check Vouchers first.",
+        code: "APV_HAS_ACTIVE_PAYMENTS",
+      });
+    }
+
+    const dateISO = AccountingPeriodService.toDateOnly(rows[0].transaction_date);
+    await assertVoidPeriodOrReversalRequired(conn, { companyId, transactionDate: dateISO, user: req.user });
+
+    await conn.execute("UPDATE apv_headers SET status = ? WHERE id = ? AND company_id = ?", [VOID, id, companyId]);
+    await logAudit(conn, {
+      module: "TRANSACTIONS", entityType: "APV", entityId: Number(id), action: "VOID",
+      description: `Voided APV ${rows[0].voucher_no || id}. Reason: ${reason}`.slice(0, 500),
+      beforeData: { status: prev }, afterData: { status: VOID, reason },
+      user: { ...req.user, ...requestMeta(req) },
+    });
+    await conn.commit();
+    res.json({ success: true, id: Number(id), status: VOID });
+  } catch (err) {
+    await conn.rollback();
+    console.error("VOID APV ERROR:", err);
+    res.status(err.statusCode || 500).json({ message: err.statusCode ? err.message : "Failed to void APV", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   } finally {
     conn.release();
   }
@@ -4448,6 +4611,7 @@ app.post("/api/cv", authenticateToken, authorizePermission("TRANSACTIONS.CV", "C
     const finalPayeeId = payeeId ?? req.body.supplierId ?? null;
     const finalPayeeName = payeeName || req.body.supplierName || "";
     const finalStatus = status || "Draft";
+    assertWriteStatus(finalStatus); // Phase 7K
     const isPosting = String(finalStatus).toUpperCase() === "POSTED";
 
     const ewt = await resolveTaxWithholding(conn, {
@@ -4735,6 +4899,7 @@ app.put("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
     const finalPayeeId = payeeId ?? req.body.supplierId ?? null;
     const finalPayeeName = payeeName || req.body.supplierName || "";
     const finalStatus = status || "Draft";
+    assertWriteStatus(finalStatus); // Phase 7K
     const isPosting = String(finalStatus).toUpperCase() === "POSTED";
 
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
@@ -4753,6 +4918,11 @@ app.put("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
     if (String(ownerRows[0].status).toUpperCase() === "POSTED") {
       await conn.rollback();
       return res.status(409).json({ message: "Posted transactions cannot be edited.", code: "TRANSACTION_ALREADY_POSTED" });
+    }
+    // Phase 7K: a Cancelled or Void CV is terminal - not generally editable.
+    if (["CANCELLED", "VOID"].includes(String(ownerRows[0].status).toUpperCase())) {
+      await conn.rollback();
+      return res.status(409).json({ message: `This CV is ${ownerRows[0].status} and cannot be edited.`, code: "TRANSACTION_NOT_EDITABLE" });
     }
     const existingDateISO = AccountingPeriodService.toDateOnly(ownerRows[0].transaction_date);
     await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate: existingDateISO, operation: "EDIT", user: req.user }, conn);
@@ -4963,6 +5133,117 @@ app.put("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
     if (handleVoucherDupError(err, res)) return;
 
     res.status(err.statusCode || 500).json({ message: err.message || "Failed to update CV", ...(err.statusCode && err.code ? { code: err.code } : {}) });
+  } finally {
+    conn.release();
+  }
+});
+
+// POST /api/cv/:id/cancel  - Draft CV -> Cancelled. Unwinds this CV's
+// settlement (transaction_applications) and recomputes affected APV /
+// AP_BEGINNING balances via the same logic PUT /api/cv/:id already uses.
+// Retains header + lines + history. Period lock is not applied to a Draft
+// cancel (no recognized ledger effect).
+app.post("/api/cv/:id/cancel", authenticateToken, authorizePermission("TRANSACTIONS.CV", "DELETE"), async (req, res) => {
+  const conn = await pool.getConnection();
+  try {
+    const { id } = req.params;
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId || req.body?.companyId);
+    const reason = assertReason(req.body?.reason);
+
+    await conn.beginTransaction();
+    const [rows] = await conn.execute(
+      "SELECT company_id, status, voucher_no FROM cv_headers WHERE id = ? FOR UPDATE",
+      [id]
+    );
+    if (!rows.length || rows[0].company_id !== companyId) {
+      await conn.rollback();
+      return res.status(404).json({ message: "CV not found" });
+    }
+    const prev = String(rows[0].status || "");
+    const prevUp = prev.toUpperCase();
+    if (prevUp === "CANCELLED") {
+      await conn.rollback();
+      return res.status(409).json({ message: "This CV is already cancelled.", code: "TRANSACTION_ALREADY_CANCELLED" });
+    }
+    if (prevUp === "VOID") {
+      await conn.rollback();
+      return res.status(409).json({ message: "A voided CV cannot be cancelled.", code: "TRANSACTION_NOT_EDITABLE" });
+    }
+    if (prevUp === "POSTED") {
+      await conn.rollback();
+      return res.status(409).json({ message: "A posted CV cannot be cancelled. Use Void instead.", code: "TRANSACTION_ALREADY_POSTED" });
+    }
+
+    const unwind = await unwindCvApplications(conn, Number(id));
+    await conn.execute("UPDATE cv_headers SET status = ? WHERE id = ? AND company_id = ?", [CANCELLED, id, companyId]);
+    await logAudit(conn, {
+      module: "TRANSACTIONS", entityType: "CV", entityId: Number(id), action: "CANCEL",
+      description: `Cancelled CV ${rows[0].voucher_no || id}. Reason: ${reason}`.slice(0, 500),
+      beforeData: { status: prev }, afterData: { status: CANCELLED, reason, ...unwind },
+      user: { ...req.user, ...requestMeta(req) },
+    });
+    await conn.commit();
+    res.json({ success: true, id: Number(id), status: CANCELLED, ...unwind });
+  } catch (err) {
+    await conn.rollback();
+    console.error("CANCEL CV ERROR:", err);
+    res.status(err.statusCode || 500).json({ message: err.statusCode ? err.message : "Failed to cancel CV", ...(err.statusCode && err.code ? { code: err.code } : {}) });
+  } finally {
+    conn.release();
+  }
+});
+
+// POST /api/cv/:id/void  - Posted CV -> Void. Unwinds settlement (reopens
+// the APV payables it paid), retains all history, ledger reports stop
+// recognizing it (POSTED-only). CLOSED original period -> REVERSAL_REQUIRED.
+app.post("/api/cv/:id/void", authenticateToken, authorizePermission("TRANSACTIONS.CV", "VOID"), async (req, res) => {
+  const conn = await pool.getConnection();
+  try {
+    const { id } = req.params;
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId || req.body?.companyId);
+    const reason = assertReason(req.body?.reason);
+
+    await conn.beginTransaction();
+    const [rows] = await conn.execute(
+      "SELECT company_id, status, voucher_no, transaction_date FROM cv_headers WHERE id = ? FOR UPDATE",
+      [id]
+    );
+    if (!rows.length || rows[0].company_id !== companyId) {
+      await conn.rollback();
+      return res.status(404).json({ message: "CV not found" });
+    }
+    const prev = String(rows[0].status || "");
+    const prevUp = prev.toUpperCase();
+    if (prevUp === "VOID") {
+      await conn.rollback();
+      return res.status(409).json({ message: "This CV is already void.", code: "TRANSACTION_ALREADY_VOIDED" });
+    }
+    if (prevUp === "CANCELLED") {
+      await conn.rollback();
+      return res.status(409).json({ message: "A cancelled CV cannot be voided.", code: "TRANSACTION_NOT_EDITABLE" });
+    }
+    if (prevUp !== "POSTED") {
+      await conn.rollback();
+      return res.status(409).json({ message: "Only a Posted CV can be voided. Cancel the Draft instead.", code: "TRANSACTION_NOT_POSTED" });
+    }
+
+    const dateISO = AccountingPeriodService.toDateOnly(rows[0].transaction_date);
+    await assertVoidPeriodOrReversalRequired(conn, { companyId, transactionDate: dateISO, user: req.user });
+
+    const unwind = await unwindCvApplications(conn, Number(id));
+    await conn.execute("UPDATE cv_headers SET status = ? WHERE id = ? AND company_id = ?", [VOID, id, companyId]);
+    await logAudit(conn, {
+      module: "TRANSACTIONS", entityType: "CV", entityId: Number(id), action: "VOID",
+      description: `Voided CV ${rows[0].voucher_no || id}. Reason: ${reason}`.slice(0, 500),
+      beforeData: { status: prev }, afterData: { status: VOID, reason, ...unwind },
+      user: { ...req.user, ...requestMeta(req) },
+    });
+    await conn.commit();
+    res.json({ success: true, id: Number(id), status: VOID, ...unwind });
+  } catch (err) {
+    await conn.rollback();
+    console.error("VOID CV ERROR:", err);
+    res.status(err.statusCode || 500).json({ message: err.statusCode ? err.message : "Failed to void CV", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   } finally {
     conn.release();
   }

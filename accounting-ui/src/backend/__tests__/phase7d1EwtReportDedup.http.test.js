@@ -58,6 +58,10 @@ function ewtLine({ ewtAmount, atcCode, partyId, partyName, date, taxableBase }) 
   };
 }
 
+// Phase 7K: the EWT alphalist/2307 reports now recognize an APV/CV only
+// while its header status is POSTED (a Cancelled/Void document stops being
+// reportable). These fixtures post their transactions - the supersession /
+// de-dup / date-basis / isolation behaviour under test is unchanged.
 async function createApv(companyIdForAuth, { voucherNo, supplierId, supplierName, supplierTin, date, gross, ewtAmount, atcCode, currency }) {
   const net = gross - (ewtAmount || 0);
   const lines = [
@@ -67,7 +71,7 @@ async function createApv(companyIdForAuth, { voucherNo, supplierId, supplierName
   lines.push({ accountId: apId, accountCode: "PH7D1AP", accountTitle: "Accounts Payable", particulars: "Payable", genRef: "", genName: "", debit: 0, credit: net });
 
   return request(app).post("/api/apv").set("Authorization", `Bearer ${token}`).send({
-    voucherNo, supplierId, supplierName, transactionDate: date, referenceNo: voucherNo, description: "Purchase", status: "Draft",
+    voucherNo, supplierId, supplierName, transactionDate: date, referenceNo: voucherNo, description: "Purchase", status: "Posted",
     // payeeTin is what the APV route actually stores into apv_headers.payee_tin
     // (the report's TIN source) - the party master's own TIN is a
     // separate thing entirely, matching real usage where the EWT card
@@ -91,7 +95,7 @@ async function createCv({ voucherNo, payeeId, payeeName, payeeTin, date, amount,
   lines.push({ accountId: cashId, accountCode: "PH7D1CASH", accountTitle: "Cash", particulars: "Cash", genRef: "", genName: "", debit: 0, credit: netCash });
 
   return request(app).post("/api/cv").set("Authorization", `Bearer ${token}`).send({
-    voucherNo, payeeId, payeeName, transactionDate: date, referenceNo: voucherNo, description: "Payment", status: "Draft",
+    voucherNo, payeeId, payeeName, transactionDate: date, referenceNo: voucherNo, description: "Payment", status: "Posted",
     paymentMethod: "Cash",
     atcCode: atcCode || undefined, taxWithheldAmount: ewtAmount || undefined, payeeTin: payeeTin || undefined,
     lines,
@@ -346,7 +350,7 @@ describe("Phase 7D.1 - J: multi-currency source", () => {
     // save time (Phase 7C.1 confirmed this), same as every other APV.
     const apvRes = await request(app).post("/api/apv").set("Authorization", `Bearer ${token}`).send({
       voucherNo: "PH7D1-APV-J", supplierId: supp, supplierName: "PH7D1 Supplier Seven",
-      transactionDate: "2026-06-07", referenceNo: "PH7D1-APV-J", description: "Foreign purchase", status: "Draft",
+      transactionDate: "2026-06-07", referenceNo: "PH7D1-APV-J", description: "Foreign purchase", status: "Posted",
       atcCode: "PH7D1-ATC", taxWithheldAmount: 100, payeeTin: "888-888-888-000",
       lines: [
         { accountId: expId, accountCode: "PH7D1EXP", accountTitle: "Purchases Expense", particulars: "Purchase", genRef: "", genName: "", debit: 1000, credit: 0 },

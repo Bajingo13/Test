@@ -104,7 +104,11 @@ async function fetchRawRows(type, asOfDate, companyId) {
       LEFT JOIN currencies cur ON cur.id = h.currency_id
       LEFT JOIN transaction_currency_snapshots snap ON snap.transaction_type = 'APV' AND snap.transaction_id = h.id
       LEFT JOIN ${pmtSql} pmt ON pmt.source_type = 'APV' AND pmt.source_id = h.id
+      -- Phase 7K: a Cancelled or Void APV is no longer an outstanding
+      -- payable. (Existing Draft-inclusion behaviour is deliberately left
+      -- unchanged - that is a separate pre-existing question.)
       WHERE h.transaction_date <= ? AND h.company_id = ?
+        AND UPPER(h.status) NOT IN ('VOID', 'CANCELLED')
 
       UNION ALL
 

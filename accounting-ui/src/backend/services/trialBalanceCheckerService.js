@@ -581,8 +581,11 @@ async function findOtherSuspicious({ from, to, companyId }) {
   const findings = [];
   const KNOWN_STATUSES = {
     JV: ["Draft", "Posted"],
-    APV: ["DRAFT", "Draft", "Posted"],
-    CV: ["Draft", "Posted"],
+    // Phase 7K: Cancelled / Void are legitimate terminal states for APV/CV
+    // (excluded from Trial Balance by the POSTED-only recognition rule) -
+    // recognized here so they don't raise a false "void-like status" finding.
+    APV: ["DRAFT", "Draft", "Posted", "Cancelled", "Void"],
+    CV: ["Draft", "Posted", "Cancelled", "Void"],
   };
 
   for (const mod of HEADER_LINE_MODULES) {
