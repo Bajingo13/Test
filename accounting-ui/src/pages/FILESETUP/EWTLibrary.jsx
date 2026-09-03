@@ -165,8 +165,11 @@ export default function EWTLibrary() {
     }
   }
 
-  async function handleDelete(id) {
-    if (!window.confirm("Delete this EWT/ATC code?")) return;
+  // Batch 8: no physical delete. Historical vouchers keep their ATC
+  // reference and the rate/description stays recoverable via audit_logs -
+  // deactivation just removes the code from new-transaction pickers.
+  async function handleDeactivate(id) {
+    if (!window.confirm("Set this EWT/ATC code Inactive? It stays on record and on existing transactions, but can no longer be selected for new ones.")) return;
 
     try {
       const res = await fetch(`${API_BASE}/api/ewt-library/${id}`, {
@@ -179,16 +182,16 @@ export default function EWTLibrary() {
 
       if (!res.ok) {
         if (handleAuthError(res.status)) return;
-        alert(data.message || "Failed to delete EWT code.");
+        alert(data.message || "Failed to update EWT code status.");
         return;
       }
 
-      alert(data.message || "EWT code deleted successfully.");
+      alert(data.message || "EWT code set to Inactive.");
       handleNew();
       await loadEwtCodes();
     } catch (err) {
-      console.error("DELETE EWT LIBRARY ERROR:", err);
-      alert("Unable to delete EWT code.");
+      console.error("DEACTIVATE EWT LIBRARY ERROR:", err);
+      alert("Unable to update EWT code status.");
     }
   }
 
@@ -268,7 +271,14 @@ export default function EWTLibrary() {
               </tr>
             ) : (
               filteredRecords.map((item) => (
-                <tr key={item.id}>
+                <tr
+                  key={item.id}
+                  style={
+                    String(item.status).toUpperCase() === "INACTIVE"
+                      ? { opacity: 0.5 }
+                      : undefined
+                  }
+                >
                   <td>{item.atcCode}</td>
                   <td>{item.description}</td>
                   <td>{item.rate}%</td>
@@ -360,6 +370,12 @@ export default function EWTLibrary() {
           <button className="fs-btn" onClick={handleNew} disabled={saving}>
             Cancel
           </button>
+
+          {mode === "edit" && form.id && String(form.status).toUpperCase() !== "INACTIVE" && (
+            <button className="fs-btn" onClick={() => handleDeactivate(form.id)} disabled={saving}>
+              Set Inactive
+            </button>
+          )}
 
           <button className="fs-btn primary" onClick={handleSave} disabled={saving}>
             {saving ? "Saving..." : mode === "add" ? "Save EWT Code" : "Update EWT Code"}

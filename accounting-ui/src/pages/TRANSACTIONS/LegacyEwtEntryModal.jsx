@@ -68,6 +68,12 @@ export default function LegacyEwtEntryModal({
                 title={blocked ? sourceDuplicationWarning : undefined}
               >
                 <option value="">None</option>
+                {atcCode && !ewtCodes.some((e) => e.atcCode === atcCode) && (
+                  // Batch 8: a saved transaction may reference an ATC that
+                  // was later set Inactive - keep it selectable/visible so
+                  // the historical EWT is never silently cleared on edit.
+                  <option value={atcCode}>{atcCode} - (inactive / not in library)</option>
+                )}
                 {ewtCodes.map((ewt) => (
                   <option key={ewt.id} value={ewt.atcCode}>
                     {ewt.atcCode} - {ewt.description} ({ewt.rate}%)

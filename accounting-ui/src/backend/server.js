@@ -8913,6 +8913,17 @@ app.post("/api/ewt-library", authenticateToken, authorizePermission("FILESETUP.T
       [atcCode, description, taxType, rate, birForm, status]
     );
 
+    await logAudit(pool, {
+      module: "FILESETUP.TAX_SETUP",
+      entityType: "EWT_LIBRARY",
+      entityId: result.insertId,
+      action: "CREATE",
+      description: `Created EWT/ATC ${atcCode} (${taxType} ${rate}%)`.slice(0, 500),
+      afterData: { atcCode, description, taxType, rate, birForm, status },
+      user: req.user,
+      ...requestMeta(req),
+    });
+
     res.json({ success: true, message: "EWT code saved successfully", id: result.insertId });
   } catch (err) {
     console.error("CREATE EWT LIBRARY ERROR:", err);
@@ -8932,12 +8943,29 @@ app.put("/api/ewt-library/:id", authenticateToken, authorizePermission("FILESETU
       return res.status(409).json({ message: `An EWT/ATC code "${atcCode}" already exists.` });
     }
 
+    const [beforeRows] = await pool.execute(
+      "SELECT atc_code AS atcCode, description, tax_type AS taxType, rate, bir_form AS birForm, status FROM ewt_library WHERE id = ?",
+      [id]
+    );
+
     await pool.execute(
       `UPDATE ewt_library SET
         atc_code = ?, description = ?, tax_type = ?, rate = ?, bir_form = ?, status = ?
       WHERE id = ?`,
       [atcCode, description, taxType, rate, birForm, status, id]
     );
+
+    await logAudit(pool, {
+      module: "FILESETUP.TAX_SETUP",
+      entityType: "EWT_LIBRARY",
+      entityId: Number(id),
+      action: "UPDATE",
+      description: `Updated EWT/ATC ${atcCode}`.slice(0, 500),
+      beforeData: beforeRows[0] || null,
+      afterData: { atcCode, description, taxType, rate, birForm, status },
+      user: req.user,
+      ...requestMeta(req),
+    });
 
     res.json({ success: true, message: "EWT code updated successfully" });
   } catch (err) {
@@ -8946,14 +8974,65 @@ app.put("/api/ewt-library/:id", authenticateToken, authorizePermission("FILESETU
   }
 });
 
+// Batch 8: no longer a physical delete. The normal UI/API path sets
+// status='INACTIVE' so historical vouchers keep resolving their ATC and
+// the rate/description history stays recoverable via audit_logs. A truly
+// destructive `?hard=true` is retained only for an unreferenced code, and
+// is blocked with 409 EWT_CODE_IN_USE the moment any transaction/config
+// row references the atc_code.
 app.delete("/api/ewt-library/:id", authenticateToken, authorizePermission("FILESETUP.TAX_SETUP", "CONFIGURE"), async (req, res) => {
   try {
     const { id } = req.params;
-    await pool.execute("DELETE FROM ewt_library WHERE id = ?", [id]);
-    res.json({ success: true, message: "EWT code deleted successfully" });
+    const hard = String(req.query.hard || "") === "true";
+
+    const [rows] = await pool.execute(
+      "SELECT id, atc_code AS atcCode, description, tax_type AS taxType, rate, bir_form AS birForm, status FROM ewt_library WHERE id = ?",
+      [id]
+    );
+    if (!rows.length) {
+      return res.status(404).json({ message: "EWT code not found" });
+    }
+    const ewt = rows[0];
+
+    if (hard) {
+      const refs = await EwtLibraryService.getAtcReferences(ewt.atcCode);
+      if (refs.referenced) {
+        return res.status(409).json({
+          message: `EWT/ATC "${ewt.atcCode}" is used by ${refs.total} record(s) and cannot be deleted. Set it Inactive instead.`,
+          code: "EWT_CODE_IN_USE",
+          references: refs.byTable,
+        });
+      }
+      await pool.execute("DELETE FROM ewt_library WHERE id = ?", [id]);
+      await logAudit(pool, {
+        module: "FILESETUP.TAX_SETUP",
+        entityType: "EWT_LIBRARY",
+        entityId: Number(id),
+        action: "DELETE",
+        description: `Hard-deleted unreferenced EWT/ATC ${ewt.atcCode}`.slice(0, 500),
+        beforeData: ewt,
+        user: req.user,
+        ...requestMeta(req),
+      });
+      return res.json({ success: true, message: "EWT code deleted." });
+    }
+
+    await pool.execute("UPDATE ewt_library SET status = 'INACTIVE' WHERE id = ?", [id]);
+    await logAudit(pool, {
+      module: "FILESETUP.TAX_SETUP",
+      entityType: "EWT_LIBRARY",
+      entityId: Number(id),
+      action: "DEACTIVATE",
+      description: `Set EWT/ATC ${ewt.atcCode} Inactive`.slice(0, 500),
+      beforeData: ewt,
+      afterData: { ...ewt, status: "INACTIVE" },
+      user: req.user,
+      ...requestMeta(req),
+    });
+    return res.json({ success: true, message: "EWT code set to Inactive.", status: "INACTIVE" });
   } catch (err) {
     console.error("DELETE EWT LIBRARY ERROR:", err);
-    res.status(500).json({ message: "Failed to delete EWT code" });
+    res.status(500).json({ message: "Failed to update EWT code status" });
   }
 });
 
@@ -9322,17 +9401,23 @@ app.get("/api/reports/2307", authenticateToken, authorizePermission("REPORTS.BIR
 // or with taxable_base still NULL (saved before that column existed).
 // Nothing is written back; this is a review tool, not a migration.
 const EWT_AUDIT_MODULES = [
-  { module: "apv", headerTable: "apv_headers", lineTable: "apv_lines", lineIdCol: "apv_id", grossCol: "total_credit", vatKeyword: "input vat" },
-  { module: "cv", headerTable: "cv_headers", lineTable: "cv_lines", lineIdCol: "cv_id", grossCol: "total_credit", vatKeyword: "input vat" },
-  { module: "po", headerTable: "purchase_order_headers", lineTable: "purchase_order_lines", lineIdCol: "po_id", grossCol: "total_credit", vatKeyword: "input vat" },
-  { module: "invoice", headerTable: "invoice_headers", lineTable: "invoice_lines", lineIdCol: "invoice_id", grossCol: "total_debit", vatKeyword: "output vat" },
-  { module: "or", headerTable: "or_headers", lineTable: "or_lines", lineIdCol: "or_id", grossCol: "total_debit", vatKeyword: "output vat" },
+  { module: "apv", txnType: "APV", headerTable: "apv_headers", lineTable: "apv_lines", lineIdCol: "apv_id", grossCol: "total_credit", vatKeyword: "input vat" },
+  { module: "cv", txnType: "CV", headerTable: "cv_headers", lineTable: "cv_lines", lineIdCol: "cv_id", grossCol: "total_credit", vatKeyword: "input vat" },
+  { module: "po", txnType: "PO", headerTable: "purchase_order_headers", lineTable: "purchase_order_lines", lineIdCol: "po_id", grossCol: "total_credit", vatKeyword: "input vat" },
+  { module: "invoice", txnType: "INV", headerTable: "invoice_headers", lineTable: "invoice_lines", lineIdCol: "invoice_id", grossCol: "total_debit", vatKeyword: "output vat" },
+  { module: "or", txnType: "OR", headerTable: "or_headers", lineTable: "or_lines", lineIdCol: "or_id", grossCol: "total_debit", vatKeyword: "output vat" },
 ];
 
 app.get("/api/reports/ewt-audit", authenticateToken, authorizePermission("REPORTS.BIR_COMPLIANCE", "VIEW"), async (req, res) => {
   try {
     const flagged = [];
     let totalChecked = 0;
+    // Phase 7L parity: identify the VAT line by validated account identity,
+    // and prefer the structured transaction_tax_entries.net_amount, exactly
+    // like resolveTaxWithholding / the save path - so a modern APV whose
+    // Input VAT control account is validation-tagged but not literally
+    // titled "Input VAT" is no longer false-flagged.
+    const vatAccountIds = await loadVatControlAccountIds(pool);
 
     for (const cfg of EWT_AUDIT_MODULES) {
       const [rows] = await pool.execute(
@@ -9345,11 +9430,33 @@ app.get("/api/reports/ewt-audit", authenticateToken, authorizePermission("REPORT
       for (const row of rows) {
         totalChecked++;
         const [lineRows] = await pool.execute(
-          `SELECT account_title AS accountTitle, debit, credit FROM ${cfg.lineTable} WHERE ${cfg.lineIdCol} = ?`,
+          `SELECT id, account_id AS accountId, account_title AS accountTitle, debit, credit FROM ${cfg.lineTable} WHERE ${cfg.lineIdCol} = ?`,
           [row.id]
         );
 
-        const computedBase = computeEwtTaxableBase({ grossAmount: row.grossAmount, lines: lineRows, vatKeyword: cfg.vatKeyword });
+        // Attach structured VAT/EWT metadata (transaction_tax_entries) to
+        // the lines by line_id so computeEwtTaxableBase can take the
+        // VAT-exclusive net directly for modern APV/INV. Legacy modules
+        // (CV/PO/OR) have no structured rows -> the enrichment is a no-op
+        // and the validated-id / keyword fallback applies.
+        const structured = await TaxEntryService.loadTaxEntries(cfg.txnType, row.id);
+        const teByLine = new Map();
+        for (const te of structured) {
+          if (te.lineId != null) teByLine.set(String(te.lineId), te);
+        }
+        const enrichedLines = lineRows.map((l) => {
+          const te = teByLine.get(String(l.id));
+          return te
+            ? { ...l, taxEntry: { entryType: te.entryType, netAmount: te.netAmount } }
+            : l;
+        });
+
+        const computedBase = computeEwtTaxableBase({
+          grossAmount: row.grossAmount,
+          lines: enrichedLines,
+          vatAccountIds,
+          vatKeyword: cfg.vatKeyword,
+        });
         const computedAmount = computeEwtAmount({ taxableBase: computedBase, ewtRate: row.taxRate });
         const storedAmount = Number(row.taxWithheldAmount) || 0;
         const storedBase = row.taxableBase != null ? Number(row.taxableBase) : null;

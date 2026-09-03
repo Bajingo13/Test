@@ -130,6 +130,10 @@ export default function EwtEntryModal({
               <label className="transaction-label">ATC Code</label>
               <select value={atcCode} onChange={(e) => handleAtcChange(e.target.value)} className="transaction-input">
                 <option value="">Select ATC code</option>
+                {atcCode && !ewtCodes.some((e) => e.atcCode === atcCode) && (
+                  // Batch 8: keep a now-Inactive ATC visible on a saved entry.
+                  <option value={atcCode}>{atcCode} - (inactive / not in library)</option>
+                )}
                 {ewtCodes.map((ewt) => (
                   <option key={ewt.id} value={ewt.atcCode}>{ewt.atcCode} - {ewt.description} ({ewt.rate}%)</option>
                 ))}
