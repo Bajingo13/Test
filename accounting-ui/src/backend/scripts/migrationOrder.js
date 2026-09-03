@@ -111,6 +111,13 @@ const MIGRATION_ORDER = [
   // run after user_access_control_migration.sql (owns permissions /
   // role_permissions / roles).
   "phase7k_void_cancel_permissions_migration.sql",
+  // Release Batch 8 - DATA/CONFIG ONLY (no DDL): the TRANSACTIONS.OR /
+  // EMAIL permission catalog row + ADMIN/ACCOUNTANT grants for POST
+  // /api/or/:id/email. INSERT IGNORE, re-run is a no-op. Must run after
+  // user_access_control_migration.sql (owns permissions / role_permissions
+  // / roles) and transaction_print_permissions_phase2_migration.sql (owns
+  // the TRANSACTIONS.OR / PRINT rows this mirrors).
+  "phase8_or_email_permissions_migration.sql",
 ];
 
 module.exports = { MIGRATION_ORDER };

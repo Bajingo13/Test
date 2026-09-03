@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import TransactionPrintOptionsModal from "../../components/TransactionPrintOptionsModal";
+import OrEmailModal from "./OrEmailModal";
 import RecurringTemplateModal from "../../components/RecurringTemplateModal";
 import { computeEwtTaxableBase, computeEwtAmount } from "../../utils/ewtCalculations.mjs";
 import usePermissions from "../../hooks/usePermissions";
@@ -126,6 +127,7 @@ export default function TransactionFormLayout({
   const [transactions, setTransactions] = useState([]);
   const [selectedTransaction, setSelectedTransaction] = useState(null);
   const [showPrintOptionsModal, setShowPrintOptionsModal] = useState(false);
+  const [showOrEmailModal, setShowOrEmailModal] = useState(false);
   const [showRecurringModal, setShowRecurringModal] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -2753,6 +2755,7 @@ if (code === "OR") {
               showVoid={toolbarVisibility.showVoid}
               showReverse={toolbarVisibility.showReverse}
               showPrint={!!printModuleType && toolbarVisibility.showPrint}
+              showEmail={toolbarVisibility.showEmail}
               showRecurring={!!recurringModuleType}
               showPrevious
               showNext
@@ -2765,6 +2768,7 @@ if (code === "OR") {
               onVoid={() => openCancelVoid("void")}
               onReverse={() => openCancelVoid("reverse")}
               onPrint={() => setShowPrintOptionsModal(true)}
+              onEmail={() => setShowOrEmailModal(true)}
               onRecurring={() => setShowRecurringModal(true)}
               onPrevious={handlePreviousTransaction}
               onNext={handleNextTransaction}
@@ -3580,6 +3584,19 @@ if (code === "OR") {
             transactionType={printModuleType}
             transactionId={selectedTransaction?.id}
             currentUser={getCurrentUser()}
+          />
+        )}
+
+        {moduleConfig.emailable && selectedTransaction?.id && (
+          <OrEmailModal
+            open={showOrEmailModal}
+            onClose={() => setShowOrEmailModal(false)}
+            endpoint={moduleConfig.endpoint}
+            transactionId={selectedTransaction.id}
+            voucherNo={selectedTransaction.voucherNo || form.referenceNo}
+            customerName={form.party}
+            defaultTo={partyOptions.find((p) => p.id === form.partyId)?.email || ""}
+            companyId={selectedTransaction.companyId ?? form.companyId ?? undefined}
           />
         )}
 

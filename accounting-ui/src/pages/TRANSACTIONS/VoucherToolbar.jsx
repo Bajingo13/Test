@@ -18,6 +18,7 @@ export default function VoucherToolbar({
   showVoid,
   showReverse,
   showPrint,
+  showEmail,
   showRecurring,
   showPrevious,
   showNext,
@@ -31,6 +32,7 @@ export default function VoucherToolbar({
   onVoid,
   onReverse,
   onPrint,
+  onEmail,
   onRecurring,
   onPrevious,
   onNext,
@@ -107,6 +109,12 @@ export default function VoucherToolbar({
         {formMode === "view" && showPrint && (
           <button type="button" className="transaction-secondary-button" onClick={onPrint}>
             🖨 Print
+          </button>
+        )}
+
+        {formMode === "view" && showEmail && (
+          <button type="button" className="transaction-secondary-button" onClick={onEmail}>
+            ✉ Email
           </button>
         )}
 

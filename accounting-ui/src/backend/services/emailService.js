@@ -67,4 +67,46 @@ If you weren't expecting this invitation, you can ignore this email.`;
   }
 }
 
-module.exports = { isConfigured, sendInvitationEmail };
+// Batch 8: generic best-effort document email (Official Receipt PDF, and
+// any later document type). Same contract as sendInvitationEmail - never
+// throws, returns { delivered: true } | { delivered: false, reason:
+// "SMTP_NOT_CONFIGURED" | "SEND_FAILED" } - so the caller (POST
+// /api/or/:id/email) always completes and always records an audit row.
+// Reuses the cached transporter and the existing SMTP_* env vars; no new
+// config, no secret ever returned or logged.
+//
+// attachments: [{ filename, content }] where `content` is a Buffer /
+// Uint8Array (nodemailer accepts both natively) - typically one entry, the
+// customer-facing "without entries" PDF from the existing print framework.
+async function sendDocumentEmail({ to, subject, text, html, attachments = [] }) {
+  const transporter = getTransporter();
+  if (!transporter) {
+    console.log(`[emailService] SMTP not configured - document email for ${to} not sent (subject: ${subject}).`);
+    return { delivered: false, reason: "SMTP_NOT_CONFIGURED" };
+  }
+
+  try {
+    await transporter.sendMail({
+      from: process.env.SMTP_FROM || process.env.SMTP_USER,
+      to,
+      subject,
+      text: text || "",
+      ...(html ? { html } : {}),
+      ...(attachments && attachments.length
+        ? {
+            attachments: attachments.map((a) => ({
+              filename: a.filename,
+              content: Buffer.isBuffer(a.content) ? a.content : Buffer.from(a.content),
+              contentType: a.contentType || "application/pdf",
+            })),
+          }
+        : {}),
+    });
+    return { delivered: true };
+  } catch (err) {
+    console.error("SEND DOCUMENT EMAIL ERROR:", err.message);
+    return { delivered: false, reason: "SEND_FAILED" };
+  }
+}
+
+module.exports = { isConfigured, sendInvitationEmail, sendDocumentEmail };

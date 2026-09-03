@@ -45,7 +45,7 @@ describe("getVoucherToolbarVisibility", () => {
       status: "Draft",
       can: allowAll,
     });
-    expect(result).toEqual({ showEdit: true, showDelete: true, showCancel: false, showVoid: false, showReverse: false, isReversed: false, showPrint: true });
+    expect(result).toEqual({ showEdit: true, showDelete: true, showCancel: false, showVoid: false, showReverse: false, isReversed: false, showPrint: true, showEmail: false });
   });
 
   test("Invoice Posted: Edit/Delete hidden even with full permissions (Phase 7A.1 guard reflected)", () => {
@@ -117,7 +117,7 @@ describe("getVoucherToolbarVisibility", () => {
       status: "Draft",
       can: denyAll,
     });
-    expect(result).toEqual({ showEdit: false, showDelete: false, showCancel: false, showVoid: false, showReverse: false, isReversed: false, showPrint: false });
+    expect(result).toEqual({ showEdit: false, showDelete: false, showCancel: false, showVoid: false, showReverse: false, isReversed: false, showPrint: false, showEmail: false });
   });
 
   // Phase 7K.1
@@ -258,6 +258,42 @@ describe("getVoucherToolbarVisibility", () => {
       expect(result.showEdit).toBe(false);
       expect(result.showDelete).toBe(false);
     }
+  });
+
+  // Batch 8: OR Email action + a pin on the Phase 7K Draft-APV toolbar.
+  describe("Batch 8", () => {
+    const OR_EMAILABLE = { moduleKey: "TRANSACTIONS.OR", delete: false, statusModel: "DRAFT_POSTED", emailable: true };
+
+    test("showEmail: Posted emailable OR + EMAIL permission -> true", () => {
+      const r = getVoucherToolbarVisibility({ moduleConfig: OR_EMAILABLE, status: "Posted", can: allowAll });
+      expect(r.showEmail).toBe(true);
+    });
+
+    test("showEmail: Draft OR -> false (BD-1: no lifecycle change; a Draft is not a real receipt)", () => {
+      const r = getVoucherToolbarVisibility({ moduleConfig: OR_EMAILABLE, status: "Draft", can: allowAll });
+      expect(r.showEmail).toBe(false);
+    });
+
+    test("showEmail: without the EMAIL permission -> false", () => {
+      const r = getVoucherToolbarVisibility({
+        moduleConfig: OR_EMAILABLE,
+        status: "Posted",
+        can: (m, a) => a !== "EMAIL",
+      });
+      expect(r.showEmail).toBe(false);
+    });
+
+    test("showEmail: a module without emailable never shows Email", () => {
+      for (const mc of [INV, OR, CV, JV, PO]) {
+        expect(getVoucherToolbarVisibility({ moduleConfig: mc, status: "Posted", can: allowAll }).showEmail).toBe(false);
+      }
+    });
+
+    test("Draft APV shows Cancel and NOT a duplicate physical Delete (Phase 7K, re-pinned)", () => {
+      const r = getVoucherToolbarVisibility({ moduleConfig: APV_CV, status: "Draft", can: allowAll });
+      expect(r.showCancel).toBe(true);
+      expect(r.showDelete).toBe(false);
+    });
   });
 });
 

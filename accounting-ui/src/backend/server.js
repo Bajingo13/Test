@@ -33,6 +33,11 @@ const BeginningBalanceCurrencyService = require("./services/beginningBalanceCurr
 const TrialBalanceDifferenceService = require("./services/trialBalanceDifferenceService");
 const { computeEwtTaxableBase, computeEwtAmount } = require("./services/ewtCalculationService");
 const { loadVatControlAccountIds } = require("./services/vatControlAccounts");
+const TransactionPrintDataService = require("./services/transactionPrintDataService");
+const EmailService = require("./services/emailService");
+const OrEmailService = require("./services/orEmailService");
+const OrPdfService = require("./services/orPdfService");
+const EwtLibraryService = require("./services/ewtLibraryService");
 const CurrencyService = require("./services/currencyService");
 const { postedOnlySql } = require("./services/reportRecognitionService");
 const OutputVatReportService = require("./services/outputVatReportService");
@@ -2266,6 +2271,127 @@ app.put("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
     });
   } finally {
     conn.release();
+  }
+});
+
+// Batch 8: server-side render of the customer-facing OR PDF. The DATA
+// comes from the EXISTING print framework
+// (transactionPrintDataService.getTransactionDocument - same accounting
+// content, company profile, currency, applied invoices and Phase 7K.1
+// reversal linkage the browser print uses). The drawing is a thin
+// CommonJS pdf-lib pass in OrPdfService (the rich browser renderer
+// src/print/pdf/documentPdfBuilder.js is an ES module in a "type":
+// "module" dir and cannot be required from this CJS server - see
+// orPdfService.js's header).
+async function renderOrPdfBuffer({ id, companyId }) {
+  const data = await TransactionPrintDataService.getTransactionDocument("or", id, {
+    withEntries: false, // customer-facing "without entries" copy
+    companyId,
+  });
+  const bytes = await OrPdfService.buildOrPdf({
+    doc: data.doc,
+    lines: data.lines,
+    party: data.party,
+    company: data.company,
+    reversal: data.reversal || null,
+  });
+  return { buffer: Buffer.from(bytes), doc: data.doc, party: data.party, company: data.company };
+}
+
+// POST /api/or/:id/email - permission-gated, company-scoped, READ-ONLY on
+// the OR (no header/line write, no tax rows, no applications). Only side
+// effects: an audit_logs row + a best-effort SMTP send.
+app.post("/api/or/:id/email", authenticateToken, authorizePermission("TRANSACTIONS.OR", "EMAIL"), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.body?.companyId);
+
+    const [headers] = await pool.execute(
+      `SELECT h.id, h.voucher_no AS voucherNo, h.customer_id AS customerId, h.customer_name AS customerName,
+              DATE_FORMAT(h.transaction_date, '%Y-%m-%d') AS transactionDate, h.status,
+              h.total_debit AS totalDebit, h.total_credit AS totalCredit,
+              g.email AS customerEmail
+       FROM or_headers h
+       LEFT JOIN general_libraries g ON g.id = h.customer_id AND g.company_id = h.company_id
+       WHERE h.id = ? AND h.company_id = ?`,
+      [id, companyId]
+    );
+    if (!headers.length) {
+      return res.status(404).json({ message: "Official Receipt not found" });
+    }
+    const or = headers[0];
+
+    const recipient = OrEmailService.resolveRecipient({
+      requestTo: req.body?.to,
+      customerEmail: or.customerEmail,
+    });
+    if (!recipient.email) {
+      return res.status(400).json({
+        message: recipient.source === "request"
+          ? "The email address provided is not valid."
+          : "No recipient email: provide one, or set the customer's email in General Libraries.",
+        code: "EMAIL_RECIPIENT_REQUIRED",
+      });
+    }
+
+    const { buffer } = await renderOrPdfBuffer({ id: or.id, companyId });
+
+    const companyName = (await TransactionPrintDataService.getCompanyProfile())?.name || "";
+    const subject = String(req.body?.subject || "").trim() || OrEmailService.orEmailSubject(or.voucherNo, companyName);
+    const { text, html } = OrEmailService.orEmailBody({
+      voucherNo: or.voucherNo,
+      customerName: or.customerName,
+      companyName,
+      transactionDate: or.transactionDate,
+      amountText: null,
+      customMessage: req.body?.message,
+    });
+    const filename = OrEmailService.safePdfFilename(`OR-${or.voucherNo || or.id}`);
+
+    const result = await EmailService.sendDocumentEmail({
+      to: recipient.email,
+      subject,
+      text,
+      html,
+      attachments: [{ filename, content: buffer, contentType: "application/pdf" }],
+    });
+
+    await logAudit(pool, {
+      module: "TRANSACTIONS.OR",
+      entityType: "OR",
+      entityId: Number(or.id),
+      action: "EMAIL",
+      description:
+        `Emailed OR ${or.voucherNo} to ${recipient.email} (source=${recipient.source}) - ` +
+        `${result.delivered ? "delivered" : `not delivered: ${result.reason}`}. Subject: ${subject}`.slice(0, 500),
+      afterData: {
+        voucherNo: or.voucherNo,
+        recipient: recipient.email,
+        recipientSource: recipient.source,
+        subject,
+        attachment: filename,
+        delivered: result.delivered,
+        reason: result.reason || null,
+      },
+      user: req.user,
+      ...requestMeta(req),
+    });
+
+    res.json({
+      success: true,
+      delivered: result.delivered,
+      ...(result.reason ? { reason: result.reason } : {}),
+      recipient: recipient.email,
+      recipientSource: recipient.source,
+      subject,
+      attachment: filename,
+    });
+  } catch (err) {
+    console.error("OR EMAIL ERROR:", err);
+    res.status(err.statusCode || 500).json({
+      message: err.message || "Failed to email Official Receipt",
+      ...(err.statusCode && err.code ? { code: err.code } : {}),
+    });
   }
 });
 

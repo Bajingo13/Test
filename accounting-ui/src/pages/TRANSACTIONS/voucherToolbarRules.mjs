@@ -39,6 +39,7 @@ export function getVoucherToolbarVisibility({ moduleConfig, status, can, already
   const canDelete = !!moduleKey && can(moduleKey, "DELETE");
   const canVoid = !!moduleKey && can(moduleKey, "VOID");
   const canPrint = !!moduleKey && can(moduleKey, "PRINT");
+  const canEmail = !!moduleKey && can(moduleKey, "EMAIL");
   const cancelVoid = !!moduleConfig?.cancelVoid;
 
   return {
@@ -63,6 +64,10 @@ export function getVoucherToolbarVisibility({ moduleConfig, status, can, already
     // document.
     showReverse: cancelVoid && isPosted && canVoid && !alreadyReversed && !!periodClosed,
     showPrint: canPrint,
+    // Batch 8: Email the customer-facing document. OR only (moduleConfig.
+    // emailable), Posted only (BD-1: no new lifecycle state - a Draft OR is
+    // not a real receipt yet), gated by the module's EMAIL permission.
+    showEmail: !!moduleConfig?.emailable && isPosted && canEmail,
     isReversed: cancelVoid && isPosted && alreadyReversed,
   };
 }

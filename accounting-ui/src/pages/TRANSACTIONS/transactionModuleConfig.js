@@ -28,7 +28,7 @@ export const TRANSACTION_MODULES = {
   INV: { endpoint: "invoices", printModuleType: "invoice", currencyEligible: true, moduleKey: "TRANSACTIONS.INVOICE", delete: true, statusModel: "DRAFT_POSTED" },
   // Phase 7K: APV/CV support explicit Cancel (Draft) + Void (Posted) actions.
   APV: { endpoint: "apv", printModuleType: "apv", currencyEligible: true, moduleKey: "TRANSACTIONS.APV", delete: true, statusModel: "DRAFT_POSTED", cancelVoid: true },
-  OR: { endpoint: "or", printModuleType: "or", currencyEligible: true, moduleKey: "TRANSACTIONS.OR", delete: false, statusModel: "DRAFT_POSTED" },
+  OR: { endpoint: "or", printModuleType: "or", currencyEligible: true, moduleKey: "TRANSACTIONS.OR", delete: false, statusModel: "DRAFT_POSTED", emailable: true },
   CV: { endpoint: "cv", printModuleType: "cv", currencyEligible: true, moduleKey: "TRANSACTIONS.CV", delete: false, statusModel: "DRAFT_POSTED", cancelVoid: true },
   JV: { endpoint: "jv", printModuleType: "jv", currencyEligible: true, moduleKey: "TRANSACTIONS.JV", delete: true, statusModel: "DRAFT_POSTED" },
   PO: { endpoint: "purchase-orders", printModuleType: "po", currencyEligible: true, moduleKey: "TRANSACTIONS.PURCHASE_ORDER", delete: true, statusModel: "OPEN_CLOSED" },
