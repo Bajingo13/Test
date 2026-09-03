@@ -3075,8 +3075,8 @@ if (code === "OR") {
               </div>
 
               {formMode !== "view" && balanceAssistMessage ? (
-                <div className="transaction-tax-duplication-warning" role="alert">
-                  ⚠ {balanceAssistMessage}
+                <div className="transaction-balance-assist" role="status">
+                  ℹ {balanceAssistMessage}
                 </div>
               ) : null}
 

@@ -172,6 +172,19 @@
   font-weight: 600;
 }
 
+/* Batch 8: the APV auto-balance assist message is an INSTRUCTION, not a
+   duplication warning - give it a calmer informational treatment so it
+   doesn't read like the tax-duplication alert it previously reused. */
+.transaction-balance-assist {
+  margin: 12px 0 0;
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color-strong, #cbd5e1);
+  background: var(--info-bg, rgba(59, 130, 246, 0.08));
+  color: var(--text-primary, #111827);
+  font-size: 13px;
+}
+
 .transaction-add-button {
   border: 1px solid var(--border-color-strong);
   background: var(--bg-surface);

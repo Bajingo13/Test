@@ -30,7 +30,25 @@ CREATE TABLE IF NOT EXISTS quotation_lines (
   FOREIGN KEY (quotation_id) REFERENCES quotation_headers(id) ON DELETE CASCADE
 );
 
-ALTER TABLE invoice_headers ADD COLUMN source_quotation_id INT NULL;
+-- Batch 8: the three invoice_headers columns below were previously bare
+-- `ALTER TABLE ... ADD COLUMN`, which throws ER_DUP_FIELDNAME on any rerun
+-- against a DB that already has them (migrate.js has no applied-migrations
+-- ledger and re-runs the whole chain). Now guarded with the same
+-- information_schema prepared-statement idiom used by
+-- ewt_taxable_base_migration.sql / phase7j / phase7h - identical schema on
+-- first run, no-op on rerun. No column dropped, no type change, no data.
 
-ALTER TABLE invoice_headers ADD COLUMN invoice_type VARCHAR(20) NOT NULL DEFAULT 'Standard';
-ALTER TABLE invoice_headers ADD COLUMN recurrence_frequency VARCHAR(20) NULL;
+SET @x = (SELECT COUNT(*) FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'invoice_headers' AND COLUMN_NAME = 'source_quotation_id');
+SET @sql = IF(@x = 0, 'ALTER TABLE invoice_headers ADD COLUMN source_quotation_id INT NULL', 'SELECT 1');
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+
+SET @x = (SELECT COUNT(*) FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'invoice_headers' AND COLUMN_NAME = 'invoice_type');
+SET @sql = IF(@x = 0, "ALTER TABLE invoice_headers ADD COLUMN invoice_type VARCHAR(20) NOT NULL DEFAULT 'Standard'", 'SELECT 1');
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+
+SET @x = (SELECT COUNT(*) FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'invoice_headers' AND COLUMN_NAME = 'recurrence_frequency');
+SET @sql = IF(@x = 0, 'ALTER TABLE invoice_headers ADD COLUMN recurrence_frequency VARCHAR(20) NULL', 'SELECT 1');
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;

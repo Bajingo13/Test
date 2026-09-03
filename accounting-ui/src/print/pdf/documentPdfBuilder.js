@@ -225,6 +225,11 @@ export async function buildDocumentPdf({
   // invoice (see MODULE_CONFIG's hasOutputVat), so the Tax Summary block
   // below simply never renders for OR/APV/CV/PO/JV.
   outputVat = null,
+  // Batch 8: { reversed, reversedByVoucher, reversalDate } from
+  // transactionPrintDataService (APV/CV closed-period reversal linkage).
+  // Absent / { reversed: false } for every other module and unreversed
+  // document -> no banner, no watermark change.
+  reversal = null,
 }) {
   const moduleMeta = MODULE_META[transactionType] || { documentLabel: "TRANSACTION", partyRoleLabel: "Party", ewtDirection: null };
   const { ewtDirection } = moduleMeta;
@@ -293,7 +298,12 @@ export async function buildDocumentPdf({
     drawOneCopy();
   }
 
-  const watermark = STATUS_WATERMARKS[String(doc.status || "").toUpperCase()];
+  // Batch 8: an explicit status watermark (DRAFT/CANCELLED/VOID) still
+  // wins; a reversed-but-still-Posted document gets a "REVERSED" watermark
+  // so a printed reversed voucher can never be mistaken for a live one.
+  const watermark =
+    STATUS_WATERMARKS[String(doc.status || "").toUpperCase()] ||
+    (reversal && reversal.reversed ? "REVERSED" : undefined);
   const generatedAt = new Date().toLocaleString("en-PH", { hour12: false });
   return kit.finish({ generatedBy, generatedAt, watermark, showPageFooter: summaryCfg.showPageFooter ?? true });
 
@@ -515,6 +525,15 @@ export async function buildDocumentPdf({
       ]);
     }
     metaPairs.push(["Status", doc.status || "-"]);
+    // Batch 8: a closed-period-reversed APV/CV keeps status "Posted" but is
+    // logically reversed by a linked Posted JV. Surface it on the printed
+    // document (the on-screen view already shows this banner).
+    if (reversal && reversal.reversed) {
+      metaPairs.push([
+        "Reversed By",
+        `${reversal.reversedByVoucher || "-"}${reversal.reversalDate ? ` on ${reversal.reversalDate}` : ""}`,
+      ]);
+    }
 
     const metaColWidth = contentWidth / 2;
     const metaColGap = 16;

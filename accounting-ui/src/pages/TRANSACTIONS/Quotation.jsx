@@ -493,13 +493,23 @@ export default function Quotation() {
     drawText(form.contactName || "-", marginX + 380, y - 33, { size: 10 });
     y -= 65;
 
-    // Table header
-    const col = { desc: marginX, qty: 330, price: 390, tax: 450, amt: pageWidth - marginX };
+    // Batch 8: item-table alignment - the numeric columns (Qty / Unit
+    // Price / Tax / Amount) are all RIGHT-aligned to a fixed right edge, so
+    // figures line up on the decimal the way the shared Invoice/OR print
+    // does, instead of Qty/Price/Tax being left-aligned while only Amount
+    // was right-aligned.
+    const col = {
+      desc: marginX,
+      qtyR: 345, // right edge of Qty
+      priceR: 430, // right edge of Unit Price
+      taxR: 470, // right edge of Tax
+      amt: pageWidth - marginX, // right edge of Amount
+    };
     page.drawRectangle({ x: marginX, y: y - 22, width: pageWidth - marginX * 2, height: 22, color: orange });
     drawText("Description", col.desc + 6, y - 15, { bold: true, size: 9, color: rgb(1, 1, 1) });
-    drawText("Qty", col.qty, y - 15, { bold: true, size: 9, color: rgb(1, 1, 1) });
-    drawText("Unit Price", col.price, y - 15, { bold: true, size: 9, color: rgb(1, 1, 1) });
-    drawText("Tax", col.tax, y - 15, { bold: true, size: 9, color: rgb(1, 1, 1) });
+    drawRight("Qty", col.qtyR, y - 15, { bold: true, size: 9, color: rgb(1, 1, 1) });
+    drawRight("Unit Price", col.priceR, y - 15, { bold: true, size: 9, color: rgb(1, 1, 1) });
+    drawRight("Tax", col.taxR, y - 15, { bold: true, size: 9, color: rgb(1, 1, 1) });
     drawRight("Amount", col.amt, y - 15, { bold: true, size: 9, color: rgb(1, 1, 1) });
     y -= 22;
 
@@ -548,6 +558,10 @@ export default function Quotation() {
       const np = ensureRoom(rowHeight);
       if (np) redrawOn(np);
 
+      const drawCellRight = (str, xRight, size = 9.5) => {
+        const s = String(str ?? "");
+        activePage.drawText(s, { x: xRight - font.widthOfTextAtSize(s, size), y: y - 15, size, font, color: darkText });
+      };
       activePage.drawText(line.description || "", {
         x: col.desc + 6,
         y: y - 15,
@@ -555,18 +569,10 @@ export default function Quotation() {
         font,
         color: darkText,
       });
-      activePage.drawText(`${formatMoney(line.quantity)} ${line.unitLabel || ""}`, {
-        x: col.qty,
-        y: y - 15,
-        size: 9,
-        font,
-        color: darkText,
-      });
-      activePage.drawText(formatMoney(line.unitPrice), { x: col.price, y: y - 15, size: 9, font, color: darkText });
-      activePage.drawText(`${line.taxRate}%`, { x: col.tax, y: y - 15, size: 9, font, color: darkText });
-      const amtStr = `P ${formatMoney(lineAmount(line))}`;
-      const amtW = font.widthOfTextAtSize(amtStr, 9.5);
-      activePage.drawText(amtStr, { x: col.amt - amtW, y: y - 15, size: 9.5, font, color: darkText });
+      drawCellRight(`${formatMoney(line.quantity)} ${line.unitLabel || ""}`.trim(), col.qtyR);
+      drawCellRight(formatMoney(line.unitPrice), col.priceR);
+      drawCellRight(`${line.taxRate}%`, col.taxR);
+      drawCellRight(`P ${formatMoney(lineAmount(line))}`, col.amt);
 
       y -= 20;
       noteLines.forEach((note) => {
@@ -583,24 +589,31 @@ export default function Quotation() {
       });
     }
 
-    y -= 15;
-    const np = ensureRoom(70);
+    // Batch 8: totals / tax-summary alignment - labels right-aligned to a
+    // single label column and values right-aligned to the Amount edge,
+    // with consistent 16px row spacing (matching the shared print's meta
+    // rows) instead of the old mixed 16/18 gaps and the wide label->value
+    // gutter.
+    y -= 18;
+    const np = ensureRoom(72);
     if (np) redrawOn(np);
+    const summaryLabelRight = col.amt - 130;
 
-    drawRight("Subtotal", col.tax - 10, y, { size: 9.5, color: grey });
+    drawRight("Subtotal", summaryLabelRight, y, { size: 9.5, color: grey });
     drawRight(`P ${formatMoney(subtotal)}`, col.amt, y, { size: 9.5 });
     y -= 16;
-    drawRight("Tax", col.tax - 10, y, { size: 9.5, color: grey });
+    drawRight("Tax", summaryLabelRight, y, { size: 9.5, color: grey });
     drawRight(`P ${formatMoney(taxTotal)}`, col.amt, y, { size: 9.5 });
-    y -= 18;
+    y -= 8;
     activePage.drawLine({
-      start: { x: col.tax - 10, y: y + 10 },
-      end: { x: pageWidth - marginX, y: y + 10 },
+      start: { x: summaryLabelRight - 40, y },
+      end: { x: col.amt, y },
       thickness: 1,
       color: darkText,
     });
-    drawRight("Total", col.tax - 10, y - 5, { size: 11, bold: true });
-    drawRight(`P ${formatMoney(grandTotal)}`, col.amt, y - 5, { size: 11, bold: true });
+    y -= 15;
+    drawRight("Total", summaryLabelRight, y, { size: 11, bold: true });
+    drawRight(`P ${formatMoney(grandTotal)}`, col.amt, y, { size: 11, bold: true });
 
     if (form.notes) {
       y -= 40;
