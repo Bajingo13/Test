@@ -9412,6 +9412,11 @@ app.get("/api/reports/ewt-audit", authenticateToken, authorizePermission("REPORT
   try {
     const flagged = [];
     let totalChecked = 0;
+    // Batch 9: company-scope this report (same cross-company-leak class
+    // Phase 7D.1 already fixed for /api/reports/alphalist and /2307 - this
+    // route was missed). Every audited header table carries company_id
+    // (checkpoint4h/4i company-isolation migrations).
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
     // Phase 7L parity: identify the VAT line by validated account identity,
     // and prefer the structured transaction_tax_entries.net_amount, exactly
     // like resolveTaxWithholding / the save path - so a modern APV whose
@@ -9424,7 +9429,8 @@ app.get("/api/reports/ewt-audit", authenticateToken, authorizePermission("REPORT
         `SELECT id, voucher_no AS voucherNo, ${cfg.grossCol} AS grossAmount, atc_code AS atcCode,
                 tax_rate AS taxRate, tax_withheld_amount AS taxWithheldAmount, taxable_base AS taxableBase
          FROM ${cfg.headerTable}
-         WHERE atc_code IS NOT NULL`
+         WHERE company_id = ? AND atc_code IS NOT NULL`,
+        [companyId]
       );
 
       for (const row of rows) {
