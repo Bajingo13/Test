@@ -1,4 +1,8 @@
 const { PDFDocument, StandardFonts, rgb } = require("pdf-lib");
+// Batch 9: shared with the ESM browser renderer (documentPdfBuilder.js)
+// via a JSON file both module systems can load - so the watermark strings
+// cannot drift between the emailed PDF and the printed PDF.
+const STAMP = require("../../print/documentStampConstants.json");
 
 // Batch 8: server-side render of the customer-facing Official Receipt PDF
 // for POST /api/or/:id/email.
@@ -18,15 +22,16 @@ const { PDFDocument, StandardFonts, rgb } = require("pdf-lib");
 // Batch 8 - a "REVERSED BY <JV>" note + REVERSED watermark for a
 // closed-period-reversed voucher.
 
-const STATUS_WATERMARKS = { DRAFT: "DRAFT", CANCELLED: "CANCELLED", VOID: "VOID" };
+const STATUS_WATERMARKS = STAMP.statusWatermarks;
 
 // Pure, unit-testable: an explicit status watermark (DRAFT/CANCELLED/VOID)
 // wins; a still-Posted-but-reversed document gets "REVERSED"; otherwise no
-// watermark. Same rule as src/print/pdf/documentPdfBuilder.js.
+// watermark. Same rule as src/print/pdf/documentPdfBuilder.js (which reads
+// the same documentStampConstants.json).
 function resolveWatermark(status, reversal) {
   return (
     STATUS_WATERMARKS[String(status || "").toUpperCase()] ||
-    (reversal && reversal.reversed ? "REVERSED" : null)
+    (reversal && reversal.reversed ? STAMP.reversedWatermark : null)
   );
 }
 

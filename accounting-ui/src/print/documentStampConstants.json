@@ -1,0 +1,5 @@
+{
+  "_comment": "Batch 9: single source for document status watermarks + the reversed-doc watermark, shared by the ESM browser renderer (src/print/pdf/documentPdfBuilder.js) and the CJS email renderer (src/backend/services/orPdfService.js) so the two cannot drift. JSON is safely consumable from both module systems.",
+  "statusWatermarks": { "DRAFT": "DRAFT", "CANCELLED": "CANCELLED", "VOID": "VOID" },
+  "reversedWatermark": "REVERSED"
+}

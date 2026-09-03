@@ -1,8 +1,13 @@
 import { createPdfKit, COLORS, wrapText, formatMoney, COPY_BADGE_HEIGHT } from "./pdfKit";
 import { DEFAULT_COPY_TYPE, MAX_COPIES } from "../copyTypes";
 import { amountToWords } from "./amountInWords";
+// Batch 9: shared with the CJS email renderer (backend/services/orPdfService.js)
+// via a JSON file both module systems can load - the watermark strings
+// cannot drift between the printed PDF and the emailed PDF.
+import STAMP from "../documentStampConstants.json";
 
-const STATUS_WATERMARKS = { DRAFT: "DRAFT", CANCELLED: "CANCELLED", VOID: "VOID" };
+const STATUS_WATERMARKS = STAMP.statusWatermarks;
+const REVERSED_WATERMARK = STAMP.reversedWatermark;
 
 // Presentation-only lookup (labels), separate from MODULE_CONFIG on the
 // backend (which is about tables/columns) - the backend never has to know
@@ -303,7 +308,7 @@ export async function buildDocumentPdf({
   // so a printed reversed voucher can never be mistaken for a live one.
   const watermark =
     STATUS_WATERMARKS[String(doc.status || "").toUpperCase()] ||
-    (reversal && reversal.reversed ? "REVERSED" : undefined);
+    (reversal && reversal.reversed ? REVERSED_WATERMARK : undefined);
   const generatedAt = new Date().toLocaleString("en-PH", { hour12: false });
   return kit.finish({ generatedBy, generatedAt, watermark, showPageFooter: summaryCfg.showPageFooter ?? true });
 

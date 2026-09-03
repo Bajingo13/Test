@@ -353,7 +353,7 @@ describe("Batch 8 - reversal print banner", () => {
     expect(src).toMatch(/reversal\s*=\s*null,/); // destructured param
     expect(src).toMatch(/reversal && reversal\.reversed/);
     expect(src).toMatch(/"Reversed By"/);
-    expect(src).toMatch(/"REVERSED"/); // watermark fallback
+    expect(src).toMatch(/REVERSED_WATERMARK/); // Batch 9: shared JSON constant
   });
 
   test("watermark/banner logic: REVERSED for a reversed-Posted doc; explicit status wins; none otherwise", () => {
@@ -387,11 +387,19 @@ describe("Batch 8 - reversal print banner", () => {
     }
   });
 
-  test("documentPdfBuilder.js keeps the DRAFT/CANCELLED/VOID watermark constant", () => {
+  test("DRAFT/CANCELLED/VOID watermark constants are shared via documentStampConstants.json (no drift)", () => {
     const fs = require("fs");
     const path = require("path");
-    const src = fs.readFileSync(path.join(__dirname, "..", "..", "print", "pdf", "documentPdfBuilder.js"), "utf8");
-    expect(src).toMatch(/STATUS_WATERMARKS = \{ DRAFT: "DRAFT", CANCELLED: "CANCELLED", VOID: "VOID" \}/);
+    const stamp = require("../../print/documentStampConstants.json");
+    expect(stamp.statusWatermarks).toEqual({ DRAFT: "DRAFT", CANCELLED: "CANCELLED", VOID: "VOID" });
+    expect(stamp.reversedWatermark).toBe("REVERSED");
+    // both renderers read the shared JSON, not a local literal
+    const builder = fs.readFileSync(path.join(__dirname, "..", "..", "print", "pdf", "documentPdfBuilder.js"), "utf8");
+    const orpdf = fs.readFileSync(path.join(__dirname, "..", "services", "orPdfService.js"), "utf8");
+    expect(builder).toMatch(/documentStampConstants\.json/);
+    expect(builder).toMatch(/STATUS_WATERMARKS = STAMP\.statusWatermarks/);
+    expect(orpdf).toMatch(/documentStampConstants\.json/);
+    expect(orpdf).toMatch(/STATUS_WATERMARKS = STAMP\.statusWatermarks/);
   });
 });
 
