@@ -3,7 +3,7 @@
 // backend route handlers are authoritative here - see taxEntryService.js -
 // with utils/vatCalculations.js as the frontend's non-authoritative preview
 // mirror, matching the exact same pattern ewtCalculationService.js /
-// utils/ewtCalculations.js already established for EWT).
+// utils/ewtCalculations.mjs already established for EWT).
 //
 // Prior to Phase 7C, this app had no VAT-inclusive entry mode at all - the
 // old "Add VAT Line" helper only accepted an already-EXCLUSIVE taxable

@@ -32,6 +32,7 @@ const GLBeginningBalanceService = require("./services/GLBeginningBalanceService"
 const BeginningBalanceCurrencyService = require("./services/beginningBalanceCurrencyService");
 const TrialBalanceDifferenceService = require("./services/trialBalanceDifferenceService");
 const { computeEwtTaxableBase, computeEwtAmount } = require("./services/ewtCalculationService");
+const { loadVatControlAccountIds } = require("./services/vatControlAccounts");
 const CurrencyService = require("./services/currencyService");
 const { postedOnlySql } = require("./services/reportRecognitionService");
 const OutputVatReportService = require("./services/outputVatReportService");
@@ -2525,7 +2526,12 @@ async function resolveTaxWithholding(conn, { moduleLabel, atcCode, lines, totalC
   }
 
   const { taxType, rate } = ewtRows[0];
-  const taxableBase = computeEwtTaxableBase({ grossAmount: totalCredit, lines, vatKeyword });
+  // Modern APV/Invoice lines carry structured taxEntry metadata -
+  // computeEwtTaxableBase uses the VAT-exclusive net directly and never
+  // reads this id set. Legacy OR/CV/PO lines don't, so identify their VAT
+  // line by validated account identity.
+  const vatAccountIds = await loadVatControlAccountIds(conn);
+  const taxableBase = computeEwtTaxableBase({ grossAmount: totalCredit, lines, vatAccountIds, vatKeyword });
   const backendAmount = computeEwtAmount({ taxableBase, ewtRate: rate });
 
   const clientAmount = Number(clientTaxWithheldAmount) || 0;

@@ -1,6 +1,7 @@
 import React from "react";
 import { formatMoney } from "./transactionFormUtils";
 import { filterSelectableRegularAccounts } from "./taxAccountRules.mjs";
+import SearchableAccountSelect from "./SearchableAccountSelect";
 import "./TransactionFormLayout.css";
 
 // Checkpoint 7A: extracted verbatim from TransactionFormLayout.jsx's
@@ -113,20 +114,13 @@ export default function AccountingEntriesGrid({
           return (
           <tr key={line.id}>
             <td>
-              <select
+              <SearchableAccountSelect
                 value={line.accountId}
-                onChange={(e) =>
-                  updateLine(line.id, "accountId", e.target.value)
-                }
-                className="transaction-table-input"
-              >
-                <option value="">Select account</option>
-                {selectableAccounts.map((account) => (
-                  <option key={account.id} value={account.id}>
-                    {account.code} - {account.title}
-                  </option>
-                ))}
-              </select>
+                onChange={(next) => updateLine(line.id, "accountId", next)}
+                accounts={selectableAccounts}
+                fallbackAccounts={accountOptions}
+                ariaLabel="Line account"
+              />
             </td>
 
             <td>

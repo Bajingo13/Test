@@ -1,12 +1,15 @@
 import React, { useEffect, useState } from "react";
-import { computeEwtTaxableBase, computeEwtAmount } from "../../utils/ewtCalculations";
+import { computeEwtTaxableBase, computeEwtAmount } from "../../utils/ewtCalculations.mjs";
 import { defaultTaxAccountId } from "./taxAccountRules.mjs";
 import { formatMoney } from "./transactionFormUtils";
+import TaxModalShell from "./TaxModalShell";
+import SearchableAccountSelect from "./SearchableAccountSelect";
 
 // Phase 7C: compact popup wrapping the EXISTING EWT engine (utils/
-// ewtCalculations.js / backend's ewtCalculationService.js +
-// resolveTaxWithholding, both completely unchanged by this phase - see
-// spec section 18). This is a UI/workflow change only: the same ATC
+// ewtCalculations.mjs / backend's ewtCalculationService.js +
+// resolveTaxWithholding). Phase 7L: the EWT base is now the VAT-exclusive
+// STRUCTURED net (balance-independent) - see ewtCalculationService.js.
+// This is a UI/workflow change only: the same ATC
 // code/rate/base/withholding-amount computation that used to live in a
 // permanent card now lives in a popup, and (new in Phase 7C, section 19)
 // confirming it also creates a real journal line instead of leaving the
@@ -100,21 +103,23 @@ export default function EwtEntryModal({
   }
 
   return (
-    <div className="apv-modal-overlay">
-      <div className="apv-modal confirm-dialog tax-entry-modal">
-        <div className="apv-modal-header">
-          <div>
-            <h2>EWT / Withholding Tax</h2>
-            <p>
-              {isOutbound
-                ? "Optional - only fill in if tax was withheld from this payment."
-                : "Optional - only fill in if the customer withheld tax from this amount."}
-            </p>
-          </div>
-          <button type="button" className="apv-modal-close" onClick={onClose} aria-label="Close">×</button>
-        </div>
-
-        <div className="tax-entry-modal-body">
+    <TaxModalShell
+      open={open}
+      onClose={onClose}
+      title="EWT / Withholding Tax"
+      subtitle={
+        isOutbound
+          ? "Optional - only fill in if tax was withheld from this payment."
+          : "Optional - only fill in if the customer withheld tax from this amount."
+      }
+      footer={
+        <>
+          <button type="button" className="transaction-secondary-button" onClick={onClose}>Cancel</button>
+          <button type="button" className="transaction-primary-button" onClick={handleConfirm} disabled={noAccountConfigured}>Confirm</button>
+        </>
+      }
+    >
+      <>
           {noAccountConfigured && (
             <p className="transaction-tax-duplication-warning" role="alert">
               ⚠ {missingAccountMessage}
@@ -181,26 +186,16 @@ export default function EwtEntryModal({
 
             <div className="transaction-field">
               <label className="transaction-label">EWT Account</label>
-              <select
+              <SearchableAccountSelect
                 value={accountId}
-                onChange={(e) => setAccountId(e.target.value)}
-                className="transaction-input"
+                onChange={(next) => setAccountId(next)}
+                accounts={taxAccountOptions}
                 disabled={noAccountConfigured}
-              >
-                <option value="">Select account</option>
-                {taxAccountOptions.map((account) => (
-                  <option key={account.id} value={account.id}>{account.code} - {account.title}</option>
-                ))}
-              </select>
+                ariaLabel="EWT account"
+              />
             </div>
           </div>
-        </div>
-
-        <div className="apv-modal-footer">
-          <button type="button" className="transaction-secondary-button" onClick={onClose}>Cancel</button>
-          <button type="button" className="transaction-primary-button" onClick={handleConfirm} disabled={noAccountConfigured}>Confirm</button>
-        </div>
-      </div>
-    </div>
+      </>
+    </TaxModalShell>
   );
 }

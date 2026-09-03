@@ -9,6 +9,8 @@ import {
 } from "../../utils/vatCalculations";
 import { defaultTaxAccountId } from "./taxAccountRules.mjs";
 import { formatMoney } from "./transactionFormUtils";
+import TaxModalShell from "./TaxModalShell";
+import SearchableAccountSelect from "./SearchableAccountSelect";
 
 const TREATMENT_LABEL = {
   STANDARD: "Standard VAT",
@@ -250,17 +252,19 @@ export default function VatEntryModal({
   }
 
   return (
-    <div className="apv-modal-overlay">
-      <div className="apv-modal confirm-dialog tax-entry-modal">
-        <div className="apv-modal-header">
-          <div>
-            <h2>{title}</h2>
-            <p>Enter the tax schedule information - the journal line amount is calculated automatically.</p>
-          </div>
-          <button type="button" className="apv-modal-close" onClick={onClose} aria-label="Close">×</button>
-        </div>
-
-        <div className="tax-entry-modal-body">
+    <TaxModalShell
+      open={open}
+      onClose={onClose}
+      title={title}
+      subtitle="Enter the tax schedule information - the journal line amount is calculated automatically."
+      footer={
+        <>
+          <button type="button" className="transaction-secondary-button" onClick={onClose}>Cancel</button>
+          <button type="button" className="transaction-primary-button" onClick={handleConfirm} disabled={noAccountConfigured}>Confirm</button>
+        </>
+      }
+    >
+      <>
           {noAccountConfigured && (
             <p className="transaction-tax-duplication-warning" role="alert">
               ⚠ {missingAccountMessage}
@@ -414,17 +418,13 @@ export default function VatEntryModal({
 
             <div className="transaction-field">
               <label className="transaction-label">{title} Account</label>
-              <select
+              <SearchableAccountSelect
                 value={accountId}
-                onChange={(e) => setAccountId(e.target.value)}
-                className="transaction-input"
+                onChange={(next) => setAccountId(next)}
+                accounts={taxAccountOptions}
                 disabled={noAccountConfigured}
-              >
-                <option value="">Select account</option>
-                {taxAccountOptions.map((account) => (
-                  <option key={account.id} value={account.id}>{account.code} - {account.title}</option>
-                ))}
-              </select>
+                ariaLabel={`${title} account`}
+              />
             </div>
 
             <div className="transaction-field">
@@ -442,13 +442,7 @@ export default function VatEntryModal({
               <input type="text" value={formatMoney(computedGross)} readOnly className="transaction-input transaction-input-readonly" />
             </div>
           </div>
-        </div>
-
-        <div className="apv-modal-footer">
-          <button type="button" className="transaction-secondary-button" onClick={onClose}>Cancel</button>
-          <button type="button" className="transaction-primary-button" onClick={handleConfirm} disabled={noAccountConfigured}>Confirm</button>
-        </div>
-      </div>
-    </div>
+      </>
+    </TaxModalShell>
   );
 }

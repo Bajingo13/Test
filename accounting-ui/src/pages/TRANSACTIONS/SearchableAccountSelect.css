@@ -1,0 +1,90 @@
+/* Phase 7L: SearchableAccountSelect - a type-to-filter account combobox
+   that visually matches the native <select> it replaces
+   (.transaction-table-input / .transaction-input) so grid rows and the
+   VAT/EWT modals keep the same field height, radius and typography. */
+
+.searchable-account {
+  position: relative;
+  width: 100%;
+}
+
+.searchable-account-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding-right: 26px; /* room for the clear button */
+}
+
+.searchable-account-clear {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  border: none;
+  background: transparent;
+  color: var(--text-secondary, #6b7280);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+.searchable-account-clear:hover {
+  color: var(--text-primary, #111827);
+}
+
+.searchable-account-listbox {
+  /* placement (position/left/top/width/max-height) is set inline as
+     position:fixed anchored to the input - see SearchableAccountSelect.jsx.
+     This rule only carries the visual treatment and a fallback. */
+  position: fixed;
+  z-index: 1200;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--bg-surface, #ffffff);
+  border: 1px solid var(--border-color-strong, #cbd5e1);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(var(--shadow-rgb, 15 23 42), 0.18);
+}
+
+.searchable-account-option {
+  padding: 7px 9px;
+  font-size: 13px;
+  border-radius: 6px;
+  color: var(--text-primary, #111827);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.searchable-account-option.is-active {
+  background: var(--accent-indigo-soft, rgba(79, 70, 229, 0.1));
+}
+
+.searchable-account-option.is-selected {
+  font-weight: 600;
+}
+
+.searchable-account-option-empty {
+  color: var(--text-secondary, #6b7280);
+  cursor: default;
+}
+
+/* view / disabled / read-only: render as a plain label, same footprint as
+   the surrounding static cells (AccountingEntriesGrid viewOnly). */
+.searchable-account-static {
+  width: 100%;
+}
+
+.searchable-account-static-label {
+  display: inline-block;
+  font-size: 13px;
+  color: var(--text-primary, #111827);
+}
+
+.searchable-account-placeholder {
+  color: var(--text-muted, #9ca3af);
+}

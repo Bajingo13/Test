@@ -1,5 +1,6 @@
 import React from "react";
 import { formatMoney } from "./transactionFormUtils";
+import TaxModalShell from "./TaxModalShell";
 
 // Transaction-entry UI standardization: OR/CV/PO's EWT stays on its
 // pre-existing, protected behavior - header-level fields (atc_code/
@@ -10,6 +11,11 @@ import { formatMoney } from "./transactionFormUtils";
 // card. Nothing is added to transaction_tax_entries here - doing so would
 // change what gets persisted and reopen the settlement-duplication risk
 // Phase 7D/7E deliberately closed for these three modules.
+//
+// Phase 7L: adopts the shared TaxModalShell for visual parity with the
+// modern EwtEntryModal. When the voucher is settling a source document
+// (hasSourceApplications) every EWT control is disabled - tax was already
+// recognized on the source APV/Invoice (Phase 7L Part F section 9).
 export default function LegacyEwtEntryModal({
   open,
   onClose,
@@ -27,26 +33,25 @@ export default function LegacyEwtEntryModal({
   hasSourceApplications,
   sourceDuplicationWarning,
 }) {
-  if (!open) return null;
+  const blocked = !!hasSourceApplications;
 
   return (
-    <div className="apv-modal-overlay">
-      <div className="apv-modal confirm-dialog tax-entry-modal">
-        <div className="apv-modal-header">
-          <div>
-            <h2>{ewtOutbound ? "Withholding Tax" : "Tax Withheld by Customer"}</h2>
-            <p>
-              {ewtOutbound
-                ? "Optional — only fill in if tax was withheld from this payment."
-                : "Optional — only fill in if the customer withheld tax from this amount (per the Form 2307 they issue you)."}
-              {" "}For VATable transactions, EWT is computed on the amount exclusive of VAT.
-            </p>
-          </div>
-          <button type="button" className="apv-modal-close" onClick={onClose} aria-label="Close">×</button>
-        </div>
-
-        <div className="tax-entry-modal-body">
-          {hasSourceApplications && (
+    <TaxModalShell
+      open={open}
+      onClose={onClose}
+      title={ewtOutbound ? "Withholding Tax" : "Tax Withheld by Customer"}
+      subtitle={
+        (ewtOutbound
+          ? "Optional — only fill in if tax was withheld from this payment."
+          : "Optional — only fill in if the customer withheld tax from this amount (per the Form 2307 they issue you).") +
+        " For VATable transactions, EWT is computed on the amount exclusive of VAT."
+      }
+      footer={
+        <button type="button" className="transaction-primary-button" onClick={onClose}>Done</button>
+      }
+    >
+      <>
+          {blocked && (
             <p className="transaction-tax-duplication-warning" role="alert">
               ⚠ {sourceDuplicationWarning}
             </p>
@@ -59,8 +64,8 @@ export default function LegacyEwtEntryModal({
                 value={atcCode}
                 onChange={(e) => handleAtcCodeChange(e.target.value)}
                 className="transaction-input"
-                disabled={hasSourceApplications}
-                title={hasSourceApplications ? sourceDuplicationWarning : undefined}
+                disabled={blocked}
+                title={blocked ? sourceDuplicationWarning : undefined}
               >
                 <option value="">None</option>
                 {ewtCodes.map((ewt) => (
@@ -95,7 +100,7 @@ export default function LegacyEwtEntryModal({
                 readOnly
                 placeholder="Select an ATC code"
                 className="transaction-input transaction-input-readonly"
-                title="Gross amount minus VAT posted on this transaction."
+                title="Amount subject to withholding, exclusive of VAT."
               />
             </div>
 
@@ -115,7 +120,7 @@ export default function LegacyEwtEntryModal({
                   setTaxWithheldAmount(e.target.value);
                   setTaxWithheldTouched(true);
                 }}
-                disabled={!atcCode || hasSourceApplications}
+                disabled={!atcCode || blocked}
                 placeholder="0.00"
                 className="transaction-input"
               />
@@ -130,16 +135,12 @@ export default function LegacyEwtEntryModal({
                   onChange={(e) => setPayeeTin(e.target.value)}
                   placeholder="000-000-000-000"
                   className="transaction-input"
+                  disabled={blocked}
                 />
               </div>
             )}
           </div>
-        </div>
-
-        <div className="apv-modal-footer">
-          <button type="button" className="transaction-primary-button" onClick={onClose}>Done</button>
-        </div>
-      </div>
-    </div>
+      </>
+    </TaxModalShell>
   );
 }

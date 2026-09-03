@@ -1,5 +1,7 @@
 import React from "react";
 import { formatMoney } from "./transactionFormUtils";
+import TaxModalShell from "./TaxModalShell";
+import SearchableAccountSelect from "./SearchableAccountSelect";
 
 // Transaction-entry UI standardization: OR/CV/PO's Output/Input VAT stays on
 // its pre-existing, protected behavior - a plain journal line stamped from
@@ -11,6 +13,15 @@ import { formatMoney } from "./transactionFormUtils";
 // what gets persisted, not just how it's reached, and would reopen the
 // settlement-duplication risk Phase 7D/7E deliberately closed for these
 // three modules.
+//
+// Phase 7L: adopts the shared TaxModalShell + SearchableAccountSelect so it
+// is visually identical to the modern APV/INV VatEntryModal (same overlay,
+// radius, header, close button, field height, footer). Accounting behavior
+// is unchanged. When the voucher is settling a source document
+// (hasSourceApplications), the tax-recognition controls are not merely
+// warned about - they are disabled AND the "Add ... Line" action is
+// blocked, so a second Input VAT/EWT cannot be recorded through the UI
+// (Phase 7L Part F section 9).
 export default function LegacyVatEntryModal({
   open,
   onClose,
@@ -32,29 +43,39 @@ export default function LegacyVatEntryModal({
   sourceDuplicationWarning,
   onAddLine,
 }) {
-  if (!open) return null;
-
   const noAccountConfigured = (accountOptions || []).length === 0;
+  const blocked = !!hasSourceApplications;
 
   function handleAdd() {
+    if (blocked) return; // Part F section 9: no second Input VAT via the UI
     if (noAccountConfigured) { alert(missingAccountMessage); return; }
     onAddLine();
     onClose();
   }
 
   return (
-    <div className="apv-modal-overlay">
-      <div className="apv-modal confirm-dialog tax-entry-modal">
-        <div className="apv-modal-header">
-          <div>
-            <h2>{vatType}</h2>
-            <p>Enter the taxable amount to add a {vatType} line automatically.</p>
-          </div>
-          <button type="button" className="apv-modal-close" onClick={onClose} aria-label="Close">×</button>
-        </div>
-
-        <div className="tax-entry-modal-body">
-          {hasSourceApplications && (
+    <TaxModalShell
+      open={open}
+      onClose={onClose}
+      title={vatType}
+      subtitle={`Enter the taxable amount to add a ${vatType} line automatically.`}
+      footer={
+        <>
+          <button type="button" className="transaction-secondary-button" onClick={onClose}>Cancel</button>
+          <button
+            type="button"
+            className="transaction-primary-button"
+            onClick={handleAdd}
+            disabled={noAccountConfigured || blocked}
+            title={blocked ? sourceDuplicationWarning : undefined}
+          >
+            + Add {vatType} Line
+          </button>
+        </>
+      }
+    >
+      <>
+          {blocked && (
             <p className="transaction-tax-duplication-warning" role="alert">
               ⚠ {sourceDuplicationWarning}
             </p>
@@ -68,20 +89,13 @@ export default function LegacyVatEntryModal({
           <div className="transaction-grid">
             <div className="transaction-field">
               <label className="transaction-label">{vatType} Account</label>
-              <select
+              <SearchableAccountSelect
                 value={vatAccountId}
-                onChange={(e) => setVatAccountId(e.target.value)}
-                className="transaction-input"
-                disabled={hasSourceApplications}
-                title={hasSourceApplications ? sourceDuplicationWarning : undefined}
-              >
-                <option value="">Select account</option>
-                {accountOptions.map((account) => (
-                  <option key={account.id} value={account.id}>
-                    {account.code} - {account.title}
-                  </option>
-                ))}
-              </select>
+                onChange={(next) => setVatAccountId(next)}
+                accounts={accountOptions || []}
+                disabled={blocked}
+                ariaLabel={`${vatType} account`}
+              />
             </div>
 
             <div className="transaction-field">
@@ -92,7 +106,7 @@ export default function LegacyVatEntryModal({
                 step="0.01"
                 value={vatTaxableAmount}
                 onChange={(e) => setVatTaxableAmount(e.target.value)}
-                disabled={hasSourceApplications}
+                disabled={blocked}
                 placeholder="0.00"
                 className="transaction-input"
               />
@@ -106,6 +120,7 @@ export default function LegacyVatEntryModal({
                 step="0.01"
                 value={vatRate}
                 onChange={(e) => setVatRate(e.target.value)}
+                disabled={blocked}
                 className="transaction-input"
               />
             </div>
@@ -120,15 +135,7 @@ export default function LegacyVatEntryModal({
               />
             </div>
           </div>
-        </div>
-
-        <div className="apv-modal-footer">
-          <button type="button" className="transaction-secondary-button" onClick={onClose}>Cancel</button>
-          <button type="button" className="transaction-primary-button" onClick={handleAdd} disabled={noAccountConfigured}>
-            + Add {vatType} Line
-          </button>
-        </div>
-      </div>
-    </div>
+      </>
+    </TaxModalShell>
   );
 }

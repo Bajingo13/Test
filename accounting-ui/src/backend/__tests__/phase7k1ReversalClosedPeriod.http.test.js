@@ -4,6 +4,7 @@ const app = require("../server");
 const pool = require("../db");
 const { assertNotProductionDatabase } = require("../lib/testDatabaseGuard");
 const CurrencyService = require("../services/currencyService");
+const AccountingPeriodService = require("../services/accountingPeriodService");
 
 // Phase 7K.1: closed-period APV/CV reversal (HYBRID). Original stays Posted;
 // a linked Posted reversing JV (source_module APV_REVERSAL / CV_REVERSAL)
@@ -311,10 +312,26 @@ describe("Phase 7K.1 - APV reversal basics", () => {
 
 describe("Phase 7K.1 - period rules", () => {
   test("Void of a CLOSED-period APV -> 409 REVERSAL_REQUIRED; then Reverse (open reversal date) -> 200", async () => {
+    // The reversal date is the application's normalized CURRENT date
+    // (server.js: AccountingPeriodService.toDateOnly(new Date())) - assert
+    // against that same contract rather than a hard-coded calendar day, so
+    // the test verifies the accounting behavior on whatever day it runs.
+    const expectedReversalDate = AccountingPeriodService.toDateOnly(new Date());
+    const [ry, rm] = expectedReversalDate.split("-").map(Number);
+    const openStart = `${ry}-${String(rm).padStart(2, "0")}-01`;
+    const openEnd = AccountingPeriodService.toDateOnly(new Date(ry, rm, 0)); // last day of month rm
+    // The APV's own month (D = 2026-08-15) must be CLOSED for the Void ->
+    // REVERSAL_REQUIRED path; the reversal-date month must be OPEN. These
+    // are always different months (D is a fixed past month).
+    expect(expectedReversalDate.slice(0, 7)).not.toBe("2026-08");
+
     // create the Posted APV BEFORE the period is closed, then close Aug 2026.
     const { res } = await createApv({ gross: 2500 });
     const apvId = res.body.id;
-    await pool.query("INSERT INTO accounting_periods (company_id, year, period_month, start_date, end_date, status) VALUES (?, 2026, 8, '2026-08-01', '2026-08-31', 'CLOSED'), (?, 2026, 9, '2026-09-01', '2026-09-30', 'OPEN')", [CO, CO]);
+    await pool.query(
+      "INSERT INTO accounting_periods (company_id, year, period_month, start_date, end_date, status) VALUES (?, 2026, 8, '2026-08-01', '2026-08-31', 'CLOSED'), (?, ?, ?, ?, ?, 'OPEN')",
+      [CO, CO, ry, rm, openStart, openEnd]
+    );
     try {
       const v = await request(app).post(`/api/apv/${apvId}/void`).set(authH()).send({ reason: "x", companyId: CO });
       expect(v.status).toBe(409);
@@ -323,8 +340,15 @@ describe("Phase 7K.1 - period rules", () => {
 
       const rev = await reverseApv(apvId);
       expect(rev.status).toBe(200);
-      expect(rev.body.reversalDate).toBe("2026-09-02");
-      expect((await jvHeader(rev.body.reversalJvId)).transactionDate).toBe("2026-09-02");
+      // reversal date == the application's normalized current date
+      expect(rev.body.reversalDate).toBe(expectedReversalDate);
+      expect((await jvHeader(rev.body.reversalJvId)).transactionDate).toBe(expectedReversalDate);
+      // original stays Posted; reversing JV is Posted and correctly linked
+      expect((await apvRow(apvId)).status).toBe("Posted");
+      const jv = await jvHeader(rev.body.reversalJvId);
+      expect(jv.status).toBe("Posted");
+      expect(jv.source_module).toBe("APV_REVERSAL");
+      expect(jv.source_reference_id).toBe(apvId);
     } finally {
       await pool.query("DELETE FROM accounting_periods WHERE company_id = ?", [CO]);
     }

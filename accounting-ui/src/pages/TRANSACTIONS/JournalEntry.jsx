@@ -1,14 +1,15 @@
 import { useMemo, useState } from "react";
+import SearchableAccountSelect from "./SearchableAccountSelect";
 
 const sampleAccounts = [
-  { id: 1, code: "1010", name: "Cash on Hand", type: "Asset" },
-  { id: 2, code: "1011", name: "Cash in Bank", type: "Asset" },
-  { id: 3, code: "1100", name: "Accounts Receivable", type: "Asset" },
-  { id: 4, code: "2000", name: "Accounts Payable", type: "Liability" },
-  { id: 5, code: "3000", name: "Owner's Equity", type: "Equity" },
-  { id: 6, code: "4000", name: "Sales Revenue", type: "Revenue" },
-  { id: 7, code: "5000", name: "Office Supplies Expense", type: "Expense" },
-  { id: 8, code: "5100", name: "Salary Expense", type: "Expense" },
+  { id: 1, code: "1010", name: "Cash on Hand", title: "Cash on Hand", type: "Asset" },
+  { id: 2, code: "1011", name: "Cash in Bank", title: "Cash in Bank", type: "Asset" },
+  { id: 3, code: "1100", name: "Accounts Receivable", title: "Accounts Receivable", type: "Asset" },
+  { id: 4, code: "2000", name: "Accounts Payable", title: "Accounts Payable", type: "Liability" },
+  { id: 5, code: "3000", name: "Owner's Equity", title: "Owner's Equity", type: "Equity" },
+  { id: 6, code: "4000", name: "Sales Revenue", title: "Sales Revenue", type: "Revenue" },
+  { id: 7, code: "5000", name: "Office Supplies Expense", title: "Office Supplies Expense", type: "Expense" },
+  { id: 8, code: "5100", name: "Salary Expense", title: "Salary Expense", type: "Expense" },
 ];
 
 const transactionTypes = [
@@ -298,20 +299,12 @@ export default function JournalEntry() {
                 {lines.map((line) => (
                   <tr key={line.id}>
                     <td style={styles.td}>
-                      <select
-                        style={styles.tableInput}
+                      <SearchableAccountSelect
                         value={line.accountId}
-                        onChange={(e) =>
-                          updateLine(line.id, "accountId", e.target.value)
-                        }
-                      >
-                        <option value="">Select account</option>
-                        {sampleAccounts.map((account) => (
-                          <option key={account.id} value={account.id}>
-                            {account.code} - {account.name}
-                          </option>
-                        ))}
-                      </select>
+                        onChange={(next) => updateLine(line.id, "accountId", next)}
+                        accounts={sampleAccounts}
+                        ariaLabel="Line account"
+                      />
                     </td>
 
                     <td style={styles.td}>

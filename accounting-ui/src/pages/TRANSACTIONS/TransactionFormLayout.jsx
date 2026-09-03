@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import TransactionPrintOptionsModal from "../../components/TransactionPrintOptionsModal";
 import RecurringTemplateModal from "../../components/RecurringTemplateModal";
-import { computeEwtTaxableBase, computeEwtAmount } from "../../utils/ewtCalculations";
+import { computeEwtTaxableBase, computeEwtAmount } from "../../utils/ewtCalculations.mjs";
 import usePermissions from "../../hooks/usePermissions";
 import { getTransactionModuleConfig } from "./transactionModuleConfig";
 import { getVoucherToolbarVisibility } from "./voucherToolbarRules.mjs";
@@ -29,6 +29,8 @@ import {
   defaultTaxAccountId,
   missingTaxAccountMessage,
 } from "./taxAccountRules.mjs";
+import { applyApvTaxBalancing } from "./apvJournalBalance.mjs";
+import { hasSettlementSourceApplications, settlementTaxWarning } from "./legacyTaxEntryPolicy.mjs";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
 import "./TransactionFormLayout.css";
 
@@ -185,6 +187,9 @@ export default function TransactionFormLayout({
   const [editingTaxLineId, setEditingTaxLineId] = useState(null);
   const [showTaxDetailsView, setShowTaxDetailsView] = useState(false);
   const [viewingTaxEntry, setViewingTaxEntry] = useState(null);
+  // Phase 7L Part E: shown when a VAT/EWT line was added to a modern APV
+  // but the payable line could not be identified for auto-balancing.
+  const [balanceAssistMessage, setBalanceAssistMessage] = useState("");
 
   // Transaction-entry UI standardization: OR/CV/PO's VAT/EWT/Cash-Check
   // fields are NOT moving to the Invoice/APV tagged-line workflow (that
@@ -956,7 +961,7 @@ if (code === "OR") {
   // This form has no VAT-inclusive entry mode - the user enters the
   // exclusive base into the VAT helper below, which posts VAT as its own
   // line, so the exclusive base is simply the transaction total minus
-  // whatever was posted to the VAT account. See utils/ewtCalculations.js.
+  // whatever was posted to the VAT account. See utils/ewtCalculations.mjs.
   const ewtTaxableBase = useMemo(
     () => computeEwtTaxableBase({ grossAmount: totals.totalCredit, lines, vatAccountId }),
     [totals.totalCredit, lines, vatAccountId]
@@ -971,6 +976,10 @@ if (code === "OR") {
   );
 
   function handleAtcCodeChange(value) {
+    // Phase 7L Part F: block legacy EWT on a settlement voucher (CV paying
+    // an APV / OR paying an Invoice) - the source document already carries
+    // the withholding.
+    if (hasSourceApplications) return;
     setAtcCode(value);
     setTaxWithheldTouched(false);
 
@@ -1039,20 +1048,25 @@ if (code === "OR") {
   // still the correct, unchanged way to record tax - see Phase 7D's "OR/CV
   // dual nature" finding. This flag never changes accounting policy; it
   // only warns and blocks NEW entry through the legacy fields.
-  const hasSourceApplications =
-    (code === "OR" && invoiceApplications.length > 0) ||
-    (code === "CV" && apvApplications.length > 0);
-  const sourceDuplicationWarning =
-    code === "OR"
-      ? "Tax is recognized on the source Invoice. Additional Output VAT on this settlement may duplicate tax."
-      : code === "CV"
-      ? "Tax is recognized on the source APV. Additional Input VAT/EWT may duplicate tax."
-      : "";
+  // Phase 7L Part F: settlement vouchers (OR->Invoice, CV->APV) never
+  // record their own VAT/EWT - see legacyTaxEntryPolicy.mjs.
+  const hasSourceApplications = hasSettlementSourceApplications({
+    code,
+    invoiceApplications,
+    apvApplications,
+  });
+  const sourceDuplicationWarning = settlementTaxWarning(code);
 
   const vatAmount =
     (Number(vatTaxableAmount || 0) * Number(vatRate || 0)) / 100;
 
   function handleAddVatLine() {
+    // Phase 7L Part F: a settlement voucher (OR paying an Invoice, CV
+    // paying an APV) must never record a second VAT line - tax is already
+    // recognized on the source document. The legacy modal disables its
+    // fields + Add button when hasSourceApplications; this is the matching
+    // backstop for any other call path.
+    if (hasSourceApplications) return;
     if (!vatAccountId) {
       alert("Please select the VAT account first.");
       return;
@@ -1100,6 +1114,23 @@ if (code === "OR") {
     setShowVatEntryModal(true);
   }
 
+  // Phase 7L Part E: commit a new/edited/removed tax-aware line set and,
+  // for a modern APV, deterministically rebalance the payable CREDIT so
+  // total debit === total credit - but ONLY when the AP/control line is
+  // unambiguous. Otherwise the lines are committed unchanged and a
+  // validation message is shown (never a silent change to an arbitrary
+  // line). Non-APV modules commit verbatim, exactly as before.
+  function commitTaxAwareLines(nextLines) {
+    if (code !== "APV") {
+      setLines(nextLines);
+      setBalanceAssistMessage("");
+      return;
+    }
+    const result = applyApvTaxBalancing(nextLines, { isAPorARAccount, enabled: true });
+    setBalanceAssistMessage(result.status === "AMBIGUOUS" ? result.message : "");
+    setLines(result.lines);
+  }
+
   function handleVatEntryConfirm(entry) {
     const isOutput = vatEntryDirection === "OUTPUT";
     const selectedPartyForRef = partyOptions.find((p) => p.id === entry.partyId);
@@ -1124,11 +1155,10 @@ if (code === "OR") {
       taxEntry: { entryType: isOutput ? "OUTPUT_VAT" : "INPUT_VAT", ...entry },
     };
 
-    if (editingTaxLineId) {
-      setLines((prev) => prev.map((l) => (l.id === editingTaxLineId ? { ...l, ...lineData } : l)));
-    } else {
-      setLines((prev) => [...prev, { ...createLine(), ...lineData }]);
-    }
+    const nextLines = editingTaxLineId
+      ? lines.map((l) => (l.id === editingTaxLineId ? { ...l, ...lineData } : l))
+      : [...lines, { ...createLine(), ...lineData }];
+    commitTaxAwareLines(nextLines);
 
     setShowVatEntryModal(false);
     setEditingTaxLineId(null);
@@ -1157,11 +1187,10 @@ if (code === "OR") {
       taxEntry: { entryType: "EWT", ...entry },
     };
 
-    if (editingTaxLineId) {
-      setLines((prev) => prev.map((l) => (l.id === editingTaxLineId ? { ...l, ...lineData } : l)));
-    } else {
-      setLines((prev) => [...prev, { ...createLine(), ...lineData }]);
-    }
+    const nextLines = editingTaxLineId
+      ? lines.map((l) => (l.id === editingTaxLineId ? { ...l, ...lineData } : l))
+      : [...lines, { ...createLine(), ...lineData }];
+    commitTaxAwareLines(nextLines);
 
     // Section 33/34 backward compatibility: keep the EXISTING header-level
     // EWT columns (read by resolveTaxWithholding and every existing EWT
@@ -1206,7 +1235,14 @@ if (code === "OR") {
       setTaxWithheldTouched(false);
       if (ewtOutbound) setPayeeTin("");
     }
-    removeLine(id);
+    if (lines.length <= 2) {
+      removeLine(id);
+      return;
+    }
+    // Phase 7L Part E: removing a VAT/EWT line must not leave the payable
+    // inflated by the removed tax - rebalance the (unambiguous) AP credit
+    // to Gross - EWT with no cumulative drift across add -> remove -> add.
+    commitTaxAwareLines(lines.filter((l) => l.id !== id));
   }
 
   function isAPorARAccount(accountId) {
@@ -1238,6 +1274,7 @@ if (code === "OR") {
 }
 
   function resetForm() {
+    setBalanceAssistMessage("");
     setForm({
       date: new Date().toISOString().split("T")[0],
       referenceNo: "",
@@ -1609,6 +1646,7 @@ if (code === "OR" || code === "CV") {
 
     setForm(transaction.form);
     setLines(transaction.lines);
+    setBalanceAssistMessage("");
     setApvApplications([]);
     setFormMode(targetFormMode);
     setMode("form");
@@ -3031,6 +3069,12 @@ if (code === "OR") {
                   <EntryTotals totals={totals} viewOnly={formMode === "view"} />
                 </table>
               </div>
+
+              {formMode !== "view" && balanceAssistMessage ? (
+                <div className="transaction-tax-duplication-warning" role="alert">
+                  ⚠ {balanceAssistMessage}
+                </div>
+              ) : null}
 
               {error ? <div className="transaction-error-box">{error}</div> : null}
             </div>

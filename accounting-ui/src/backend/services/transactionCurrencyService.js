@@ -1,7 +1,8 @@
 const pool = require("../db");
 const { HttpError } = require("../lib/httpError");
 const Resolver = require("./exchangeRateResolverService");
-const { sumVatLines } = require("./ewtCalculationService");
+const { sumVatLines, sumStructuredVatExclusiveBase, hasStructuredVat } = require("./ewtCalculationService");
+const { loadVatControlAccountIds } = require("./vatControlAccounts");
 const { toDateOnly, isValidDateOnly } = require("../lib/dateOnly");
 
 // Wires Invoice/APV (Checkpoint 3A) to the existing Phase 1/2 currency
@@ -72,10 +73,22 @@ function computeBaseLines({ lines, exchangeRate }) {
 // (sumVatLines) rather than a second formula. taxWithheldAmount is
 // whatever the existing EWT flow already computed in the transaction
 // currency - untouched by this file.
-function computeForeignTaxTotals({ lines, grossAmount, vatKeyword, taxWithheldAmount }) {
-  const foreignTax = roundMoney(sumVatLines(lines, vatKeyword));
+function computeForeignTaxTotals({ lines, grossAmount, vatKeyword, taxWithheldAmount, vatAccountIds }) {
+  // Phase 7L: identify the VAT line by validated account identity (or
+  // structured taxEntry) first, the direction keyword only as a fallback -
+  // see ewtCalculationService.sumVatLines.
+  const foreignTax = roundMoney(sumVatLines(lines, { vatKeyword, vatAccountIds }));
   const foreignTotal = roundMoney(grossAmount);
-  const foreignSubtotal = roundMoney(foreignTotal - foreignTax);
+  // Phase 7L: when the transaction carries structured VAT metadata the
+  // VAT-EXCLUSIVE subtotal IS the sum of the structured net amounts - this
+  // is balance-independent and does not silently fold a non-VATable line
+  // into the subtotal the way (total - VAT line) would. This subtotal is
+  // what APV/CV persist as taxable_base, so the EWT base is the true
+  // VAT-exclusive net (spec Part D sections 12/13). Legacy transactions
+  // with no structured metadata keep the (total - VAT line) fallback.
+  const foreignSubtotal = hasStructuredVat(lines)
+    ? sumStructuredVatExclusiveBase(lines)
+    : roundMoney(foreignTotal - foreignTax);
   const foreignEwt = roundMoney(Number(taxWithheldAmount) || 0);
   return { foreignSubtotal, foreignTax, foreignEwt, foreignTotal };
 }
@@ -138,6 +151,10 @@ async function resolveTransactionCurrency({
 }) {
   const baseCurrency = await Resolver.getBaseCurrencyForCompany(companyId);
   const existingSnapshot = transactionId ? await getSnapshot(transactionType, transactionId) : null;
+  // Phase 7L: validated INPUT/OUTPUT VAT account ids, resolved once and
+  // threaded into the foreign-tax split so a non-standard VAT account
+  // title cannot make the VAT line invisible.
+  const vatAccountIds = await loadVatControlAccountIds();
 
   if (existingSnapshot?.rateLocked) {
     // Posted transactions are immutable on the currency side (section 10).
@@ -148,7 +165,7 @@ async function resolveTransactionCurrency({
     if (currencyChanged || rateChanged) {
       throw new HttpError(409, "Posted transactions use their original exchange rate and cannot be changed.");
     }
-    return finalizeWithRate({ currencyId: existingSnapshot.currencyId, currencyCode: existingSnapshot.currencyCode, baseCurrency, rateInfo: existingSnapshot, lines, grossAmount, vatKeyword, taxWithheldAmount, wasLocked: true });
+    return finalizeWithRate({ currencyId: existingSnapshot.currencyId, currencyCode: existingSnapshot.currencyCode, baseCurrency, rateInfo: existingSnapshot, lines, grossAmount, vatKeyword, taxWithheldAmount, vatAccountIds, wasLocked: true });
   }
 
   // No currency selected (or explicitly the base currency) -> plain base-currency transaction.
@@ -170,7 +187,7 @@ async function resolveTransactionCurrency({
       rateBasis: null, rateStatus: "FINAL", rateRetrievedAt: null, rateIngestionMethod: null,
       systemRate: null, overrideRate: null, overrideReason: null,
     };
-    return finalizeWithRate({ currencyId: baseCurrency.id, currencyCode: baseCurrency.currencyCode, baseCurrency, rateInfo, lines, grossAmount, vatKeyword, taxWithheldAmount, wasLocked: false });
+    return finalizeWithRate({ currencyId: baseCurrency.id, currencyCode: baseCurrency.currencyCode, baseCurrency, rateInfo, lines, grossAmount, vatKeyword, taxWithheldAmount, vatAccountIds, wasLocked: false });
   }
 
   // Foreign currency.
@@ -249,17 +266,17 @@ async function resolveTransactionCurrency({
     }
   }
 
-  return finalizeWithRate({ currencyId: currency.id, currencyCode: currency.currencyCode, baseCurrency, rateInfo, lines, grossAmount, vatKeyword, taxWithheldAmount, wasLocked: false });
+  return finalizeWithRate({ currencyId: currency.id, currencyCode: currency.currencyCode, baseCurrency, rateInfo, lines, grossAmount, vatKeyword, taxWithheldAmount, vatAccountIds, wasLocked: false });
 }
 
-function finalizeWithRate({ currencyId, currencyCode, baseCurrency, rateInfo, lines, grossAmount, vatKeyword, taxWithheldAmount, wasLocked }) {
+function finalizeWithRate({ currencyId, currencyCode, baseCurrency, rateInfo, lines, grossAmount, vatKeyword, taxWithheldAmount, vatAccountIds, wasLocked }) {
   const { lines: convertedLines, foreignTotalDebit, foreignTotalCredit, baseTotalDebit, baseTotalCredit } = computeBaseLines({ lines, exchangeRate: rateInfo.exchangeRate });
 
   if (Math.abs(foreignTotalDebit - foreignTotalCredit) > 0.01) {
     throw new HttpError(400, "Transaction lines are not balanced in the transaction currency.");
   }
 
-  const foreignTotals = computeForeignTaxTotals({ lines, grossAmount, vatKeyword, taxWithheldAmount });
+  const foreignTotals = computeForeignTaxTotals({ lines, grossAmount, vatKeyword, taxWithheldAmount, vatAccountIds });
   const baseTotals = {
     baseSubtotal: roundMoney(foreignTotals.foreignSubtotal * rateInfo.exchangeRate),
     baseTax: roundMoney(foreignTotals.foreignTax * rateInfo.exchangeRate),
