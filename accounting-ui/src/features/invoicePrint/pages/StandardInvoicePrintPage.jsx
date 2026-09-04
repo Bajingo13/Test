@@ -11,6 +11,7 @@ import InvoiceCompanyHeader from "../components/InvoiceCompanyHeader";
 import InvoiceCustomerSection from "../components/InvoiceCustomerSection";
 import InvoiceDocumentDetails from "../components/InvoiceDocumentDetails";
 import InvoiceItemsTable from "../components/InvoiceItemsTable";
+import InvoiceEntriesTable from "../components/InvoiceEntriesTable";
 import InvoiceTotalsSection from "../components/InvoiceTotalsSection";
 import InvoicePrintFooter from "../components/InvoicePrintFooter";
 
@@ -21,6 +22,11 @@ import "../styles/standard-invoice-print.css";
 // while sourcing all data from the Accounting System's own, already-
 // authoritative print pipeline (invoicePrintDataService). Read-only:
 // nothing here ever calls a write endpoint.
+//
+// ?mode=with_entries switches from the customer-facing copy to the
+// internal accounting copy (account code/title/debit/credit lines,
+// balanced check) - everything else on the page (header, customer info,
+// totals, footer, watermark) is shared between both copies.
 export default function StandardInvoicePrintPage() {
   const { identifier } = useParams();
   const [searchParams] = useSearchParams();
@@ -29,8 +35,9 @@ export default function StandardInvoicePrintPage() {
   // Present only when Puppeteer's headless page loaded this route (see
   // invoicePrintPdfService.js) - a real user's browser never has this.
   const renderToken = searchParams.get("renderToken");
+  const mode = searchParams.get("mode") === "with_entries" ? "with_entries" : "without_entries";
 
-  const { data, loading, error } = useInvoicePrintData(identifier, renderToken);
+  const { data, loading, error } = useInvoicePrintData(identifier, { renderToken, mode });
   const layout = useInvoiceLayout(data?.layout);
 
   usePrintReadiness({ identifier, loading, error, containerRef });
@@ -64,7 +71,8 @@ export default function StandardInvoicePrintPage() {
     return <div className="invoice-print-state invoice-print-state--error">{error || "Invoice not found."}</div>;
   }
 
-  const { document, seller, customer, items, totals, footer, currency } = data;
+  const { document, seller, customer, items, totals, footer, currency, entriesSummary } = data;
+  const isWithEntries = document.mode === "with_entries";
 
   return (
     <div className="invoice-page" ref={containerRef}>
@@ -72,12 +80,20 @@ export default function StandardInvoicePrintPage() {
 
       <InvoiceCompanyHeader seller={seller} document={document} />
 
+      {isWithEntries ? (
+        <div className="invoice-copy-badge">INTERNAL ACCOUNTING COPY</div>
+      ) : null}
+
       <div className="invoice-info-table">
         <InvoiceCustomerSection customer={customer} />
         <InvoiceDocumentDetails document={document} currency={currency} />
       </div>
 
-      <InvoiceItemsTable items={items} currencyCode={document.currencyCode} tableConfig={layout.table} />
+      {isWithEntries ? (
+        <InvoiceEntriesTable items={items} currencyCode={document.currencyCode} entriesSummary={entriesSummary} />
+      ) : (
+        <InvoiceItemsTable items={items} currencyCode={document.currencyCode} tableConfig={layout.table} />
+      )}
 
       <InvoiceTotalsSection totals={totals} currencyCode={document.currencyCode} />
 

@@ -1,0 +1,77 @@
+.invoice-list-page {
+  padding: 0.5in;
+}
+
+.invoice-list-header {
+  text-align: center;
+  border-bottom: 1px solid #000;
+  padding-bottom: 10px;
+  margin-bottom: 16px;
+  font-size: 12px;
+}
+.invoice-list-title {
+  font-weight: bold;
+  font-size: 16px;
+  margin-top: 6px;
+}
+.invoice-list-range {
+  font-size: 11px;
+  color: #333;
+}
+.invoice-list-count {
+  font-size: 11px;
+  color: #333;
+  margin-top: 2px;
+}
+
+.invoice-list-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  margin-bottom: 10px;
+}
+.invoice-list-table th,
+.invoice-list-table td {
+  border: 1px solid #000;
+  padding: 5px 8px;
+  text-align: left;
+}
+.invoice-list-table th {
+  background: #f9f9f9;
+  font-weight: bold;
+}
+.invoice-list-table th.amount,
+.invoice-list-table td.amount {
+  text-align: right;
+}
+.invoice-list-table tr {
+  page-break-inside: avoid;
+}
+.invoice-list-table thead {
+  display: table-header-group;
+}
+.invoice-list-table tfoot td {
+  border-top: 2px solid #000;
+}
+.invoice-list-table__empty {
+  text-align: center;
+  color: #666;
+  font-style: italic;
+}
+
+.invoice-list-group {
+  margin-bottom: 18px;
+  page-break-inside: avoid;
+}
+.invoice-list-group__label {
+  font-weight: 700;
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+.invoice-list-grand-total {
+  text-align: right;
+  font-size: 13px;
+  margin-top: 8px;
+  border-top: 2px solid #000;
+  padding-top: 6px;
+}

@@ -11,16 +11,12 @@ const INTERNAL_APP_URL = process.env.INTERNAL_APP_URL || "http://127.0.0.1:5173"
 const NAVIGATION_TIMEOUT_MS = 30000;
 const READY_TIMEOUT_MS = 20000;
 
-// Renders the Standard Invoice printable to a Letter-sized PDF via a
-// disposable, isolated Puppeteer page. Read-only end to end: the page it
-// loads never posts, never writes, and this function never touches
-// invoice_headers/invoice_lines itself - the caller (the /pdf export
-// controller) has already loaded/validated the invoice through the normal,
-// company-scoped, permission-checked print pipeline before this runs.
-async function renderInvoicePdf({ invoiceId, userId, username, companyId }) {
-  const renderToken = signInvoicePrintRenderToken({ userId, username, companyId, invoiceId });
-  const url = `${INTERNAL_APP_URL}/print/invoice/${encodeURIComponent(invoiceId)}?renderToken=${encodeURIComponent(renderToken)}`;
-
+// Shared by every Standard Invoice print flavor (single document, with-
+// entries copy, and the 3 list summaries) - navigates to `url`, waits for
+// the same window.__REPLICA_READY/__REPLICA_ERROR readiness contract every
+// StandardInvoicePrintPage/InvoiceListPrintPage variant sets, and returns a
+// Letter-sized PDF buffer.
+async function renderPrintUrlToPdf(url) {
   let browser;
   try {
     browser = await puppeteer.launch({
@@ -49,10 +45,6 @@ async function renderInvoicePdf({ invoiceId, userId, username, companyId }) {
 
     await page.goto(url, { waitUntil: "networkidle0", timeout: NAVIGATION_TIMEOUT_MS });
 
-    // The readiness contract StandardInvoicePrintPage/usePrintReadiness
-    // sets: window.__REPLICA_READY only after data + fonts + images have
-    // all settled, or window.__REPLICA_ERROR on a safe, non-sensitive
-    // failure.
     await page.waitForFunction(
       "window.__REPLICA_READY === true || !!window.__REPLICA_ERROR",
       { timeout: READY_TIMEOUT_MS }
@@ -60,29 +52,52 @@ async function renderInvoicePdf({ invoiceId, userId, username, companyId }) {
 
     const replicaError = await page.evaluate(() => window.__REPLICA_ERROR);
     if (replicaError || renderError) {
-      throw new HttpError(422, "Unable to render this invoice for PDF export.");
+      throw new HttpError(422, "Unable to render this document for PDF export.");
     }
 
-    const pdfBuffer = await page.pdf({
+    return await page.pdf({
       format: "Letter",
       printBackground: true,
       preferCSSPageSize: true,
-      // The invoice's own CSS already draws its footer
-      // (.invoice-print-footer-meta) - Chrome's built-in header/footer
-      // template would duplicate it, so it stays off.
+      // The page's own CSS already draws its footer - Chrome's built-in
+      // header/footer template would duplicate it, so it stays off.
       displayHeaderFooter: false,
       margin: { top: "0", right: "0", bottom: "0", left: "0" },
     });
-
-    return pdfBuffer;
   } catch (err) {
     if (err instanceof HttpError) throw err;
     // Never bubble the raw Puppeteer error (it can echo back the request
     // URL, which carries the render token) to the HTTP response or logs.
-    throw new HttpError(500, "Failed to generate invoice PDF.");
+    throw new HttpError(500, "Failed to generate PDF.");
   } finally {
     if (browser) await browser.close().catch(() => {});
   }
 }
 
-module.exports = { renderInvoicePdf };
+// Single invoice (customer-facing "without entries", or internal
+// "with entries" accounting copy - see `mode`). Read-only end to end: the
+// page it loads never posts, never writes, and this function never
+// touches invoice_headers/invoice_lines itself - the caller (the /pdf
+// export controller) has already loaded/validated the invoice through the
+// normal, company-scoped, permission-checked print pipeline before this
+// runs.
+async function renderInvoicePdf({ invoiceId, userId, username, companyId, mode }) {
+  const renderToken = signInvoicePrintRenderToken({ userId, username, companyId, invoiceId, docType: "single" });
+  const params = new URLSearchParams({ renderToken });
+  if (mode === "with_entries") params.set("mode", "with_entries");
+  const url = `${INTERNAL_APP_URL}/print/invoice/${encodeURIComponent(invoiceId)}?${params.toString()}`;
+  return renderPrintUrlToPdf(url);
+}
+
+// One of the 3 "Print List by ..." summaries (by invoice number, invoice
+// date, or customer) - never scoped to a single invoice id.
+async function renderInvoiceListPdf({ userId, username, companyId, grouping, from, to }) {
+  const renderToken = signInvoicePrintRenderToken({ userId, username, companyId, docType: "list" });
+  const params = new URLSearchParams({ renderToken, grouping: grouping || "number" });
+  if (from) params.set("from", from);
+  if (to) params.set("to", to);
+  const url = `${INTERNAL_APP_URL}/print/invoice/list?${params.toString()}`;
+  return renderPrintUrlToPdf(url);
+}
+
+module.exports = { renderInvoicePdf, renderInvoiceListPdf };

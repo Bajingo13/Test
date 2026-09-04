@@ -74,18 +74,21 @@ async function getCustomerFacingItems(invoiceId, useForeignAmount) {
     });
 }
 
-async function getInvoicePrintViewModel({ id, companyId, requestedTemplateId }) {
+async function getInvoicePrintViewModel({ id, companyId, requestedTemplateId, withEntries = false }) {
   if (!id) throw new HttpError(400, "Invoice id is required.");
 
   // Reuses the exact same authoritative, company-scoped data the existing
   // generic print pipeline resolves for every module (header, party,
   // company profile, currency snapshot, Output VAT) - never re-queried or
-  // recomputed here.
+  // recomputed here. withEntries=true is the internal accounting copy
+  // ("Print With Entries"): transactionPrintDataService already returns
+  // full ledger lines (account code/title/debit/credit) plus a balanced
+  // debit=credit check in that mode - reused as-is, never rebuilt here.
   const base = await TransactionPrintDataService.getTransactionDocument("invoice", id, {
-    withEntries: false,
+    withEntries,
     companyId,
   });
-  const { doc, party, company, outputVat } = base;
+  const { doc, party, company, outputVat, entriesSummary, lines } = base;
 
   const templateResolution = await PrintTemplateService.resolveEffectiveConfig({
     companyId,
@@ -96,7 +99,29 @@ async function getInvoicePrintViewModel({ id, companyId, requestedTemplateId }) 
   const currency = doc.currency || null;
   const isForeign = !!currency?.isForeign;
 
-  const items = await getCustomerFacingItems(id, isForeign);
+  // Customer-facing copy: only INCOME-class lines (see the item-selection
+  // rule above). Internal accounting copy: every ledger line exactly as
+  // transactionPrintDataService.mapLines(withEntries:true) already builds
+  // it - account code/title, particulars, debit, credit - never filtered,
+  // since this copy's entire purpose is showing the full entry.
+  const items = withEntries
+    ? lines.map((l, idx) => ({
+        id: idx + 1,
+        lineNo: idx + 1,
+        description: l.particulars || "",
+        accountCode: l.accountCode || null,
+        accountTitle: l.accountTitle || null,
+        debit: Number(l.debit) || 0,
+        credit: Number(l.credit) || 0,
+        quantity: null,
+        unit: null,
+        unitPrice: null,
+        discount: null,
+        taxCode: null,
+        vatAmount: null,
+        amount: Number(l.amount) || 0,
+      }))
+    : await getCustomerFacingItems(id, isForeign);
 
   const totalDebit = Number(doc.totalDebit) || 0;
   const paidAmount = doc.paidAmount != null ? Number(doc.paidAmount) || 0 : null;
@@ -111,6 +136,7 @@ async function getInvoicePrintViewModel({ id, companyId, requestedTemplateId }) 
     // No terms/payment-terms column exists on invoice_headers today.
     terms: null,
     invoiceType: "Sales Invoice",
+    mode: withEntries ? "with_entries" : "without_entries",
     currencyCode: currency?.currencyCode || currency?.baseCurrencyCode || "PHP",
     exchangeRate: currency?.exchangeRate != null ? Number(currency.exchangeRate) : 1,
     accountingStatus: doc.status || null,
@@ -196,7 +222,20 @@ async function getInvoicePrintViewModel({ id, companyId, requestedTemplateId }) 
     },
   };
 
-  return { document, seller, customer, items, totals, footer, layout, currency };
+  return {
+    document,
+    seller,
+    customer,
+    items,
+    totals,
+    footer,
+    layout,
+    currency,
+    // Only meaningful (non-null) for the internal accounting copy - the
+    // same total-debit/total-credit/balanced check
+    // transactionPrintDataService.buildEntriesSummary already computes.
+    entriesSummary: withEntries ? entriesSummary : null,
+  };
 }
 
 module.exports = { getInvoicePrintViewModel, getCustomerFacingItems };

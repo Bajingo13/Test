@@ -22,9 +22,21 @@ const { HttpError } = require("../lib/httpError");
 const RENDER_TOKEN_TYPE = "invoice_print_render";
 const RENDER_TOKEN_TTL_SECONDS = 90;
 
-function signInvoicePrintRenderToken({ userId, username, companyId, invoiceId }) {
+// docType "single" (one invoice, print or with-entries copy) carries
+// invoiceId and is only ever accepted for that exact invoice's route.
+// docType "list" (the 3 "Print List by ..." summaries) carries no
+// invoiceId - it isn't scoped to one document, only to the company/
+// permission already checked before minting.
+function signInvoicePrintRenderToken({ userId, username, companyId, invoiceId, docType = "single" }) {
   return jwt.sign(
-    { typ: RENDER_TOKEN_TYPE, userId, username: username || null, companyId, invoiceId: String(invoiceId) },
+    {
+      typ: RENDER_TOKEN_TYPE,
+      userId,
+      username: username || null,
+      companyId,
+      docType,
+      invoiceId: invoiceId != null ? String(invoiceId) : null,
+    },
     process.env.JWT_SECRET,
     { expiresIn: RENDER_TOKEN_TTL_SECONDS }
   );

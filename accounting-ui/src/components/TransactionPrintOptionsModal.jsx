@@ -142,8 +142,52 @@ export default function TransactionPrintOptionsModal({ open, onClose, transactio
     return data;
   }
 
+  // INV only (Standard Letter Invoice migration): every option here is
+  // rendered server-side by Puppeteer against the real React printable
+  // (StandardInvoicePrintPage / InvoiceListPrintPage) instead of the
+  // client-side pdf-lib builders below. Every other module (OR/APV/CV/JV/
+  // PO/PettyCash/DebitMemo/CreditMemo) is untouched and keeps using
+  // buildDocumentPdf/buildDocumentListPdf exactly as before.
+  async function fetchInvoicePdfBlob() {
+    if (selectedOption.scope === "single") {
+      const params = new URLSearchParams({ disposition: "inline" });
+      if (selectedOption.mode === "with_entries") params.set("mode", "with_entries");
+      if (templateId) params.set("templateId", templateId);
+      const res = await fetch(`${API_URL}/api/invoice-print/${transactionId}/pdf?${params.toString()}`, {
+        credentials: "include",
+        headers: authHeaders(),
+      });
+      if (!res.ok) throw new Error(await readPdfErrorMessage(res));
+      return res.blob();
+    }
+
+    const params = new URLSearchParams({ disposition: "inline", grouping: selectedOption.grouping });
+    if (fromDate) params.set("from", fromDate);
+    if (toDate) params.set("to", toDate);
+    const res = await fetch(`${API_URL}/api/invoice-print/list/pdf?${params.toString()}`, {
+      credentials: "include",
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(await readPdfErrorMessage(res));
+    return res.blob();
+  }
+
+  async function readPdfErrorMessage(res) {
+    try {
+      const body = await res.json();
+      return body?.message || `The server returned an error (${res.status}).`;
+    } catch {
+      return `The server returned an error (${res.status}).`;
+    }
+  }
+
   async function buildPdfBlob(intent) {
     if (!selectedOption) throw new Error("Select a print option first.");
+
+    if (transactionType === "invoice") {
+      return fetchInvoicePdfBlob();
+    }
+
     const generatedBy = currentUser?.username || currentUser?.fullName || "Unknown User";
 
     if (selectedOption.scope === "single") {

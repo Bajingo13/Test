@@ -38,6 +38,7 @@ import CurrencySetup from "./pages/FILESETUP/CurrencySetup";
 import PrintTemplateList from "./pages/FILESETUP/PrintTemplateList";
 import StandardInvoicePrintPage from "./features/invoicePrint/pages/StandardInvoicePrintPage";
 import InvoicePrintViewer from "./features/invoicePrint/pages/InvoicePrintViewer";
+import InvoiceListPrintPage from "./features/invoicePrint/pages/InvoiceListPrintPage";
 
 
 // TRANSACTIONS
@@ -131,6 +132,7 @@ function AppLayout() {
         <Routes>
           <Route path="/" element={<Navigate to="/login" replace />} />
           <Route path="/login" element={<Login />} />
+          <Route path="/print/invoice/list" element={<InvoiceListPrintPage />} />
           <Route path="/print/invoice/:identifier" element={<StandardInvoicePrintPage />} />
           <Route path="/print/invoice/:identifier/viewer" element={<InvoicePrintViewer />} />
           <Route path="/accept-invite" element={<AcceptInvite />} />

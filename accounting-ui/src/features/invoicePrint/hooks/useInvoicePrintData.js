@@ -2,9 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { fetchInvoicePrintViewModel } from "../services/invoicePrintApi";
 
 // Loads the Standard Invoice print view model for one identifier. Refetches
-// only when the identifier (or the render token, which only ever changes
-// together with it) changes - never on unrelated re-renders.
-export default function useInvoicePrintData(identifier, renderToken) {
+// only when the identifier, render token, or mode change - never on
+// unrelated re-renders.
+export default function useInvoicePrintData(identifier, { renderToken, mode } = {}) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -24,7 +24,7 @@ export default function useInvoicePrintData(identifier, renderToken) {
     setLoading(true);
     setError(null);
 
-    fetchInvoicePrintViewModel(identifier, { signal: controller.signal, renderToken })
+    fetchInvoicePrintViewModel(identifier, { signal: controller.signal, renderToken, mode })
       .then((viewModel) => {
         if (requestIdRef.current !== requestId) return; // stale response
         setData(viewModel);
@@ -39,7 +39,7 @@ export default function useInvoicePrintData(identifier, renderToken) {
       });
 
     return () => controller.abort();
-  }, [identifier, renderToken]);
+  }, [identifier, renderToken, mode]);
 
   return { data, loading, error };
 }
