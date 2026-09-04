@@ -56,6 +56,15 @@ console.log("JWT_SECRET loaded:", Boolean(process.env.JWT_SECRET));
 
 const app = express();
 
+// Railway (and any single-reverse-proxy host) sits in front of this app and
+// sets X-Forwarded-For itself - without telling Express to trust it,
+// express-rate-limit refuses to trust that header (ERR_ERL_UNEXPECTED_X_
+// FORWARDED_FOR) since an untrusted client could otherwise forge it to
+// dodge rate limits. `1` means "trust exactly one hop" (Railway's own
+// edge), not every hop - req.ip still can't be spoofed by the actual
+// client past that one trusted proxy.
+app.set("trust proxy", 1);
+
 const allowedOrigins = (process.env.FRONTEND_URL || "http://localhost:5173")
   .split(",")
   .map((origin) => origin.trim());
