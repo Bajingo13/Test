@@ -1,7 +1,11 @@
 /* Phase 7L: SearchableAccountSelect - a type-to-filter account combobox
    that visually matches the native <select> it replaces
    (.transaction-table-input / .transaction-input) so grid rows and the
-   VAT/EWT modals keep the same field height, radius and typography. */
+   VAT/EWT modals keep the same field height, radius and typography.
+
+   Account-search UX pass: the open dropdown is a fixed-position column
+   with a pinned search bar on top and an independently scrolling option
+   list beneath it. */
 
 .searchable-account {
   position: relative;
@@ -12,6 +16,7 @@
   width: 100%;
   box-sizing: border-box;
   padding-right: 26px; /* room for the clear button */
+  cursor: pointer;
 }
 
 .searchable-account-clear {
@@ -32,21 +37,73 @@
   color: var(--text-primary, #111827);
 }
 
-.searchable-account-listbox {
-  /* placement (position/left/top/width/max-height) is set inline as
-     position:fixed anchored to the input - see SearchableAccountSelect.jsx.
-     This rule only carries the visual treatment and a fallback. */
+/* The fixed dropdown shell. position/left/top/bottom/width/max-height are
+   set inline (position:fixed anchored to the trigger - see the .jsx) so it
+   escapes every overflow-clipping ancestor. This rule carries only the
+   visual treatment + the flex column that lets the search bar stay put
+   while the list scrolls. */
+.searchable-account-dropdown {
   position: fixed;
   z-index: 1200;
-  margin: 0;
-  padding: 4px;
-  list-style: none;
-  max-height: 240px;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   background: var(--bg-surface, #ffffff);
   border: 1px solid var(--border-color-strong, #cbd5e1);
   border-radius: 8px;
   box-shadow: 0 12px 32px rgba(var(--shadow-rgb, 15 23 42), 0.18);
+  overflow: hidden;
+}
+
+/* Pinned search bar - never scrolls with the results. */
+.searchable-account-search {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border-color, #e5e7eb);
+  background: var(--bg-surface, #ffffff);
+}
+
+.searchable-account-search-icon {
+  flex-shrink: 0;
+  color: var(--text-muted, #9ca3af);
+}
+
+.searchable-account-search-input {
+  flex: 1;
+  min-width: 0;
+  box-sizing: border-box;
+  height: 28px;
+  padding: 0 8px;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--text-primary, #111827);
+  background: #ffffff;
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 6px;
+  outline: none;
+}
+
+.searchable-account-search-input:focus {
+  border-color: var(--border-color-strong, #cbd5e1);
+  box-shadow: 0 0 0 2px var(--accent-indigo-soft, rgba(79, 70, 229, 0.1));
+}
+
+.searchable-account-search-input::placeholder {
+  color: var(--text-muted, #9ca3af);
+}
+
+/* The option list - now nested inside .searchable-account-dropdown and the
+   only part that scrolls. */
+.searchable-account-listbox {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  overflow-y: auto;
 }
 
 .searchable-account-option {
