@@ -36,6 +36,8 @@ import PrepaidAccountSetup from "./pages/FILESETUP/PrepaidAccountSetup";
 import CompanyProfile from "./pages/FILESETUP/CompanyProfile";
 import CurrencySetup from "./pages/FILESETUP/CurrencySetup";
 import PrintTemplateList from "./pages/FILESETUP/PrintTemplateList";
+import StandardInvoicePrintPage from "./features/invoicePrint/pages/StandardInvoicePrintPage";
+import InvoicePrintViewer from "./features/invoicePrint/pages/InvoicePrintViewer";
 
 
 // TRANSACTIONS
@@ -95,6 +97,10 @@ function PlaceholderPage({ title }) {
 function AppLayout() {
   const location = useLocation();
   const isLoginPage = location.pathname === "/login" || location.pathname === "/accept-invite";
+  // Standard Letter Invoice printable: full-bleed, no sidebar/app chrome -
+  // it's a Letter-sized document, not an app screen, and is also what
+  // Puppeteer will screenshot for PDF export (Phase 4).
+  const isPrintPage = location.pathname.startsWith("/print/");
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
@@ -106,16 +112,16 @@ function AppLayout() {
         fontFamily: "Arial, sans-serif",
       }}
     >
-      {!isLoginPage && (
+      {!isLoginPage && !isPrintPage && (
         <Sidebar sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen} />
       )}
 
       <main
         style={{
-          marginLeft: isLoginPage ? "0" : sidebarOpen ? "270px" : "110px",
-          padding: isLoginPage ? "0" : "24px",
+          marginLeft: isLoginPage || isPrintPage ? "0" : sidebarOpen ? "270px" : "110px",
+          padding: isLoginPage || isPrintPage ? "0" : "24px",
           flex: 1,
-          background: isLoginPage ? "transparent" : "var(--bg-page)",
+          background: isLoginPage || isPrintPage ? "transparent" : "var(--bg-page)",
           boxSizing: "border-box",
           minHeight: "100vh",
           transition: "margin-left 0.3s ease",
@@ -125,6 +131,8 @@ function AppLayout() {
         <Routes>
           <Route path="/" element={<Navigate to="/login" replace />} />
           <Route path="/login" element={<Login />} />
+          <Route path="/print/invoice/:identifier" element={<StandardInvoicePrintPage />} />
+          <Route path="/print/invoice/:identifier/viewer" element={<InvoicePrintViewer />} />
           <Route path="/accept-invite" element={<AcceptInvite />} />
           <Route path="/admin/invitations" element={<PendingInvitations />} />
           <Route path="/admin/user-settings" element={<UserSettings />} />
