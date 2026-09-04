@@ -185,6 +185,44 @@
 }
 
 /* ==============================
+   INTERNAL ACCOUNTING COPY
+============================== */
+.invoice-copy-badge {
+  text-align: center;
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  color: #b91c1c;
+  border: 1px solid #b91c1c;
+  border-radius: 4px;
+  display: inline-block;
+  padding: 2px 10px;
+  margin-bottom: 10px;
+}
+
+.invoice-entries-table th.line-no,
+.invoice-entries-table td.line-no {
+  width: 30px;
+}
+.invoice-entries-table th.account,
+.invoice-entries-table td.account {
+  text-align: left;
+  width: 22%;
+}
+.invoice-entries-table td.description {
+  text-align: left;
+}
+.invoice-entries-table tfoot td {
+  border-top: 2px solid #000;
+}
+.invoice-entries-unbalanced-notice {
+  color: #b91c1c;
+  font-weight: 700;
+  font-size: 11px;
+  margin-top: 6px;
+}
+
+/* ==============================
    ITEMS TABLE
 ============================== */
 .invoice-items-table {

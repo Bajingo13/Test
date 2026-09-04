@@ -2,7 +2,12 @@ const { authenticateToken } = require("../lib/auth");
 const authorizePermission = require("./authorizePermission");
 const { verifyInvoicePrintRenderToken } = require("../services/invoicePrintRenderTokenService");
 
-const requireInvoicePrintPermission = authorizePermission("TRANSACTIONS.INVOICE", "PRINT");
+// Mirrors transactionPrint.routes.js's own rule: the internal accounting
+// copy (?mode=with_entries) needs the stronger PRINT_WITH_ENTRIES action,
+// not just the base PRINT every "without entries" request only needs.
+function requiredAction(req) {
+  return req.query.mode === "with_entries" ? "PRINT_WITH_ENTRIES" : "PRINT";
+}
 
 // Guards the invoice print JSON view-model route (GET /api/invoice-print/:id)
 // for its two legitimate callers:
@@ -18,10 +23,12 @@ const requireInvoicePrintPermission = authorizePermission("TRANSACTIONS.INVOICE"
 module.exports = function authenticateInvoicePrintAccess(req, res, next) {
   const renderToken = req.query.renderToken || req.headers["x-print-render-token"];
 
+  const requirePermission = authorizePermission("TRANSACTIONS.INVOICE", requiredAction(req));
+
   if (!renderToken) {
     return authenticateToken(req, res, (err) => {
       if (err) return next(err);
-      return requireInvoicePrintPermission(req, res, next);
+      return requirePermission(req, res, next);
     });
   }
 
@@ -32,15 +39,15 @@ module.exports = function authenticateInvoicePrintAccess(req, res, next) {
     return res.status(err.statusCode || 401).json({ message: err.message || "Invalid render token" });
   }
 
-  if (String(payload.invoiceId) !== String(req.params.id)) {
+  if (payload.docType !== "single" || String(payload.invoiceId) !== String(req.params.id)) {
     return res.status(403).json({ message: "Render token is not valid for this invoice" });
   }
 
   req.user = { id: payload.userId, username: payload.username || null };
   req.printRenderToken = payload;
 
-  // Defense in depth: still re-verifies PRINT permission for the token's
-  // own user, even though the /pdf export route already checked it once
-  // before minting this token.
-  return requireInvoicePrintPermission(req, res, next);
+  // Defense in depth: still re-verifies the required permission for the
+  // token's own user, even though the /pdf export route already checked it
+  // once before minting this token.
+  return requirePermission(req, res, next);
 };
