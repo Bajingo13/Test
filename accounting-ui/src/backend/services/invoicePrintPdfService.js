@@ -4,9 +4,21 @@ const { signInvoicePrintRenderToken } = require("./invoicePrintRenderTokenServic
 
 // Internal, server-to-server base URL for the React app - Puppeteer
 // navigates here directly, never through whatever public hostname the
-// browser uses. Defaults to the Vite dev server; set INTERNAL_APP_URL in
-// production to wherever the built frontend is actually served from.
-const INTERNAL_APP_URL = process.env.INTERNAL_APP_URL || "http://127.0.0.1:5173";
+// browser uses.
+//
+// In production this same Express process serves the built frontend
+// itself (see server.js's "FRONTEND STATIC FILES" section - express.static
+// on `dist/`, same PORT as the API), so the correct target is this
+// server's own port, not the Vite dev server. In development
+// (npm run dev:backend sets NODE_ENV=development), the React app is only
+// served by the separate Vite dev server on :5173 - `dist/` may not even
+// exist yet. Set INTERNAL_APP_URL explicitly to override either default
+// (e.g. a deployment that serves the frontend from a separate host).
+const INTERNAL_APP_URL =
+  process.env.INTERNAL_APP_URL ||
+  (process.env.NODE_ENV === "development"
+    ? "http://127.0.0.1:5173"
+    : `http://127.0.0.1:${process.env.PORT || 8080}`);
 
 const NAVIGATION_TIMEOUT_MS = 30000;
 const READY_TIMEOUT_MS = 20000;
@@ -21,7 +33,11 @@ async function renderPrintUrlToPdf(url) {
   try {
     browser = await puppeteer.launch({
       headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+      // --disable-dev-shm-usage: containers (Railway included) often mount
+      // a tiny /dev/shm, which otherwise makes Chromium crash under normal
+      // page load - a very common "just works locally, fails in the
+      // container" gotcha, harmless to always set.
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
     });
 
     const page = await browser.newPage();
@@ -66,8 +82,11 @@ async function renderPrintUrlToPdf(url) {
     });
   } catch (err) {
     if (err instanceof HttpError) throw err;
-    // Never bubble the raw Puppeteer error (it can echo back the request
-    // URL, which carries the render token) to the HTTP response or logs.
+    // Server-side diagnostic only (never sent to the HTTP response) - the
+    // render token is redacted first since a Puppeteer navigation error can
+    // otherwise echo the full request URL back in its message.
+    const safeMessage = String(err?.message || err).replace(/renderToken=[^&\s]+/g, "renderToken=[redacted]");
+    console.error("INVOICE PDF RENDER ERROR:", err?.name || "Error", safeMessage);
     throw new HttpError(500, "Failed to generate PDF.");
   } finally {
     if (browser) await browser.close().catch(() => {});
