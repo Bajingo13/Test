@@ -8,7 +8,7 @@ import "./TransactionFormLayout.css";
 // Phase 7G: generalized into a single reusable compact transaction-header
 // panel shared by every module that opts into the compact top section
 // (see TransactionFormLayout.jsx's `COMPACT_HEADER_MODULES` set - INV/OR/
-// APV/CV/PO/JV). Reference No. / Date are MOVED here from
+// APV/CV/PO/JV, plus PCV/DM/CM). Reference No. / Date are MOVED here from
 // TransactionVoucherHeader.jsx for those modules (not duplicated - the
 // parent hides them there via hideDateAndReference, so every module NOT
 // in that set keeps TransactionVoucherHeader byte-for-byte unchanged).
@@ -31,6 +31,9 @@ const REFERENCE_LABELS = {
   CV: "CV No.",
   PO: "PO No.",
   JV: "JV No.",
+  PCV: "PCV No.",
+  DM: "DM No.",
+  CM: "CM No.",
 };
 
 export default function TransactionSummaryPanel({

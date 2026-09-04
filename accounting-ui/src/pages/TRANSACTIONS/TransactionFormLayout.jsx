@@ -37,13 +37,15 @@ import "./TransactionFormLayout.css";
 
 const CURRENCY_MODULE_KEY = "FILESETUP.CURRENCY_SETUP";
 
-// Phase 7G: explicit whitelist, not "every currency-eligible module" -
-// PCV/DM/CM are currency-eligible too (transactionModuleConfig.js) but were
-// never named in this checkpoint's scope, so they deliberately keep the
-// original stacked layout (TransactionVoucherHeader + a separate
-// CurrencySummary card) untouched. A Set, not an array, purely so the
-// several `.has(code)` checks below read as a plain membership test.
-const COMPACT_HEADER_MODULES = new Set(["INV", "OR", "APV", "CV", "PO", "JV"]);
+// Phase 7G: explicit whitelist of every module that renders the compact
+// 2-column top section (TransactionVoucherHeader + TransactionSummaryPanel
+// side by side, with Currency living inside the summary panel) instead of
+// the older stacked cards. PCV/DM/CM were added here in the transaction-UI
+// consistency pass so all currency-eligible modules share CV's layout -
+// this is a presentation-only membership test (the two `.has(code)` checks
+// below), never a routing/tax/lifecycle decision. A Set, not an array,
+// purely so those checks read as a plain membership test.
+const COMPACT_HEADER_MODULES = new Set(["INV", "OR", "APV", "CV", "PO", "JV", "PCV", "DM", "CM"]);
 
 function getCurrentUser() {
   try {
@@ -2797,7 +2799,8 @@ if (code === "OR") {
 
             {/* Phase 7G: compact top section, generalized from Phase 7F's
                 Invoice-only version to every module in COMPACT_HEADER_MODULES
-                (INV/OR/APV/CV/PO/JV - see that constant's own comment).
+                (INV/OR/APV/CV/PO/JV, plus PCV/DM/CM since the transaction-UI
+                consistency pass - see that constant's own comment).
                 Left (Customer or Supplier or Payee/Transaction Type or
                 Check No./Description, via the unchanged
                 TransactionVoucherHeader) and right (Reference No./Date/
@@ -2807,8 +2810,7 @@ if (code === "OR") {
                 cards. Currency (and, for Invoice only, Due Date/Invoice
                 Type) is MOVED here (not duplicated), so no separate
                 CurrencySummary card renders below for any module in this
-                set. PCV/DM/CM (currency-eligible but NOT in this set) keep
-                the original stacked layout untouched. */}
+                set. */}
             {COMPACT_HEADER_MODULES.has(code) ? (
               <div className="transaction-top-section">
                 <TransactionVoucherHeader
