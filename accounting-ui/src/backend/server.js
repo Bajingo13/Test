@@ -24,6 +24,7 @@ const loginRateLimiter = rateLimit({
   message: { success: false, message: "Too many login attempts. Please try again later." },
 });
 const LedgerReportService = require("./services/LedgerReportService");
+const FinancialStatementService = require("./services/financialStatementService");
 const { buildXlsxTemplate } = require("./services/TemplateExportService");
 const { templateImportUpload, coaImportUpload, handleUpload } = require("./lib/uploadMiddleware");
 const COAImportService = require("./services/COAImportService");
@@ -7490,185 +7491,28 @@ app.get("/api/reports/account-analysis", authenticateToken, authorizePermission(
     if (!accountCode) {
       return res.status(400).json({ message: "Account code is required" });
     }
+    if (!from || !to) {
+      return res.status(400).json({ message: "from and to dates are required" });
+    }
 
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
-    const params = [
-      accountCode,
-      from,
-      to,
-      companyId,
-
-      accountCode,
-      from,
-      to,
-      companyId,
-
-      accountCode,
-      from,
-      to,
-      companyId,
-
-      accountCode,
-      from,
-      to,
-      companyId,
-
-      accountCode,
-      from,
-      to,
-      companyId,
-
-      accountCode,
-      from,
-      to,
-      companyId,
-    ];
-
-    const [rows] = await pool.execute(
-      `
-      SELECT
-        transaction_date,
-        source_type,
-        reference_no,
-        transaction_id,
-        account_code,
-        account_title,
-        particulars,
-        debit,
-        credit,
-        SUM(debit - credit) OVER (
-          ORDER BY transaction_date, sort_order, id
-        ) AS running_balance
-      FROM (
-        SELECT
-          l.id,
-          DATE_FORMAT(h.transaction_date, '%Y-%m-%d') AS transaction_date,
-          'APV' AS source_type,
-          h.voucher_no AS reference_no,
-          h.id AS transaction_id,
-          l.account_code,
-          l.account_title,
-          COALESCE(l.particulars, h.description, '') AS particulars,
-          COALESCE(l.debit, 0) AS debit,
-          COALESCE(l.credit, 0) AS credit,
-          1 AS sort_order
-        FROM apv_lines l
-        JOIN apv_headers h ON h.id = l.apv_id
-        WHERE l.account_code = ?
-          AND h.transaction_date BETWEEN ? AND ?
-          AND h.company_id = ?
-          AND ${postedOnlySql("h")}
-
-        UNION ALL
-
-        SELECT
-          l.id,
-          DATE_FORMAT(h.transaction_date, '%Y-%m-%d') AS transaction_date,
-          'CV' AS source_type,
-          h.voucher_no AS reference_no,
-          h.id AS transaction_id,
-          l.account_code,
-          l.account_title,
-          COALESCE(l.particulars, h.description, '') AS particulars,
-          COALESCE(l.debit, 0) AS debit,
-          COALESCE(l.credit, 0) AS credit,
-          2 AS sort_order
-        FROM cv_lines l
-        JOIN cv_headers h ON h.id = l.cv_id
-        WHERE l.account_code = ?
-          AND h.transaction_date BETWEEN ? AND ?
-          AND h.company_id = ?
-          AND ${postedOnlySql("h")}
-
-        UNION ALL
-
-        SELECT
-          l.id,
-          DATE_FORMAT(h.balance_date, '%Y-%m-%d') AS transaction_date,
-          h.balance_type AS source_type,
-          l.reference_no AS reference_no,
-          NULL AS transaction_id,
-          l.account_code,
-          l.account_title,
-          COALESCE(l.party_name, '') AS particulars,
-          COALESCE(l.debit, 0) AS debit,
-          COALESCE(l.credit, 0) AS credit,
-          3 AS sort_order
-        FROM arap_beginning_balance_lines l
-        JOIN arap_beginning_balance_headers h ON h.id = l.header_id
-        WHERE l.account_code = ?
-          AND h.balance_date BETWEEN ? AND ?
-          AND h.company_id = ?
-          AND ${postedOnlySql("h")}
-
-        UNION ALL
-
-        SELECT
-          l.id,
-          DATE_FORMAT(h.transaction_date, '%Y-%m-%d') AS transaction_date,
-          'JV' AS source_type,
-          h.voucher_no AS reference_no,
-          h.id AS transaction_id,
-          l.account_code,
-          l.account_title,
-          COALESCE(l.particulars, h.description, '') AS particulars,
-          COALESCE(l.debit, 0) AS debit,
-          COALESCE(l.credit, 0) AS credit,
-          4 AS sort_order
-        FROM jv_lines l
-        JOIN jv_headers h ON h.id = l.jv_id
-        WHERE l.account_code = ?
-          AND h.transaction_date BETWEEN ? AND ?
-          AND h.company_id = ?
-          AND ${postedOnlySql("h")}
-
-        UNION ALL
-
-        SELECT
-          l.id,
-          DATE_FORMAT(h.transaction_date, '%Y-%m-%d') AS transaction_date,
-          'PETTY CASH' AS source_type,
-          h.voucher_no AS reference_no,
-          h.id AS transaction_id,
-          l.account_code,
-          l.account_title,
-          COALESCE(l.particulars, h.description, '') AS particulars,
-          COALESCE(l.debit, 0) AS debit,
-          COALESCE(l.credit, 0) AS credit,
-          5 AS sort_order
-        FROM petty_cash_lines l
-        JOIN petty_cash_headers h ON h.id = l.petty_cash_id
-        WHERE l.account_code = ?
-          AND h.transaction_date BETWEEN ? AND ?
-          AND h.company_id = ?
-          AND ${postedOnlySql("h")}
-
-        UNION ALL
-
-        SELECT
-          l.id,
-          DATE_FORMAT(h.transaction_date, '%Y-%m-%d') AS transaction_date,
-          CONCAT(h.memo_type, ' MEMO') AS source_type,
-          h.voucher_no AS reference_no,
-          h.id AS transaction_id,
-          l.account_code,
-          l.account_title,
-          COALESCE(l.particulars, h.description, '') AS particulars,
-          COALESCE(l.debit, 0) AS debit,
-          COALESCE(l.credit, 0) AS credit,
-          6 AS sort_order
-        FROM memo_lines l
-        JOIN memo_headers h ON h.id = l.memo_id
-        WHERE l.account_code = ?
-          AND h.transaction_date BETWEEN ? AND ?
-          AND h.company_id = ?
-          AND ${postedOnlySql("h")}
-      ) aa
-      ORDER BY transaction_date, sort_order, id
-      `,
-      params
-    );
+    // Reports Batch 1: previously a hand-rolled 6-source UNION (APV/CV/
+    // AR-AP-Beginning/JV/Petty-Cash/Memo) missing Invoice, OR, and GL
+    // Beginning Balance, and with no true opening balance before `from`
+    // (running_balance started at 0 for the range instead of continuing
+    // from history). Now backed by financialStatementService.js, which
+    // reuses LedgerReportService's canonical 9-source union (the same one
+    // General Ledger/Trial Balance/Cash Flow Statement use) plus
+    // LedgerReportService.getBeginningBalances for a real opening balance -
+    // same engine, same posted-only/company-scope guarantees, no new
+    // recognition model invented. Response shape (a flat array of
+    // {transaction_date, source_type, reference_no, transaction_id,
+    // account_code, account_title, particulars, debit, credit,
+    // running_balance}) is unchanged - the frontend is untouched - with
+    // `beginning_balance` newly added per row (mirrors General Ledger's
+    // existing per-row beginning_balance convention).
+    const rows = await FinancialStatementService.getAccountAnalysisRows({ companyId, accountCode, from, to });
 
     res.json(rows);
   } catch (err) {
@@ -7812,115 +7656,29 @@ app.get("/api/reports/output-vat", authenticateToken, authorizePermission("REPOR
 app.get("/api/reports/income-statement", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
   try {
     const { from, to } = req.query;
-    // Checkpoint 6A: this query previously had NO company_id filter at all
-    // on any of its 6 UNION branches - every company's revenue/expense data
-    // was combined into one report regardless of who was logged in. Fixed
-    // by resolving the caller's company the same way every other report
-    // does and requiring company_id = ? on each branch. chart_of_accounts/
-    // coa_groups/account_group_codes are intentionally NOT company-filtered
-    // - they're a single shared catalog across companies (see
-    // checkpoint4h_company_isolation_migration.sql's explicit exclusion),
-    // same as every other report in this file already treats them.
+    // Checkpoint 6A fixed company scoping here (company_id = ? on every
+    // branch). chart_of_accounts/coa_groups/account_group_codes remain
+    // intentionally NOT company-filtered - single shared catalog across
+    // companies (checkpoint4h_company_isolation_migration.sql), same as
+    // every other report in this file.
+    //
+    // Reports Batch 1: Checkpoint 6A's fix only covered company scope - the
+    // 6-branch UNION itself (APV/CV/GL-Beginning/AR-AP-Beginning/Petty-Cash/
+    // Memo) was a real, confirmed completeness gap: Invoice and OR revenue,
+    // and any JV to a Revenue/Expense account, never reached this report.
+    // Now backed by financialStatementService.js, which reuses
+    // LedgerReportService's canonical 9-source union - the exact set
+    // General Ledger/Trial Balance/Cash Flow Statement already use - so
+    // Invoice/OR/JV are included and this can't independently fall behind
+    // again. GL Beginning Balance and AR/AP Beginning Balance remain
+    // included exactly as they already were (not newly added, not
+    // removed) - only the missing sources were added. Classification
+    // (Revenue/Expense via account_group_codes/account_class), the
+    // credit-minus-debit sign convention, grouping, and ordering are
+    // byte-identical to the prior query.
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
-    const params = [
-      from, to, companyId,
-      from, to, companyId,
-      from, to, companyId,
-      from, to, companyId,
-      from, to, companyId,
-      from, to, companyId,
-    ];
-
-    const [rows] = await pool.execute(
-      `
-      SELECT
-        ag.group_description AS group_name,
-        ca.code AS account_code,
-        ca.title AS account_title,
-        ca.account_class,
-        COALESCE(SUM(tx.credit - tx.debit), 0) AS amount
-      FROM chart_of_accounts ca
-      JOIN coa_groups cg ON cg.coa_id = ca.id
-      JOIN account_group_codes ag ON ag.group_code = cg.group_code
-      LEFT JOIN (
-        SELECT
-          l.account_code,
-          COALESCE(l.debit, 0) AS debit,
-          COALESCE(l.credit, 0) AS credit
-        FROM apv_lines l
-        JOIN apv_headers h ON h.id = l.apv_id
-        WHERE h.transaction_date BETWEEN ? AND ? AND h.company_id = ? AND ${postedOnlySql("h")}
-
-        UNION ALL
-
-        SELECT
-          l.account_code,
-          COALESCE(l.debit, 0) AS debit,
-          COALESCE(l.credit, 0) AS credit
-        FROM cv_lines l
-        JOIN cv_headers h ON h.id = l.cv_id
-        WHERE h.transaction_date BETWEEN ? AND ? AND h.company_id = ? AND ${postedOnlySql("h")}
-
-        UNION ALL
-
-          SELECT
-  l.account_code,
-  COALESCE(l.othrdebit, 0) AS debit,
-  COALESCE(l.othrcredit, 0) AS credit
-FROM gl_beginning_balance_lines l
-JOIN gl_beginning_balance_headers h ON h.id = l.header_id
-WHERE h.balance_date BETWEEN ? AND ? AND h.company_id = ? AND ${postedOnlySql("h")}
-
-        UNION ALL
-
-        SELECT
-          l.account_code,
-          COALESCE(l.debit, 0) AS debit,
-          COALESCE(l.credit, 0) AS credit
-        FROM arap_beginning_balance_lines l
-        JOIN arap_beginning_balance_headers h ON h.id = l.header_id
-        WHERE h.balance_date BETWEEN ? AND ? AND h.company_id = ? AND ${postedOnlySql("h")}
-
-        UNION ALL
-
-        SELECT
-          l.account_code,
-          COALESCE(l.debit, 0) AS debit,
-          COALESCE(l.credit, 0) AS credit
-        FROM petty_cash_lines l
-        JOIN petty_cash_headers h ON h.id = l.petty_cash_id
-        WHERE h.transaction_date BETWEEN ? AND ? AND h.company_id = ? AND ${postedOnlySql("h")}
-
-        UNION ALL
-
-        SELECT
-          l.account_code,
-          COALESCE(l.debit, 0) AS debit,
-          COALESCE(l.credit, 0) AS credit
-        FROM memo_lines l
-        JOIN memo_headers h ON h.id = l.memo_id
-        WHERE h.transaction_date BETWEEN ? AND ? AND h.company_id = ? AND ${postedOnlySql("h")}
-      ) tx ON TRIM(tx.account_code) = TRIM(ca.code)
-      WHERE UPPER(ag.group_description) IN ('REVENUE', 'EXPENSES', 'EXPENSE')
-         OR UPPER(ca.account_class) IN ('INCOME', 'EXPENSE')
-      GROUP BY
-        ag.group_description,
-        ca.code,
-        ca.title,
-        ca.account_class
-      ORDER BY
-        CASE
-          WHEN UPPER(ag.group_description) = 'REVENUE' THEN 1
-          WHEN UPPER(ca.account_class) = 'INCOME' THEN 1
-          WHEN UPPER(ag.group_description) IN ('EXPENSES', 'EXPENSE') THEN 2
-          WHEN UPPER(ca.account_class) = 'EXPENSE' THEN 2
-          ELSE 9
-        END,
-        ca.code ASC
-      `,
-      params
-    );
+    const rows = await FinancialStatementService.getIncomeStatementRows({ companyId, from, to });
 
     res.json(rows);
   } catch (err) {
@@ -7938,112 +7696,29 @@ WHERE h.balance_date BETWEEN ? AND ? AND h.company_id = ? AND ${postedOnlySql("h
 app.get("/api/reports/balance-sheet", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
   try {
     const { to } = req.query;
-    // Checkpoint 6A: same fix as Income Statement above - this query had no
-    // company_id filter on any branch at all. chart_of_accounts/coa_groups/
-    // account_group_codes remain unfiltered by design (shared catalog).
+    // Checkpoint 6A: company_id = ? on every branch (chart_of_accounts/
+    // coa_groups/account_group_codes remain unfiltered by design).
+    //
+    // Reports Batch 1: same completeness gap as Income Statement - the
+    // 6-branch UNION excluded Invoice, OR, and JV, so e.g. AR built up by
+    // Invoices, or any JV to an Asset/Liability/Equity account, never
+    // reached this report. Now backed by financialStatementService.js
+    // (LedgerReportService's canonical 9-source union, as-of "<= ?" date
+    // filter). GL/AR-AP Beginning Balance remain included exactly as
+    // before - only the missing sources were added.
+    //
+    // financialStatementService also appends a computed "Current Year
+    // Earnings" equity row (calendar-year-to-`to`, since no fiscal-year
+    // configuration exists in this codebase) so Assets = Liabilities +
+    // Equity can hold without requiring the user to manually close every
+    // Revenue/Expense account first. This is reporting-only: nothing is
+    // written to the ledger, no JV is created, no account is mutated -
+    // the frontend already sums any row whose group_name/account_class
+    // matches "EQUITY"/"CAPITAL" into Total Capital, so no frontend change
+    // is needed for it to appear correctly.
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
-    const params = [
-      to, companyId,
-      to, companyId,
-      to, companyId,
-      to, companyId,
-      to, companyId,
-      to, companyId,
-    ];
-
-    const [rows] = await pool.execute(
-      `
-      SELECT
-        ag.group_description AS group_name,
-        ca.code AS account_code,
-        ca.title AS account_title,
-        ca.account_class,
-        CASE
-          WHEN UPPER(ca.account_class) = 'ASSET'
-            THEN COALESCE(SUM(tx.debit - tx.credit), 0)
-          ELSE COALESCE(SUM(tx.credit - tx.debit), 0)
-        END AS amount
-      FROM chart_of_accounts ca
-      JOIN coa_groups cg ON cg.coa_id = ca.id
-      JOIN account_group_codes ag ON ag.group_code = cg.group_code
-      LEFT JOIN (
-        SELECT
-          l.account_code,
-          COALESCE(l.debit, 0) AS debit,
-          COALESCE(l.credit, 0) AS credit
-        FROM apv_lines l
-        JOIN apv_headers h ON h.id = l.apv_id
-        WHERE h.transaction_date <= ? AND h.company_id = ? AND ${postedOnlySql("h")}
-
-        UNION ALL
-
-        SELECT
-          l.account_code,
-          COALESCE(l.debit, 0) AS debit,
-          COALESCE(l.credit, 0) AS credit
-        FROM cv_lines l
-        JOIN cv_headers h ON h.id = l.cv_id
-        WHERE h.transaction_date <= ? AND h.company_id = ? AND ${postedOnlySql("h")}
-
-        UNION ALL
-
-        SELECT
-  l.account_code,
-  COALESCE(l.othrdebit, 0) AS debit,
-  COALESCE(l.othrcredit, 0) AS credit
-FROM gl_beginning_balance_lines l
-JOIN gl_beginning_balance_headers h ON h.id = l.header_id
-WHERE h.balance_date <= ? AND h.company_id = ? AND ${postedOnlySql("h")}
-
-        UNION ALL
-
-        SELECT
-          l.account_code,
-          COALESCE(l.debit, 0) AS debit,
-          COALESCE(l.credit, 0) AS credit
-        FROM arap_beginning_balance_lines l
-        JOIN arap_beginning_balance_headers h ON h.id = l.header_id
-        WHERE h.balance_date <= ? AND h.company_id = ? AND ${postedOnlySql("h")}
-
-        UNION ALL
-
-        SELECT
-          l.account_code,
-          COALESCE(l.debit, 0) AS debit,
-          COALESCE(l.credit, 0) AS credit
-        FROM petty_cash_lines l
-        JOIN petty_cash_headers h ON h.id = l.petty_cash_id
-        WHERE h.transaction_date <= ? AND h.company_id = ? AND ${postedOnlySql("h")}
-
-        UNION ALL
-
-        SELECT
-          l.account_code,
-          COALESCE(l.debit, 0) AS debit,
-          COALESCE(l.credit, 0) AS credit
-        FROM memo_lines l
-        JOIN memo_headers h ON h.id = l.memo_id
-        WHERE h.transaction_date <= ? AND h.company_id = ? AND ${postedOnlySql("h")}
-      ) tx ON TRIM(tx.account_code) = TRIM(ca.code)
-      WHERE UPPER(ag.group_description) IN ('ASSETS', 'ASSET', 'LIABILITIES', 'LIABILITY', 'EQUITY', 'CAPITAL')
-         OR UPPER(ca.account_class) IN ('ASSET', 'LIABILITY', 'LIABILITIES', 'EQUITY', 'CAPITAL')
-      GROUP BY
-        ag.group_description,
-        ca.code,
-        ca.title,
-        ca.account_class
-      ORDER BY
-        CASE
-          WHEN UPPER(ag.group_description) IN ('ASSETS', 'ASSET') THEN 1
-          WHEN UPPER(ag.group_description) IN ('LIABILITIES', 'LIABILITY') THEN 2
-          WHEN UPPER(ag.group_description) IN ('EQUITY', 'CAPITAL') THEN 3
-          ELSE 9
-        END,
-        ca.code ASC
-      `,
-      params
-    );
+    const rows = await FinancialStatementService.getBalanceSheetRows({ companyId, to });
 
     res.json(rows);
   } catch (err) {
