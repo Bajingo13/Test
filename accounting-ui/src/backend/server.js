@@ -7731,6 +7731,13 @@ app.get("/api/reports/balance-sheet", authenticateToken, authorizePermission("RE
 });
 
 // ====================== AGING REPORT ======================
+// DEPRECATED (Reports Module Audit / Reports Batch 2): superseded by
+// /api/reports/ap-aging and /api/reports/ar-aging (agingReportService.js),
+// which add Phase 7K Void/Cancelled + Phase 7K.1 reversal exclusion this
+// inline query never received. No frontend page calls this route and no
+// test exercises it. Left in place, unmodified and un-removed per Reports
+// Batch 2's explicit scope (no route removal in that batch) - a candidate
+// for deletion once confirmed nothing external depends on it.
 app.get("/api/reports/aging", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
   try {
     const { type = "AP", asOf } = req.query;
@@ -7994,6 +8001,18 @@ app.get("/api/reports/subsidiary-ledger", authenticateToken, authorizePermission
         FROM arap_beginning_balance_lines l
         JOIN arap_beginning_balance_headers h ON h.id = l.header_id
         WHERE h.balance_type = ? AND l.party_id = ? AND h.balance_date BETWEEN ? AND ? AND h.company_id = ? AND ${postedOnlySql("h")}
+
+        UNION ALL
+
+        SELECT
+          id, DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transaction_date,
+          CONCAT(memo_type, ' MEMO') AS source_type, voucher_no AS reference_no, id AS transaction_id,
+          COALESCE(description, '') AS particulars,
+          CASE WHEN memo_type = 'DEBIT' THEN COALESCE(total_debit, 0) ELSE 0 END AS debit,
+          CASE WHEN memo_type = 'CREDIT' THEN COALESCE(total_credit, 0) ELSE 0 END AS credit,
+          3 AS sort_order
+        FROM memo_headers
+        WHERE party_id = ? AND party_type = ? AND transaction_date BETWEEN ? AND ? AND company_id = ? AND ${postedOnlySql()}
       ) sl
       ORDER BY transaction_date, sort_order, id
       `
@@ -8030,14 +8049,37 @@ app.get("/api/reports/subsidiary-ledger", authenticateToken, authorizePermission
         FROM arap_beginning_balance_lines l
         JOIN arap_beginning_balance_headers h ON h.id = l.header_id
         WHERE h.balance_type = ? AND l.party_id = ? AND h.balance_date BETWEEN ? AND ? AND h.company_id = ? AND ${postedOnlySql("h")}
+
+        UNION ALL
+
+        SELECT
+          id, DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transaction_date,
+          CONCAT(memo_type, ' MEMO') AS source_type, voucher_no AS reference_no, id AS transaction_id,
+          COALESCE(description, '') AS particulars,
+          CASE WHEN memo_type = 'DEBIT' THEN COALESCE(total_debit, 0) ELSE 0 END AS debit,
+          CASE WHEN memo_type = 'CREDIT' THEN COALESCE(total_credit, 0) ELSE 0 END AS credit,
+          3 AS sort_order
+        FROM memo_headers
+        WHERE party_id = ? AND party_type = ? AND transaction_date BETWEEN ? AND ? AND company_id = ? AND ${postedOnlySql()}
       ) sl
       ORDER BY transaction_date, sort_order, id
       `;
 
+    // Reports Batch 2: Debit/Credit Memo now contribute to the party
+    // subsidiary ledger. Direction is NOT guessed - it follows the
+    // "Approved convention" DebitMemo.jsx / CreditMemo.jsx document in
+    // their own source comments (Checkpoint 6): a Debit Memo increases AR
+    // / decreases AP; a Credit Memo decreases AR / increases AP. The AR
+    // branch's SUM(debit-credit) and the AP branch's SUM(credit-debit)
+    // running-balance formulas (already fixed above, unchanged by this
+    // batch) turn that into the correct running balance automatically -
+    // same debit/credit assignment works for both ledgers, only the
+    // party_type filter ('CUSTOMER' vs 'SUPPLIER') differs, so a DM/CM
+    // aimed at the other party type can never leak into this one.
     const queryParams =
       type === "AR"
-        ? [partyId, from, to, companyId, partyId, from, to, companyId, "AR", partyId, from, to, companyId]
-        : [partyId, from, to, companyId, partyId, from, to, companyId, "AP", partyId, from, to, companyId];
+        ? [partyId, from, to, companyId, partyId, from, to, companyId, "AR", partyId, from, to, companyId, partyId, "CUSTOMER", from, to, companyId]
+        : [partyId, from, to, companyId, partyId, from, to, companyId, "AP", partyId, from, to, companyId, partyId, "SUPPLIER", from, to, companyId];
 
     const [rows] = await pool.execute(query, queryParams);
 
