@@ -9086,15 +9086,26 @@ app.get("/api/reports/2307", authenticateToken, authorizePermission("REPORTS.BIR
 // or with taxable_base still NULL (saved before that column existed).
 // Nothing is written back; this is a review tool, not a migration.
 const EWT_AUDIT_MODULES = [
-  { module: "apv", txnType: "APV", headerTable: "apv_headers", lineTable: "apv_lines", lineIdCol: "apv_id", grossCol: "total_credit", vatKeyword: "input vat" },
-  { module: "cv", txnType: "CV", headerTable: "cv_headers", lineTable: "cv_lines", lineIdCol: "cv_id", grossCol: "total_credit", vatKeyword: "input vat" },
-  { module: "po", txnType: "PO", headerTable: "purchase_order_headers", lineTable: "purchase_order_lines", lineIdCol: "po_id", grossCol: "total_credit", vatKeyword: "input vat" },
-  { module: "invoice", txnType: "INV", headerTable: "invoice_headers", lineTable: "invoice_lines", lineIdCol: "invoice_id", grossCol: "total_debit", vatKeyword: "output vat" },
-  { module: "or", txnType: "OR", headerTable: "or_headers", lineTable: "or_lines", lineIdCol: "or_id", grossCol: "total_debit", vatKeyword: "output vat" },
+  { module: "apv", txnType: "APV", headerTable: "apv_headers", lineTable: "apv_lines", lineIdCol: "apv_id", grossCol: "total_credit", vatKeyword: "input vat", partyIdCol: "supplier_id", partyNameCol: "supplier_name" },
+  { module: "cv", txnType: "CV", headerTable: "cv_headers", lineTable: "cv_lines", lineIdCol: "cv_id", grossCol: "total_credit", vatKeyword: "input vat", partyIdCol: "payee_id", partyNameCol: "payee_name" },
+  { module: "po", txnType: "PO", headerTable: "purchase_order_headers", lineTable: "purchase_order_lines", lineIdCol: "po_id", grossCol: "total_credit", vatKeyword: "input vat", partyIdCol: "supplier_id", partyNameCol: "supplier_name" },
+  { module: "invoice", txnType: "INV", headerTable: "invoice_headers", lineTable: "invoice_lines", lineIdCol: "invoice_id", grossCol: "total_debit", vatKeyword: "output vat", partyIdCol: "customer_id", partyNameCol: "customer_name" },
+  { module: "or", txnType: "OR", headerTable: "or_headers", lineTable: "or_lines", lineIdCol: "or_id", grossCol: "total_debit", vatKeyword: "output vat", partyIdCol: "customer_id", partyNameCol: "customer_name" },
 ];
 
 app.get("/api/reports/ewt-audit", authenticateToken, authorizePermission("REPORTS.BIR_COMPLIANCE", "VIEW"), async (req, res) => {
   try {
+    // Reports Batch 2: optional, additive read-query filters only - the
+    // canonical document-date field across every audited module is
+    // `transaction_date` (verified: all 5 header tables use that exact
+    // column name, no `order_date`/other variant). from/to/atcCode narrow
+    // WHICH documents get checked; they never touch the mismatch/recompute
+    // algorithm below, which is byte-for-byte unchanged from Batch 9. With
+    // no query params (the only way this endpoint was ever called before
+    // this batch, since it had no UI), behavior is identical to before.
+    const { from, to } = req.query;
+    const atcCode = req.query.atcCode ? String(req.query.atcCode).trim() : "";
+
     const flagged = [];
     let totalChecked = 0;
     // Batch 9: company-scope this report (same cross-company-leak class
@@ -9110,12 +9121,35 @@ app.get("/api/reports/ewt-audit", authenticateToken, authorizePermission("REPORT
     const vatAccountIds = await loadVatControlAccountIds(pool);
 
     for (const cfg of EWT_AUDIT_MODULES) {
+      const conditions = ["h.company_id = ?", "h.atc_code IS NOT NULL"];
+      const params = [companyId];
+      if (from) {
+        conditions.push("h.transaction_date >= ?");
+        params.push(from);
+      }
+      if (to) {
+        conditions.push("h.transaction_date <= ?");
+        params.push(to);
+      }
+      if (atcCode) {
+        conditions.push("h.atc_code = ?");
+        params.push(atcCode);
+      }
+
+      // Reports Batch 2: transaction_date/party name/party TIN are a safe
+      // read-only projection added for the new EWT Audit UI (Document Date/
+      // Payee/TIN columns) - g (general_libraries) is joined by primary key
+      // id, never by a company-ambiguous value, and additionally pinned to
+      // the same company as the header row as defense in depth.
       const [rows] = await pool.execute(
-        `SELECT id, voucher_no AS voucherNo, ${cfg.grossCol} AS grossAmount, atc_code AS atcCode,
-                tax_rate AS taxRate, tax_withheld_amount AS taxWithheldAmount, taxable_base AS taxableBase
-         FROM ${cfg.headerTable}
-         WHERE company_id = ? AND atc_code IS NOT NULL`,
-        [companyId]
+        `SELECT h.id, h.voucher_no AS voucherNo, h.${cfg.grossCol} AS grossAmount, h.atc_code AS atcCode,
+                h.tax_rate AS taxRate, h.tax_withheld_amount AS taxWithheldAmount, h.taxable_base AS taxableBase,
+                DATE_FORMAT(h.transaction_date, '%Y-%m-%d') AS transactionDate,
+                h.${cfg.partyIdCol} AS partyId, h.${cfg.partyNameCol} AS partyName, g.tin AS partyTin
+         FROM ${cfg.headerTable} h
+         LEFT JOIN general_libraries g ON g.id = h.${cfg.partyIdCol} AND g.company_id = h.company_id
+         WHERE ${conditions.join(" AND ")}`,
+        params
       );
 
       for (const row of rows) {
@@ -9160,6 +9194,9 @@ app.get("/api/reports/ewt-audit", authenticateToken, authorizePermission("REPORT
             module: cfg.module,
             id: row.id,
             voucherNo: row.voucherNo,
+            transactionDate: row.transactionDate,
+            partyName: row.partyName,
+            partyTin: row.partyTin || null,
             atcCode: row.atcCode,
             taxRate: row.taxRate,
             grossAmount: Number(row.grossAmount),

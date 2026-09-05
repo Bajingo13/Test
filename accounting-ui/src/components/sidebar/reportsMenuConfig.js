@@ -132,6 +132,10 @@ export const REPORTS_MENU = [
       { id: "output-vat-report", label: "Output VAT Report", icon: CircleDollarSign, path: "/reports/output-vat-report" },
       { id: "monthly-final-tax-alphalist", label: "Monthly Final Tax / Alphalist Report", icon: FileBarChart, path: "/reports/final-withholding-tax-report" },
       { id: "monthly-expanded-tax-alphalist", label: "Monthly Expanded Tax List / Alphalist Report", icon: FileBarChart2, path: "/reports/expanded-withholding-tax-report" },
+      // Reports Batch 2: the backend (GET /api/reports/ewt-audit) has
+      // existed since Phase 7L/Batch 8/Batch 9 with real company-isolation
+      // and recompute-parity fixes, but no page ever linked to it.
+      { id: "ewt-audit", label: "EWT Audit", icon: FileWarning, path: "/reports/ewt-audit" },
     ],
   },
 ];
