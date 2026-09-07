@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import "./AccountAnalysis.css";
+import { downloadCsv } from "./reportCsv";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
 
@@ -58,6 +59,39 @@ export default function SubsidiaryLedger() {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     });
+
+  function exportCSV() {
+    if (!rows.length) {
+      alert("Please generate the report first.");
+      return;
+    }
+    const meta = [
+      [`${ledgerType} SUBSIDIARY LEDGER`],
+      [`${selectedParty?.code || ""} - ${selectedParty?.name || ""}`],
+      [`Period: ${fromDate} to ${toDate}`],
+      [],
+    ];
+    const header = ["DATE", "SOURCE", "DOC REF", "PARTICULARS", "DEBIT", "CREDIT", "RUNNING BALANCE"];
+    const body = rows.map((r) => [
+      r.transaction_date,
+      r.source_type,
+      r.reference_no,
+      r.particulars,
+      Number(r.debit || 0) > 0 ? Number(r.debit).toFixed(2) : "",
+      Number(r.credit || 0) > 0 ? Number(r.credit).toFixed(2) : "",
+      Number(r.running_balance || 0).toFixed(2),
+    ]);
+    const totalRow = [
+      "", "", "", "TOTAL",
+      totals.debit.toFixed(2),
+      totals.credit.toFixed(2),
+      totals.endingBalance.toFixed(2),
+    ];
+    downloadCsv(
+      `Subsidiary_Ledger_${ledgerType}_${selectedParty?.code || partyId}_${toDate}.csv`,
+      [...meta, header, ...body, totalRow]
+    );
+  }
 
   async function generateReport() {
     if (!partyId) {
@@ -146,6 +180,10 @@ export default function SubsidiaryLedger() {
 
           <button className="dark" onClick={() => window.print()}>
             Export PDF
+          </button>
+
+          <button className="dark" onClick={exportCSV}>
+            Export CSV
           </button>
         </div>
       </div>

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import "./AccountAnalysis.css";
 import "./PrepaidReports.css";
+import { downloadCsv } from "./reportCsv";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
 
@@ -28,6 +29,43 @@ export default function AlphalistReportBase({ title, reportTitle, taxType }) {
     }),
     { grossAmount: 0, taxWithheld: 0 }
   );
+
+  // One CSV implementation for BOTH the Expanded Withholding Tax Alphalist
+  // and the Final Tax Alphalist - they share this base component, so they
+  // get export parity from a single place. Mirrors exactly the on-screen,
+  // company-scoped rows for the selected month; no re-query.
+  function exportCSV() {
+    if (!rows.length) {
+      alert("Please generate the report first.");
+      return;
+    }
+    const meta = [
+      [reportTitle],
+      [`For the month of ${month}`],
+      [],
+    ];
+    const header = [
+      "PERIOD", "PAYEE", "TIN", "ATC CODE", "TAX RATE (%)",
+      "NO. OF TRANSACTIONS", "INCOME PAYMENT / GROSS AMOUNT", "TAX WITHHELD",
+    ];
+    const body = rows.map((r) => [
+      month,
+      r.payeeName,
+      r.tin || "",
+      r.atcCode,
+      Number(r.taxRate || 0).toFixed(2),
+      r.transactionCount,
+      Number(r.grossAmount || 0).toFixed(2),
+      Number(r.taxWithheld || 0).toFixed(2),
+    ]);
+    const totalRow = [
+      "", "", "", "", "", "TOTAL",
+      totals.grossAmount.toFixed(2),
+      totals.taxWithheld.toFixed(2),
+    ];
+    const slug = reportTitle.replace(/[^A-Za-z0-9]+/g, "_").replace(/^_|_$/g, "");
+    downloadCsv(`${slug}_${month}.csv`, [...meta, header, ...body, totalRow]);
+  }
 
   async function generateReport() {
     setLoading(true);
@@ -86,6 +124,10 @@ export default function AlphalistReportBase({ title, reportTitle, taxType }) {
 
           <button className="dark" onClick={() => window.print()}>
             Export PDF
+          </button>
+
+          <button className="dark" onClick={exportCSV}>
+            Export CSV
           </button>
         </div>
       </div>
