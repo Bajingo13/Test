@@ -49,7 +49,10 @@ export const REPORTS_MENU = [
       { id: "balance-sheet", label: "Balance Sheet", icon: Calculator, path: "/reports/balance-sheet" },
       { id: "bank-reconciliation", label: "Bank Reconciliation", icon: Landmark, path: "/reports/bank-reconciliation" },
       { id: "ai-reconciliation", label: "AI Reconciliation Assistant", icon: Sparkles, path: "/reports/ai-reconciliation" },
-      { id: "cash-flow", label: "Cash Flow", icon: Waves, path: "/reports/cash-flow-statement" },
+      // Renamed from "Cash Flow" (Reports Final Polish) - it is a bank/cash
+      // movement ledger, not a GAAP Cash Flow Statement. Route/API path kept
+      // for backward compatibility.
+      { id: "cash-flow", label: "Bank & Cash Movement Report", icon: Waves, path: "/reports/cash-flow-statement" },
       { id: "daily-cash-position", label: "Daily Cash Position Report", icon: Banknote, path: null },
       { id: "fx-revaluation", label: "Month-End FX Revaluation", icon: RefreshCw, path: "/reports/fx-revaluation" },
     ],
