@@ -9283,7 +9283,8 @@ app.get("/api/company-profile", authenticateToken, authorizePermission("FILESETU
       `SELECT
         name AS payorName, tin AS payorTin, address AS payorAddress, zip AS payorZip,
         telephone, email, vat_registered AS vatRegistered, branch_code AS branchCode,
-        logo_url AS logoUrl, bir_permit_no AS birPermitNo, atp_date AS atpDate,
+        logo_url AS logoUrl, bir_permit_no AS birPermitNo,
+        DATE_FORMAT(atp_date, '%Y-%m-%d') AS atpDate,
         approved_serial_from AS approvedSerialFrom, approved_serial_to AS approvedSerialTo
       FROM companies WHERE id = ?`,
       [companyId]
