@@ -263,24 +263,36 @@ describe("Trial Balance: Draft excluded, Posted included (Section 4/16)", () => 
 });
 
 describe("Account Analysis: Draft excluded, Posted included", () => {
-  // Account Analysis's source union has never included Invoice/OR (only
-  // APV/CV/ARAP-BB/JV/Petty Cash/Memo) - a pre-existing, EXCLUDED BY DESIGN
-  // gap unrelated to Draft/Posted recognition and out of this checkpoint's
-  // scope (Section 5 only asks to exclude Drafts from whatever sources are
-  // already included, not to expand coverage). So only the Posted JV (222)
-  // is expected here, not the Posted Invoice (1010).
-  test("4. AR-A shows the Posted JV row (222), never the Draft JV row (111)", async () => {
+  // Reports Batch 1 expanded Account Analysis's source union to the same
+  // canonical 9-source set General Ledger/Trial Balance already use
+  // (financialStatementService.js -> LedgerReportService.
+  // buildTransactionUnionSql), which now includes Invoice/OR. AR-A in this
+  // fixture is touched by both a JV pair (Draft 111 / Posted 222) and an
+  // Invoice pair (Draft 999 / Posted 1010) - so the Posted-only,
+  // Draft-excluded population here is now BOTH Posted rows (222 + 1010),
+  // proven by financialStatementCompleteness.http.test.js's own dedicated
+  // Invoice/OR/JV/beginning-balance completeness tests. This test stays
+  // scoped to Draft-vs-Posted recognition (its original purpose): Drafts
+  // (111, 999) must never appear regardless of how many sources are wired.
+  test("4. AR-A shows both Posted rows (JV 222, Invoice 1010), never the Draft rows (JV 111, Invoice 999)", async () => {
     const res = await request(app)
       .get("/api/reports/account-analysis")
       .query({ ...range, accountCode: "DVP6BAR-A" })
       .set("Authorization", `Bearer ${tokenA}`);
     expect(res.status).toBe(200);
-    expect(res.body.length).toBe(1);
-    expect(Number(res.body[0].debit)).toBe(222);
+    expect(res.body.length).toBe(2);
+    const debits = res.body.map((r) => Number(r.debit)).sort((a, b) => a - b);
+    expect(debits).toEqual([222, 1010]);
+    expect(debits).not.toContain(111);
+    expect(debits).not.toContain(999);
   });
 });
 
-describe("Income Statement: Draft excluded (Section 6, no source-coverage expansion)", () => {
+describe("Income Statement: Draft excluded (Section 6)", () => {
+  // Reports Batch 1 expanded Income Statement's source union to include
+  // Invoice/OR/JV (see financialStatementCompleteness.http.test.js), but
+  // EXP-A in THIS fixture is only ever touched by APV/Petty Cash - adding
+  // the missing sources elsewhere doesn't change this account's number.
   test("5. EXP-A reflects only Posted APV (444) + Posted Petty Cash (888) = -1332, never the Draft 333/777", async () => {
     const res = await request(app).get("/api/reports/income-statement").query(range).set("Authorization", `Bearer ${tokenA}`);
     expect(res.status).toBe(200);
@@ -289,7 +301,12 @@ describe("Income Statement: Draft excluded (Section 6, no source-coverage expans
   });
 });
 
-describe("Balance Sheet: Draft excluded (Section 7, no source-coverage expansion)", () => {
+describe("Balance Sheet: Draft excluded (Section 7)", () => {
+  // Same note as Income Statement above - AP-A in this fixture is only
+  // ever touched by APV/CV, so Reports Batch 1's Invoice/OR/JV expansion
+  // doesn't change this account's number (Current Year Earnings, also
+  // added by Reports Batch 1, is a separate synthetic row and doesn't
+  // affect AP-A either).
   test("6. AP-A reflects only Posted APV (444cr) and Posted CV (666dr) = -222, never the Draft 333/555", async () => {
     const res = await request(app).get("/api/reports/balance-sheet").query({ to: "2026-08-01" }).set("Authorization", `Bearer ${tokenA}`);
     expect(res.status).toBe(200);

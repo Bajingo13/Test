@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import "./AccountAnalysis.css";
+import { downloadCsv } from "./reportCsv";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
 
@@ -67,6 +68,50 @@ export default function OutputVAT() {
   // "—" for a GL-fallback row's unknown bucket (net/base was never recorded),
   // a formatted number otherwise.
   const cell = (value) => (value === null || value === undefined ? "—" : formatMoney(value));
+
+  // Raw numeric for CSV: "" for an unknown bucket, a fixed-2 string otherwise
+  // (no thousands separators, no em-dash - spreadsheet-safe).
+  const csvNum = (value) => (value === null || value === undefined ? "" : Number(value).toFixed(2));
+
+  function exportCSV() {
+    if (!rows.length) {
+      alert("Please generate the report first.");
+      return;
+    }
+    const meta = [
+      ["OUTPUT VAT REPORT"],
+      selectedAccount ? [`GL fallback account: ${accountCode} - ${selectedAccount.title}`] : [],
+      [`Period: ${fromDate} to ${toDate}`],
+      inclusionRule ? [inclusionRule] : [],
+      [],
+    ];
+    const header = [
+      "DATE", "SOURCE", "DOC REF", "CUSTOMER", "TIN",
+      "VATABLE SALES (STANDARD)", "ZERO-RATED SALES", "VAT-EXEMPT SALES",
+      "VAT AMOUNT", "GROSS / TOTAL",
+    ];
+    const body = rows.map((r) => [
+      r.date,
+      `${r.sourceType || ""}${r.source === "gl" ? " (GL)" : ""}`,
+      r.docRef,
+      r.customer,
+      r.tin || "",
+      csvNum(r.vatableSales),
+      csvNum(r.zeroRatedSales),
+      csvNum(r.exemptSales),
+      Number(r.vatAmount || 0).toFixed(2),
+      Number(r.grossAmount || 0).toFixed(2),
+    ]);
+    const totalRow = [
+      "", "", "", "", "TOTALS",
+      Number(totals.vatableSales || 0).toFixed(2),
+      Number(totals.zeroRatedSales || 0).toFixed(2),
+      Number(totals.exemptSales || 0).toFixed(2),
+      Number(totals.vatAmount || 0).toFixed(2),
+      Number(totals.grossAmount || 0).toFixed(2),
+    ];
+    downloadCsv(`Output_VAT_${toDate}.csv`, [...meta, header, ...body, totalRow]);
+  }
 
   async function generateReport() {
     setLoading(true);
@@ -147,6 +192,10 @@ export default function OutputVAT() {
 
           <button className="dark" onClick={() => window.print()}>
             Export PDF
+          </button>
+
+          <button className="dark" onClick={exportCSV}>
+            Export CSV
           </button>
         </div>
       </div>

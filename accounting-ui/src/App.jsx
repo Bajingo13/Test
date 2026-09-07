@@ -83,6 +83,7 @@ import ListOfLapsedPrepayments from "./pages/REPORTS/ListOfLapsedPrepayments.jsx
 import MonthlyFinalTaxAlphalist from "./pages/REPORTS/MonthlyFinalTaxAlphalist.jsx";
 import MonthlyExpandedTaxAlphalist from "./pages/REPORTS/MonthlyExpandedTaxAlphalist.jsx";
 import Form2307 from "./pages/REPORTS/Form2307.jsx";
+import EwtAudit from "./pages/REPORTS/EwtAudit.jsx";
 import GeneralLedger from "./pages/REPORTS/GeneralLedger.jsx";
 import CashFlowStatement from "./pages/REPORTS/CashFlowStatement.jsx";
 
@@ -209,6 +210,7 @@ function AppLayout() {
           <Route path="/reports/final-withholding-tax-report" element={<MonthlyFinalTaxAlphalist />} />
           <Route path="/reports/2307" element={<Form2307 />} />
           <Route path="/reports/expanded-withholding-tax-report" element={<MonthlyExpandedTaxAlphalist />} />
+          <Route path="/reports/ewt-audit" element={<EwtAudit />} />
 
           <Route
   path="/beginning-balances/gl"

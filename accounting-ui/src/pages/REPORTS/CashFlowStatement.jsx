@@ -22,10 +22,18 @@ function formatAsOfDate(dateValue) {
     .toUpperCase();
 }
 
-// Cash Receipts & Disbursements: same LedgerReportService engine as the
+// Bank & Cash Movement Report (formerly mislabeled "Cash Flow Statement" -
+// see the Reports Module Audit): same LedgerReportService engine as the
 // General Ledger, just scoped server-side to accounts flagged BANK / CASH
-// (via bank_codes) instead of every account. No Operating/Investing/
-// Financing classification - the schema has no field to support that split.
+// (via bank_codes) instead of every account. It shows opening balances,
+// dated cash/bank movements, inflow/outflow totals and ending balances - it
+// is NOT a GAAP Cash Flow Statement and deliberately makes no
+// Operating/Investing/Financing split. A true Indirect Cash Flow Statement
+// would need per-COA-account cash-flow activity classification + a non-cash
+// flag, which is separate accounting-classification work (out of scope
+// here). The route (/reports/cash-flow-statement) and API
+// (GET /api/reports/cash-flow-statement) paths are intentionally kept for
+// backward compatibility; only user-facing labels changed.
 export default function CashFlowStatement() {
   const [fromDate, setFromDate] = useState("2026-01-01");
   const [toDate, setToDate] = useState(new Date().toISOString().slice(0, 10));
@@ -44,7 +52,7 @@ export default function CashFlowStatement() {
         headers: authHeaders(),
       });
 
-      if (!res.ok) throw new Error("Failed to fetch cash flow statement");
+      if (!res.ok) throw new Error("Failed to fetch bank & cash movement report");
 
       const data = await res.json();
       setAccounts(data.accounts || []);
@@ -54,7 +62,7 @@ export default function CashFlowStatement() {
       });
     } catch (err) {
       console.error(err);
-      alert("Failed to generate Cash Flow Statement. Please check the backend/server.");
+      alert("Failed to generate the Bank & Cash Movement Report. Please check the backend/server.");
       setAccounts([]);
     } finally {
       setGenerated(true);
@@ -72,10 +80,10 @@ export default function CashFlowStatement() {
   );
 
   function downloadCSV() {
-    if (!accounts.length) return alert("Please generate the Cash Flow Statement first.");
+    if (!accounts.length) return alert("Please generate the Bank & Cash Movement Report first.");
 
     const csvRows = [
-      ["CASH FLOW STATEMENT"],
+      ["BANK & CASH MOVEMENT REPORT"],
       [`FOR THE PERIOD ${formatAsOfDate(fromDate)} TO ${formatAsOfDate(toDate)}`],
       [],
       ["", "TOTAL BEGINNING CASH", totals.beginning.toFixed(2)],
@@ -112,13 +120,13 @@ export default function CashFlowStatement() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `Cash_Flow_Statement_${toDate}.csv`;
+    link.download = `Bank_And_Cash_Movement_${toDate}.csv`;
     link.click();
     URL.revokeObjectURL(url);
   }
 
   function downloadExcel() {
-    if (!accounts.length) return alert("Please generate the Cash Flow Statement first.");
+    if (!accounts.length) return alert("Please generate the Bank & Cash Movement Report first.");
 
     const htmlAccounts = accounts
       .map(
@@ -154,7 +162,7 @@ export default function CashFlowStatement() {
 
     const htmlTable = `
       <table border="1">
-        <tr><th colspan="7">CASH FLOW STATEMENT</th></tr>
+        <tr><th colspan="7">BANK &amp; CASH MOVEMENT REPORT</th></tr>
         <tr><th colspan="7">FOR THE PERIOD ${formatAsOfDate(fromDate)} TO ${formatAsOfDate(toDate)}</th></tr>
         <tr></tr>
         <tr><td colspan="2">TOTAL BEGINNING CASH</td><td>${totals.beginning.toFixed(2)}</td></tr>
@@ -170,7 +178,7 @@ export default function CashFlowStatement() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `Cash_Flow_Statement_${toDate}.xls`;
+    link.download = `Bank_And_Cash_Movement_${toDate}.xls`;
     link.click();
     URL.revokeObjectURL(url);
   }
@@ -178,7 +186,11 @@ export default function CashFlowStatement() {
   return (
     <div className="lgr-page">
       <div className="lgr-header">
-        <h1>Cash Flow Statement</h1>
+        <h1>Bank &amp; Cash Movement Report</h1>
+        <p className="lgr-subtitle">
+          Shows opening balances, cash/bank account movements, inflows, outflows, and
+          ending balances for the selected period.
+        </p>
       </div>
 
       <div className="lgr-filters">
@@ -228,7 +240,7 @@ export default function CashFlowStatement() {
       {generated && (
         <div className="lgr-report-card">
           <div className="lgr-report-title">
-            <h2>CASH FLOW STATEMENT</h2>
+            <h2>BANK &amp; CASH MOVEMENT REPORT</h2>
             <h3>
               FOR THE PERIOD {formatAsOfDate(fromDate)} TO {formatAsOfDate(toDate)}
             </h3>
