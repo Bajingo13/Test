@@ -118,6 +118,28 @@ const MIGRATION_ORDER = [
   // / roles) and transaction_print_permissions_phase2_migration.sql (owns
   // the TRANSACTIONS.OR / PRINT rows this mirrors).
   "phase8_or_email_permissions_migration.sql",
+  // Company Profile Contact/BIR Fields - purely additive columns on
+  // company_profile (telephone/email/vat_registered/branch_code/logo_url/
+  // bir_permit_no/atp_date/approved_serial_from/approved_serial_to), no
+  // ALTERs to any other table. Guarded by information_schema; re-run is a
+  // no-op. Depends only on 000_baseline (owns company_profile).
+  "company_profile_contact_fields_migration.sql",
+  // Invoice Terms - one additive nullable column, invoice_headers.terms.
+  // Guarded by information_schema; re-run is a no-op. Depends only on
+  // 000_baseline (owns invoice_headers).
+  "invoice_terms_migration.sql",
+  // Companies Contact/BIR Fields - moves the 9 columns
+  // company_profile_contact_fields_migration.sql added to the single
+  // global company_profile row onto the real multi-tenant `companies`
+  // table instead (Option B - retire company_profile as the source of
+  // truth for print/BIR letterhead data). Adds the columns, backfills
+  // companies.id = 1 ONLY from company_profile's row (verified same
+  // tenant - see this file's own header), then renames (does not drop)
+  // company_profile to company_profile_deprecated. Guarded throughout;
+  // re-run is a no-op. Must run after user_access_control_migration.sql
+  // (owns companies) and company_profile_contact_fields_migration.sql
+  // (owns the source columns being backfilled from).
+  "companies_contact_bir_fields_migration.sql",
 ];
 
 module.exports = { MIGRATION_ORDER };

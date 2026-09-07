@@ -133,8 +133,7 @@ async function getInvoicePrintViewModel({ id, companyId, requestedTemplateId, wi
     invoiceNumber: doc.voucherNo,
     invoiceDate: doc.transactionDate || null,
     dueDate: doc.dueDate || null,
-    // No terms/payment-terms column exists on invoice_headers today.
-    terms: null,
+    terms: doc.terms || null,
     invoiceType: "Sales Invoice",
     mode: withEntries ? "with_entries" : "without_entries",
     currencyCode: currency?.currencyCode || currency?.baseCurrencyCode || "PHP",
@@ -146,21 +145,37 @@ async function getInvoicePrintViewModel({ id, companyId, requestedTemplateId, wi
     printCount: null,
   };
 
+  // BIR ATP/Permit compliance block (permit no., date issued, approved
+  // serial range). Per the BIR reference layout, this prints in the
+  // document FOOTER, below the "THIS IS SYSTEM GENERATED" line - not in
+  // the header block alongside company name/address/TIN. Computed once
+  // here, from `company`, so `footer` (the visual owner) and `seller`
+  // (kept for any other consumer that may read it off the header object)
+  // share this exact same source instead of each independently hardcoding
+  // their own null block.
+  const birComplianceInfo = {
+    // No separate ATP "number" column exists - bir_permit_no already
+    // covers the BIR-issued permit/authority number.
+    atpNumber: null,
+    atpDate: company?.atpDate || null,
+    birPermitNumber: company?.birPermitNo || null,
+    serialNumbers:
+      company?.approvedSerialFrom || company?.approvedSerialTo
+        ? { from: company?.approvedSerialFrom || null, to: company?.approvedSerialTo || null }
+        : null,
+  };
+
   const seller = {
     name: company?.name || "",
     businessName: company?.name || "",
     address: [company?.address, company?.zip].filter(Boolean).join(" "),
     tin: company?.tin || "",
-    // Not present on company_profile today - left null, never invented.
-    vatRegistration: null,
-    branchCode: null,
-    phone: null,
-    email: null,
-    logoUrl: null,
-    atpNumber: null,
-    atpDate: null,
-    birPermitNumber: null,
-    serialNumbers: null,
+    vatRegistration: company?.vatRegistered != null ? !!company.vatRegistered : null,
+    branchCode: company?.branchCode || null,
+    phone: company?.telephone || null,
+    email: company?.email || null,
+    logoUrl: company?.logoUrl || null,
+    ...birComplianceInfo,
   };
 
   const customer = {
@@ -207,10 +222,7 @@ async function getInvoicePrintViewModel({ id, companyId, requestedTemplateId, wi
     preparedBy: null,
     approvedBy: null,
     signature: null,
-    atpNumber: null,
-    atpDate: null,
-    birPermitNumber: null,
-    serialNumbers: null,
+    ...birComplianceInfo,
   };
 
   const layout = {

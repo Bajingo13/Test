@@ -11,6 +11,15 @@ export default function CompanyProfile() {
     payorTin: "",
     payorAddress: "",
     payorZip: "",
+    telephone: "",
+    email: "",
+    vatRegistered: true,
+    branchCode: "",
+    logoUrl: "",
+    birPermitNo: "",
+    atpDate: "",
+    approvedSerialFrom: "",
+    approvedSerialTo: "",
   });
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -35,7 +44,21 @@ export default function CompanyProfile() {
         return;
       }
 
-      setForm(data);
+      setForm({
+        payorName: data.payorName || "",
+        payorTin: data.payorTin || "",
+        payorAddress: data.payorAddress || "",
+        payorZip: data.payorZip || "",
+        telephone: data.telephone || "",
+        email: data.email || "",
+        vatRegistered: data.vatRegistered != null ? !!data.vatRegistered : true,
+        branchCode: data.branchCode || "",
+        logoUrl: data.logoUrl || "",
+        birPermitNo: data.birPermitNo || "",
+        atpDate: data.atpDate ? String(data.atpDate).slice(0, 10) : "",
+        approvedSerialFrom: data.approvedSerialFrom || "",
+        approvedSerialTo: data.approvedSerialTo || "",
+      });
     } catch (err) {
       console.error("LOAD COMPANY PROFILE ERROR:", err);
       alert("Unable to connect to server.");
@@ -128,6 +151,72 @@ export default function CompanyProfile() {
                 value={form.payorZip}
                 onChange={(e) => updateField("payorZip", e.target.value)}
                 placeholder="0000"
+              />
+
+              <label>Telephone</label>
+              <input
+                value={form.telephone}
+                onChange={(e) => updateField("telephone", e.target.value)}
+                placeholder="(02) 8123-4567"
+              />
+
+              <label>Email</label>
+              <input
+                type="email"
+                value={form.email}
+                onChange={(e) => updateField("email", e.target.value)}
+                placeholder="billing@company.example"
+              />
+
+              <label>
+                <input
+                  type="checkbox"
+                  checked={form.vatRegistered}
+                  onChange={(e) => updateField("vatRegistered", e.target.checked)}
+                />{" "}
+                VAT Registered
+              </label>
+
+              <label>Branch Code</label>
+              <input
+                value={form.branchCode}
+                onChange={(e) => updateField("branchCode", e.target.value)}
+                placeholder="HO"
+              />
+
+              <label>Logo URL</label>
+              <input
+                value={form.logoUrl}
+                onChange={(e) => updateField("logoUrl", e.target.value)}
+                placeholder="https://..."
+              />
+
+              <label>BIR Permit No.</label>
+              <input
+                value={form.birPermitNo}
+                onChange={(e) => updateField("birPermitNo", e.target.value)}
+                placeholder="BIR Permit / ATP number"
+              />
+
+              <label>ATP Date Issued</label>
+              <input
+                type="date"
+                value={form.atpDate}
+                onChange={(e) => updateField("atpDate", e.target.value)}
+              />
+
+              <label>Approved Serial No. (From)</label>
+              <input
+                value={form.approvedSerialFrom}
+                onChange={(e) => updateField("approvedSerialFrom", e.target.value)}
+                placeholder="000001"
+              />
+
+              <label>Approved Serial No. (To)</label>
+              <input
+                value={form.approvedSerialTo}
+                onChange={(e) => updateField("approvedSerialTo", e.target.value)}
+                placeholder="000100"
               />
 
               <button className="primary-btn" type="button" onClick={handleSave} disabled={saving}>

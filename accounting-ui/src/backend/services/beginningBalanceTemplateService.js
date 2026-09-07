@@ -2,10 +2,14 @@ const pool = require("../db");
 const { buildMultiSheetXlsxTemplate } = require("./TemplateExportService");
 const { TEMPLATE_VERSION } = require("./beginningBalanceImportService");
 
-async function getCompanyName() {
+// Company-scoped (Checkpoint: Companies Contact/BIR Fields) - previously
+// read the single global company_profile row (LIMIT 1, no companyId at
+// all), so every tenant's exported Beginning Balance template was labeled
+// with the same company name regardless of which company's data it held.
+async function getCompanyName(companyId) {
   try {
-    const [rows] = await pool.execute("SELECT payor_name FROM company_profile LIMIT 1");
-    return (rows[0] && rows[0].payor_name && rows[0].payor_name.trim()) || "AstreaBlue Accounting System";
+    const [rows] = await pool.execute("SELECT name FROM companies WHERE id = ?", [companyId]);
+    return (rows[0] && rows[0].name && rows[0].name.trim()) || "AstreaBlue Accounting System";
   } catch {
     return "AstreaBlue Accounting System";
   }
@@ -54,7 +58,7 @@ function buildCsvTemplate(columns, sampleRow) {
 }
 
 async function buildGLTemplate(format, companyId) {
-  const companyName = await getCompanyName();
+  const companyName = await getCompanyName(companyId);
 
   const [accounts] = await pool.execute(
     "SELECT code, title, account_class AS accountClass FROM chart_of_accounts ORDER BY code ASC"
@@ -236,7 +240,7 @@ async function buildPartyTemplate(module, format, companyId) {
   const coaFlag = isAR ? "AR CODE" : "AP CODE";
   const docPrefix = isAR ? "AR" : "AP";
 
-  const companyName = await getCompanyName();
+  const companyName = await getCompanyName(companyId);
 
   const [parties] = await pool.execute(
     "SELECT code, name FROM general_libraries WHERE party_type = ? AND company_id = ? ORDER BY code ASC",

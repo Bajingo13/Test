@@ -1041,6 +1041,7 @@ app.get("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACTION
         customer_name AS customerName,
         DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate,
         DATE_FORMAT(due_date, '%Y-%m-%d') AS dueDate,
+        terms,
         reference_no AS referenceNo,
         description,
         remarks,
@@ -1132,6 +1133,7 @@ app.post("/api/invoices", authenticateToken, authorizePermission("TRANSACTIONS.I
       customerName,
       transactionDate,
       dueDate,
+      terms,
       referenceNo,
       description,
       remarks,
@@ -1192,6 +1194,7 @@ app.post("/api/invoices", authenticateToken, authorizePermission("TRANSACTIONS.I
         customer_name,
         transaction_date,
         due_date,
+        terms,
         reference_no,
         description,
         remarks,
@@ -1209,7 +1212,7 @@ app.post("/api/invoices", authenticateToken, authorizePermission("TRANSACTIONS.I
         tax_withheld_amount,
         taxable_base,
         currency_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         companyId,
         normalizeVoucherNo(voucherNo),
@@ -1217,6 +1220,7 @@ app.post("/api/invoices", authenticateToken, authorizePermission("TRANSACTIONS.I
         customerName || "",
         transactionDate || null,
         dueDate || transactionDate || null,
+        terms || null,
         referenceNo || "",
         description || "",
         remarks || "",
@@ -1359,6 +1363,7 @@ app.put("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACTION
       customerName,
       transactionDate,
       dueDate,
+      terms,
       referenceNo,
       description,
       remarks,
@@ -1434,6 +1439,7 @@ app.put("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACTION
         customer_name = ?,
         transaction_date = ?,
         due_date = ?,
+        terms = ?,
         reference_no = ?,
         description = ?,
         remarks = ?,
@@ -1455,6 +1461,7 @@ app.put("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACTION
         customerName || "",
         transactionDate || null,
         dueDate || transactionDate || null,
+        terms || null,
         referenceNo || "",
         description || "",
         remarks || "",
@@ -2345,7 +2352,7 @@ app.post("/api/or/:id/email", authenticateToken, authorizePermission("TRANSACTIO
 
     const { buffer } = await renderOrPdfBuffer({ id: or.id, companyId });
 
-    const companyName = (await TransactionPrintDataService.getCompanyProfile())?.name || "";
+    const companyName = (await TransactionPrintDataService.getCompanyProfile(companyId))?.name || "";
     const subject = String(req.body?.subject || "").trim() || OrEmailService.orEmailSubject(or.voucherNo, companyName);
     const { text, html } = OrEmailService.orEmailBody({
       voucherNo: or.voucherNo,
@@ -9262,32 +9269,67 @@ app.get("/api/reports/alphalist", authenticateToken, authorizePermission("REPORT
 
 // ===================== COMPANY PROFILE API =====================
 
+// Company-scoped (Checkpoint: Companies Contact/BIR Fields) - reads/writes
+// `companies` (the real multi-tenant identity table) instead of the
+// deprecated single-global-row company_profile. Every caller's own
+// companyId (resolved the same way every other company-scoped route in
+// this file resolves it) - never a hardcoded id, so a SUPER_ADMIN with
+// access to multiple companies edits only the one they're acting as.
 app.get("/api/company-profile", authenticateToken, authorizePermission("FILESETUP.COMPANY_SETUP", "VIEW"), async (req, res) => {
   try {
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
     const [rows] = await pool.execute(
-      "SELECT payor_name AS payorName, payor_tin AS payorTin, payor_address AS payorAddress, payor_zip AS payorZip FROM company_profile WHERE id = 1"
+      `SELECT
+        name AS payorName, tin AS payorTin, address AS payorAddress, zip AS payorZip,
+        telephone, email, vat_registered AS vatRegistered, branch_code AS branchCode,
+        logo_url AS logoUrl, bir_permit_no AS birPermitNo, atp_date AS atpDate,
+        approved_serial_from AS approvedSerialFrom, approved_serial_to AS approvedSerialTo
+      FROM companies WHERE id = ?`,
+      [companyId]
     );
 
-    res.json(rows[0] || { payorName: "", payorTin: "", payorAddress: "", payorZip: "" });
+    res.json(
+      rows[0] || {
+        payorName: "", payorTin: "", payorAddress: "", payorZip: "",
+        telephone: null, email: null, vatRegistered: null, branchCode: null,
+        logoUrl: null, birPermitNo: null, atpDate: null, approvedSerialFrom: null, approvedSerialTo: null,
+      }
+    );
   } catch (err) {
     console.error("GET COMPANY PROFILE ERROR:", err);
-    res.status(500).json({ message: "Failed to load company profile" });
+    res.status(err.statusCode || 500).json({ message: err.statusCode ? err.message : "Failed to load company profile" });
   }
 });
 
 app.put("/api/company-profile", authenticateToken, authorizePermission("FILESETUP.COMPANY_SETUP", "CONFIGURE"), async (req, res) => {
   try {
-    const { payorName, payorTin, payorAddress, payorZip } = req.body;
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.body?.companyId);
+    const {
+      payorName, payorTin, payorAddress, payorZip,
+      telephone, email, vatRegistered, branchCode, logoUrl,
+      birPermitNo, atpDate, approvedSerialFrom, approvedSerialTo,
+    } = req.body;
 
     await pool.execute(
-      `UPDATE company_profile SET payor_name = ?, payor_tin = ?, payor_address = ?, payor_zip = ? WHERE id = 1`,
-      [payorName || "", payorTin || "", payorAddress || "", payorZip || ""]
+      `UPDATE companies SET
+        name = ?, tin = ?, address = ?, zip = ?,
+        telephone = ?, email = ?, vat_registered = ?, branch_code = ?, logo_url = ?,
+        bir_permit_no = ?, atp_date = ?, approved_serial_from = ?, approved_serial_to = ?
+      WHERE id = ?`,
+      [
+        payorName || "", payorTin || "", payorAddress || "", payorZip || "",
+        telephone || null, email || null, vatRegistered != null ? (vatRegistered ? 1 : 0) : 1,
+        branchCode || null, logoUrl || null,
+        birPermitNo || null, atpDate || null, approvedSerialFrom || null, approvedSerialTo || null,
+        companyId,
+      ]
     );
 
     res.json({ success: true, message: "Company profile saved successfully" });
   } catch (err) {
     console.error("UPDATE COMPANY PROFILE ERROR:", err);
-    res.status(500).json({ message: "Failed to save company profile" });
+    res.status(err.statusCode || 500).json({ message: err.statusCode ? err.message : "Failed to save company profile" });
   }
 });
 
@@ -9332,8 +9374,14 @@ app.get("/api/reports/2307", authenticateToken, authorizePermission("REPORTS.BIR
       .filter(Boolean)
       .join(", ");
 
+    // Checkpoint: Companies Contact/BIR Fields - this payor block was the
+    // one leak the Phase 7D.1 hardening above missed: the payee lookup was
+    // already company-scoped, but the payor (this system's OWN withholding-
+    // agent identity on a filed BIR Form 2307 certificate) was still read
+    // from the single global company_profile row regardless of companyId.
     const [payorRows] = await pool.execute(
-      "SELECT payor_name AS payorName, payor_tin AS payorTin, payor_address AS payorAddress, payor_zip AS payorZip FROM company_profile WHERE id = 1"
+      "SELECT name AS payorName, tin AS payorTin, address AS payorAddress, zip AS payorZip FROM companies WHERE id = ?",
+      [companyId]
     );
     const payor = payorRows[0] || { payorName: "", payorTin: "", payorAddress: "", payorZip: "" };
 

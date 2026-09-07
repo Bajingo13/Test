@@ -1,10 +1,12 @@
 // Ported from the Replica's signature card + BIR compliance footer +
-// print-footer-meta (timestamp/system logo). Every BIR field
-// (birPermitNumber/atpNumber/atpDate/serialNumbers) and preparedBy/
-// approvedBy/signature is null today (no backing columns on
-// invoice_headers) and is hidden cleanly rather than shown blank.
+// print-footer-meta (timestamp/system logo). birPermitNumber/atpDate/
+// serialNumbers now come from company_profile's ATP columns (see
+// invoicePrintDataService.js's birComplianceInfo block); atpNumber has no
+// backing column and stays null. preparedBy/approvedBy/signature still
+// have no backing columns on invoice_headers. Every field here is hidden
+// cleanly (not shown blank) whenever its value is null.
 export default function InvoicePrintFooter({ footer }) {
-  const hasBirInfo = footer.birPermitNumber || footer.atpNumber || footer.serialNumbers;
+  const hasBirInfo = footer.birPermitNumber || footer.atpNumber || footer.atpDate || footer.serialNumbers;
   const hasSignOff = footer.preparedBy || footer.approvedBy;
 
   return (
@@ -47,9 +49,14 @@ export default function InvoicePrintFooter({ footer }) {
 
       {hasBirInfo ? (
         <footer className="invoice-bir-footer">
+          {footer.atpNumber ? <div>ATP No.: {footer.atpNumber}</div> : null}
           {footer.birPermitNumber ? <div>BIR Permit No.: {footer.birPermitNumber}</div> : null}
           {footer.atpDate ? <div>Date Issued: {footer.atpDate}</div> : null}
-          {footer.serialNumbers ? <div>Approved Serial Nos.: {footer.serialNumbers}</div> : null}
+          {footer.serialNumbers ? (
+            <div>
+              Approved Serial Nos.: {footer.serialNumbers.from || "—"} to {footer.serialNumbers.to || "—"}
+            </div>
+          ) : null}
         </footer>
       ) : null}
 

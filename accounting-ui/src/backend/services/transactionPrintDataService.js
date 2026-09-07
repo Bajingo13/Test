@@ -33,6 +33,8 @@ const MODULE_CONFIG = {
     // JV (see the Phase 7C decision audit) - reads real transaction_tax_
     // entries OUTPUT_VAT rows for the printed Tax Summary block.
     hasOutputVat: true,
+    // invoice_headers.terms is invoice-only (see invoice_terms_migration.sql).
+    extraCols: ["terms"],
   },
   or: {
     moduleKey: "TRANSACTIONS.OR",
@@ -191,11 +193,43 @@ function getModuleConfig(transactionType) {
   return cfg;
 }
 
-async function getCompanyProfile() {
+// Company-scoped (Checkpoint: Companies Contact/BIR Fields). Used to read
+// company_profile unconditionally at id = 1 - every company printed every
+// document with the SAME letterhead/TIN/address/BIR data regardless of
+// which company actually issued it. `companies` (already the join target
+// for every other piece of this system's isolation layer) is now the
+// single source of truth for both identity and letterhead/BIR print
+// data; company_profile is deprecated (renamed, not dropped - see
+// companies_contact_bir_fields_migration.sql). companyId is required, not
+// defaulted, so a caller can never silently fall back to the old global
+// behavior.
+async function getCompanyProfile(companyId) {
+  if (!companyId) throw new HttpError(400, "companyId is required to resolve the company profile.");
   const [rows] = await pool.execute(
-    "SELECT payor_name AS name, payor_tin AS tin, payor_address AS address, payor_zip AS zip FROM company_profile WHERE id = 1"
+    `SELECT name, tin, address, zip,
+            telephone, email, vat_registered AS vatRegistered, branch_code AS branchCode,
+            logo_url AS logoUrl, bir_permit_no AS birPermitNo, atp_date AS atpDate,
+            approved_serial_from AS approvedSerialFrom, approved_serial_to AS approvedSerialTo
+       FROM companies WHERE id = ?`,
+    [companyId]
   );
-  return rows[0] || { name: "", tin: "", address: "", zip: "" };
+  return (
+    rows[0] || {
+      name: "",
+      tin: "",
+      address: "",
+      zip: "",
+      telephone: null,
+      email: null,
+      vatRegistered: null,
+      branchCode: null,
+      logoUrl: null,
+      birPermitNo: null,
+      atpDate: null,
+      approvedSerialFrom: null,
+      approvedSerialTo: null,
+    }
+  );
 }
 
 // Phase 7C1: the one authoritative Output VAT source for print - reuses
@@ -507,7 +541,7 @@ async function getTransactionDocument(transactionType, id, { withEntries, compan
     bankAccount = bankRows[0] || null;
   }
 
-  const company = await getCompanyProfile();
+  const company = await getCompanyProfile(companyId);
 
   // Phase 7C1: Invoice-only (gated by cfg.hasOutputVat, true only for the
   // invoice module config above) - reuses cfg.currencyTxnType as the
@@ -610,7 +644,7 @@ async function getTransactionList(transactionType, { from, to, grouping, company
     bankLabels = new Map(bankRows.map((b) => [b.id, `${b.bankCode} - ${b.bankName} (${b.accountNo})`]));
   }
 
-  const company = await getCompanyProfile();
+  const company = await getCompanyProfile(companyId);
 
   if (isGrouped) {
     const { key, label, fallbackLabel } = GROUP_KEY_FIELD[grouping];

@@ -20,7 +20,12 @@ export default function InvoiceCompanyHeader({ seller, document }) {
         {seller.address ? <span>{seller.address}</span> : null}
         {seller.phone ? <><br />Tel. No.: <span>{seller.phone}</span></> : null}
         <br />
-        VAT Reg. TIN: <span>{seller.tin}</span>
+        {/* vatRegistration is null only for a pre-migration company_profile
+            row that predates the column - treated as the historical
+            VAT-registered default (company_profile.vat_registered's own
+            DEFAULT 1) rather than silently switching label. */}
+        {seller.vatRegistration === false ? "Non-VAT Reg. TIN:" : "VAT Reg. TIN:"} <span>{seller.tin}</span>
+        {seller.branchCode ? <><br />Branch: <span>{seller.branchCode}</span></> : null}
       </div>
 
       <div className="invoice-header__meta">
