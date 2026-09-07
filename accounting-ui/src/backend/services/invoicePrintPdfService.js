@@ -31,14 +31,32 @@ const READY_TIMEOUT_MS = 20000;
 async function renderPrintUrlToPdf(url) {
   let browser;
   try {
-    browser = await puppeteer.launch({
+    const launchOptions = {
       headless: true,
       // --disable-dev-shm-usage: containers (Railway included) often mount
       // a tiny /dev/shm, which otherwise makes Chromium crash under normal
       // page load - a very common "just works locally, fails in the
-      // container" gotcha, harmless to always set.
-      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
-    });
+      // container" gotcha, harmless to always set. --disable-gpu/--no-zygote
+      // mirror the flags the already-proven-working E-Invoicing Puppeteer
+      // route (invoicePreviewPdfPuppeteer.routes.js) launches with.
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--no-zygote",
+      ],
+    };
+    // Some containers can't reliably run puppeteer's own bundled/downloaded
+    // Chrome (missing shared libs, blocked network during install) and
+    // instead point at a system-installed Chromium via this env var - same
+    // override invoicePreviewPdfPuppeteer.routes.js already honors. Without
+    // this, a production environment relying on that override would always
+    // fail to launch here even though the older Puppeteer route works fine.
+    const executablePath = String(process.env.PUPPETEER_EXECUTABLE_PATH || "").trim();
+    if (executablePath) launchOptions.executablePath = executablePath;
+
+    browser = await puppeteer.launch(launchOptions);
 
     const page = await browser.newPage();
 
@@ -68,6 +86,10 @@ async function renderPrintUrlToPdf(url) {
 
     const replicaError = await page.evaluate(() => window.__REPLICA_ERROR);
     if (replicaError || renderError) {
+      console.error(
+        "INVOICE PDF RENDER ERROR (replica-reported):",
+        replicaError || renderError?.message || renderError
+      );
       throw new HttpError(422, "Unable to render this document for PDF export.");
     }
 
@@ -85,8 +107,11 @@ async function renderPrintUrlToPdf(url) {
     // Server-side diagnostic only (never sent to the HTTP response) - the
     // render token is redacted first since a Puppeteer navigation error can
     // otherwise echo the full request URL back in its message.
-    const safeMessage = String(err?.message || err).replace(/renderToken=[^&\s]+/g, "renderToken=[redacted]");
+    const redact = (s) => String(s || "").replace(/renderToken=[^&\s]+/g, "renderToken=[redacted]");
+    const safeMessage = redact(err?.message || err);
+    const safeStack = err?.stack ? redact(err.stack) : null;
     console.error("INVOICE PDF RENDER ERROR:", err?.name || "Error", safeMessage);
+    if (safeStack) console.error(safeStack);
     throw new HttpError(500, "Failed to generate PDF.");
   } finally {
     if (browser) await browser.close().catch(() => {});

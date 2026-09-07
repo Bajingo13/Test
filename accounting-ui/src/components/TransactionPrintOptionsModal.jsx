@@ -26,7 +26,7 @@ function authHeaders() {
 // printOptionsConfig.js, and both the single-document and list PDFs are
 // built by the same two generic functions (documentPdfBuilder.js /
 // documentListPdfBuilder.js) - nothing here is Invoice-specific.
-export default function TransactionPrintOptionsModal({ open, onClose, transactionType, transactionId, currentUser }) {
+export default function TransactionPrintOptionsModal({ open, onClose, transactionType, transactionId, companyId, currentUser }) {
   const { can, loading: permsLoading } = usePermissions();
 
   const config = PRINT_OPTIONS_BY_MODULE[transactionType];
@@ -67,12 +67,14 @@ export default function TransactionPrintOptionsModal({ open, onClose, transactio
     // an error) if the fetch fails - the print flow still works via the
     // company-default/built-in fallback either way.
     if (PRINT_TEMPLATE_MODULE_TYPES.includes(transactionType)) {
-      fetch(`${API_URL}/api/print-templates?moduleType=${transactionType}`, { credentials: "include", headers: authHeaders() })
+      const templatesParams = new URLSearchParams({ moduleType: transactionType });
+      if (companyId) templatesParams.set("companyId", companyId);
+      fetch(`${API_URL}/api/print-templates?${templatesParams.toString()}`, { credentials: "include", headers: authHeaders() })
         .then((res) => (res.ok ? res.json() : []))
         .then((list) => setTemplates(Array.isArray(list) ? list.filter((t) => t.isActive) : []))
         .catch(() => setTemplates([]));
     }
-  }, [open, transactionType, transactionId]);
+  }, [open, transactionType, transactionId, companyId]);
 
   useEffect(() => {
     return () => {
@@ -106,6 +108,7 @@ export default function TransactionPrintOptionsModal({ open, onClose, transactio
   async function fetchDocumentData(mode, intent) {
     const params = new URLSearchParams({ mode, intent, copyType, copies: String(copies) });
     if (templateId) params.set("templateId", templateId);
+    if (companyId) params.set("companyId", companyId);
     const res = await fetch(
       `${API_URL}/api/print/${transactionType}/${transactionId}?${params.toString()}`,
       { credentials: "include", headers: authHeaders() }
@@ -118,7 +121,7 @@ export default function TransactionPrintOptionsModal({ open, onClose, transactio
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json", ...authHeaders() },
-      body: JSON.stringify({ grouping, from: fromDate || null, to: toDate || null, intent, copyType, copies }),
+      body: JSON.stringify({ grouping, from: fromDate || null, to: toDate || null, intent, copyType, copies, companyId: companyId || undefined }),
     });
     return handleResponse(res);
   }
@@ -153,6 +156,7 @@ export default function TransactionPrintOptionsModal({ open, onClose, transactio
       const params = new URLSearchParams({ disposition: "inline" });
       if (selectedOption.mode === "with_entries") params.set("mode", "with_entries");
       if (templateId) params.set("templateId", templateId);
+      if (companyId) params.set("companyId", companyId);
       const res = await fetch(`${API_URL}/api/invoice-print/${transactionId}/pdf?${params.toString()}`, {
         credentials: "include",
         headers: authHeaders(),
@@ -164,6 +168,7 @@ export default function TransactionPrintOptionsModal({ open, onClose, transactio
     const params = new URLSearchParams({ disposition: "inline", grouping: selectedOption.grouping });
     if (fromDate) params.set("from", fromDate);
     if (toDate) params.set("to", toDate);
+    if (companyId) params.set("companyId", companyId);
     const res = await fetch(`${API_URL}/api/invoice-print/list/pdf?${params.toString()}`, {
       credentials: "include",
       headers: authHeaders(),
