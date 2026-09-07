@@ -37,7 +37,26 @@ const mysql = require("mysql2/promise");
 const { resolveDatabaseConfig, describeSafely } = require("../config/database");
 const { MIGRATION_ORDER } = require("./migrationOrder");
 
-const REPO_ROOT = path.join(__dirname, "..", "..", "..", "..");
+// The migration .sql files live at the repo root (where migrate.js reads
+// them for local dev/test), but the deployed backend is not guaranteed to
+// include the repo root - only the accounting-ui/ subtree is certain to
+// ship. So a co-located copy under src/backend/migrations/ is the
+// authoritative source here, with the repo root kept as a fallback for a
+// checkout where the copy is absent. migrationsSync.test.js asserts the
+// two copies are byte-identical.
+const CANDIDATE_DIRS = [
+  path.join(__dirname, "..", "migrations"),
+  path.join(__dirname, "..", "..", "..", ".."),
+];
+
+function resolveMigrationPath(filename) {
+  for (const dir of CANDIDATE_DIRS) {
+    const candidate = path.join(dir, filename);
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
 const LOCK_NAME = "astrea_schema_migrations";
 const LOCK_TIMEOUT_SECONDS = 120;
 
@@ -108,10 +127,10 @@ async function runMigrations({ logger = console } = {}) {
       for (const filename of MIGRATION_ORDER) {
         if (done.has(filename)) continue;
 
-        const filePath = path.join(REPO_ROOT, filename);
-        if (!fs.existsSync(filePath)) {
+        const filePath = resolveMigrationPath(filename);
+        if (!filePath) {
           throw new Error(
-            `migration file missing from the deployment: ${filename} (looked in ${REPO_ROOT})`
+            `migration file missing from the deployment: ${filename} (looked in ${CANDIDATE_DIRS.join(", ")})`
           );
         }
         const sql = fs.readFileSync(filePath, "utf8");
