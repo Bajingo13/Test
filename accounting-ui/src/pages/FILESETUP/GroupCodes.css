@@ -164,3 +164,23 @@
     align-items: flex-start;
   }
 }
+
+/* Reports Classification Foundation - unclassified-groups notice + badge */
+.group-warning {
+  margin: 12px 0 4px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: var(--warning-bg, #fef3c7);
+  border: 1px solid var(--warning-border, #fcd34d);
+  color: var(--warning-text, #92400e);
+  font-size: 13px;
+}
+
+.group-unclassified {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--border-color, #e5e7eb);
+  color: var(--text-secondary, #6b7280);
+  font-size: 12px;
+}

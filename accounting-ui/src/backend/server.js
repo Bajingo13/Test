@@ -25,6 +25,7 @@ const loginRateLimiter = rateLimit({
 });
 const LedgerReportService = require("./services/LedgerReportService");
 const FinancialStatementService = require("./services/financialStatementService");
+const GroupCodeClassification = require("./services/groupCodeClassification");
 const { buildXlsxTemplate } = require("./services/TemplateExportService");
 const { templateImportUpload, coaImportUpload, handleUpload } = require("./lib/uploadMiddleware");
 const COAImportService = require("./services/COAImportService");
@@ -6956,17 +6957,29 @@ app.use("/api/accounting-periods", require("./routes/accountingPeriods.routes"))
 
 // ===================== ACCOUNT GROUP CODES API =====================
 
+// Reports Classification Foundation: account_group_codes now also carries
+// report_section (VARCHAR(32) NULL) + display_order (INT NULL) - reporting
+// metadata only, no accounting impact. GET returns them; POST/PUT accept +
+// validate them (a section must be legal for the group's account_class -
+// see groupCodeClassification.js); an old payload that omits them stays
+// valid and PUT leaves an existing classification untouched.
 app.get("/api/group-codes", authenticateToken, authorizePermission("FILESETUP.GROUP_CODES", "VIEW"), async (req, res) => {
   try {
+    // Ordering fallback (documented): display_order ascending with NULLs
+    // last, then group_code ascending. Member-account ordering within a
+    // group (by account code, or a configured sequence) is a report-time
+    // concern, not this list's.
     const [rows] = await pool.execute(`
       SELECT
         id,
         group_code AS groupCode,
         group_description AS groupDescription,
         account_class AS accountClass,
+        report_section AS reportSection,
+        display_order AS displayOrder,
         status
       FROM account_group_codes
-      ORDER BY group_code ASC
+      ORDER BY (display_order IS NULL), display_order ASC, group_code ASC
     `);
 
     res.json(rows);
@@ -6976,18 +6989,41 @@ app.get("/api/group-codes", authenticateToken, authorizePermission("FILESETUP.GR
   }
 });
 
+// Read-only classification readiness over ACTIVE group codes. Group codes
+// are a shared catalog in the current architecture, so there is no
+// per-company scoping and no balances are read here - only the group
+// code / class / section metadata.
+app.get("/api/group-codes/classification-readiness", authenticateToken, authorizePermission("FILESETUP.GROUP_CODES", "VIEW"), async (req, res) => {
+  try {
+    const [rows] = await pool.execute(
+      `SELECT group_code, group_description, account_class, report_section
+       FROM account_group_codes
+       WHERE status = 'ACTIVE'`
+    );
+    res.json(GroupCodeClassification.getClassificationReadiness(rows));
+  } catch (err) {
+    console.error("GROUP CODE CLASSIFICATION READINESS ERROR:", err);
+    res.status(500).json({ message: "Failed to compute group code classification readiness" });
+  }
+});
+
 app.post("/api/group-codes", authenticateToken, authorizePermission("FILESETUP.GROUP_CODES", "CONFIGURE"), async (req, res) => {
   try {
-    const { groupCode, groupDescription, accountClass, status } = req.body;
+    const { groupCode, groupDescription, accountClass, status, reportSection, displayOrder } = req.body;
+
+    const check = GroupCodeClassification.validateGroupCodeClassification({ accountClass, reportSection, displayOrder });
+    if (!check.ok) return res.status(400).json({ message: check.error });
 
     const [result] = await pool.execute(
       `INSERT INTO account_group_codes
-       (group_code, group_description, account_class, status)
-       VALUES (?, ?, ?, ?)`,
+       (group_code, group_description, account_class, report_section, display_order, status)
+       VALUES (?, ?, ?, ?, ?, ?)`,
       [
         groupCode,
         groupDescription,
         accountClass || "",
+        check.value.reportSection,
+        check.value.displayOrder,
         status || "ACTIVE",
       ]
     );
@@ -7011,22 +7047,31 @@ app.post("/api/group-codes", authenticateToken, authorizePermission("FILESETUP.G
 app.put("/api/group-codes/:id", authenticateToken, authorizePermission("FILESETUP.GROUP_CODES", "CONFIGURE"), async (req, res) => {
   try {
     const { id } = req.params;
-    const { groupCode, groupDescription, accountClass, status } = req.body;
+    const { groupCode, groupDescription, accountClass, status, reportSection, displayOrder } = req.body;
+
+    // Backward compatible: a payload that omits reportSection AND
+    // displayOrder does not touch those columns at all - an existing
+    // classification survives an old client's edit. Only when the user
+    // explicitly sends one of them do we validate + update it.
+    const touchesClassification =
+      Object.prototype.hasOwnProperty.call(req.body, "reportSection") ||
+      Object.prototype.hasOwnProperty.call(req.body, "displayOrder");
+
+    const setCols = ["group_code = ?", "group_description = ?", "account_class = ?", "status = ?"];
+    const params = [groupCode, groupDescription, accountClass || "", status || "ACTIVE"];
+
+    if (touchesClassification) {
+      const check = GroupCodeClassification.validateGroupCodeClassification({ accountClass, reportSection, displayOrder });
+      if (!check.ok) return res.status(400).json({ message: check.error });
+      setCols.push("report_section = ?", "display_order = ?");
+      params.push(check.value.reportSection, check.value.displayOrder);
+    }
+
+    params.push(id);
 
     await pool.execute(
-      `UPDATE account_group_codes SET
-        group_code = ?,
-        group_description = ?,
-        account_class = ?,
-        status = ?
-       WHERE id = ?`,
-      [
-        groupCode,
-        groupDescription,
-        accountClass || "",
-        status || "ACTIVE",
-        id,
-      ]
+      `UPDATE account_group_codes SET ${setCols.join(", ")} WHERE id = ?`,
+      params
     );
 
     res.json({

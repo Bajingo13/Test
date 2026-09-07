@@ -140,6 +140,24 @@ const MIGRATION_ORDER = [
   // (owns companies) and company_profile_contact_fields_migration.sql
   // (owns the source columns being backfilled from).
   "companies_contact_bir_fields_migration.sql",
+  // company_profile rerun guard - idempotency-only fix for the chain
+  // above: after companies_contact_bir_fields_migration.sql renames
+  // company_profile -> company_profile_deprecated, a rerun of
+  // 000_baseline_schema_migration.sql resurrects an EMPTY company_profile
+  // (its CREATE TABLE IF NOT EXISTS no longer sees the renamed table),
+  // drifting the schema. This drops ONLY that stray empty resurrection,
+  // and only once retirement has completed (company_profile_deprecated
+  // present). Never touches companies or company_profile_deprecated, never
+  // drops a table with rows. Must run AFTER
+  // companies_contact_bir_fields_migration.sql.
+  "company_profile_rerun_guard_migration.sql",
+  // Account Group Code report classification - two additive nullable
+  // columns on account_group_codes (report_section VARCHAR(32),
+  // display_order INT). No backfill, NO name-based auto-classification -
+  // existing groups stay report_section = NULL. Guarded by
+  // information_schema; re-run is a no-op. Depends only on 000_baseline
+  // (owns account_group_codes).
+  "accounting_group_code_report_section_migration.sql",
 ];
 
 module.exports = { MIGRATION_ORDER };
