@@ -45,6 +45,9 @@ export default function TransactionSummaryPanel({
   onDateChange,
   onDueDateChange,
   showDueDate = false,
+  terms,
+  onTermsChange,
+  showTerms = false,
   currencyEligible,
   currencyOptions,
   selectedCurrencyId,
@@ -93,6 +96,7 @@ export default function TransactionSummaryPanel({
             <ViewField label="Date" value={form.date} />
             {currencyEligible && <ViewField label="Currency" value={currencyLabel} />}
             {showDueDate && <ViewField label="Due Date" value={dueDate} />}
+            {showTerms && <ViewField label="Terms" value={terms} />}
             {showRateField && <ViewField label="Exchange Rate" value={rateLabel} />}
             {showInvoiceType && <ViewField label="Type" value={invoiceType} />}
             {showInvoiceType && invoiceType === "Recurring" && (
@@ -158,6 +162,20 @@ export default function TransactionSummaryPanel({
                 type="date"
                 value={dueDate}
                 onChange={(e) => onDueDateChange(e.target.value)}
+                className="transaction-input"
+              />
+            </div>
+          )}
+
+          {/* Invoice-only (showTerms), same gating pattern as showDueDate. */}
+          {showTerms && (
+            <div className="transaction-field">
+              <label className="transaction-label">Terms</label>
+              <input
+                type="text"
+                value={terms}
+                onChange={(e) => onTermsChange(e.target.value)}
+                placeholder="e.g. Net 30, Due on Receipt"
                 className="transaction-input"
               />
             </div>

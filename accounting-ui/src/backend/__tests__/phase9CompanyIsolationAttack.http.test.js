@@ -105,7 +105,10 @@ beforeAll(async () => {
 
   await pool.execute("INSERT INTO ewt_library (atc_code, description, rate, tax_type, status) VALUES (?, 'ph9', 10, 'EWT', 'ACTIVE')", [ATC]);
   await pool.execute("INSERT INTO accounting_periods (company_id, year, period_month, start_date, end_date, status) VALUES (?, 2026, 8, '2026-08-01', '2026-08-31', 'OPEN'), (?, 2026, 8, '2026-08-01', '2026-08-31', 'OPEN')", [A, B]);
-  await pool.execute("INSERT INTO company_profile (id, payor_name) VALUES (1, 'PH9') ON DUPLICATE KEY UPDATE payor_name = payor_name");
+  // Checkpoint: Companies Contact/BIR Fields retired the single global
+  // company_profile row - transactionPrintDataService.getCompanyProfile()
+  // now reads `companies` itself, scoped to A/B, so no separate seed is
+  // needed: A and B already have their own `name` (inserted above).
 });
 
 afterAll(async () => {

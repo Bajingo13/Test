@@ -126,9 +126,11 @@ beforeAll(async () => {
   );
   custOtherCoId = p3.insertId;
 
-  await pool.execute(
-    "INSERT INTO company_profile (id, payor_name, payor_tin, payor_address, payor_zip) VALUES (1, 'PH8 Test Co', '000-000-000-000', 'Test Addr', '1000') ON DUPLICATE KEY UPDATE payor_name = payor_name"
-  );
+  // Checkpoint: Companies Contact/BIR Fields retired the single global
+  // company_profile row - the OR-email companyName lookup
+  // (TransactionPrintDataService.getCompanyProfile) now reads `companies`
+  // itself, scoped to CO, so no separate seed is needed: CO's own `name`
+  // ("PH8 Co", inserted above) is already what the email subject/body use.
 });
 
 afterAll(async () => {

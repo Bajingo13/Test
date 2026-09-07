@@ -259,6 +259,11 @@ export default function TransactionFormLayout({
   const [dueDate, setDueDate] = useState(new Date().toISOString().split("T")[0]);
   const [dueDateTouched, setDueDateTouched] = useState(false);
 
+  // Invoice-only free-text payment terms (e.g. "Net 30", "Due on Receipt").
+  // Mirrors the Due Date pattern above: only ever read/written for
+  // code === "INV" - every other module ignores this state entirely.
+  const [terms, setTerms] = useState("");
+
   const [lines, setLines] = useState(
     defaultLines.map((line) => ({
       ...line,
@@ -1294,6 +1299,7 @@ if (code === "OR") {
     // no other module ever reads it.
     setDueDate(new Date().toISOString().split("T")[0]);
     setDueDateTouched(false);
+    setTerms("");
 
     setLines(
       defaultLines.map((line) => ({
@@ -1525,6 +1531,7 @@ setError("");
         if (code === "INV") {
           setDueDate(data.dueDate || data.transactionDate || "");
           setDueDateTouched(true);
+          setTerms(data.terms || "");
         }
 
         setLines(
@@ -2363,6 +2370,9 @@ if (code === "OR" || code === "CV") {
         // as before this checkpoint (unchanged behavior, per the explicit
         // non-scope instruction).
         dueDate: code === "INV" ? (dueDate || updatedForm.date) : updatedForm.date,
+        // Invoice-only; every other module has no terms column to receive
+        // this and server.js only reads it off the INV payload.
+        terms: code === "INV" ? terms || null : undefined,
         referenceNo: updatedForm.referenceNo,
         description: updatedForm.description,
         remarks: updatedForm.checkNo,
@@ -2839,6 +2849,9 @@ if (code === "OR") {
                   onDateChange={code === "INV" ? handleInvoiceDateChange : (value) => updateForm("date", value)}
                   onDueDateChange={handleDueDateChange}
                   showDueDate={code === "INV"}
+                  terms={terms}
+                  onTermsChange={setTerms}
+                  showTerms={code === "INV"}
                   currencyEligible={CURRENCY_ELIGIBLE}
                   currencyOptions={currencyOptions}
                   selectedCurrencyId={selectedCurrencyId}
