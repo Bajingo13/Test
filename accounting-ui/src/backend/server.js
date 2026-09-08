@@ -9504,9 +9504,28 @@ module.exports = app;
 
 const PORT = process.env.PORT || 8080;
 
-if (require.main === module) {
+function startListening() {
   app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
     require("./jobs/recurringSchedulerJob").start();
   });
+}
+
+if (require.main === module) {
+  // Bring the schema up to date with the code we're about to serve, then
+  // boot. Idempotent and ledger-tracked (see scripts/runMigrations.js) -
+  // a deploy with no new migration files costs one SELECT. Set
+  // SKIP_STARTUP_MIGRATIONS=1 to boot without touching the schema.
+  if (process.env.SKIP_STARTUP_MIGRATIONS === "1") {
+    console.log("[migrate] SKIP_STARTUP_MIGRATIONS=1 - skipping startup migrations");
+    startListening();
+  } else {
+    const { runMigrations } = require("./scripts/runMigrations");
+    runMigrations()
+      .then(startListening)
+      .catch((err) => {
+        console.error("[migrate] startup migrations failed - refusing to boot:", err.message);
+        process.exit(1);
+      });
+  }
 }

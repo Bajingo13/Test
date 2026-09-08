@@ -106,9 +106,38 @@ npm run db:test:reset
 npm run db:migrate:dev
 npm run db:migrate:test
 
-# Production - unchanged, still just:
+# Production - just:
 npm start
+# (server.js now runs pending migrations automatically before it opens
+#  the listener - see "Automatic startup migrations" below)
 ```
+
+## Automatic startup migrations
+
+`server.js`, when run directly (`npm start` / the Railway deploy), calls
+`scripts/runMigrations.js` before `app.listen()`. This keeps the
+production schema from lagging behind freshly-deployed code (the class
+of bug behind "Unknown column 'terms'" / "Unknown column 'telephone'"
+print-preview errors).
+
+`runMigrations.js` is separate from `migrate.js` on purpose - `migrate.js`
+stays a manual, production-refusing CLI for local dev/test. The startup
+runner is safe to auto-run because:
+
+- **`schema_migrations` ledger table** - each file in `MIGRATION_ORDER`
+  runs at most once ever. A redeploy with no new migration files is one
+  `SELECT` and done.
+- **`GET_LOCK` advisory lock** - concurrent boots / overlapping deploys
+  cannot migrate at the same time.
+- **First-run tolerance** - the first boot against a pre-ledger database
+  (production) records the already-applied chain instead of aborting on
+  "duplicate column" errors. After the ledger is populated, any
+  migration error is fatal and stops the deploy.
+- **`SKIP_STARTUP_MIGRATIONS=1`** - env var to boot without touching the
+  schema.
+
+If a startup migration fails, the process exits non-zero and the app
+does **not** start serving on a half-migrated schema.
 
 ## Setup status: DONE
 
