@@ -1,0 +1,236 @@
+/* Reports Phase E.2 / G: printable Income Statement / Balance Sheet.
+
+   The print root is portaled onto <body> and is display:none on screen.
+   During a print (window "beforeprint" adds body.printing-statement) every
+   other direct child of <body> is hidden and only #statement-print-root
+   prints - a dedicated print container, gated by a body class so no other
+   report's print output is affected.
+
+   Phase G: the printed page is styled to follow the user's original
+   Excel-style INCOME STATEMENT / BALANCE SHEET templates - centered header
+   block, compact spreadsheet spacing, serif type, accounting rules above
+   subtotals and a double-rule under the final grand total, a stacked
+   signature area. No modern web-card styling. All content stays dynamic
+   from the structured report model. */
+
+#statement-print-root {
+  display: none;
+}
+
+@media print {
+  body.printing-statement > *:not(#statement-print-root) {
+    display: none !important;
+  }
+  body.printing-statement #statement-print-root {
+    display: block !important;
+  }
+
+  @page {
+    size: A4 portrait;
+    margin: 16mm 14mm;
+  }
+
+  html,
+  body {
+    background: #fff;
+  }
+
+  .spv {
+    color: #000;
+    font: 10pt/1.32 "Times New Roman", Georgia, "Liberation Serif", serif;
+  }
+
+  /* ---- centered header block, closed by a full-width rule ---- */
+  .spv-head {
+    text-align: center;
+    padding-bottom: 7pt;
+    margin-bottom: 8pt;
+    border-bottom: 1pt solid #000;
+  }
+  .spv-company {
+    font-weight: 700;
+    font-size: 12pt;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  .spv-title {
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-top: 1pt;
+  }
+  .spv-subtitle {
+    font-size: 9.5pt;
+  }
+
+  /* ---- columnar body ---- */
+  .spv-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+  }
+  /* repeat the column headers at the top of every printed page */
+  .spv-table thead {
+    display: table-header-group;
+  }
+  .spv-table tfoot {
+    display: table-footer-group;
+  }
+
+  .spv-table th,
+  .spv-table td {
+    padding: 1pt 6pt;
+    vertical-align: top;
+    font-weight: 400;
+    text-align: left;
+  }
+  .spv-table th:first-child,
+  .spv-table td:first-child {
+    width: 52%;
+  }
+  .spv-num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  /* two-row column header: band ("FOR THE MONTH" / "AS OF" / ...) + period */
+  .spv-band th {
+    font-size: 8.5pt;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    border-bottom: 0.5pt solid #000;
+  }
+  .spv-period th {
+    font-weight: 700;
+    border-bottom: 1pt solid #000;
+    padding-bottom: 3pt;
+  }
+
+  /* statement super-headings (BS "ASSETS" / "LIABILITIES & SHAREHOLDERS'
+     EQUITY") - spaced-out caps closed by a rule, per the template */
+  .spv-statement-heading .spv-desc {
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.28em;
+    padding-top: 13pt;
+    padding-bottom: 2pt;
+    border-bottom: 0.75pt solid #000;
+  }
+
+  /* section headings (REVENUE, LESS: DIRECT COSTS, CURRENT ASSETS, ...).
+     Flow-section headings carry their section total on the same row. */
+  .spv-section-heading .spv-desc,
+  .spv-section-heading .spv-num {
+    font-weight: 700;
+    text-transform: uppercase;
+    padding-top: 6pt;
+  }
+
+  .spv-account .spv-desc {
+    font-size: 9.5pt;
+  }
+
+  /* subtotals: bold, thin rule above (the template's "----" over TOTAL rows) */
+  .spv-subtotal .spv-desc,
+  .spv-subtotal .spv-num {
+    font-weight: 700;
+  }
+  .spv-subtotal td,
+  .spv-subtotal th {
+    border-top: 0.5pt solid #000;
+  }
+
+  /* computed totals: bold caps, heavier rule above */
+  .spv-computed-total .spv-desc,
+  .spv-computed-total .spv-num {
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+  }
+  .spv-computed-total td,
+  .spv-computed-total th {
+    border-top: 1pt solid #000;
+    padding-top: 3pt;
+    padding-bottom: 3pt;
+  }
+
+  /* the final grand total of each statement (Net Income / Total Liabilities
+     & Shareholders' Equity): the template's "====" double underline */
+  .spv-grand-total td,
+  .spv-grand-total th {
+    border-bottom: 3pt double #000;
+  }
+
+  /* Current Year Earnings / NET INCOME/(LOSS) line inside Equity - a single
+     normal line item, never expanded */
+  .spv-synthetic .spv-desc {
+    font-weight: 700;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+
+  .spv-unclassified .spv-desc {
+    font-style: italic;
+  }
+
+  /* negatives keep the plain leading "-" (as the template does); all black */
+  .spv-neg {
+    color: #000;
+  }
+
+  /* serializer "rule" nodes -> a small vertical gap; the section / subtotal
+     / total borders above carry the visible ruling, so no double lines */
+  .spv-rule td {
+    padding: 0;
+    height: 4pt;
+    border: 0;
+  }
+  .spv-spacer td {
+    padding: 0;
+    height: 6pt;
+    border: 0;
+  }
+
+  /* keep totals with their section, don't strand a heading / grand total */
+  .spv-subtotal,
+  .spv-computed-total,
+  .spv-section-heading,
+  .spv-statement-heading {
+    break-inside: avoid;
+  }
+  .spv-computed-total {
+    break-before: avoid;
+  }
+
+  .spv-notes {
+    margin-top: 12pt;
+    font-size: 9pt;
+    break-inside: avoid;
+  }
+  .spv-notes p {
+    margin: 2pt 0;
+  }
+
+  /* stacked signature area, per the template (Prepared / Checked / Approved,
+     each a label above a blank rule with room to sign) */
+  .spv-signatures {
+    margin-top: 40pt;
+    break-inside: avoid;
+  }
+  .spv-sig {
+    margin-top: 26pt;
+  }
+  .spv-sig:first-child {
+    margin-top: 0;
+  }
+  .spv-sig-line {
+    border-bottom: 0.75pt solid #000;
+    width: 2.7in;
+    height: 22pt;
+  }
+  .spv-sig-label {
+    margin-top: 2pt;
+    font-size: 9.5pt;
+  }
+}

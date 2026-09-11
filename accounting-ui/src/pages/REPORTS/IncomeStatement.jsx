@@ -1,5 +1,16 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { downloadCsvText } from "./reportCsv.mjs";
+import {
+  statementToCsv,
+  statementFilename,
+  incomeStatementScreenParams,
+  toQueryString,
+  statementWarnings,
+} from "./statementModel.mjs";
+import StatementView from "./StatementView.jsx";
+import StatementPrintView from "./StatementPrintView.jsx";
+import ReportExportMenu from "./ReportExportMenu.jsx";
 import "./IncomeStatement.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
@@ -15,95 +26,77 @@ export function IncomeStatement() {
 
   const [fromDate, setFromDate] = useState("2026-01-01");
   const [toDate, setToDate] = useState(today);
-  const [rows, setRows] = useState([]);
-  const [generated, setGenerated] = useState(false);
+  const [mode, setMode] = useState("condensed");
+  const [comparePrevWanted, setComparePrevWanted] = useState(true);
+
+  const [model, setModel] = useState(null);
+  const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
 
-  const formatMoney = (amount) =>
-    Number(amount || 0).toLocaleString("en-PH", {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    });
-
-  const revenueRows = rows.filter(
-    (r) =>
-      String(r.group_name || "").toUpperCase().includes("REVENUE") ||
-      String(r.account_class || "").toUpperCase() === "INCOME"
+  // request shape (also drives the enabled/disabled state of the compact
+  // "Previous Month" comparison checkbox) - all logic lives in the pure
+  // helper; previous-month comparison is only offered for a full calendar
+  // month.
+  const req = useMemo(
+    () => incomeStatementScreenParams({ from: fromDate, to: toDate, mode, comparePrevWanted }),
+    [fromDate, toDate, mode, comparePrevWanted]
   );
-
-  const expenseRows = rows.filter(
-    (r) =>
-      String(r.group_name || "").toUpperCase().includes("EXPENSE") ||
-      String(r.account_class || "").toUpperCase() === "EXPENSE"
-  );
-
-  const totals = useMemo(() => {
-    const revenue = revenueRows.reduce((s, r) => s + Number(r.amount || 0), 0);
-    const expenses = expenseRows.reduce((s, r) => s + Number(r.amount || 0), 0);
-    return { revenue, expenses, netIncome: revenue - expenses };
-  }, [rows]);
 
   async function generateReport() {
     setLoading(true);
+    setError(null);
     try {
-      const res = await fetch(
-        `${API_URL}/api/reports/income-statement?from=${fromDate}&to=${toDate}`,
-        { credentials: "include", headers: authHeaders() }
-      );
-
-      if (!res.ok) throw new Error("Failed to generate income statement");
-
-      const data = await res.json();
-      setRows(Array.isArray(data) ? data : []);
-      setGenerated(true);
+      const res = await fetch(`${API_URL}/api/reports/income-statement?${toQueryString(req.params)}`, {
+        credentials: "include",
+        headers: authHeaders(),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setModel(null);
+        setError(body.message || "Unable to generate the Income Statement for the selected filters.");
+        return;
+      }
+      setModel(body);
     } catch (err) {
-      console.error(err);
-      alert("Failed to generate Income Statement. Check backend/server.");
-      setRows([]);
-      setGenerated(true);
+      console.error("INCOME STATEMENT ERROR:", err);
+      setModel(null);
+      setError("Unable to reach the server. Please try again.");
     } finally {
       setLoading(false);
     }
   }
 
-  function openAccount(row) {
-    navigate(
-      `/reports/account-analysis?accountCode=${encodeURIComponent(
-        row.account_code
-      )}&from=${fromDate}&to=${toDate}`
-    );
+  // Changing the report shape (mode / comparison) re-fetches from the
+  // canonical structured endpoint - Detailed is never faked client-side.
+  const firstRender = useRef(true);
+  useEffect(() => {
+    if (firstRender.current) {
+      firstRender.current = false;
+      return;
+    }
+    if (model || error) generateReport();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, comparePrevWanted]);
+
+  function clearReport() {
+    setModel(null);
+    setError(null);
   }
 
   function exportCSV() {
-    if (!rows.length) return alert("Generate report first.");
-
-    const csvRows = [
-      ["INCOME STATEMENT"],
-      [`For the period ${fromDate} to ${toDate}`],
-      [],
-      ["REVENUE"],
-      ...revenueRows.map((r) => [r.account_code, r.account_title, r.amount]),
-      ["", "TOTAL REVENUE", totals.revenue],
-      [],
-      ["EXPENSES"],
-      ...expenseRows.map((r) => [r.account_code, r.account_title, r.amount]),
-      ["", "TOTAL EXPENSES", totals.expenses],
-      [],
-      ["", "NET INCOME / LOSS", totals.netIncome],
-    ];
-
-    const csv = csvRows
-      .map((row) => row.map((c) => `"${String(c ?? "").replace(/"/g, '""')}"`).join(","))
-      .join("\n");
-
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `Income_Statement_${toDate}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    if (!model) return alert("Generate the report first.");
+    // The CSV is the exact statement currently on screen - same mode, dates
+    // and comparison - because it serializes the displayed model.
+    downloadCsvText(statementFilename(model), statementToCsv(model));
   }
+
+  function openAccount(accountCode) {
+    navigate(
+      `/reports/account-analysis?accountCode=${encodeURIComponent(accountCode)}&from=${fromDate}&to=${toDate}`
+    );
+  }
+
+  const warnings = statementWarnings(model);
 
   return (
     <div className="is-page">
@@ -114,36 +107,39 @@ export function IncomeStatement() {
 
         <div className="is-grid">
           <div>
-            <label>Date From</label>
-            <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
+            <label htmlFor="is-from">Date From</label>
+            <input id="is-from" type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
           </div>
 
           <div>
-            <label>Date To</label>
-            <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
+            <label htmlFor="is-to">Date To</label>
+            <input id="is-to" type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
           </div>
 
           <div>
-            <label>Company</label>
-            <select>
-              <option>Select Company</option>
+            <label htmlFor="is-mode">Report Mode</label>
+            <select id="is-mode" value={mode} onChange={(e) => setMode(e.target.value)}>
+              <option value="condensed">Condensed</option>
+              <option value="detailed">Detailed</option>
             </select>
           </div>
 
-          <div>
-            <label>Branch / Department</label>
-            <select>
-              <option>All Branches</option>
-            </select>
-          </div>
-
-          <div>
-            <label>Status</label>
-            <select>
-              <option>All</option>
-              <option>Posted</option>
-              <option>Draft</option>
-            </select>
+          <div className="is-compare-field">
+            <label className={`is-compare-check${!req.wholeMonth ? " is-compare-check--disabled" : ""}`}>
+              <input
+                type="checkbox"
+                checked={req.comparePrevActive}
+                disabled={!req.wholeMonth}
+                onChange={(e) => setComparePrevWanted(e.target.checked)}
+                aria-describedby={req.comparePrevDisabledReason ? "is-compare-hint" : undefined}
+              />
+              <span>Previous Month</span>
+            </label>
+            {req.comparePrevDisabledReason ? (
+              <span id="is-compare-hint" className="is-compare-hint">
+                {req.comparePrevDisabledReason}
+              </span>
+            ) : null}
           </div>
         </div>
 
@@ -151,62 +147,40 @@ export function IncomeStatement() {
           <button className="primary" onClick={generateReport} disabled={loading}>
             {loading ? "Generating..." : "Generate Report"}
           </button>
-          <button
-            className="secondary"
-            onClick={() => {
-              setRows([]);
-              setGenerated(false);
-            }}
-          >
+          <button className="secondary" onClick={clearReport} disabled={loading}>
             Clear Filters
           </button>
-          <button className="dark" onClick={() => window.print()}>Export PDF</button>
-          <button className="dark" onClick={exportCSV}>Export CSV</button>
+          <ReportExportMenu
+            disabled={!model}
+            onPrint={() => window.print()}
+            onExportCsv={exportCSV}
+          />
         </div>
       </div>
 
-      {generated && (
-        <div className="is-report">
-          <div className="is-title">
-            <h2>INCOME STATEMENT</h2>
-            <p>For the period {fromDate} to {toDate}</p>
-          </div>
+      {loading ? <div className="stmt-loading">Generating the Income Statement…</div> : null}
 
-          <div className="section-title">REVENUE</div>
-          {revenueRows.map((row) => (
-            <div className="report-row" key={row.account_code}>
-              <span className="clickable" onClick={() => openAccount(row)}>
-                {row.account_code} - {row.account_title}
-              </span>
-              <span>{formatMoney(row.amount)}</span>
-            </div>
-          ))}
-          <div className="subtotal">
-            <span>TOTAL REVENUE</span>
-            <span>{formatMoney(totals.revenue)}</span>
-          </div>
-
-          <div className="section-title">LESS: EXPENSES</div>
-          {expenseRows.map((row) => (
-            <div className="report-row" key={row.account_code}>
-              <span className="clickable" onClick={() => openAccount(row)}>
-                {row.account_code} - {row.account_title}
-              </span>
-              <span>{formatMoney(row.amount)}</span>
-            </div>
-          ))}
-          <div className="subtotal">
-            <span>TOTAL EXPENSES</span>
-            <span>{formatMoney(totals.expenses)}</span>
-          </div>
-
-          <div className="grand-total">
-            <span>NET INCOME / LOSS</span>
-            <span>{formatMoney(totals.netIncome)}</span>
-          </div>
+      {error ? (
+        <div className="stmt-error" role="alert">
+          {error}
         </div>
-      )}
+      ) : null}
+
+      {warnings.unclassified.show ? (
+        <div className="stmt-warning" role="status">
+          <strong>Group Code classification incomplete</strong>
+          {warnings.unclassified.message}
+        </div>
+      ) : null}
+
+      {model ? (
+        <>
+          <StatementView model={model} onAccountClick={openAccount} />
+          <StatementPrintView model={model} />
+        </>
+      ) : !loading && !error ? (
+        <div className="stmt-empty">Choose a date range and click Generate Report.</div>
+      ) : null}
     </div>
-    
   );
 }

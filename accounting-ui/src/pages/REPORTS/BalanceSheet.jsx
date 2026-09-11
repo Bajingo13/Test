@@ -1,5 +1,17 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { downloadCsvText } from "./reportCsv.mjs";
+import {
+  statementToCsv,
+  statementFilename,
+  balanceSheetScreenParams,
+  toQueryString,
+  statementWarnings,
+  formatScreenAmount,
+} from "./statementModel.mjs";
+import StatementView from "./StatementView.jsx";
+import StatementPrintView from "./StatementPrintView.jsx";
+import ReportExportMenu from "./ReportExportMenu.jsx";
 import "./BalanceSheet.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
@@ -14,116 +26,71 @@ export default function BalanceSheet() {
   const today = new Date().toISOString().slice(0, 10);
 
   const [toDate, setToDate] = useState(today);
-  const [rows, setRows] = useState([]);
-  const [generated, setGenerated] = useState(false);
+  const [compareTo, setCompareTo] = useState("");
+  const [mode, setMode] = useState("condensed");
+
+  const [model, setModel] = useState(null);
+  const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
 
-  const formatMoney = (amount) =>
-    Number(amount || 0).toLocaleString("en-PH", {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    });
-
-  const assetRows = rows.filter(
-    (r) =>
-      String(r.group_name || "").toUpperCase().includes("ASSET") ||
-      String(r.account_class || "").toUpperCase() === "ASSET"
+  const req = useMemo(
+    () => balanceSheetScreenParams({ to: toDate, compareTo, mode }),
+    [toDate, compareTo, mode]
   );
-
-  const liabilityRows = rows.filter(
-    (r) =>
-      String(r.group_name || "").toUpperCase().includes("LIABIL") ||
-      String(r.account_class || "").toUpperCase().includes("LIABIL")
-  );
-
-  const capitalRows = rows.filter(
-    (r) =>
-      String(r.group_name || "").toUpperCase().includes("EQUITY") ||
-      String(r.group_name || "").toUpperCase().includes("CAPITAL") ||
-      String(r.account_class || "").toUpperCase() === "CAPITAL"
-  );
-
-  const totals = useMemo(() => {
-    const assets = assetRows.reduce((s, r) => s + Number(r.amount || 0), 0);
-    const liabilities = liabilityRows.reduce((s, r) => s + Number(r.amount || 0), 0);
-    const capital = capitalRows.reduce((s, r) => s + Number(r.amount || 0), 0);
-
-    return {
-      assets,
-      liabilities,
-      capital,
-      liabilitiesAndCapital: liabilities + capital,
-    };
-  }, [rows]);
 
   async function generateReport() {
     setLoading(true);
-
+    setError(null);
     try {
-      const res = await fetch(`${API_URL}/api/reports/balance-sheet?to=${toDate}`, {
+      const res = await fetch(`${API_URL}/api/reports/balance-sheet?${toQueryString(req.params)}`, {
         credentials: "include",
         headers: authHeaders(),
       });
-
-      if (!res.ok) throw new Error("Failed to generate balance sheet");
-
-      const data = await res.json();
-      setRows(Array.isArray(data) ? data : []);
-      setGenerated(true);
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setModel(null);
+        setError(body.message || "Unable to generate the Balance Sheet for the selected filters.");
+        return;
+      }
+      setModel(body);
     } catch (err) {
-      console.error(err);
-      alert("Failed to generate Balance Sheet. Check backend/server.");
-      setRows([]);
-      setGenerated(true);
+      console.error("BALANCE SHEET ERROR:", err);
+      setModel(null);
+      setError("Unable to reach the server. Please try again.");
     } finally {
       setLoading(false);
     }
   }
 
-  function openAccount(row) {
-    navigate(
-      `/reports/account-analysis?accountCode=${encodeURIComponent(
-        row.account_code
-      )}&from=2026-01-01&to=${toDate}`
-    );
+  // Re-fetch the canonical structured report when the report shape changes
+  // (mode, or the comparative as-of). Detailed is never faked client-side.
+  const firstRender = useRef(true);
+  useEffect(() => {
+    if (firstRender.current) {
+      firstRender.current = false;
+      return;
+    }
+    if (model || error) generateReport();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, compareTo]);
+
+  function clearReport() {
+    setModel(null);
+    setError(null);
   }
 
   function exportCSV() {
-    if (!rows.length) return alert("Generate report first.");
-
-    const csvRows = [
-      ["BALANCE SHEET"],
-      [`As of ${toDate}`],
-      [],
-      ["ASSETS"],
-      ...assetRows.map((r) => [r.account_code, r.account_title, r.amount]),
-      ["", "TOTAL ASSETS", totals.assets],
-      [],
-      ["LIABILITIES"],
-      ...liabilityRows.map((r) => [r.account_code, r.account_title, r.amount]),
-      ["", "TOTAL LIABILITIES", totals.liabilities],
-      [],
-      ["CAPITAL"],
-      ...capitalRows.map((r) => [r.account_code, r.account_title, r.amount]),
-      ["", "TOTAL CAPITAL", totals.capital],
-      [],
-      ["", "TOTAL LIABILITIES & CAPITAL", totals.liabilitiesAndCapital],
-    ];
-
-    const csv = csvRows
-      .map((row) => row.map((c) => `"${String(c ?? "").replace(/"/g, '""')}"`).join(","))
-      .join("\n");
-
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-
-    a.href = url;
-    a.download = `Balance_Sheet_${toDate}.csv`;
-    a.click();
-
-    URL.revokeObjectURL(url);
+    if (!model) return alert("Generate the report first.");
+    downloadCsvText(statementFilename(model), statementToCsv(model));
   }
+
+  function openAccount(accountCode) {
+    navigate(
+      `/reports/account-analysis?accountCode=${encodeURIComponent(accountCode)}&from=2026-01-01&to=${toDate}`
+    );
+  }
+
+  const warnings = statementWarnings(model);
 
   return (
     <div className="bs-page">
@@ -134,30 +101,20 @@ export default function BalanceSheet() {
 
         <div className="bs-grid">
           <div>
-            <label>Date As Of</label>
-            <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
+            <label htmlFor="bs-asof">As Of</label>
+            <input id="bs-asof" type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
           </div>
 
           <div>
-            <label>Company</label>
-            <select>
-              <option>Select Company</option>
-            </select>
+            <label htmlFor="bs-compare">Compare To (optional)</label>
+            <input id="bs-compare" type="date" value={compareTo} onChange={(e) => setCompareTo(e.target.value)} />
           </div>
 
           <div>
-            <label>Branch / Department</label>
-            <select>
-              <option>All Branches</option>
-            </select>
-          </div>
-
-          <div>
-            <label>Status</label>
-            <select>
-              <option>All</option>
-              <option>Posted</option>
-              <option>Draft</option>
+            <label htmlFor="bs-mode">Report Mode</label>
+            <select id="bs-mode" value={mode} onChange={(e) => setMode(e.target.value)}>
+              <option value="condensed">Condensed</option>
+              <option value="detailed">Detailed</option>
             </select>
           </div>
         </div>
@@ -166,75 +123,56 @@ export default function BalanceSheet() {
           <button className="primary" onClick={generateReport} disabled={loading}>
             {loading ? "Generating..." : "Generate Report"}
           </button>
-          <button
-            className="secondary"
-            onClick={() => {
-              setRows([]);
-              setGenerated(false);
-            }}
-          >
+          <button className="secondary" onClick={clearReport} disabled={loading}>
             Clear Filters
           </button>
-          <button className="dark" onClick={() => window.print()}>Export PDF</button>
-          <button className="dark" onClick={exportCSV}>Export CSV</button>
+          <ReportExportMenu
+            disabled={!model}
+            onPrint={() => window.print()}
+            onExportCsv={exportCSV}
+          />
         </div>
       </div>
 
-      {generated && (
-        <div className="bs-report">
-          <div className="bs-title">
-            <h2>BALANCE SHEET</h2>
-            <p>As of {toDate}</p>
-          </div>
+      {loading ? <div className="stmt-loading">Generating the Balance Sheet…</div> : null}
 
-          <div className="section-title">ASSETS</div>
-          {assetRows.map((row) => (
-            <div className="report-row" key={row.account_code}>
-              <span className="clickable" onClick={() => openAccount(row)}>
-                {row.account_code} - {row.account_title}
-              </span>
-              <span>{formatMoney(row.amount)}</span>
-            </div>
-          ))}
-          <div className="subtotal">
-            <span>TOTAL ASSETS</span>
-            <span>{formatMoney(totals.assets)}</span>
-          </div>
-
-          <div className="section-title">LIABILITIES</div>
-          {liabilityRows.map((row) => (
-            <div className="report-row" key={row.account_code}>
-              <span className="clickable" onClick={() => openAccount(row)}>
-                {row.account_code} - {row.account_title}
-              </span>
-              <span>{formatMoney(row.amount)}</span>
-            </div>
-          ))}
-          <div className="subtotal">
-            <span>TOTAL LIABILITIES</span>
-            <span>{formatMoney(totals.liabilities)}</span>
-          </div>
-
-          <div className="section-title">CAPITAL</div>
-          {capitalRows.map((row) => (
-            <div className="report-row" key={row.account_code}>
-              <span className="clickable" onClick={() => openAccount(row)}>
-                {row.account_code} - {row.account_title}
-              </span>
-              <span>{formatMoney(row.amount)}</span>
-            </div>
-          ))}
-          <div className="subtotal">
-            <span>TOTAL CAPITAL</span>
-            <span>{formatMoney(totals.capital)}</span>
-          </div>
-
-          <div className="grand-total">
-            <span>TOTAL LIABILITIES & CAPITAL</span>
-            <span>{formatMoney(totals.liabilitiesAndCapital)}</span>
-          </div>
+      {error ? (
+        <div className="stmt-error" role="alert">
+          {error}
         </div>
-      )}
+      ) : null}
+
+      {warnings.unclassified.show ? (
+        <div className="stmt-warning" role="status">
+          <strong>Group Code classification incomplete</strong>
+          {warnings.unclassified.message}
+        </div>
+      ) : null}
+
+      {warnings.balance.show ? (
+        <div className="stmt-warning" role="status">
+          <strong>Balance Sheet is out of balance</strong>
+          {warnings.balance.message}
+          {warnings.balance.columns.length ? (
+            <ul>
+              {warnings.balance.columns.map((c) => (
+                <li key={c.key}>
+                  {c.label}: difference of {formatScreenAmount(c.delta)}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
+
+      {model ? (
+        <>
+          <StatementView model={model} onAccountClick={openAccount} />
+          <StatementPrintView model={model} />
+        </>
+      ) : !loading && !error ? (
+        <div className="stmt-empty">Choose an as-of date and click Generate Report.</div>
+      ) : null}
     </div>
   );
 }

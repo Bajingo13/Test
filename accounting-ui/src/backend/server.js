@@ -25,6 +25,8 @@ const loginRateLimiter = rateLimit({
 });
 const LedgerReportService = require("./services/LedgerReportService");
 const FinancialStatementService = require("./services/financialStatementService");
+const FinancialStatementStructureService = require("./services/financialStatementStructureService");
+const StructuredStatementRequest = require("./lib/structuredStatementRequest");
 const GroupCodeClassification = require("./services/groupCodeClassification");
 const { buildXlsxTemplate } = require("./services/TemplateExportService");
 const { templateImportUpload, coaImportUpload, handleUpload } = require("./lib/uploadMiddleware");
@@ -7088,6 +7090,36 @@ app.delete("/api/group-codes/:id", authenticateToken, authorizePermission("FILES
   try {
     const { id } = req.params;
 
+    // Phase H.1 integrity safeguard: a Group Code that is still assigned to
+    // Chart of Accounts rows must not be deleted, or those COA rows would be
+    // orphaned on the financial statements. coa_groups links to
+    // account_group_codes by the group_code STRING (there is no DB foreign
+    // key), so this is an explicit application-level reference check. No
+    // cascade, no reassignment, no NULLing - the user detaches the accounts
+    // first (or sets the Group Code Inactive). If the id does not exist the
+    // pre-existing lenient behaviour is preserved (DELETE hits 0 rows, still
+    // reports success).
+    const [ownerRows] = await pool.execute(
+      "SELECT group_code AS groupCode FROM account_group_codes WHERE id = ?",
+      [id]
+    );
+    if (ownerRows.length) {
+      const [usageRows] = await pool.execute(
+        "SELECT COUNT(*) AS refCount FROM coa_groups WHERE group_code = ?",
+        [ownerRows[0].groupCode]
+      );
+      const refCount = Number(usageRows[0].refCount) || 0;
+      if (refCount > 0) {
+        return res.status(409).json({
+          message:
+            "This Group Code cannot be deleted because it is assigned to one or more Chart of Accounts records.",
+          code: "GROUP_CODE_IN_USE",
+          error: "GROUP_CODE_IN_USE",
+          references: { coaGroups: refCount },
+        });
+      }
+    }
+
     await pool.execute("DELETE FROM account_group_codes WHERE id = ?", [id]);
 
     res.json({
@@ -7705,8 +7737,54 @@ app.get("/api/reports/output-vat", authenticateToken, authorizePermission("REPOR
 
 // ====================== INCOME STATEMENT REPORT ======================
 
+// Reports Phase B: additive, opt-in structured view. `?view=structured`
+// delegates to the canonical financialStatementStructureService model
+// (Condensed/Detailed, current / previous-month / YTD columns, readiness +
+// unclassified diagnostics, optional strict gate). ANY request WITHOUT
+// view=structured falls through to the byte-identical legacy flat response
+// below - shape, status codes and callers unchanged.
+async function handleStructuredIncomeStatement(req, res) {
+  const parsed = StructuredStatementRequest.parseIncomeStatementParams(req.query);
+  if (!parsed.ok) return res.status(parsed.status).json(parsed.body);
+
+  const { mode, strict, periods } = parsed.value;
+  // Same backend-authoritative company scope as the legacy branch:
+  // resolveCompanyIdForWrite validates any requested companyId against the
+  // authenticated user's companies (or falls back to their own).
+  const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+  const model = await FinancialStatementStructureService.buildIncomeStatement({
+    companyId,
+    mode,
+    periods: periods.map((p) => ({ key: p.key, label: p.bandLabel, from: p.from, to: p.to })),
+  });
+
+  if (strict) {
+    const gate = StructuredStatementRequest.evaluateStrict(model);
+    if (gate.blocked) return res.status(gate.status).json(gate.body);
+  }
+
+  const columns = periods.map((p) => ({
+    key: p.key,
+    label: p.bandLabel,
+    periodLabel: p.periodLabel,
+    from: p.from,
+    to: p.to,
+  }));
+  return res.json({
+    ...model,
+    view: "structured",
+    columns,
+    meta: { ...model.meta, view: "structured", periods: columns },
+  });
+}
+
 app.get("/api/reports/income-statement", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
   try {
+    if (req.query.view === "structured") {
+      return await handleStructuredIncomeStatement(req, res);
+    }
+
     const { from, to } = req.query;
     // Checkpoint 6A fixed company scoping here (company_id = ? on every
     // branch). chart_of_accounts/coa_groups/account_group_codes remain
@@ -7745,8 +7823,57 @@ app.get("/api/reports/income-statement", authenticateToken, authorizePermission(
 
 // ====================== BALANCE SHEET REPORT ======================
 
+// Reports Phase C: additive, opt-in structured view. `?view=structured`
+// delegates to the canonical financialStatementStructureService model
+// (Condensed/Detailed; current + optional comparative as-of + DIFFERENCE;
+// canonical Phase A.1 Current Year Earnings; balanceCheck; readiness +
+// unclassified diagnostics; optional strict gate). ANY request WITHOUT
+// view=structured falls through to the byte-identical legacy flat response
+// below - shape, CYE behaviour, status codes and callers unchanged.
+async function handleStructuredBalanceSheet(req, res) {
+  const parsed = StructuredStatementRequest.parseBalanceSheetParams(req.query);
+  if (!parsed.ok) return res.status(parsed.status).json(parsed.body);
+
+  const { mode, strict, withDifference, columns } = parsed.value;
+  // Same backend-authoritative company scope as the legacy branch.
+  const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+  const model = await FinancialStatementStructureService.buildBalanceSheet({
+    companyId,
+    mode,
+    columns: columns.map((c) => ({ key: c.key, label: c.bandLabel, date: c.date })),
+    withDifference,
+  });
+
+  if (strict) {
+    const gate = StructuredStatementRequest.evaluateBalanceSheetStrict(model);
+    if (gate.blocked) return res.status(gate.status).json(gate.body);
+  }
+
+  // Enrich the model's slim {key,label} columns with periodLabel + date.
+  // The builder-produced DIFFERENCE column (if any) has no date and passes
+  // through with its label.
+  const byKey = new Map(columns.map((c) => [c.key, c]));
+  const enriched = model.columns.map((mc) => {
+    const src = byKey.get(mc.key);
+    return src
+      ? { key: mc.key, label: src.bandLabel, periodLabel: src.periodLabel, date: src.date }
+      : { key: mc.key, label: mc.label };
+  });
+  return res.json({
+    ...model,
+    view: "structured",
+    columns: enriched,
+    meta: { ...model.meta, view: "structured", asOf: enriched.filter((c) => c.date) },
+  });
+}
+
 app.get("/api/reports/balance-sheet", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
   try {
+    if (req.query.view === "structured") {
+      return await handleStructuredBalanceSheet(req, res);
+    }
+
     const { to } = req.query;
     // Checkpoint 6A: company_id = ? on every branch (chart_of_accounts/
     // coa_groups/account_group_codes remain unfiltered by design).

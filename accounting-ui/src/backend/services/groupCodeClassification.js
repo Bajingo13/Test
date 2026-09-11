@@ -101,20 +101,39 @@ function validateGroupCodeClassification({ accountClass, reportSection, displayO
   return { ok: true, value: { reportSection: section, displayOrder: order } };
 }
 
+// The five canonical account classes report_section validation is keyed on.
+const CANONICAL_ACCOUNT_CLASSES = Object.keys(ALLOWED_SECTIONS_BY_CLASS);
+
 // Classification readiness over a list of active group-code rows. Pure -
 // the caller supplies the rows (already company/tenant appropriate; group
 // codes follow the shared-catalog architecture, so there is no per-company
 // scoping to apply here, and no balances are ever read). `ready` is true
 // only when every active group is classified AND no active group carries
 // an invalid section for its class.
+//
+// `unrecognizedGroupClass` (added for the Reports canonical statement model)
+// is an ADDITIVE diagnostic derived from the same input rows: any active
+// group whose account_class is not one of the five canonical classes. It
+// does NOT change the `ready` rule - such a group is already caught as
+// unclassified (NULL section) or invalid (non-NULL section that can never
+// be valid for a non-canonical class), so `ready` was already unreachable
+// for it.
 function getClassificationReadiness(rows) {
   const list = Array.isArray(rows) ? rows : [];
   const unclassified = [];
   const invalid = [];
+  const unrecognizedGroupClass = [];
 
   for (const row of list) {
     const section = normalizeSection(row.report_section ?? row.reportSection);
     const cls = row.account_class ?? row.accountClass;
+    const clsNorm = String(cls ?? "").trim().toUpperCase();
+    if (!CANONICAL_ACCOUNT_CLASSES.includes(clsNorm)) {
+      unrecognizedGroupClass.push({
+        groupCode: row.group_code ?? row.groupCode,
+        accountClass: cls ?? null,
+      });
+    }
     if (section === null) {
       unclassified.push({ groupCode: row.group_code ?? row.groupCode, groupDescription: row.group_description ?? row.groupDescription });
     } else if (!isValidSectionForClass(cls, section)) {
@@ -134,6 +153,7 @@ function getClassificationReadiness(rows) {
     unclassified: unclassified.length,
     unclassifiedGroupCodes: unclassified,
     invalid,
+    unrecognizedGroupClass,
     ready: total > 0 && unclassified.length === 0 && invalid.length === 0,
   };
 }
