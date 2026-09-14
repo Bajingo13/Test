@@ -7,6 +7,7 @@ import Dashboard from "./pages/DASHBOARD/dashboard";
 import COA from "./pages/FILESETUP/COA";
 import GenLib from "./pages/FILESETUP/GenLib";
 import GroupCodes from "./pages/FILESETUP/GroupCodes";
+import ReportSections from "./pages/FILESETUP/ReportSections";
 import Login from "./pages/login/login";
 import AcceptInvite from "./pages/ADMIN/AcceptInvite";
 import PendingInvitations from "./pages/ADMIN/PendingInvitations";
@@ -156,6 +157,7 @@ function AppLayout() {
           <Route path="/general-libraries" element={<GenLib />} />
           <Route path="/group-code" element={<GroupCodes />} />
           <Route path="/group-codes" element={<GroupCodes />} />
+          <Route path="/report-sections" element={<ReportSections />} />
           <Route path="/industry" element={<Industry />} />
           <Route path="/category-code" element={<CategoryCode />} />
           <Route path="/beginning-balances" element={<BeginningBalance />} />

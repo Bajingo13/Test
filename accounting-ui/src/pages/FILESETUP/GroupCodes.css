@@ -149,6 +149,36 @@
   color: var(--text-muted, var(--text-secondary));
 }
 
+/* Phase M.1: Report Section dropdown + "+" quick-add button, same
+   row/button shape as TransactionVoucherHeader.jsx's party-add button. */
+.group-section-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.group-section-row select {
+  flex: 1;
+}
+
+.group-section-add-btn {
+  flex: 0 0 auto;
+  width: 42px;
+  height: 42px;
+  border: 1px solid var(--border-color-strong);
+  border-radius: 10px;
+  background: var(--bg-surface);
+  color: var(--accent-teal);
+  font-size: 20px;
+  font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.group-section-add-btn:hover {
+  background: var(--bg-surface-muted);
+}
+
 .group-actions {
   margin-top: 22px;
   display: flex;

@@ -1,33 +1,34 @@
 import { useEffect, useMemo, useState } from "react";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
 import usePermissions from "../../hooks/usePermissions";
-import AutoResizeTextarea from "../../components/AutoResizeTextarea";
-import ReportSectionQuickAddModal from "../../components/ReportSectionQuickAddModal";
 import "./GroupCodes.css";
 
+// Phase M.1: Report Section master data. Reuses GroupCodes.css verbatim
+// (group-* class names) - same List/Add/Edit/Delete/View/Search toolbar
+// pattern as Group Code, on purpose: this page is the new authoritative
+// source Group Code's own Report Section dropdown now loads dynamically
+// from GET /api/report-sections, replacing the old hard-coded
+// groupCodeSections.mjs-driven dropdown.
+
 const API_BASE = import.meta.env.VITE_API_URL || "";
-const MODULE_KEY = "FILESETUP.GROUP_CODES";
+const MODULE_KEY = "FILESETUP.REPORT_SECTIONS";
 
 const ACCOUNT_CLASS_OPTIONS = ["ASSET", "LIABILITY", "EQUITY", "INCOME", "EXPENSE"];
 const STATUS_OPTIONS = ["ACTIVE", "INACTIVE"];
 
 const EMPTY_FORM = {
   id: null,
-  groupCode: "",
-  groupDescription: "",
+  code: "",
+  name: "",
   accountClass: "ASSET",
-  reportSection: "",
   displayOrder: "",
   status: "ACTIVE",
 };
 
-// API row -> form shape (Report Section "" = Unclassified, Display Order as a
-// string so the number input stays controlled and "blank" round-trips).
 function toForm(item) {
   return {
     ...EMPTY_FORM,
     ...item,
-    reportSection: item.reportSection || "",
     displayOrder:
       item.displayOrder === null || item.displayOrder === undefined
         ? ""
@@ -35,7 +36,7 @@ function toForm(item) {
   };
 }
 
-export default function GroupCodes() {
+export default function ReportSections() {
   const { can, loading: permsLoading } = usePermissions();
 
   const [records, setRecords] = useState([]);
@@ -45,97 +46,32 @@ export default function GroupCodes() {
   const [form, setForm] = useState(EMPTY_FORM);
   const [loading, setLoading] = useState(false);
 
-  // Phase M.1: Report Section options now come from the dynamic
-  // report_sections master table (GET /api/report-sections) instead of the
-  // old hard-coded groupCodeSections.mjs - loaded once on mount and
-  // refreshed after a quick-add. `sections` holds ALL rows (any status) so
-  // an existing Group Code referencing a since-deactivated section can
-  // still show its proper name instead of the raw code; the dropdown
-  // itself filters to ACTIVE + the selected Account Class.
-  const [sections, setSections] = useState([]);
-  const [showSectionModal, setShowSectionModal] = useState(false);
-
   const isEditing = mode === "add" || mode === "edit";
 
-  // Backend authority is authorizePermission("FILESETUP.GROUP_CODES", ...);
-  // the toolbar only REFLECTS it. VIEW gates the screen, CONFIGURE gates
-  // every write. No new permissions are introduced.
+  // Backend authority is authorizePermission("FILESETUP.REPORT_SECTIONS",
+  // ...); the toolbar only REFLECTS it, same pattern as Group Code.
   const canView = permsLoading || can(MODULE_KEY, "VIEW");
   const canConfigure = can(MODULE_KEY, "CONFIGURE");
 
   useEffect(() => {
-    loadGroupCodes();
     loadReportSections();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  async function loadReportSections() {
-    try {
-      const res = await fetch(`${API_BASE}/api/report-sections`, {
-        credentials: "include",
-        headers: authHeaders(),
-      });
-      const data = await res.json();
-      if (res.ok) setSections(Array.isArray(data) ? data : []);
-    } catch (err) {
-      console.error("LOAD REPORT SECTIONS ERROR:", err);
-    }
-  }
-
-  // [{code, name}] for a class, ACTIVE only - what the dropdown offers.
-  function sectionsForClass(accountClass) {
-    const cls = String(accountClass || "").trim().toUpperCase();
-    return sections
-      .filter((s) => s.accountClass === cls && s.status === "ACTIVE")
-      .map((s) => ({ code: s.code, label: s.name }));
-  }
-
-  // Any status, so a since-deactivated section a Group Code still
-  // references shows its real name rather than the bare code.
-  function sectionLabel(code) {
-    const found = sections.find((s) => s.code === code);
-    return found ? found.name : code || "";
-  }
-
-  function isSectionValidForClass(accountClass, section) {
-    if (!section) return true;
-    return sectionsForClass(accountClass).some((s) => s.code === section);
-  }
-
-  function handleSectionCreated(created) {
-    setShowSectionModal(false);
-    loadReportSections();
-    // The whole point of the "+" quick-add is that the newly created
-    // section is immediately usable - select it right away rather than
-    // leaving the user to reopen the dropdown and find it themselves.
-    updateField("reportSection", created.code);
-  }
 
   const filteredRecords = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return records;
 
     return records.filter((item) =>
-      [
-        item.groupCode,
-        item.groupDescription,
-        item.accountClass,
-        item.reportSection ? sectionLabel(item.reportSection) : "Unclassified",
-        item.status,
-      ]
+      [item.code, item.name, item.accountClass, item.status]
         .join(" ")
         .toLowerCase()
         .includes(q)
     );
   }, [records, search]);
 
-  // Previous / Next walk the CURRENTLY VISIBLE (filtered) list, in the same
-  // deterministic order the API returns (display_order asc, NULLs last, then
-  // group_code).
   const currentIndex = filteredRecords.findIndex((r) => r.id === selectedId);
 
-  // If a narrowing search hides the selected record, drop the selection so a
-  // later Edit / Delete can never act on a row the user can no longer see.
   useEffect(() => {
     if (isEditing) return;
     if (selectedId != null && !filteredRecords.some((r) => r.id === selectedId)) {
@@ -145,11 +81,11 @@ export default function GroupCodes() {
     }
   }, [filteredRecords, isEditing, selectedId]);
 
-  async function loadGroupCodes(preferId) {
+  async function loadReportSections(preferId) {
     try {
       setLoading(true);
 
-      const res = await fetch(`${API_BASE}/api/group-codes`, {
+      const res = await fetch(`${API_BASE}/api/report-sections`, {
         credentials: "include",
         headers: authHeaders(),
       });
@@ -158,7 +94,7 @@ export default function GroupCodes() {
 
       if (!res.ok) {
         if (handleAuthError(res.status)) return;
-        alert(data.message || "Failed to load group codes.");
+        alert(data.message || "Failed to load report sections.");
         return;
       }
 
@@ -176,7 +112,7 @@ export default function GroupCodes() {
       }
       setMode("view");
     } catch (err) {
-      console.error("LOAD GROUP CODES ERROR:", err);
+      console.error("LOAD REPORT SECTIONS ERROR:", err);
       alert("Unable to connect to server.");
     } finally {
       setLoading(false);
@@ -184,26 +120,12 @@ export default function GroupCodes() {
   }
 
   function updateField(key, value) {
-    setForm((prev) => {
-      const next = { ...prev, [key]: value };
-      // Changing Account Class can invalidate the chosen Report Section -
-      // reset it to Unclassified rather than keep an illegal combination or
-      // silently guess a replacement.
-      if (key === "accountClass" && !isSectionValidForClass(value, next.reportSection)) {
-        next.reportSection = "";
-      }
-      return next;
-    });
+    setForm((prev) => ({ ...prev, [key]: value }));
   }
-
-  const unclassifiedCount = useMemo(
-    () => records.filter((r) => r.status === "ACTIVE" && !r.reportSection).length,
-    [records]
-  );
 
   function confirmDiscardIfEditing() {
     if (!isEditing) return true;
-    return window.confirm("Discard unsaved changes to this Group Code?");
+    return window.confirm("Discard unsaved changes to this Report Section?");
   }
 
   function applySelection(item) {
@@ -236,7 +158,7 @@ export default function GroupCodes() {
   function handleEdit() {
     if (!canConfigure) return;
     if (!form.id) {
-      alert("Select a Group Code from the list first.");
+      alert("Select a Report Section from the list first.");
       return;
     }
     setMode("edit");
@@ -270,16 +192,16 @@ export default function GroupCodes() {
 
   async function handleSave() {
     if (!canConfigure) return;
-    if (!form.groupCode.trim() || !form.groupDescription.trim()) {
-      alert("Group Code and Description are required.");
+    if (!form.code.trim() || !form.name.trim()) {
+      alert("Report Section Code and Name are required.");
       return;
     }
 
     try {
       const url =
         mode === "add"
-          ? `${API_BASE}/api/group-codes`
-          : `${API_BASE}/api/group-codes/${form.id}`;
+          ? `${API_BASE}/api/report-sections`
+          : `${API_BASE}/api/report-sections/${form.id}`;
 
       const method = mode === "add" ? "POST" : "PUT";
 
@@ -291,11 +213,10 @@ export default function GroupCodes() {
         },
         credentials: "include",
         body: JSON.stringify({
-          groupCode: form.groupCode.trim(),
-          groupDescription: form.groupDescription.trim(),
+          code: form.code.trim(),
+          name: form.name.trim(),
           accountClass: form.accountClass,
           status: form.status,
-          reportSection: form.reportSection || null,
           displayOrder: form.displayOrder === "" ? null : Number(form.displayOrder),
         }),
       });
@@ -304,33 +225,33 @@ export default function GroupCodes() {
 
       if (!res.ok) {
         if (handleAuthError(res.status)) return;
-        alert(data.message || "Failed to save group code.");
+        alert(data.message || "Failed to save report section.");
         return;
       }
 
-      alert(data.message || "Group code saved successfully.");
+      alert(data.message || "Report section saved successfully.");
       const savedId = mode === "add" ? data.id : form.id;
-      await loadGroupCodes(savedId);
+      await loadReportSections(savedId);
     } catch (err) {
-      console.error("SAVE GROUP CODE ERROR:", err);
-      alert("Unable to save group code.");
+      console.error("SAVE REPORT SECTION ERROR:", err);
+      alert("Unable to save report section.");
     }
   }
 
   async function handleDelete() {
     if (!canConfigure) return;
     if (!form.id) {
-      alert("Select a Group Code from the list first.");
+      alert("Select a Report Section from the list first.");
       return;
     }
 
     const confirmDelete = window.confirm(
-      `Delete group code "${form.groupCode}"? This cannot be undone.`
+      `Delete report section "${form.name}"? This cannot be undone.`
     );
     if (!confirmDelete) return;
 
     try {
-      const res = await fetch(`${API_BASE}/api/group-codes/${form.id}`, {
+      const res = await fetch(`${API_BASE}/api/report-sections/${form.id}`, {
         method: "DELETE",
         credentials: "include",
         headers: authHeaders(),
@@ -340,32 +261,32 @@ export default function GroupCodes() {
 
       if (!res.ok) {
         if (handleAuthError(res.status)) return;
-        alert(data.message || "Failed to delete group code.");
+        alert(data.message || "Failed to delete report section.");
         return;
       }
 
-      alert(data.message || "Group code deleted successfully.");
-      await loadGroupCodes();
+      alert(data.message || "Report section deleted successfully.");
+      await loadReportSections();
     } catch (err) {
-      console.error("DELETE GROUP CODE ERROR:", err);
-      alert("Unable to delete group code.");
+      console.error("DELETE REPORT SECTION ERROR:", err);
+      alert("Unable to delete report section.");
     }
   }
 
   const modeLabel =
     mode === "add"
-      ? "Adding a new Group Code"
+      ? "Adding a new Report Section"
       : mode === "edit"
-      ? "Editing Group Code"
+      ? "Editing Report Section"
       : selectedId
-      ? "Viewing Group Code"
-      : "No Group Code selected";
+      ? "Viewing Report Section"
+      : "No Report Section selected";
 
   if (!canView) {
     return (
       <div className="group-page">
         <div className="group-main">
-          <div className="group-card">You do not have permission to view Group Codes.</div>
+          <div className="group-card">You do not have permission to view Report Sections.</div>
         </div>
       </div>
     );
@@ -377,9 +298,10 @@ export default function GroupCodes() {
         <div className="group-header">
           <div>
             <p className="group-mini">Astrea Blue</p>
-            <h1>Group Codes</h1>
+            <h1>Report Sections</h1>
             <p className="group-subtext">
-              Maintain account grouping and financial statement classification.
+              Maintain the Balance Sheet / Income Statement section catalog Group Codes classify
+              into.
             </p>
           </div>
 
@@ -443,44 +365,36 @@ export default function GroupCodes() {
         </div>
 
         <div className="group-card">
-          {unclassifiedCount > 0 && (
-            <div className="group-warning" role="status">
-              {unclassifiedCount} Group Code{unclassifiedCount === 1 ? "" : "s"} still need
-              report classification. Their balances will appear under Unclassified on the
-              Condensed / Detailed Balance Sheet and Income Statement until classification is
-              completed.
-            </div>
-          )}
-
           <p className="group-mode-tag">{modeLabel}</p>
 
           <div className="group-form-grid">
             <div className="group-field">
-              <label htmlFor="gc-code">Group Code</label>
+              <label htmlFor="rs-code">Report Section Code</label>
               <input
-                id="gc-code"
-                value={form.groupCode}
+                id="rs-code"
+                value={form.code}
                 disabled={!isEditing}
-                onChange={(e) => updateField("groupCode", e.target.value)}
-                placeholder="Example: 1000"
+                onChange={(e) => updateField("code", e.target.value.toUpperCase())}
+                placeholder="Example: CURRENT_ASSET"
               />
+              <p className="group-help">Machine-safe code stored on Group Code.</p>
             </div>
 
             <div className="group-field group-field--wide">
-              <label htmlFor="gc-desc">Group Description</label>
-              <AutoResizeTextarea
-                id="gc-desc"
-                value={form.groupDescription}
+              <label htmlFor="rs-name">Report Section Name</label>
+              <input
+                id="rs-name"
+                value={form.name}
                 disabled={!isEditing}
-                onChange={(e) => updateField("groupDescription", e.target.value)}
-                placeholder="Example: Cash and Cash Equivalents"
+                onChange={(e) => updateField("name", e.target.value)}
+                placeholder="Example: Current Assets"
               />
             </div>
 
             <div className="group-field">
-              <label htmlFor="gc-class">Account Class</label>
+              <label htmlFor="rs-class">Account Class</label>
               <select
-                id="gc-class"
+                id="rs-class"
                 value={form.accountClass}
                 disabled={!isEditing}
                 onChange={(e) => updateField("accountClass", e.target.value)}
@@ -489,55 +403,13 @@ export default function GroupCodes() {
                   <option key={item}>{item}</option>
                 ))}
               </select>
-              <p className="group-help">What type of account this group holds.</p>
+              <p className="group-help">Which Group Code Account Class can use this section.</p>
             </div>
 
             <div className="group-field">
-              <label htmlFor="gc-section">Report Section</label>
-              <div className="group-section-row">
-                <select
-                  id="gc-section"
-                  value={form.reportSection}
-                  disabled={!isEditing}
-                  onChange={(e) => updateField("reportSection", e.target.value)}
-                >
-                  <option value="">— Unclassified —</option>
-                  {sectionsForClass(form.accountClass).map((s) => (
-                    <option key={s.code} value={s.code}>
-                      {s.label}
-                    </option>
-                  ))}
-                </select>
-                {isEditing && (
-                  <button
-                    type="button"
-                    className="group-section-add-btn"
-                    onClick={() => setShowSectionModal(true)}
-                    title="Add New Report Section"
-                    aria-label="Add New Report Section"
-                  >
-                    +
-                  </button>
-                )}
-              </div>
-              <p className="group-help">
-                Where this group appears in the Balance Sheet / Income Statement template. The
-                choices follow the selected Account Class. Manage the full catalog under File
-                Setup → Report Sections.
-              </p>
-            </div>
-
-            <ReportSectionQuickAddModal
-              open={showSectionModal}
-              accountClass={form.accountClass}
-              onClose={() => setShowSectionModal(false)}
-              onCreated={handleSectionCreated}
-            />
-
-            <div className="group-field">
-              <label htmlFor="gc-order">Display Order</label>
+              <label htmlFor="rs-order">Display Order</label>
               <input
-                id="gc-order"
+                id="rs-order"
                 type="number"
                 step="1"
                 value={form.displayOrder}
@@ -546,15 +418,14 @@ export default function GroupCodes() {
                 placeholder="blank = auto"
               />
               <p className="group-help">
-                Controls the order of Group Codes within the selected Report Section. Leave
-                blank for automatic ordering.
+                Controls the order sections are offered in. Leave blank for automatic ordering.
               </p>
             </div>
 
             <div className="group-field">
-              <label htmlFor="gc-status">Status</label>
+              <label htmlFor="rs-status">Status</label>
               <select
-                id="gc-status"
+                id="rs-status"
                 value={form.status}
                 disabled={!isEditing}
                 onChange={(e) => updateField("status", e.target.value)}
@@ -563,6 +434,7 @@ export default function GroupCodes() {
                   <option key={item}>{item}</option>
                 ))}
               </select>
+              <p className="group-help">Only ACTIVE sections are offered on Group Code.</p>
             </div>
           </div>
 
@@ -576,20 +448,20 @@ export default function GroupCodes() {
                 className="group-btn group-btn--primary"
                 onClick={handleSave}
               >
-                {mode === "add" ? "Save Group Code" : "Update Group Code"}
+                {mode === "add" ? "Save Report Section" : "Update Report Section"}
               </button>
             </div>
           )}
 
           <div className="group-list-section">
             <div className="group-list-header">
-              <h2>Group Code List</h2>
+              <h2>Report Section List</h2>
               <span className="group-count">{filteredRecords.length} item(s)</span>
               <input
                 className="group-search no-print"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search group code..."
+                placeholder="Search report section..."
               />
             </div>
 
@@ -597,10 +469,9 @@ export default function GroupCodes() {
               <table className="group-table">
                 <thead>
                   <tr>
-                    <th>Group Code</th>
-                    <th>Description</th>
-                    <th>Class</th>
-                    <th>Report Section</th>
+                    <th>Code</th>
+                    <th>Name</th>
+                    <th>Account Class</th>
                     <th>Order</th>
                     <th>Status</th>
                   </tr>
@@ -609,8 +480,8 @@ export default function GroupCodes() {
                 <tbody>
                   {loading ? (
                     <tr>
-                      <td colSpan="6" className="empty-cell">
-                        Loading group codes...
+                      <td colSpan="5" className="empty-cell">
+                        Loading report sections...
                       </td>
                     </tr>
                   ) : filteredRecords.length > 0 ? (
@@ -622,24 +493,17 @@ export default function GroupCodes() {
                         }
                         onClick={() => selectRecord(item)}
                       >
-                        <td>{item.groupCode}</td>
-                        <td>{item.groupDescription}</td>
+                        <td>{item.code}</td>
+                        <td>{item.name}</td>
                         <td>{item.accountClass}</td>
-                        <td>
-                          {item.reportSection ? (
-                            sectionLabel(item.reportSection)
-                          ) : (
-                            <span className="group-unclassified">Unclassified</span>
-                          )}
-                        </td>
                         <td>{item.displayOrder ?? ""}</td>
                         <td>{item.status}</td>
                       </tr>
                     ))
                   ) : (
                     <tr>
-                      <td colSpan="6" className="empty-cell">
-                        No group codes found.
+                      <td colSpan="5" className="empty-cell">
+                        No report sections found.
                       </td>
                     </tr>
                   )}

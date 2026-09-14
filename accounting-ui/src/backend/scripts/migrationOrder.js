@@ -158,6 +158,17 @@ const MIGRATION_ORDER = [
   // information_schema; re-run is a no-op. Depends only on 000_baseline
   // (owns account_group_codes).
   "accounting_group_code_report_section_migration.sql",
+  // Phase M.1: Report Section master data - new report_sections table,
+  // seeded with the exact same 11 sections already live in
+  // groupCodeClassification.js, so every existing account_group_codes.
+  // report_section value keeps validating unchanged. Depends only on
+  // 000_baseline (no FK to any other table - account_group_codes.
+  // report_section stays a plain VARCHAR match, same as before).
+  "report_sections_master_migration.sql",
+  // Phase M.1: FILESETUP.REPORT_SECTIONS permission rows (VIEW/CONFIGURE)
+  // + ADMIN grant - must run after user_access_control_migration.sql
+  // (owns permissions/role_permissions/roles).
+  "report_sections_permissions_migration.sql",
 ];
 
 module.exports = { MIGRATION_ORDER };

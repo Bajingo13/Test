@@ -74,20 +74,42 @@ function isValidSectionForClass(accountClass, reportSection) {
 
 // Full validation for a create/update payload. Returns { ok: true, value }
 // with the normalized section + display order, or { ok: false, error }.
-function validateGroupCodeClassification({ accountClass, reportSection, displayOrder } = {}) {
+//
+// Phase M.1: report_section's legal-values source moved from this file's
+// static ALLOWED_SECTIONS_BY_CLASS/SECTION_CODES to the new report_sections
+// master table (reportSectionService.js) - this function is now ASYNC and
+// queries that table. This is a deliberately narrow, contained change: it
+// is the ONLY export in this file that becomes DB-aware. SECTION_CODES,
+// SECTION_LABELS, ALLOWED_SECTIONS_BY_CLASS, normalizeSection, and
+// isValidSectionForClass are untouched and still work exactly as before -
+// financialStatementStructureService.js's resolveSection() depends on them
+// synchronously and is out of scope for Phase M.1 (see that file's own
+// unmodified comment). A section beyond the original 11 seeded into
+// report_sections will pass THIS validation (Group Code create/update) but
+// will not yet have a slot in the structured statement skeleton, which
+// still checks against the original static SECTION_CODES - it shows under
+// Unclassified there, a documented limitation, not a defect.
+async function validateGroupCodeClassification({ accountClass, reportSection, displayOrder } = {}) {
   const section = normalizeSection(reportSection);
+  const cls = String(accountClass || "").trim().toUpperCase();
 
-  if (section !== null && !SECTION_CODES.includes(section)) {
-    return { ok: false, error: `Unknown report section "${reportSection}".` };
-  }
-  if (section !== null && !isValidSectionForClass(accountClass, section)) {
-    return {
-      ok: false,
-      error:
-        `Report section "${SECTION_LABELS[section] || section}" is not valid for account class ` +
-        `${String(accountClass || "").toUpperCase()}. Allowed: ` +
-        `${allowedSectionsForClass(accountClass).map((s) => s.label).join(", ") || "(none)"}.`,
-    };
+  if (section !== null) {
+    const ReportSectionService = require("./reportSectionService");
+    const allowedCodes = await ReportSectionService.getActiveCodesByClass(cls);
+    if (!allowedCodes.includes(section)) {
+      const rows = await ReportSectionService.listReportSections({ accountClass: cls, status: "ACTIVE" });
+      const labelFor = (code) => {
+        const found = rows.find((r) => r.code === code);
+        return found ? found.name : code;
+      };
+      const label = (rows.find((r) => r.code === section) || {}).name || SECTION_LABELS[section] || section;
+      return {
+        ok: false,
+        error:
+          `Report section "${label}" is not valid for account class ${cls}. Allowed: ` +
+          `${rows.map((r) => labelFor(r.code)).join(", ") || "(none)"}.`,
+      };
+    }
   }
 
   let order = null;

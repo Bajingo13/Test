@@ -12,6 +12,7 @@
 // so they're mapped below like every other real transaction module now.
 const PATH_PERMISSIONS = {
   "/coa": ["FILESETUP.COA", "VIEW"],
+  "/report-sections": ["FILESETUP.REPORT_SECTIONS", "VIEW"],
   "/general-libraries": ["FILESETUP.GENLIB", "VIEW"],
   "/beginning-balances/gl": ["FILESETUP.BEGINNING_BALANCES", "VIEW"],
   "/beginning-balances/ar": ["FILESETUP.BEGINNING_BALANCES", "VIEW"],

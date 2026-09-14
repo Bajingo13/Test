@@ -28,6 +28,7 @@ const FinancialStatementService = require("./services/financialStatementService"
 const FinancialStatementStructureService = require("./services/financialStatementStructureService");
 const StructuredStatementRequest = require("./lib/structuredStatementRequest");
 const GroupCodeClassification = require("./services/groupCodeClassification");
+const ReportSectionService = require("./services/reportSectionService");
 const { buildXlsxTemplate } = require("./services/TemplateExportService");
 const { templateImportUpload, coaImportUpload, handleUpload } = require("./lib/uploadMiddleware");
 const COAImportService = require("./services/COAImportService");
@@ -7013,7 +7014,9 @@ app.post("/api/group-codes", authenticateToken, authorizePermission("FILESETUP.G
   try {
     const { groupCode, groupDescription, accountClass, status, reportSection, displayOrder } = req.body;
 
-    const check = GroupCodeClassification.validateGroupCodeClassification({ accountClass, reportSection, displayOrder });
+    // Phase M.1: report_section validity is now checked against the
+    // report_sections master table (DB-backed), so this call is awaited.
+    const check = await GroupCodeClassification.validateGroupCodeClassification({ accountClass, reportSection, displayOrder });
     if (!check.ok) return res.status(400).json({ message: check.error });
 
     const [result] = await pool.execute(
@@ -7063,7 +7066,7 @@ app.put("/api/group-codes/:id", authenticateToken, authorizePermission("FILESETU
     const params = [groupCode, groupDescription, accountClass || "", status || "ACTIVE"];
 
     if (touchesClassification) {
-      const check = GroupCodeClassification.validateGroupCodeClassification({ accountClass, reportSection, displayOrder });
+      const check = await GroupCodeClassification.validateGroupCodeClassification({ accountClass, reportSection, displayOrder });
       if (!check.ok) return res.status(400).json({ message: check.error });
       setCols.push("report_section = ?", "display_order = ?");
       params.push(check.value.reportSection, check.value.displayOrder);
@@ -7129,6 +7132,73 @@ app.delete("/api/group-codes/:id", authenticateToken, authorizePermission("FILES
   } catch (err) {
     console.error("DELETE GROUP CODE ERROR:", err);
     res.status(500).json({ message: "Failed to delete group code" });
+  }
+});
+
+// ===================== REPORT SECTIONS API (Phase M.1) =====================
+// Dynamic master data for the Report Section catalog Group Code's
+// report_section column validates against - replaces what used to be a
+// hard-coded array (see reportSectionService.js's header comment for the
+// full architecture note). Purely metadata, read-only with respect to
+// every transaction module, COA, tax/EWT/VAT, and currency logic - nothing
+// here touches account_group_codes' group_code/group_description/
+// account_class/status columns, coa_groups, or any ledger table except a
+// read-only usage COUNT(*) on account_group_codes for the delete guard.
+app.get("/api/report-sections", authenticateToken, authorizePermission("FILESETUP.REPORT_SECTIONS", "VIEW"), async (req, res) => {
+  try {
+    const { accountClass, status } = req.query;
+    const rows = await ReportSectionService.listReportSections({ accountClass, status });
+    res.json(rows);
+  } catch (err) {
+    console.error("GET REPORT SECTIONS ERROR:", err);
+    res.status(500).json({ message: "Failed to load report sections" });
+  }
+});
+
+app.post("/api/report-sections", authenticateToken, authorizePermission("FILESETUP.REPORT_SECTIONS", "CONFIGURE"), async (req, res) => {
+  try {
+    const { code, name, accountClass, displayOrder, status } = req.body;
+    const result = await ReportSectionService.createReportSection({ code, name, accountClass, displayOrder, status });
+    res.json({ success: true, message: "Report section created successfully", id: result.id });
+  } catch (err) {
+    if (err.statusCode) {
+      return res.status(err.statusCode).json({ message: err.message, ...(err.code ? { code: err.code } : {}) });
+    }
+    console.error("CREATE REPORT SECTION ERROR:", err);
+    res.status(500).json({ message: "Failed to create report section" });
+  }
+});
+
+app.put("/api/report-sections/:id", authenticateToken, authorizePermission("FILESETUP.REPORT_SECTIONS", "CONFIGURE"), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { code, name, accountClass, displayOrder, status } = req.body;
+    await ReportSectionService.updateReportSection(id, { code, name, accountClass, displayOrder, status });
+    res.json({ success: true, message: "Report section updated successfully" });
+  } catch (err) {
+    if (err.statusCode) {
+      return res.status(err.statusCode).json({ message: err.message, ...(err.code ? { code: err.code } : {}) });
+    }
+    console.error("UPDATE REPORT SECTION ERROR:", err);
+    res.status(500).json({ message: "Failed to update report section" });
+  }
+});
+
+app.delete("/api/report-sections/:id", authenticateToken, authorizePermission("FILESETUP.REPORT_SECTIONS", "CONFIGURE"), async (req, res) => {
+  try {
+    const { id } = req.params;
+    await ReportSectionService.deleteReportSection(id);
+    res.json({ success: true, message: "Report section deleted successfully" });
+  } catch (err) {
+    if (err.statusCode) {
+      return res.status(err.statusCode).json({
+        message: err.message,
+        ...(err.code ? { code: err.code } : {}),
+        ...(err.references ? { references: err.references } : {}),
+      });
+    }
+    console.error("DELETE REPORT SECTION ERROR:", err);
+    res.status(500).json({ message: "Failed to delete report section" });
   }
 });
 

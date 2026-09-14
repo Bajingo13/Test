@@ -110,61 +110,67 @@ describe("migration - accounting_group_code_report_section_migration.sql", () =>
 
 // ------------------------------------------------------------------ validation
 
+// Phase M.1: validateGroupCodeClassification is now ASYNC (it validates
+// report_section against the new report_sections master table instead of
+// the static ALLOWED_SECTIONS_BY_CLASS object) - every call here is
+// awaited and every test is async. The matrix itself is unchanged: the
+// table is seeded (report_sections_master_migration.sql) with the exact
+// same 11 codes/classes this matrix always tested.
 describe("validation matrix (§6)", () => {
-  const ok = (accountClass, reportSection) =>
-    expect(GCC.validateGroupCodeClassification({ accountClass, reportSection }).ok).toBe(true);
-  const rejected = (accountClass, reportSection) =>
-    expect(GCC.validateGroupCodeClassification({ accountClass, reportSection }).ok).toBe(false);
+  const ok = async (accountClass, reportSection) =>
+    expect((await GCC.validateGroupCodeClassification({ accountClass, reportSection })).ok).toBe(true);
+  const rejected = async (accountClass, reportSection) =>
+    expect((await GCC.validateGroupCodeClassification({ accountClass, reportSection })).ok).toBe(false);
 
-  test("ASSET accepts Current/Non-Current Asset, rejects everything else", () => {
-    ok("ASSET", "CURRENT_ASSET");
-    ok("ASSET", "NON_CURRENT_ASSET");
-    rejected("ASSET", "OPERATING_EXPENSE");
-    rejected("ASSET", "CURRENT_LIABILITY");
-    rejected("ASSET", "EQUITY");
+  test("ASSET accepts Current/Non-Current Asset, rejects everything else", async () => {
+    await ok("ASSET", "CURRENT_ASSET");
+    await ok("ASSET", "NON_CURRENT_ASSET");
+    await rejected("ASSET", "OPERATING_EXPENSE");
+    await rejected("ASSET", "CURRENT_LIABILITY");
+    await rejected("ASSET", "EQUITY");
   });
 
-  test("LIABILITY accepts Current/Non-Current Liability", () => {
-    ok("LIABILITY", "CURRENT_LIABILITY");
-    ok("LIABILITY", "NON_CURRENT_LIABILITY");
-    rejected("LIABILITY", "CURRENT_ASSET");
+  test("LIABILITY accepts Current/Non-Current Liability", async () => {
+    await ok("LIABILITY", "CURRENT_LIABILITY");
+    await ok("LIABILITY", "NON_CURRENT_LIABILITY");
+    await rejected("LIABILITY", "CURRENT_ASSET");
   });
 
-  test("EQUITY accepts EQUITY only", () => {
-    ok("EQUITY", "EQUITY");
-    rejected("EQUITY", "REVENUE");
+  test("EQUITY accepts EQUITY only", async () => {
+    await ok("EQUITY", "EQUITY");
+    await rejected("EQUITY", "REVENUE");
   });
 
-  test("INCOME accepts Revenue and Other Income", () => {
-    ok("INCOME", "REVENUE");
-    ok("INCOME", "OTHER_INCOME");
-    rejected("INCOME", "DIRECT_COST");
+  test("INCOME accepts Revenue and Other Income", async () => {
+    await ok("INCOME", "REVENUE");
+    await ok("INCOME", "OTHER_INCOME");
+    await rejected("INCOME", "DIRECT_COST");
   });
 
-  test("EXPENSE accepts Direct Cost / Operating Expense / Other Expense / Tax Expense", () => {
-    ok("EXPENSE", "DIRECT_COST");
-    ok("EXPENSE", "OPERATING_EXPENSE");
-    ok("EXPENSE", "OTHER_EXPENSE");
-    ok("EXPENSE", "TAX_EXPENSE");
-    rejected("EXPENSE", "REVENUE");
+  test("EXPENSE accepts Direct Cost / Operating Expense / Other Expense / Tax Expense", async () => {
+    await ok("EXPENSE", "DIRECT_COST");
+    await ok("EXPENSE", "OPERATING_EXPENSE");
+    await ok("EXPENSE", "OTHER_EXPENSE");
+    await ok("EXPENSE", "TAX_EXPENSE");
+    await rejected("EXPENSE", "REVENUE");
   });
 
-  test("NULL / empty report_section is always valid (unclassified allowed)", () => {
-    ok("ASSET", null);
-    ok("EXPENSE", "");
-    ok("INCOME", undefined);
+  test("NULL / empty report_section is always valid (unclassified allowed)", async () => {
+    await ok("ASSET", null);
+    await ok("EXPENSE", "");
+    await ok("INCOME", undefined);
   });
 
-  test("unknown section code is rejected", () => {
-    rejected("ASSET", "MYSTERY_SECTION");
+  test("unknown section code is rejected", async () => {
+    await rejected("ASSET", "MYSTERY_SECTION");
   });
 
-  test("display_order: integer accepted, blank/NULL accepted, non-integer rejected", () => {
-    expect(GCC.validateGroupCodeClassification({ accountClass: "ASSET", displayOrder: 10 }).ok).toBe(true);
-    expect(GCC.validateGroupCodeClassification({ accountClass: "ASSET", displayOrder: "" }).value.displayOrder).toBeNull();
-    expect(GCC.validateGroupCodeClassification({ accountClass: "ASSET", displayOrder: null }).value.displayOrder).toBeNull();
-    expect(GCC.validateGroupCodeClassification({ accountClass: "ASSET", displayOrder: 3.5 }).ok).toBe(false);
-    expect(GCC.validateGroupCodeClassification({ accountClass: "ASSET", displayOrder: "abc" }).ok).toBe(false);
+  test("display_order: integer accepted, blank/NULL accepted, non-integer rejected", async () => {
+    expect((await GCC.validateGroupCodeClassification({ accountClass: "ASSET", displayOrder: 10 })).ok).toBe(true);
+    expect((await GCC.validateGroupCodeClassification({ accountClass: "ASSET", displayOrder: "" })).value.displayOrder).toBeNull();
+    expect((await GCC.validateGroupCodeClassification({ accountClass: "ASSET", displayOrder: null })).value.displayOrder).toBeNull();
+    expect((await GCC.validateGroupCodeClassification({ accountClass: "ASSET", displayOrder: 3.5 })).ok).toBe(false);
+    expect((await GCC.validateGroupCodeClassification({ accountClass: "ASSET", displayOrder: "abc" })).ok).toBe(false);
   });
 });
 
