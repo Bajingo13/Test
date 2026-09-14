@@ -59,6 +59,22 @@ export function downloadCsv(filename, rows) {
   downloadCsvText(filename, rowsToCsv(rows));
 }
 
+// Formula-injection-safe row builder for reports whose cells mix free text
+// (particulars, references, account titles - any of which could start with
+// a spreadsheet formula lead) and numeric amounts. Each cell is
+// { t: "text" | "num", v }; text cells go through csvTextCell (formula-
+// injection guard), numeric cells go through csvCell (already safe, and a
+// negative amount's leading "-" stays untouched, matching the convention
+// documented on csvTextCell above). Mirrors statementModel.mjs's cell-
+// typing convention so other Reports pages (e.g. Books of Accounts) can
+// share this instead of re-deriving it per page. Purely additive - existing
+// csvCell/csvTextCell/rowsToCsv/downloadCsv callers are unchanged.
+export function typedRowsToCsv(rows) {
+  return rows
+    .map((row) => row.map((c) => (c && c.t === "num" ? csvCell(c.v) : csvTextCell(c && c.v))).join(","))
+    .join("\n");
+}
+
 // Download an already-assembled CSV string (the statement serializer builds
 // its own string so it can apply csvTextCell vs csvCell per cell type).
 export function downloadCsvText(filename, csvString) {

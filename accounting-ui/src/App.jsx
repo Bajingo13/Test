@@ -86,6 +86,13 @@ import Form2307 from "./pages/REPORTS/Form2307.jsx";
 import EwtAudit from "./pages/REPORTS/EwtAudit.jsx";
 import GeneralLedger from "./pages/REPORTS/GeneralLedger.jsx";
 import CashFlowStatement from "./pages/REPORTS/CashFlowStatement.jsx";
+import JournalBook from "./pages/REPORTS/JournalBook.jsx";
+import IncomeBook from "./pages/REPORTS/IncomeBook.jsx";
+import CashReceiptBook from "./pages/REPORTS/CashReceiptBook.jsx";
+import CashDisbursementBook from "./pages/REPORTS/CashDisbursementBook.jsx";
+import AccountsPayableBook from "./pages/REPORTS/AccountsPayableBook.jsx";
+import PettyCashBook from "./pages/REPORTS/PettyCashBook.jsx";
+import DebitCreditMemoBook from "./pages/REPORTS/DebitCreditMemoBook.jsx";
 
 function PlaceholderPage({ title }) {
   return (
@@ -211,6 +218,13 @@ function AppLayout() {
           <Route path="/reports/2307" element={<Form2307 />} />
           <Route path="/reports/expanded-withholding-tax-report" element={<MonthlyExpandedTaxAlphalist />} />
           <Route path="/reports/ewt-audit" element={<EwtAudit />} />
+          <Route path="/reports/books/journal" element={<JournalBook />} />
+          <Route path="/reports/books/income" element={<IncomeBook />} />
+          <Route path="/reports/books/cash-receipt" element={<CashReceiptBook />} />
+          <Route path="/reports/books/cash-disbursement" element={<CashDisbursementBook />} />
+          <Route path="/reports/books/accounts-payable" element={<AccountsPayableBook />} />
+          <Route path="/reports/books/petty-cash" element={<PettyCashBook />} />
+          <Route path="/reports/books/debit-credit-memo" element={<DebitCreditMemoBook />} />
 
           <Route
   path="/beginning-balances/gl"

@@ -220,9 +220,22 @@
   font-weight: 700;
 }
 
+/* Reports Phase L.1: controlled inline API error (no alert()), shared by
+   any lgr-page report that wants it. */
+.lgr-error {
+  background: #fdecec;
+  border: 1px solid #e0a1a1;
+  color: #8a1f1f;
+  border-radius: 10px;
+  padding: 12px 16px;
+  margin-bottom: 20px;
+  font-size: 14px;
+}
+
 @media print {
   .lgr-header,
-  .lgr-filters {
+  .lgr-filters,
+  .lgr-error {
     display: none;
   }
 

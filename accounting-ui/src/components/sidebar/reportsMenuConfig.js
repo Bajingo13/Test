@@ -98,13 +98,30 @@ export const REPORTS_MENU = [
     id: "books-of-accounts",
     label: "Books of Accounts",
     children: [
-      { id: "income-book", label: "Income Book", icon: Banknote, path: null },
-      { id: "cash-receipt-book", label: "Cash Receipt Book", icon: ArrowDownToLine, path: null },
-      { id: "cash-disbursement-book", label: "Cash Disbursement Book", icon: ArrowUpFromLine, path: null },
-      { id: "accounts-payable-book", label: "Accounts Payable Book", icon: CreditCard, path: null },
-      { id: "journal-book", label: "Journal Book", icon: FileText, path: null },
-      { id: "petty-cash-book", label: "Petty Cash Book", icon: PiggyBank, path: null },
-      { id: "debit-credit-memo-book", label: "Debit/Credit Memo Book", icon: FileWarning, path: null },
+      // Reports Phase L.2: second Book of Accounts to get a real page -
+      // source_type = 'INV' from the canonical LedgerReportService union.
+      { id: "income-book", label: "Income Book", icon: Banknote, path: "/reports/books/income" },
+      // Reports Phase L.3: third Book of Accounts to get a real page -
+      // source_type = 'OR' from the canonical LedgerReportService union.
+      { id: "cash-receipt-book", label: "Cash Receipt Book", icon: ArrowDownToLine, path: "/reports/books/cash-receipt" },
+      // Reports Phase L.4: fourth Book of Accounts to get a real page -
+      // source_type = 'CV' from the canonical LedgerReportService union.
+      { id: "cash-disbursement-book", label: "Cash Disbursement Book", icon: ArrowUpFromLine, path: "/reports/books/cash-disbursement" },
+      // Reports Phase L.5: fifth Book of Accounts to get a real page -
+      // source_type = 'APV' from the canonical LedgerReportService union.
+      { id: "accounts-payable-book", label: "Accounts Payable Book", icon: CreditCard, path: "/reports/books/accounts-payable" },
+      // Reports Phase L.1: the first Book of Accounts to get a real page -
+      // source_type = 'JV' from the canonical LedgerReportService union.
+      // The other six stay path:null/"Coming Soon" until their own phase.
+      { id: "journal-book", label: "Journal Book", icon: FileText, path: "/reports/books/journal" },
+      // Reports Phase L.6: sixth Book of Accounts to get a real page -
+      // source_type = 'PETTY CASH' from the canonical LedgerReportService
+      // union.
+      { id: "petty-cash-book", label: "Petty Cash Book", icon: PiggyBank, path: "/reports/books/petty-cash" },
+      // Reports Phase L.7: seventh and final individual Book of Accounts
+      // to get a real page - source_type = 'DEBIT MEMO' or 'CREDIT MEMO'
+      // (combined) from the canonical LedgerReportService union.
+      { id: "debit-credit-memo-book", label: "Debit/Credit Memo Book", icon: FileWarning, path: "/reports/books/debit-credit-memo" },
     ],
   },
   {

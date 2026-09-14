@@ -185,8 +185,157 @@ async function getBeginningBalances({ before, accountCodes, companyId }) {
   return balances;
 }
 
+// Reports Books of Accounts (Phase L.1 Journal Book, Phase L.2 Income Book,
+// ...). A Book of Accounts is simply the canonical union filtered to one or
+// more source_type values and presented chronologically (by voucher, then
+// by line), instead of grouped/windowed by account_code the way General
+// Ledger / Subsidiary Ledger are. No new recognition SQL - Posted-only and
+// company isolation are inherited unchanged from buildTransactionUnionSql.
+// Every line is preserved (a voucher with N lines produces N rows here),
+// never collapsed to one net amount, so the caller can show full
+// debit/credit detail and sum its own totals from the actual rows.
+//
+// `sourceTypes` is ALWAYS server-chosen configuration - each Book's own
+// backend route passes a hardcoded literal array (["JV"], ["INV"], ...),
+// never anything derived from req.query/req.body - so this can never become
+// a client-controlled SQL-injection surface; the IN (...) list is still
+// fully parameterized regardless.
+//
+// tx.source_type is additive (Phase L.7): it was already computed inside
+// buildTransactionUnionSql for every branch and used internally by the WHERE
+// clause below, just never surfaced in the SELECT list. Six Books (Journal/
+// Income/Cash Receipt/Cash Disbursement/Accounts Payable/Petty Cash) each
+// have exactly one sourceTypes[] entry, so every row they get back already
+// has one single, implied, unambiguous type - their BookReport.jsx callers
+// don't read this field and are completely unaffected by its presence. Only
+// the seventh, dual-source Debit/Credit Memo Book (Phase L.7) needs it: its
+// two source types ("DEBIT MEMO"/"CREDIT MEMO") share one free-typed,
+// user-entered voucher_no column with no enforced DM-/CM- prefix (see
+// voucherNumberService.js - "manual numbering is preserved, voucher_no
+// stays user-typed free text"), so two rows with the same reference number
+// could otherwise be indistinguishable as to which Memo produced them.
+async function getBookRows({ sourceTypes, from, to, companyId }) {
+  if (!Array.isArray(sourceTypes) || sourceTypes.length === 0) {
+    throw new Error("getBookRows: sourceTypes[] is required");
+  }
+  const unionSql = buildTransactionUnionSql("BETWEEN ? AND ?");
+  const unionParams = Array(9).fill([from, to, companyId]).flat();
+  const placeholders = sourceTypes.map(() => "?").join(",");
+
+  const [rows] = await pool.execute(
+    `
+    SELECT
+      tx.id AS line_id,
+      tx.transaction_id,
+      tx.transaction_date,
+      tx.reference_no,
+      tx.source_type,
+      tx.account_code,
+      COALESCE(ca.title, tx.account_title) AS account_title,
+      tx.particulars,
+      tx.debit,
+      tx.credit
+    FROM (${unionSql}) tx
+    LEFT JOIN chart_of_accounts ca
+      ON TRIM(CAST(ca.code AS CHAR)) = TRIM(CAST(tx.account_code AS CHAR))
+    WHERE tx.source_type IN (${placeholders})
+    ORDER BY tx.transaction_date, tx.sort_order, tx.transaction_id, tx.id
+    `,
+    [...unionParams, ...sourceTypes]
+  );
+
+  return rows;
+}
+
+// Journal Book (Phase L.1) - source_type = 'JV' only. Kept as its own named
+// function (not inlined at the route) so the call site reads the same as
+// before the Phase L.2 getBookRows extraction; behavior is unchanged - for
+// a single-element sourceTypes array, `IN (?)` is equivalent to `= ?`.
+function getJournalBookRows({ from, to, companyId }) {
+  return getBookRows({ sourceTypes: ["JV"], from, to, companyId });
+}
+
+// Income Book (Phase L.2) - source_type = 'INV' only.
+function getIncomeBookRows({ from, to, companyId }) {
+  return getBookRows({ sourceTypes: ["INV"], from, to, companyId });
+}
+
+// Cash Receipt Book (Phase L.3) - source_type = 'OR' only.
+function getCashReceiptBookRows({ from, to, companyId }) {
+  return getBookRows({ sourceTypes: ["OR"], from, to, companyId });
+}
+
+// Cash Disbursement Book (Phase L.4) - source_type = 'CV' only. CV's
+// lifecycle (Draft/Posted/Void/Cancelled/Reversed) needs no special-casing
+// here: postedOnlySql already excludes anything not Posted, and a CV
+// "reversal" creates a separate Posted reversing JV (see POST
+// /api/cv/:id/reverse) rather than a second CV row - the original CV stays
+// Posted, unchanged, and shows here exactly once; its reversing entry shows
+// once in Journal Book (source_type = 'JV'), not here.
+function getCashDisbursementBookRows({ from, to, companyId }) {
+  return getBookRows({ sourceTypes: ["CV"], from, to, companyId });
+}
+
+// Accounts Payable Book (Phase L.5) - source_type = 'APV' only. Same
+// lifecycle shape as CV: postedOnlySql excludes Void/Cancelled, and an APV
+// "reversal" creates a separate Posted reversing JV (see POST
+// /api/apv/:id/reverse) rather than a second APV row - the original APV
+// stays Posted, unchanged, exactly once. CV settlement of an APV updates
+// only apv_headers.payment_status/balance_amount (never apv_lines.debit/
+// credit, which is all this union reads), so settlement has zero effect on
+// what this Book shows - it is an accounting book, not an outstanding-
+// payables/AP-aging report.
+function getAccountsPayableBookRows({ from, to, companyId }) {
+  return getBookRows({ sourceTypes: ["APV"], from, to, companyId });
+}
+
+// Petty Cash Book (Phase L.6) - source_type = 'PETTY CASH' only (note the
+// space - confirmed by reading buildTransactionUnionSql directly, not
+// assumed). Petty Cash's lifecycle is simpler than CV/APV: server.js has no
+// /void, /cancel, or /reverse route for petty-cash at all - only Draft
+// (freely PUT-editable/DELETE-able) and Posted (both blocked with 409
+// TRANSACTION_ALREADY_POSTED once Posted; see PUT/DELETE /api/petty-cash/:id
+// - Phase 7A.1 immutability). There is no reversal mechanism (no separate
+// reversing PCV or JV is ever generated for Petty Cash), so unlike CV/APV
+// there is nothing here to exclude beyond the standard postedOnlySql filter,
+// which already keeps this Book to Posted PCVs exactly as recognized by the
+// canonical union.
+function getPettyCashBookRows({ from, to, companyId }) {
+  return getBookRows({ sourceTypes: ["PETTY CASH"], from, to, companyId });
+}
+
+// Debit/Credit Memo Book (Phase L.7) - a single combined Book over TWO
+// source types, confirmed by reading buildTransactionUnionSql directly:
+// the memo branch computes source_type as CONCAT(h.memo_type, ' MEMO')
+// from memo_headers.memo_type (ENUM('DEBIT','CREDIT')), producing exactly
+// 'DEBIT MEMO' and 'CREDIT MEMO' - not two separate physical tables, one
+// shared memo_headers/memo_lines pair discriminated by memo_type (same
+// design memoized in voucherNumberService.js's DM/CM module config and
+// server.js's registerMemoRoutes("DEBIT", ...)/("CREDIT", ...)). Both
+// share the exact same lifecycle (Draft -> Posted, both enforced by
+// postedOnlySql; no /void, /cancel, or /reverse route exists for either -
+// same shape as Petty Cash) and the same permission module
+// (TRANSACTIONS.DEBIT_CREDIT_MEMO), so one combined Book with two literal
+// sourceTypes is correct and sufficient - no separate recognition query,
+// no two frontend Books.
+function getDebitCreditMemoBookRows({ from, to, companyId }) {
+  return getBookRows({ sourceTypes: ["DEBIT MEMO", "CREDIT MEMO"], from, to, companyId });
+}
+
 // buildTransactionUnionSql is exported (Reports Batch 1) so
 // financialStatementService.js can build Income Statement / Balance Sheet /
 // Account Analysis on the exact same canonical source set, instead of each
 // maintaining its own independent, driftable UNION.
-module.exports = { getLedgerRows, getBeginningBalances, buildTransactionUnionSql };
+module.exports = {
+  getLedgerRows,
+  getBeginningBalances,
+  getBookRows,
+  getJournalBookRows,
+  getIncomeBookRows,
+  getCashReceiptBookRows,
+  getCashDisbursementBookRows,
+  getAccountsPayableBookRows,
+  getPettyCashBookRows,
+  getDebitCreditMemoBookRows,
+  buildTransactionUnionSql,
+};

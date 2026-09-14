@@ -7706,6 +7706,209 @@ app.get("/api/reports/cash-flow-statement", authenticateToken, authorizePermissi
   }
 });
 
+// ====================== BOOKS OF ACCOUNTS - JOURNAL BOOK ======================
+// Reports Phase L.1: the first of the seven "Books of Accounts" menu items
+// (see reportsMenuConfig.js) - the other six stay path:null/"Coming Soon".
+// Reuses LedgerReportService.getJournalBookRows, itself a thin filter
+// (source_type = 'JV') over the same canonical buildTransactionUnionSql
+// every other ledger/financial report is built on - Posted-only and company
+// isolation are inherited unchanged, no new recognition logic. Reuses the
+// existing REPORTS.FINANCIAL permission (same as Trial Balance / General
+// Ledger / Cash Flow) rather than introducing a new Books-of-Accounts
+// permission module for this single low-risk book.
+app.get("/api/reports/books/journal", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
+  try {
+    const { from, to } = req.query;
+
+    if (!from || !to) {
+      return res.status(400).json({ message: "from and to dates are required" });
+    }
+
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+    const rows = await LedgerReportService.getJournalBookRows({ from, to, companyId });
+    res.json(rows);
+  } catch (err) {
+    console.error("JOURNAL BOOK REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate Journal Book",
+      error: err.message,
+    });
+  }
+});
+
+// ====================== BOOKS OF ACCOUNTS - INCOME BOOK ======================
+// Reports Phase L.2: second Books of Accounts item. Same architecture as
+// Journal Book (Phase L.1) - source_type = 'INV' only, via the shared
+// LedgerReportService.getBookRows engine. No invoice creation/posting/
+// approval/tax logic touched; read-only.
+app.get("/api/reports/books/income", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
+  try {
+    const { from, to } = req.query;
+
+    if (!from || !to) {
+      return res.status(400).json({ message: "from and to dates are required" });
+    }
+
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+    const rows = await LedgerReportService.getIncomeBookRows({ from, to, companyId });
+    res.json(rows);
+  } catch (err) {
+    console.error("INCOME BOOK REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate Income Book",
+      error: err.message,
+    });
+  }
+});
+
+// ====================== BOOKS OF ACCOUNTS - CASH RECEIPT BOOK ======================
+// Reports Phase L.3: third Books of Accounts item. Same architecture as
+// Journal Book (Phase L.1) / Income Book (Phase L.2) - source_type = 'OR'
+// only, via the shared LedgerReportService.getBookRows engine. No Official
+// Receipt creation/settlement/application/tax logic touched; read-only.
+app.get("/api/reports/books/cash-receipt", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
+  try {
+    const { from, to } = req.query;
+
+    if (!from || !to) {
+      return res.status(400).json({ message: "from and to dates are required" });
+    }
+
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+    const rows = await LedgerReportService.getCashReceiptBookRows({ from, to, companyId });
+    res.json(rows);
+  } catch (err) {
+    console.error("CASH RECEIPT BOOK REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate Cash Receipt Book",
+      error: err.message,
+    });
+  }
+});
+
+// ====================== BOOKS OF ACCOUNTS - CASH DISBURSEMENT BOOK ======================
+// Reports Phase L.4: fourth Books of Accounts item. Same architecture as
+// Journal Book (L.1) / Income Book (L.2) / Cash Receipt Book (L.3) -
+// source_type = 'CV' only, via the shared LedgerReportService.getBookRows
+// engine. No Check Voucher creation/posting/void/cancel/reversal/APV-
+// settlement/tax logic touched; read-only.
+app.get("/api/reports/books/cash-disbursement", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
+  try {
+    const { from, to } = req.query;
+
+    if (!from || !to) {
+      return res.status(400).json({ message: "from and to dates are required" });
+    }
+
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+    const rows = await LedgerReportService.getCashDisbursementBookRows({ from, to, companyId });
+    res.json(rows);
+  } catch (err) {
+    console.error("CASH DISBURSEMENT BOOK REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate Cash Disbursement Book",
+      error: err.message,
+    });
+  }
+});
+
+// ====================== BOOKS OF ACCOUNTS - ACCOUNTS PAYABLE BOOK ======================
+// Reports Phase L.5: fifth Books of Accounts item. Same architecture as
+// Journal (L.1) / Income (L.2) / Cash Receipt (L.3) / Cash Disbursement
+// (L.4) Books - source_type = 'APV' only, via the shared
+// LedgerReportService.getBookRows engine. No Accounts Payable Voucher
+// creation/posting/void/cancel/reversal/CV-settlement/AP-aging/tax logic
+// touched; read-only. This is an accounting book (the Posted APV entries
+// exactly as recognized by the canonical ledger), not an outstanding-
+// payables or AP-aging report - later CV settlement never changes what it
+// shows (settlement only updates apv_headers.payment_status/balance_amount,
+// columns this report never reads).
+app.get("/api/reports/books/accounts-payable", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
+  try {
+    const { from, to } = req.query;
+
+    if (!from || !to) {
+      return res.status(400).json({ message: "from and to dates are required" });
+    }
+
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+    const rows = await LedgerReportService.getAccountsPayableBookRows({ from, to, companyId });
+    res.json(rows);
+  } catch (err) {
+    console.error("ACCOUNTS PAYABLE BOOK REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate Accounts Payable Book",
+      error: err.message,
+    });
+  }
+});
+
+// Reports Phase L.6: sixth Book of Accounts - source_type = 'PETTY CASH'
+// from the canonical LedgerReportService union (buildTransactionUnionSql).
+// No PCV creation/editing/posting/currency/reversal logic anywhere here -
+// read-only, and no PCV-specific lifecycle handling is needed either: the
+// repository has no /void, /cancel, or /reverse route for petty-cash at all
+// (only Draft and Posted, both enforced by the shared postedOnlySql filter
+// already used everywhere else), so a Posted PCV shows here exactly once,
+// exactly as recognized by the canonical ledger.
+app.get("/api/reports/books/petty-cash", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
+  try {
+    const { from, to } = req.query;
+
+    if (!from || !to) {
+      return res.status(400).json({ message: "from and to dates are required" });
+    }
+
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+    const rows = await LedgerReportService.getPettyCashBookRows({ from, to, companyId });
+    res.json(rows);
+  } catch (err) {
+    console.error("PETTY CASH BOOK REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate Petty Cash Book",
+      error: err.message,
+    });
+  }
+});
+
+// Reports Phase L.7: seventh and final individual Book of Accounts - a
+// single combined Book over TWO source types confirmed by reading
+// buildTransactionUnionSql directly: 'DEBIT MEMO' and 'CREDIT MEMO'
+// (CONCAT(h.memo_type, ' MEMO') from the shared memo_headers/memo_lines
+// pair's memo_type ENUM). No memo creation/editing/posting/currency/
+// reversal logic anywhere here - read-only, and no memo-specific lifecycle
+// handling is needed either: like Petty Cash, the repository has no
+// /void, /cancel, or /reverse route for either Debit or Credit Memo (only
+// Draft and Posted, both enforced by the shared postedOnlySql filter
+// already used everywhere else), so a Posted Debit or Credit Memo shows
+// here exactly once, exactly as recognized by the canonical ledger.
+app.get("/api/reports/books/debit-credit-memo", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
+  try {
+    const { from, to } = req.query;
+
+    if (!from || !to) {
+      return res.status(400).json({ message: "from and to dates are required" });
+    }
+
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+    const rows = await LedgerReportService.getDebitCreditMemoBookRows({ from, to, companyId });
+    res.json(rows);
+  } catch (err) {
+    console.error("DEBIT/CREDIT MEMO BOOK REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate Debit/Credit Memo Book",
+      error: err.message,
+    });
+  }
+});
+
 // ====================== OUTPUT VAT REPORT =================
 
 app.get("/api/reports/output-vat", authenticateToken, authorizePermission("REPORTS.BIR_COMPLIANCE", "VIEW"), async (req, res) => {
