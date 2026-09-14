@@ -233,27 +233,27 @@ export default function PartyQuickAddModal({ open, partyType, onClose, onCreated
               </div>
 
               <div className="pqam-field">
-                <label>Contact Person</label>
+                <label>Contact Person (optional)</label>
                 <input value={form.attention} onChange={(e) => updateField("attention", e.target.value)} />
               </div>
 
               <div className="pqam-field pqam-field-wide">
-                <label>Address</label>
+                <label>Address (optional)</label>
                 <input value={form.address1} onChange={(e) => updateField("address1", e.target.value)} />
               </div>
 
               <div className="pqam-field">
-                <label>Telephone</label>
+                <label>Telephone (optional)</label>
                 <input value={form.telephone} onChange={(e) => updateField("telephone", e.target.value)} />
               </div>
 
               <div className="pqam-field">
-                <label>Mobile</label>
+                <label>Mobile (optional)</label>
                 <input value={form.mobile} onChange={(e) => updateField("mobile", e.target.value)} />
               </div>
 
               <div className="pqam-field">
-                <label>Email</label>
+                <label>Email (optional)</label>
                 <input
                   type="email"
                   value={form.email}
@@ -262,7 +262,7 @@ export default function PartyQuickAddModal({ open, partyType, onClose, onCreated
               </div>
 
               <div className="pqam-field">
-                <label>TIN</label>
+                <label>TIN (optional)</label>
                 <input value={form.tin} onChange={(e) => updateField("tin", e.target.value)} />
               </div>
 

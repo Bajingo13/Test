@@ -1,6 +1,7 @@
 import { createPdfKit, COLORS, wrapText, formatMoney, COPY_BADGE_HEIGHT } from "./pdfKit";
 import { DEFAULT_COPY_TYPE, MAX_COPIES } from "../copyTypes";
 import { amountToWords } from "./amountInWords";
+import { formatManilaTimestamp } from "../../utils/formatManilaTimestamp";
 // Batch 9: shared with the CJS email renderer (backend/services/orPdfService.js)
 // via a JSON file both module systems can load - the watermark strings
 // cannot drift between the printed PDF and the emailed PDF.
@@ -309,7 +310,13 @@ export async function buildDocumentPdf({
   const watermark =
     STATUS_WATERMARKS[String(doc.status || "").toUpperCase()] ||
     (reversal && reversal.reversed ? REVERSED_WATERMARK : undefined);
-  const generatedAt = new Date().toLocaleString("en-PH", { hour12: false });
+  // Asia/Manila, fixed regardless of server/viewer local timezone - see
+  // formatManilaTimestamp's own comment for why this replaced the previous
+  // unlocalized-timezone `toLocaleString("en-PH", {hour12:false})` call
+  // (which used "en-PH" only for locale formatting, not an actual
+  // Asia/Manila timezone conversion, and could drift from the invoice
+  // print footer's own timestamp depending on where this ran).
+  const generatedAt = formatManilaTimestamp();
   return kit.finish({ generatedBy, generatedAt, watermark, showPageFooter: summaryCfg.showPageFooter ?? true });
 
   // Draws `text` (word-wrapped to maxWidth) starting at the CURRENT cursor,

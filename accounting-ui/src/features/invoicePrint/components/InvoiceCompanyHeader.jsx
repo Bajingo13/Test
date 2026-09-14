@@ -1,4 +1,5 @@
 import InvoiceCopyLabel from "./InvoiceCopyLabel";
+import InvoiceVerificationQr from "./InvoiceVerificationQr";
 import { formatDate } from "../utils/invoicePrintFormatters";
 
 // Layout structure ported from the Replica's .header (logo | company-info |
@@ -29,7 +30,10 @@ export default function InvoiceCompanyHeader({ seller, document }) {
       </div>
 
       <div className="invoice-header__meta">
-        <InvoiceCopyLabel printCount={document.printCount} />
+        <div className="invoice-header__meta-top">
+          <InvoiceCopyLabel printCount={document.printCount} />
+          <InvoiceVerificationQr verificationUrl={document.verificationUrl} />
+        </div>
         {document.accountingStatus ? (
           <div className={`invoice-status invoice-status--${document.accountingStatus.toLowerCase()}`}>
             {document.accountingStatus}

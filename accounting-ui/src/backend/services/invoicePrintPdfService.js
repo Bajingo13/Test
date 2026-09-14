@@ -1,6 +1,6 @@
 const puppeteer = require("puppeteer");
 const { HttpError } = require("../lib/httpError");
-const { signInvoicePrintRenderToken } = require("./invoicePrintRenderTokenService");
+const { signInvoicePrintRenderToken, signPublicVerifiedInvoiceRenderToken } = require("./invoicePrintRenderTokenService");
 
 // Internal, server-to-server base URL for the React app - Puppeteer
 // navigates here directly, never through whatever public hostname the
@@ -144,4 +144,16 @@ async function renderInvoiceListPdf({ userId, username, companyId, grouping, fro
   return renderPrintUrlToPdf(url);
 }
 
-module.exports = { renderInvoicePdf, renderInvoiceListPdf };
+// Public-verification download (GET /api/verify/:token/pdf). Called only
+// after invoiceVerificationController has already confirmed the token is
+// valid/unaltered/not voided - always the customer-facing copy
+// (mode=without_entries is never set here, deliberately, since the
+// internal accounting copy must never reach an unauthenticated visitor).
+async function renderVerifiedInvoicePdf({ invoiceId, companyId }) {
+  const renderToken = signPublicVerifiedInvoiceRenderToken({ invoiceId, companyId });
+  const params = new URLSearchParams({ renderToken });
+  const url = `${INTERNAL_APP_URL}/print/invoice/${encodeURIComponent(invoiceId)}?${params.toString()}`;
+  return renderPrintUrlToPdf(url);
+}
+
+module.exports = { renderInvoicePdf, renderInvoiceListPdf, renderVerifiedInvoicePdf };

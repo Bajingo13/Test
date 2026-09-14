@@ -43,6 +43,24 @@ module.exports = function authenticateInvoicePrintAccess(req, res, next) {
     return res.status(403).json({ message: "Render token is not valid for this invoice" });
   }
 
+  // Public-verification render token (see
+  // invoicePrintRenderTokenService.signPublicVerifiedInvoiceRenderToken):
+  // minted only after /api/verify/:token has already independently
+  // confirmed the invoice is valid/unaltered/not voided - there is no real
+  // user to re-check a permission for, and the customer-facing copy this
+  // path always requests carries no more detail than the printed document
+  // itself. Hard-blocked from ever requesting the internal "with entries"
+  // accounting copy, so this flag can never expand into a general
+  // authentication bypass for arbitrary invoice print access.
+  if (payload.public === true) {
+    if (requiredAction(req) !== "PRINT") {
+      return res.status(403).json({ message: "Render token is not valid for this document mode" });
+    }
+    req.user = null;
+    req.printRenderToken = payload;
+    return next();
+  }
+
   req.user = { id: payload.userId, username: payload.username || null };
   req.printRenderToken = payload;
 

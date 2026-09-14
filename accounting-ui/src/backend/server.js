@@ -51,6 +51,7 @@ const TaxEntryService = require("./services/taxEntryService");
 const EwtReportReconciliationService = require("./services/ewtReportReconciliationService");
 const { assertWriteStatus, assertReason, unwindCvApplications, CANCELLED, VOID } = require("./services/voidCancelService");
 const { findPostedReversalJv, buildReversalLine, buildReversalTaxEntry, reversalVoucherNo } = require("./services/reversalService");
+const InvoiceVerificationService = require("./services/invoiceVerificationService");
 
 console.log("ENV FILE:", require("path").resolve(".env"));
 console.log("JWT_SECRET loaded:", Boolean(process.env.JWT_SECRET));
@@ -1333,6 +1334,22 @@ app.post("/api/invoices", authenticateToken, authorizePermission("TRANSACTIONS.I
       userId: req.user.id, lockNow: String(finalStatus).toUpperCase() === "POSTED",
     });
 
+    // Mints this invoice's verification token + HMAC signature exactly
+    // once, inside this same transaction - see invoiceVerificationService's
+    // own header for why it is never regenerated afterward (reprints, PDF
+    // exports, and emails all reuse it).
+    await InvoiceVerificationService.issueVerification(conn, {
+      invoiceId,
+      voucherNo: normalizeVoucherNo(voucherNo),
+      transactionDate: transactionDate || null,
+      customerId: customerId || null,
+      customerName: customerName || "",
+      totalDebit: currencyResult.baseTotalDebit,
+      totalCredit: currencyResult.baseTotalCredit,
+      currencyId: currencyResult.currencyId,
+      companyId,
+    });
+
     await conn.commit();
 
     res.json({
@@ -1399,7 +1416,7 @@ app.put("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACTION
     // (Phase 7C.1's existingAtcCode - see reconcileEwtTaxEntry's own
     // comment for why comparing against this exact stored value is what
     // exempts an untouched legacy re-save from the new line requirement).
-    const [ownerRows] = await conn.execute("SELECT company_id, transaction_date, status, atc_code FROM invoice_headers WHERE id = ?", [id]);
+    const [ownerRows] = await conn.execute("SELECT company_id, transaction_date, status, atc_code, verification_token FROM invoice_headers WHERE id = ?", [id]);
     if (!ownerRows.length || ownerRows[0].company_id !== companyId) {
       await conn.rollback();
       return res.status(404).json({ message: "Invoice not found" });
@@ -1564,6 +1581,25 @@ app.put("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACTION
     });
 
     await updateInvoicePaymentStatus(conn, id);
+
+    // Reached only while the invoice is still not POSTED (see the
+    // TRANSACTION_ALREADY_POSTED guard above) - a legitimate pre-issuance
+    // revision, so the signature is refreshed over the edited data while
+    // reusing the SAME token. See invoiceVerificationService.reSignVerification's
+    // own comment for why this can never mask a genuine post-issuance
+    // alteration.
+    await InvoiceVerificationService.reSignVerification(conn, {
+      invoiceId: Number(id),
+      verificationToken: ownerRows[0].verification_token,
+      voucherNo: normalizeVoucherNo(voucherNo),
+      transactionDate: transactionDate || null,
+      customerId: customerId || null,
+      customerName: customerName || "",
+      totalDebit: currencyResult.baseTotalDebit,
+      totalCredit: currencyResult.baseTotalCredit,
+      currencyId: currencyResult.currencyId,
+      companyId,
+    });
 
     await conn.commit();
 
@@ -6947,6 +6983,8 @@ app.use("/api/access-restrictions", require("./routes/accessRestrictions.routes"
 app.use("/api/permission-templates", require("./routes/templates.routes"));
 app.use("/api/print", require("./routes/transactionPrint.routes"));
 app.use("/api/invoice-print", require("./routes/invoicePrint.routes"));
+app.use("/api/verify", require("./routes/invoiceVerification.routes"));
+app.use("/api/system-settings", require("./routes/systemSettings.routes"));
 app.use("/api/print-templates", require("./routes/printTemplate.routes"));
 app.use("/api/recurring-transactions", require("./routes/recurringTransactions.routes"));
 app.use("/api/fx-revaluation", require("./routes/fxRevaluation.routes"));

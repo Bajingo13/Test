@@ -15,6 +15,8 @@ import InvoiceEntriesTable from "../components/InvoiceEntriesTable";
 import InvoiceTotalsSection from "../components/InvoiceTotalsSection";
 import InvoicePrintFooter from "../components/InvoicePrintFooter";
 
+import { formatManilaTimestamp } from "../../../utils/formatManilaTimestamp";
+
 import "../styles/standard-invoice-print.css";
 
 // The Standard Letter Invoice printable (INV only). Reproduces the
@@ -51,12 +53,15 @@ export default function StandardInvoicePrintPage() {
   });
 
   // Footer timestamp - presentation only, computed client-side like the
-  // Replica's updateOnScreenFooter(), never a stored/audited value.
+  // Replica's updateOnScreenFooter(), never a stored/audited value. Fixed
+  // to Asia/Manila (not the viewer's/Puppeteer host's local timezone) -
+  // see formatManilaTimestamp's own comment for why this is kept separate
+  // from every DB/report date formatter.
   useEffect(() => {
     if (!containerRef.current) return;
-    const stamp = new Date().toLocaleString();
+    const stamp = formatManilaTimestamp();
     containerRef.current.querySelectorAll(".invoice-print-timestamp").forEach((el) => {
-      el.textContent = `Timestamp: ${stamp}`;
+      el.textContent = `Generated: ${stamp}`;
     });
     containerRef.current.querySelectorAll(".invoice-print-page").forEach((el) => {
       el.textContent = "Page 1 of 1";

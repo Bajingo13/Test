@@ -42,6 +42,33 @@ function signInvoicePrintRenderToken({ userId, username, companyId, invoiceId, d
   );
 }
 
+// Public-verification variant: minted only by
+// invoicePrintPdfService.renderVerifiedInvoicePdf, only after the public
+// /api/verify/:token controller has already independently confirmed the
+// token is valid, unaltered, and not voided (invoiceVerificationService).
+// There is no real user here (the visitor never authenticated), so this
+// payload carries `public: true` instead of a userId - the ONLY effect
+// that flag has is telling authenticateInvoicePrintAccess to skip the
+// normal authorizePermission re-check for this one request (see that
+// file's comment). Everything else about this token is identical to the
+// normal one: signed with the same server-only JWT_SECRET, expires in the
+// same short TTL, and is rejected outright for any invoice id other than
+// the one it was minted for or for the with-entries (internal accounting)
+// copy - it can never become a general "print any invoice" credential.
+function signPublicVerifiedInvoiceRenderToken({ invoiceId, companyId }) {
+  return jwt.sign(
+    {
+      typ: RENDER_TOKEN_TYPE,
+      public: true,
+      companyId,
+      docType: "single",
+      invoiceId: String(invoiceId),
+    },
+    process.env.JWT_SECRET,
+    { expiresIn: RENDER_TOKEN_TTL_SECONDS }
+  );
+}
+
 function verifyInvoicePrintRenderToken(token) {
   let decoded;
   try {
@@ -55,4 +82,9 @@ function verifyInvoicePrintRenderToken(token) {
   return decoded;
 }
 
-module.exports = { signInvoicePrintRenderToken, verifyInvoicePrintRenderToken, RENDER_TOKEN_TTL_SECONDS };
+module.exports = {
+  signInvoicePrintRenderToken,
+  signPublicVerifiedInvoiceRenderToken,
+  verifyInvoicePrintRenderToken,
+  RENDER_TOKEN_TTL_SECONDS,
+};
