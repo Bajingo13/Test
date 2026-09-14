@@ -64,6 +64,7 @@ const PATH_PERMISSIONS = {
   "/reports/2307": ["REPORTS.BIR_COMPLIANCE", "VIEW"],
   "/reports/output-vat-report": ["REPORTS.BIR_COMPLIANCE", "VIEW"],
   "/reports/final-withholding-tax-report": ["REPORTS.BIR_COMPLIANCE", "VIEW"],
+  "/reports/ewt-audit": ["REPORTS.BIR_COMPLIANCE", "VIEW"],
 
   "/admin/user-settings": ["ADMIN.USER_SETTINGS", "VIEW"],
   "/admin/invitations": ["ADMIN.INVITATIONS", "VIEW"],

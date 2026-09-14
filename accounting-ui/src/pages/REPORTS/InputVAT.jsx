@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import "./AccountAnalysis.css";
+import { downloadCsv } from "./reportCsv";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
 
@@ -52,6 +53,34 @@ export default function InputVAT() {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     });
+
+  // Input VAT reuses the Account Analysis endpoint (no separate backend) -
+  // the CSV mirrors exactly the rows already on screen for the current
+  // account + date range; it never re-queries.
+  function exportCSV() {
+    if (!rows.length) {
+      alert("Please generate the report first.");
+      return;
+    }
+    const meta = [
+      ["INPUT VAT REPORT"],
+      [`${accountCode} - ${selectedAccount?.title || ""}`],
+      [`Period: ${fromDate} to ${toDate}`],
+      [],
+    ];
+    const header = ["DATE", "SOURCE", "DOC REF", "PARTICULARS", "DEBIT", "CREDIT"];
+    const body = rows.map((r) => [
+      r.transaction_date,
+      r.source_type,
+      r.reference_no,
+      r.particulars,
+      Number(r.debit || 0) > 0 ? Number(r.debit).toFixed(2) : "",
+      Number(r.credit || 0) > 0 ? Number(r.credit).toFixed(2) : "",
+    ]);
+    const totalRow = ["", "", "", "TOTAL", totals.debit.toFixed(2), totals.credit.toFixed(2)];
+    const netRow = ["", "", "", "", "TOTAL INPUT VAT", totals.net.toFixed(2)];
+    downloadCsv(`Input_VAT_${accountCode}_${toDate}.csv`, [...meta, header, ...body, totalRow, netRow]);
+  }
 
   async function generateReport() {
     if (!accountCode) {
@@ -132,6 +161,10 @@ export default function InputVAT() {
 
           <button className="dark" onClick={() => window.print()}>
             Export PDF
+          </button>
+
+          <button className="dark" onClick={exportCSV}>
+            Export CSV
           </button>
         </div>
       </div>

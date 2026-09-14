@@ -15,6 +15,13 @@
   font-weight: 800;
 }
 
+.lgr-subtitle {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--text-secondary, #6b7280);
+  max-width: 720px;
+}
+
 .lgr-filters {
   background: var(--bg-surface);
   padding: 22px;
