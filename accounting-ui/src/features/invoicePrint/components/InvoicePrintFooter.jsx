@@ -61,7 +61,16 @@ export default function InvoicePrintFooter({ footer }) {
       ) : null}
 
       <div className="invoice-print-footer-meta">
-        <span className="invoice-print-timestamp" />
+        <div className="invoice-print-footer-left">
+          {/* No authoritative system-version source exists in this
+              codebase today (package.json carries no name/version field) -
+              hardcoded here, same "AstreaBlue Accounting System" identity
+              documentListPdfBuilder.js already falls back to for a missing
+              company name. Update alongside any real release-versioning
+              scheme this system adopts later. */}
+          <span className="invoice-print-system-name">AstreaBlue Accounting System v1.0</span>
+          <span className="invoice-print-timestamp" />
+        </div>
         <span className="invoice-print-page" />
       </div>
     </>

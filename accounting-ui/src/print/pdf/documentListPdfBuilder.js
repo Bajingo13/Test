@@ -1,5 +1,6 @@
 import { createPdfKit, COLORS, formatMoney, COPY_BADGE_HEIGHT } from "./pdfKit";
 import { DEFAULT_COPY_TYPE, MAX_COPIES } from "../copyTypes";
+import { formatManilaTimestamp } from "../../utils/formatManilaTimestamp";
 
 // Shared list/summary PDF builder for every module's "Print List by ..."
 // options. `columns` describes which fields to render (see
@@ -29,7 +30,8 @@ export async function buildDocumentListPdf({
     drawOneCopy();
   }
 
-  const generatedAt = new Date().toLocaleString("en-PH", { hour12: false });
+  // Asia/Manila, fixed - see documentPdfBuilder.js's identical comment.
+  const generatedAt = formatManilaTimestamp();
   return kit.finish({ generatedBy, generatedAt });
 
   // One full copy of the list - called copyCount times above, each

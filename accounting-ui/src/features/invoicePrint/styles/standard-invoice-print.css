@@ -136,6 +136,27 @@
   color: #000;
 }
 
+.invoice-header__meta-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.invoice-verification-qr {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.invoice-verification-qr__label {
+  font-size: 7px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: #555;
+}
+
 /* ==============================
    BILLING / TERMS INFO
 ============================== */
@@ -374,10 +395,20 @@
   right: 15mm;
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-end;
   font-size: 10px;
   color: #000;
   pointer-events: none;
+}
+
+.invoice-print-footer-left {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.invoice-print-system-name {
+  font-weight: 600;
 }
 
 @media print {

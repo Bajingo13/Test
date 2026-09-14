@@ -140,6 +140,17 @@ const MIGRATION_ORDER = [
   // (owns companies) and company_profile_contact_fields_migration.sql
   // (owns the source columns being backfilled from).
   "companies_contact_bir_fields_migration.sql",
+  // Invoice Verification - two additive nullable columns on invoice_headers
+  // (verification_token, verification_signature) plus a UNIQUE index on the
+  // token. Guarded by information_schema; re-run is a no-op. Depends only
+  // on 000_baseline (owns invoice_headers).
+  "invoice_verification_migration.sql",
+  // System Settings - two new standalone tables (system_settings,
+  // system_settings_audit_log), no ALTERs to anything else. First consumer
+  // is the superadmin-only global 2FA toggle. CREATE TABLE IF NOT EXISTS;
+  // re-run is a no-op. No dependency on any table above beyond the
+  // baseline existing at all.
+  "system_settings_migration.sql",
 ];
 
 module.exports = { MIGRATION_ORDER };

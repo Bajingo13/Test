@@ -39,6 +39,7 @@ import PrintTemplateList from "./pages/FILESETUP/PrintTemplateList";
 import StandardInvoicePrintPage from "./features/invoicePrint/pages/StandardInvoicePrintPage";
 import InvoicePrintViewer from "./features/invoicePrint/pages/InvoicePrintViewer";
 import InvoiceListPrintPage from "./features/invoicePrint/pages/InvoiceListPrintPage";
+import PublicInvoiceVerificationPage from "./features/invoicePrint/pages/PublicInvoiceVerificationPage";
 
 
 // TRANSACTIONS
@@ -102,6 +103,10 @@ function AppLayout() {
   // it's a Letter-sized document, not an app screen, and is also what
   // Puppeteer will screenshot for PDF export (Phase 4).
   const isPrintPage = location.pathname.startsWith("/print/");
+  // Public invoice-verification page (QR scan target) - same full-bleed,
+  // no-sidebar treatment as the print pages, since an anonymous visitor
+  // scanning a QR code should never see the internal app chrome.
+  const isVerifyPage = location.pathname.startsWith("/verify/");
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
@@ -113,16 +118,16 @@ function AppLayout() {
         fontFamily: "Arial, sans-serif",
       }}
     >
-      {!isLoginPage && !isPrintPage && (
+      {!isLoginPage && !isPrintPage && !isVerifyPage && (
         <Sidebar sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen} />
       )}
 
       <main
         style={{
-          marginLeft: isLoginPage || isPrintPage ? "0" : sidebarOpen ? "270px" : "110px",
-          padding: isLoginPage || isPrintPage ? "0" : "24px",
+          marginLeft: isLoginPage || isPrintPage || isVerifyPage ? "0" : sidebarOpen ? "270px" : "110px",
+          padding: isLoginPage || isPrintPage || isVerifyPage ? "0" : "24px",
           flex: 1,
-          background: isLoginPage || isPrintPage ? "transparent" : "var(--bg-page)",
+          background: isLoginPage || isPrintPage || isVerifyPage ? "transparent" : "var(--bg-page)",
           boxSizing: "border-box",
           minHeight: "100vh",
           transition: "margin-left 0.3s ease",
@@ -135,6 +140,7 @@ function AppLayout() {
           <Route path="/print/invoice/list" element={<InvoiceListPrintPage />} />
           <Route path="/print/invoice/:identifier" element={<StandardInvoicePrintPage />} />
           <Route path="/print/invoice/:identifier/viewer" element={<InvoicePrintViewer />} />
+          <Route path="/verify/:token" element={<PublicInvoiceVerificationPage />} />
           <Route path="/accept-invite" element={<AcceptInvite />} />
           <Route path="/admin/invitations" element={<PendingInvitations />} />
           <Route path="/admin/user-settings" element={<UserSettings />} />

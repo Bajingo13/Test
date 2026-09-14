@@ -3,6 +3,25 @@ const { HttpError } = require("../lib/httpError");
 const TransactionPrintDataService = require("./transactionPrintDataService");
 const PrintTemplateService = require("./printTemplateService");
 
+// Same convention invitationService.js already uses for building a public,
+// customer-facing URL from FRONTEND_URL (first of a comma-separated list,
+// trimmed; localhost fallback for local dev).
+function publicFrontendUrl() {
+  return (process.env.FRONTEND_URL || "http://localhost:5173").split(",")[0].trim();
+}
+
+// Invoice-only, dedicated lookup (mirrors getCustomerFacingItems' own
+// "runs its own query, never touches transactionPrintDataService" rule) -
+// verification_token/verification_signature exist only on invoice_headers,
+// not on any of the other 8 modules that shared service also serves.
+async function getVerificationInfo(invoiceId) {
+  const [rows] = await pool.execute(
+    `SELECT verification_token AS verificationToken FROM invoice_headers WHERE id = ?`,
+    [invoiceId]
+  );
+  return rows[0]?.verificationToken || null;
+}
+
 // Standard Letter Invoice print-data adapter (INV only).
 //
 // This is a thin, additive layer on top of the already-existing,
@@ -123,6 +142,9 @@ async function getInvoicePrintViewModel({ id, companyId, requestedTemplateId, wi
       }))
     : await getCustomerFacingItems(id, isForeign);
 
+  const verificationToken = await getVerificationInfo(id);
+  const verificationUrl = verificationToken ? `${publicFrontendUrl()}/verify/${verificationToken}` : null;
+
   const totalDebit = Number(doc.totalDebit) || 0;
   const paidAmount = doc.paidAmount != null ? Number(doc.paidAmount) || 0 : null;
   const balanceAmount = doc.balanceAmount != null ? Number(doc.balanceAmount) || 0 : null;
@@ -143,6 +165,11 @@ async function getInvoicePrintViewModel({ id, companyId, requestedTemplateId, wi
     // invoice_headers has no print_count column - always null, and the
     // React copy-label component hides itself whenever this is null.
     printCount: null,
+    // Null only for an invoice created before this feature shipped (no
+    // backfill - see invoice_verification_migration.sql) or one that
+    // somehow reached this view before its POST /api/invoices transaction
+    // finished minting it; the QR component hides itself cleanly when null.
+    verificationUrl,
   };
 
   // BIR ATP/Permit compliance block (permit no., date issued, approved
