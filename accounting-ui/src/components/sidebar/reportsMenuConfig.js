@@ -42,8 +42,8 @@ export const REPORTS_MENU = [
       { id: "trial-balance", label: "Trial Balance", icon: Scale, path: "/reports/trial-balance" },
       { id: "general-ledger", label: "General Ledger Report", icon: BookOpenCheck, path: "/reports/general-ledger" },
       { id: "account-analysis", label: "Account Analysis", icon: Search, path: "/reports/account-analysis" },
-      { id: "summary-of-books-totals", label: "Summary of Books by Totals", icon: FileBarChart, path: null },
-      { id: "net-summary-of-books", label: "Net Summary of Books", icon: FileBarChart2, path: null },
+      { id: "summary-of-books-totals", label: "Summary of Books by Totals", icon: FileBarChart, path: "/reports/books/summary-totals" },
+      { id: "net-summary-of-books", label: "Net Summary of Books", icon: FileBarChart2, path: "/reports/books/net-summary" },
       { id: "gl-beginning-balance-list", label: "GL Beginning Balance List", icon: ClipboardList, path: "/beginning-balances/gl" },
       { id: "income-statement", label: "Income Statement", icon: TrendingUp, path: "/reports/income-statement" },
       { id: "balance-sheet", label: "Balance Sheet", icon: Calculator, path: "/reports/balance-sheet" },
@@ -53,7 +53,7 @@ export const REPORTS_MENU = [
       // movement ledger, not a GAAP Cash Flow Statement. Route/API path kept
       // for backward compatibility.
       { id: "cash-flow", label: "Bank & Cash Movement Report", icon: Waves, path: "/reports/cash-flow-statement" },
-      { id: "daily-cash-position", label: "Daily Cash Position Report", icon: Banknote, path: null },
+      { id: "daily-cash-position", label: "Daily Cash Position Report", icon: Banknote, path: "/reports/daily-cash-position" },
       { id: "fx-revaluation", label: "Month-End FX Revaluation", icon: RefreshCw, path: "/reports/fx-revaluation" },
     ],
   },
@@ -71,9 +71,9 @@ export const REPORTS_MENU = [
         ],
       },
       { id: "ar-subsidiary-ledger", label: "Subsidiary Ledger Report", icon: BookOpen, path: "/reports/subsidiary-ledger" },
-      { id: "ar-statement-of-accounts", label: "Statement of Accounts", icon: Receipt, path: null },
-      { id: "ar-billings-and-collections", label: "Billings and Collections", icon: HandCoins, path: null },
-      { id: "ar-overdue-accounts", label: "List of Overdue Accounts", icon: AlertCircle, path: null },
+      { id: "ar-statement-of-accounts", label: "Statement of Accounts", icon: Receipt, path: "/reports/ar-statement-of-accounts" },
+      { id: "ar-billings-and-collections", label: "Billings and Collections", icon: HandCoins, path: "/reports/ar-billings-and-collections" },
+      { id: "ar-overdue-accounts", label: "List of Overdue Accounts", icon: AlertCircle, path: "/reports/ar-overdue-accounts" },
     ],
   },
   {
@@ -90,8 +90,8 @@ export const REPORTS_MENU = [
         ],
       },
       { id: "ap-subsidiary-ledger", label: "Subsidiary Ledger Report", icon: BookOpen, path: "/reports/subsidiary-ledger" },
-      { id: "ap-payables-and-payments", label: "List of Payables and Payments", icon: CreditCard, path: null },
-      { id: "ap-overdue-accounts", label: "List of Overdue Accounts", icon: AlertCircle, path: null },
+      { id: "ap-payables-and-payments", label: "List of Payables and Payments", icon: CreditCard, path: "/reports/ap-payables-and-payments" },
+      { id: "ap-overdue-accounts", label: "List of Overdue Accounts", icon: AlertCircle, path: "/reports/ap-overdue-accounts" },
     ],
   },
   {
@@ -129,7 +129,7 @@ export const REPORTS_MENU = [
     label: "Fixed Asset Reports",
     children: [
       { id: "list-of-fixed-assets", label: "List of Fixed Assets", icon: Boxes, path: "/reports/fixed-asset-register" },
-      { id: "fixed-asset-lapsing", label: "Fixed Asset Lapsing Report", icon: FileClock, path: null },
+      { id: "fixed-asset-lapsing", label: "Fixed Asset Lapsing Report", icon: FileClock, path: "/reports/fixed-asset-lapsing" },
     ],
   },
   {
@@ -146,7 +146,6 @@ export const REPORTS_MENU = [
           { id: "list-of-lapsed-prepayments", label: "List of Lapsed Prepayments", icon: FileWarning, path: "/reports/lapsed-prepayments" },
         ],
       },
-      { id: "expanded-withholding-tax", label: "Expanded Withholding Tax Report", icon: FileText, path: "/reports/expanded-withholding-tax-report" },
       { id: "bir-form-2307", label: "BIR Form 2307", icon: FileCheck2, path: "/reports/2307" },
       { id: "input-vat-report", label: "Input VAT Report", icon: CircleDollarSign, path: "/reports/input-vat-report" },
       { id: "output-vat-report", label: "Output VAT Report", icon: CircleDollarSign, path: "/reports/output-vat-report" },

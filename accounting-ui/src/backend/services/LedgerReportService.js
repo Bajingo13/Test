@@ -322,6 +322,74 @@ function getDebitCreditMemoBookRows({ from, to, companyId }) {
   return getBookRows({ sourceTypes: ["DEBIT MEMO", "CREDIT MEMO"], from, to, companyId });
 }
 
+// Summary of Books by Totals - a cross-book roll-up, NOT a new recognition
+// query: it calls the exact same 7 getXBookRows() functions above (Phase
+// L.1-L.7's own canonical per-Book row sets, unchanged) and reduces each
+// to its own {totalDebit, totalCredit} - the identical sum every
+// individual Book page already computes client-side in BookReport.jsx's
+// own `totals` useMemo. Running all 7 in parallel (Promise.all) costs the
+// same 7 underlying UNION-ALL queries an operator would get by opening
+// each of the 7 Book pages one at a time; nothing here changes what any of
+// them recognizes (Posted-only, company-scoped, transaction_date-ranged -
+// all inherited unchanged from buildTransactionUnionSql via getBookRows).
+// The 2 beginning-balance-only branches of the canonical union ('AR'/'AP'
+// from arap_beginning_balance_lines, 'GL BEGINNING' from
+// gl_beginning_balance_lines) are deliberately NOT included - they are not
+// one of the 7 established Books of Accounts, exactly as none of the 7
+// getXBookRows() functions above ever reference them either.
+const BOOK_SUMMARY_DEFINITIONS = [
+  { key: "journal", label: "Journal Book", getRows: getJournalBookRows },
+  { key: "income", label: "Income Book", getRows: getIncomeBookRows },
+  { key: "cashReceipt", label: "Cash Receipt Book", getRows: getCashReceiptBookRows },
+  { key: "cashDisbursement", label: "Cash Disbursement Book", getRows: getCashDisbursementBookRows },
+  { key: "accountsPayable", label: "Accounts Payable Book", getRows: getAccountsPayableBookRows },
+  { key: "pettyCash", label: "Petty Cash Book", getRows: getPettyCashBookRows },
+  { key: "debitCreditMemo", label: "Debit/Credit Memo Book", getRows: getDebitCreditMemoBookRows },
+];
+
+async function getBooksSummaryTotals({ from, to, companyId }) {
+  const perBook = await Promise.all(
+    BOOK_SUMMARY_DEFINITIONS.map(async ({ key, label, getRows }) => {
+      const rows = await getRows({ from, to, companyId });
+      let totalDebit = 0;
+      let totalCredit = 0;
+      for (const row of rows) {
+        totalDebit += Number(row.debit || 0);
+        totalCredit += Number(row.credit || 0);
+      }
+      return { book: key, label, transactionCount: rows.length, totalDebit, totalCredit };
+    })
+  );
+
+  const grandTotalDebit = perBook.reduce((s, b) => s + b.totalDebit, 0);
+  const grandTotalCredit = perBook.reduce((s, b) => s + b.totalCredit, 0);
+
+  return { books: perBook, grandTotalDebit, grandTotalCredit };
+}
+
+// Net Summary of Books - a thin wrapper (same shape as getJournalBookRows()
+// wrapping getBookRows()) around the EXISTING getBooksSummaryTotals() above
+// (Summary of Books by Totals, completely unchanged - no new SQL, no new
+// query). Adds a `net` field per book (= totalDebit - totalCredit) and a
+// `grandTotalNet` field, using the SAME debit-minus-credit "balance"
+// convention this same service already uses elsewhere (getLedgerRows'
+// running_balance, getBeginningBalances' balance) - NOT the account-class-
+// aware credit-minus-debit convention financialStatementService.js's
+// Income Statement query uses (that one is specific to per-account
+// Revenue/Expense sign normalization; a Book can contain lines against any
+// account class, so no class-based sign flip applies here). Since every
+// individually-posted voucher is itself balanced (total_debit ==
+// total_credit, enforced at write time), a healthy Book's net is 0.00 by
+// construction - this report's purpose is to make a Book that ISN'T
+// balanced (a data-integrity anomaly) visible at a glance, the same
+// diagnostic spirit as the existing Trial Balance Checker module.
+async function getNetSummaryOfBooks({ from, to, companyId }) {
+  const summary = await getBooksSummaryTotals({ from, to, companyId });
+  const books = summary.books.map((b) => ({ ...b, net: b.totalDebit - b.totalCredit }));
+  const grandTotalNet = summary.grandTotalDebit - summary.grandTotalCredit;
+  return { books, grandTotalDebit: summary.grandTotalDebit, grandTotalCredit: summary.grandTotalCredit, grandTotalNet };
+}
+
 // buildTransactionUnionSql is exported (Reports Batch 1) so
 // financialStatementService.js can build Income Statement / Balance Sheet /
 // Account Analysis on the exact same canonical source set, instead of each
@@ -337,5 +405,7 @@ module.exports = {
   getAccountsPayableBookRows,
   getPettyCashBookRows,
   getDebitCreditMemoBookRows,
+  getBooksSummaryTotals,
+  getNetSummaryOfBooks,
   buildTransactionUnionSql,
 };

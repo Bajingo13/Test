@@ -29,6 +29,12 @@ const FinancialStatementStructureService = require("./services/financialStatemen
 const StructuredStatementRequest = require("./lib/structuredStatementRequest");
 const GroupCodeClassification = require("./services/groupCodeClassification");
 const ReportSectionService = require("./services/reportSectionService");
+const ArStatementService = require("./services/ArStatementService");
+const ArBillingsCollectionsService = require("./services/ArBillingsCollectionsService");
+const ArOverdueAccountsService = require("./services/ArOverdueAccountsService");
+const ApListOfPayablesPaymentsService = require("./services/ApListOfPayablesPaymentsService");
+const ApOverdueAccountsService = require("./services/ApOverdueAccountsService");
+const FixedAssetLapsingService = require("./services/FixedAssetLapsingService");
 const { buildXlsxTemplate } = require("./services/TemplateExportService");
 const { templateImportUpload, coaImportUpload, handleUpload } = require("./lib/uploadMiddleware");
 const COAImportService = require("./services/COAImportService");
@@ -7776,6 +7782,101 @@ app.get("/api/reports/cash-flow-statement", authenticateToken, authorizePermissi
   }
 });
 
+// ====================== DAILY CASH POSITION REPORT ======================
+// Third of the 9 previously-"Coming Soon" reports identified in the
+// technical documentation audit. Same architecture and same bank_codes
+// account universe as Cash Flow Statement immediately above - not a new
+// recognition query: reuses the identical getBeginningBalances/getLedgerRows
+// calls, just scoped to a single reporting date (from = to = date) instead
+// of a range, with each account's debit/credit split into explicit Cash
+// Receipts/Cash Disbursements totals rather than exposing full row detail.
+// endingBalance = beginningBalance + (receipts - disbursements), the same
+// arithmetic Cash Flow Statement's own endingBalance = beginningBalance +
+// running_balance already performs. Internal transfers between two cash/
+// bank accounts are NOT netted - Cash Flow Statement doesn't net them
+// either, and no transfer-detection mechanism exists anywhere in this
+// codebase to reuse. No AR/AP/tax logic touched; read-only.
+app.get("/api/reports/daily-cash-position", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
+  try {
+    const { date } = req.query;
+
+    if (!date) {
+      return res.status(400).json({ message: "date is required" });
+    }
+
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+    const [bankAccounts] = await pool.execute(
+      `SELECT coa_code, account_name, bank_name FROM bank_codes WHERE status = 'ACTIVE' AND coa_code IS NOT NULL AND coa_code != ''`
+    );
+
+    const accountCodes = bankAccounts.map((b) => b.coa_code);
+
+    if (accountCodes.length === 0) {
+      return res.json({
+        asOfDate: date,
+        accounts: [],
+        totalBeginningBalance: 0,
+        totalCashReceipts: 0,
+        totalCashDisbursements: 0,
+        totalNetMovement: 0,
+        totalEndingBalance: 0,
+      });
+    }
+
+    const [rows, beginningBalances] = await Promise.all([
+      LedgerReportService.getLedgerRows({ from: date, to: date, accountCodes, companyId }),
+      LedgerReportService.getBeginningBalances({ before: date, accountCodes, companyId }),
+    ]);
+
+    const byAccount = new Map();
+    for (const code of accountCodes) {
+      const label = bankAccounts.find((b) => b.coa_code === code);
+      byAccount.set(code, {
+        accountCode: code,
+        accountTitle: (label && (label.account_name || label.bank_name)) || code,
+        beginningBalance: beginningBalances[code] || 0,
+        cashReceipts: 0,
+        cashDisbursements: 0,
+      });
+    }
+
+    for (const row of rows) {
+      const acct = byAccount.get(row.account_code);
+      if (!acct) continue;
+      acct.cashReceipts += Number(row.debit || 0);
+      acct.cashDisbursements += Number(row.credit || 0);
+    }
+
+    const accounts = Array.from(byAccount.values()).map((a) => {
+      const netMovement = a.cashReceipts - a.cashDisbursements;
+      return { ...a, netMovement, endingBalance: a.beginningBalance + netMovement };
+    });
+
+    const totalBeginningBalance = accounts.reduce((sum, a) => sum + a.beginningBalance, 0);
+    const totalCashReceipts = accounts.reduce((sum, a) => sum + a.cashReceipts, 0);
+    const totalCashDisbursements = accounts.reduce((sum, a) => sum + a.cashDisbursements, 0);
+    const totalNetMovement = accounts.reduce((sum, a) => sum + a.netMovement, 0);
+    const totalEndingBalance = accounts.reduce((sum, a) => sum + a.endingBalance, 0);
+
+    res.json({
+      asOfDate: date,
+      accounts,
+      totalBeginningBalance,
+      totalCashReceipts,
+      totalCashDisbursements,
+      totalNetMovement,
+      totalEndingBalance,
+    });
+  } catch (err) {
+    console.error("DAILY CASH POSITION REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate Daily Cash Position report",
+      error: err.message,
+    });
+  }
+});
+
 // ====================== BOOKS OF ACCOUNTS - JOURNAL BOOK ======================
 // Reports Phase L.1: the first of the seven "Books of Accounts" menu items
 // (see reportsMenuConfig.js) - the other six stay path:null/"Coming Soon".
@@ -7974,6 +8075,67 @@ app.get("/api/reports/books/debit-credit-memo", authenticateToken, authorizePerm
     console.error("DEBIT/CREDIT MEMO BOOK REPORT ERROR:", err.message);
     res.status(500).json({
       message: "Failed to generate Debit/Credit Memo Book",
+      error: err.message,
+    });
+  }
+});
+
+// ====================== BOOKS OF ACCOUNTS - SUMMARY OF BOOKS BY TOTALS ======================
+// First of the 9 previously-"Coming Soon" reports identified in the
+// technical documentation audit. Same architecture as the 7 individual
+// Books above - Posted-only, company-scoped, transaction_date-ranged, via
+// the shared LedgerReportService engine. Not a new recognition query: it
+// re-runs the exact same 7 getXBookRows() calls each individual Book page
+// already uses and reduces each to its own {totalDebit, totalCredit}, then
+// adds a grand total across all 7 - mathematically identical to opening
+// each of the 7 Book pages and reading their own TOTAL row. No AP/AR/tax
+// logic touched; read-only.
+app.get("/api/reports/books/summary-totals", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
+  try {
+    const { from, to } = req.query;
+
+    if (!from || !to) {
+      return res.status(400).json({ message: "from and to dates are required" });
+    }
+
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+    const summary = await LedgerReportService.getBooksSummaryTotals({ from, to, companyId });
+    res.json(summary);
+  } catch (err) {
+    console.error("SUMMARY OF BOOKS BY TOTALS REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate Summary of Books by Totals",
+      error: err.message,
+    });
+  }
+});
+
+// ====================== BOOKS OF ACCOUNTS - NET SUMMARY OF BOOKS ======================
+// Second of the 9 previously-"Coming Soon" reports identified in the
+// technical documentation audit. Same architecture as Summary of Books by
+// Totals immediately above - Posted-only, company-scoped, transaction_date-
+// ranged. Not a new recognition query and not a new aggregation: it calls
+// LedgerReportService.getNetSummaryOfBooks(), which itself calls the
+// unchanged getBooksSummaryTotals() and only adds a derived `net` field
+// (totalDebit - totalCredit) per Book. No AR/AP/tax logic touched;
+// read-only.
+app.get("/api/reports/books/net-summary", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
+  try {
+    const { from, to } = req.query;
+
+    if (!from || !to) {
+      return res.status(400).json({ message: "from and to dates are required" });
+    }
+
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+    const summary = await LedgerReportService.getNetSummaryOfBooks({ from, to, companyId });
+    res.json(summary);
+  } catch (err) {
+    console.error("NET SUMMARY OF BOOKS REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate Net Summary of Books",
       error: err.message,
     });
   }
@@ -8338,6 +8500,84 @@ app.get("/api/reports/ap-aging-summary", authenticateToken, authorizePermission(
   }
 });
 
+// ====================== AP LIST OF PAYABLES AND PAYMENTS ======================
+// Seventh of the 9 previously-"Coming Soon" reports identified in the
+// technical documentation audit. A period, multi-supplier summary - the
+// AP structural mirror of AR Billings & Collections, NOT a copy of it:
+// Payments here are reconstructed from transaction_applications (not a
+// flat cv_headers total), because unlike Invoice/OR, APV/CV DO have a
+// void/cancel/reverse lifecycle, and only the transaction_applications
+// reconstruction self-corrects for it. Payables use the EXACT VOID/
+// CANCELLED + reversal-JV exclusion agingReportService.js's own AP branch
+// already established (mirrored, not imported - see
+// ApListOfPayablesPaymentsService.js). agingReportService.js itself is
+// NOT modified. No AR/tax logic touched; read-only.
+app.get("/api/reports/ap-payables-and-payments", authenticateToken, authorizePermission("REPORTS.AP", "VIEW"), async (req, res) => {
+  try {
+    const { partyId, from, to } = req.query;
+
+    if (!from || !to) {
+      return res.status(400).json({ message: "from and to dates are required" });
+    }
+
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+    if (partyId) {
+      const [partyRows] = await pool.execute("SELECT company_id FROM general_libraries WHERE id = ?", [partyId]);
+      if (!partyRows.length || partyRows[0].company_id !== companyId) {
+        return res.status(404).json({ message: "Party not found" });
+      }
+    }
+
+    const report = await ApListOfPayablesPaymentsService.getApPayablesAndPayments({ from, to, companyId, partyId });
+
+    res.json({ from, to, ...report });
+  } catch (err) {
+    console.error("AP LIST OF PAYABLES AND PAYMENTS REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate AP List of Payables and Payments report",
+      error: err.message,
+    });
+  }
+});
+
+// ====================== AP LIST OF OVERDUE ACCOUNTS ======================
+// Eighth of the 9 previously-"Coming Soon" reports identified in the
+// technical documentation audit. Built directly on the existing,
+// UNCHANGED AgingReportService - the same engine AP Aging and AP Aging
+// Summary immediately above already use, and the exact AP mirror of AR
+// List of Overdue Accounts. Not a new recognition query, not a new
+// balance calculation: calls the unchanged getAgingRows("AP", ...) and
+// drops the "current" (not-yet-due) bucket. See
+// ApOverdueAccountsService.js for the full rationale, including two
+// documented, inherited (not invented) characteristics: Draft APVs ARE
+// included (only VOID/CANCELLED plus reversed APVs are excluded by
+// Aging's own AP branch), and Debit/Credit Memos never appear (Aging's
+// row source never joins memo_headers). No AR/tax logic touched;
+// read-only.
+app.get("/api/reports/ap-overdue-accounts", authenticateToken, authorizePermission("REPORTS.AP", "VIEW"), async (req, res) => {
+  try {
+    const { asOf, currency, partyId, status } = req.query;
+    const reportDate = asOf || new Date().toISOString().slice(0, 10);
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+    const { rows, bucketTotals, parties } = await ApOverdueAccountsService.getOverdueAccounts({
+      companyId,
+      asOfDate: reportDate,
+      currencyCode: currency,
+      partyId,
+      status,
+    });
+
+    res.json({ asOfDate: reportDate, rows, bucketTotals, parties });
+  } catch (err) {
+    console.error("AP LIST OF OVERDUE ACCOUNTS REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate AP List of Overdue Accounts report",
+      error: err.message,
+    });
+  }
+});
 
 // ====================== AR AGING REPORT ======================
 app.get("/api/reports/ar-aging", authenticateToken, authorizePermission("REPORTS.AR", "VIEW"), async (req, res) => {
@@ -8385,6 +8625,43 @@ app.get("/api/reports/ar-aging-summary", authenticateToken, authorizePermission(
     console.error("AR AGING SUMMARY REPORT ERROR:", err.message);
     res.status(500).json({
       message: "Failed to generate AR aging summary report",
+      error: err.message,
+    });
+  }
+});
+
+// ====================== AR LIST OF OVERDUE ACCOUNTS ======================
+// Sixth of the 9 previously-"Coming Soon" reports identified in the
+// technical documentation audit. Built directly on the existing,
+// UNCHANGED AgingReportService - the same engine AR Aging and AR Aging
+// Summary immediately above already use. Not a new recognition query, not
+// a new balance calculation: calls the unchanged getAgingRows("AR", ...)
+// and drops the "current" (not-yet-due) bucket, since this report is
+// specifically the overdue subset of Aging's inclusive row set. See
+// ArOverdueAccountsService.js for the full rationale, including two
+// documented, inherited (not invented) characteristics: Draft invoices
+// are included (Aging's AR branch has no status filter), and Debit/Credit
+// Memos never appear (Aging's row source never joins memo_headers). No
+// AP/tax logic touched; read-only.
+app.get("/api/reports/ar-overdue-accounts", authenticateToken, authorizePermission("REPORTS.AR", "VIEW"), async (req, res) => {
+  try {
+    const { asOf, currency, partyId, status } = req.query;
+    const reportDate = asOf || new Date().toISOString().slice(0, 10);
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+    const { rows, bucketTotals, parties } = await ArOverdueAccountsService.getOverdueAccounts({
+      companyId,
+      asOfDate: reportDate,
+      currencyCode: currency,
+      partyId,
+      status,
+    });
+
+    res.json({ asOfDate: reportDate, rows, bucketTotals, parties });
+  } catch (err) {
+    console.error("AR LIST OF OVERDUE ACCOUNTS REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate AR List of Overdue Accounts report",
       error: err.message,
     });
   }
@@ -8540,6 +8817,105 @@ app.get("/api/reports/subsidiary-ledger", authenticateToken, authorizePermission
     console.error("SUBSIDIARY LEDGER REPORT ERROR:", err.message);
     res.status(500).json({
       message: "Failed to generate subsidiary ledger",
+      error: err.message,
+    });
+  }
+});
+
+// ====================== AR STATEMENT OF ACCOUNTS ======================
+// Fourth of the 9 previously-"Coming Soon" reports identified in the
+// technical documentation audit. Same account universe and same 4-source
+// union (invoice_headers/or_headers/arap_beginning_balance_lines/
+// memo_headers) the Subsidiary Ledger route immediately above already
+// uses for its AR branch - that route is unchanged by this addition. The
+// one genuine addition beyond Subsidiary Ledger is a true pre-period
+// Beginning Balance (see ArStatementService.js), so the running balance
+// shown is a real carried-forward figure instead of starting at 0.
+// Payment allocation (transaction_applications) is not consumed, same as
+// Subsidiary Ledger - an OR's own total is used as a flat payment on its
+// transaction_date regardless of which invoice(s) it was later applied
+// to. No AP/tax logic touched; read-only.
+app.get("/api/reports/ar-statement-of-accounts", authenticateToken, authorizePermission("REPORTS.AR", "VIEW"), async (req, res) => {
+  try {
+    const { partyId, from, to } = req.query;
+
+    if (!partyId) {
+      return res.status(400).json({ message: "partyId is required" });
+    }
+
+    if (!from || !to) {
+      return res.status(400).json({ message: "from and to dates are required" });
+    }
+
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+    const [partyRows] = await pool.execute(
+      "SELECT company_id, code, name FROM general_libraries WHERE id = ?",
+      [partyId]
+    );
+    if (!partyRows.length || partyRows[0].company_id !== companyId) {
+      return res.status(404).json({ message: "Party not found" });
+    }
+
+    const statement = await ArStatementService.getArStatementOfAccounts({ partyId, from, to, companyId });
+
+    res.json({
+      partyId: Number(partyId),
+      partyCode: partyRows[0].code,
+      partyName: partyRows[0].name,
+      from,
+      to,
+      ...statement,
+    });
+  } catch (err) {
+    console.error("AR STATEMENT OF ACCOUNTS REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate AR Statement of Accounts",
+      error: err.message,
+    });
+  }
+});
+
+// ====================== AR BILLINGS & COLLECTIONS ======================
+// Fifth of the 9 previously-"Coming Soon" reports identified in the
+// technical documentation audit. A period, multi-customer SUMMARY - not a
+// second AR Statement of Accounts. Pure composition: for each customer in
+// scope it calls the unchanged ArStatementService.getArStatementOfAccounts
+// (the AR Statement of Accounts route immediately above is untouched by
+// this addition) and buckets the already-computed rows into Billings/
+// Debit Memos/Collections/Credit Memos - no new recognition SQL, no new
+// balance math. Collections is the flat OR total (same source AR
+// Statement/Subsidiary Ledger already use), deliberately NOT
+// transaction_applications, since an OR can be legitimately unallocated
+// (invoiceApplications = []) and would otherwise be silently excluded
+// from a "Collections" total despite representing real cash received.
+// partyId is optional here (unlike AR Statement, where it's required) -
+// omit it for a company-wide, all-active-customers view. No AP/tax logic
+// touched; read-only.
+app.get("/api/reports/ar-billings-and-collections", authenticateToken, authorizePermission("REPORTS.AR", "VIEW"), async (req, res) => {
+  try {
+    const { partyId, from, to } = req.query;
+
+    if (!from || !to) {
+      return res.status(400).json({ message: "from and to dates are required" });
+    }
+
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+    if (partyId) {
+      const [partyRows] = await pool.execute("SELECT company_id FROM general_libraries WHERE id = ?", [partyId]);
+      if (!partyRows.length || partyRows[0].company_id !== companyId) {
+        return res.status(404).json({ message: "Party not found" });
+      }
+    }
+
+    const report = await ArBillingsCollectionsService.getArBillingsAndCollections({ from, to, companyId, partyId });
+
+    res.json({ from, to, ...report });
+  } catch (err) {
+    console.error("AR BILLINGS & COLLECTIONS REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate AR Billings & Collections report",
       error: err.message,
     });
   }
@@ -8713,6 +9089,35 @@ app.get("/api/reports/fixed-asset-register", authenticateToken, authorizePermiss
   } catch (err) {
     console.error("FIXED ASSET REGISTER REPORT ERROR:", err.message);
     res.status(500).json({ message: "Failed to generate fixed asset register", error: err.message });
+  }
+});
+
+// ====================== FIXED ASSET LAPSING REPORT ======================
+// Period depreciation roll-forward (Beginning Accumulated Depreciation ->
+// Depreciation Expense for the Period -> Ending Accumulated
+// Depreciation) for every ACTIVE fixed asset, over a From/To date range.
+// Reuses the fixed-asset-register route's own straight-line formula
+// unchanged (see FixedAssetLapsingService.js) - not a new recognition
+// query, not a new depreciation method, not a schema change. Read-only;
+// the existing fixed-asset-register route and fixed_assets CRUD routes
+// above are untouched. Same REPORTS.FIXED_ASSETS/VIEW permission as the
+// existing Fixed Asset Register - no new permission introduced. Like
+// every fixed-asset route in this file, fixed_assets has no
+// company_id/branch_id column, so this report is NOT company- or
+// branch-scoped (inherited limitation, not invented here).
+app.get("/api/reports/fixed-asset-lapsing", authenticateToken, authorizePermission("REPORTS.FIXED_ASSETS", "VIEW"), async (req, res) => {
+  try {
+    const { from, to } = req.query;
+    if (!from) return res.status(400).json({ message: "From date is required" });
+    if (!to) return res.status(400).json({ message: "To date is required" });
+    if (from > to) return res.status(400).json({ message: "From date must not be after To date" });
+
+    const { rows, grandTotals } = await FixedAssetLapsingService.getFixedAssetLapsing({ from, to });
+
+    res.json({ from, to, rows, grandTotals });
+  } catch (err) {
+    console.error("FIXED ASSET LAPSING REPORT ERROR:", err.message);
+    res.status(500).json({ message: "Failed to generate Fixed Asset Lapsing report", error: err.message });
   }
 });
 
