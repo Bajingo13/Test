@@ -3,6 +3,7 @@ const { HttpError } = require("../lib/httpError");
 const BBCurrency = require("./beginningBalanceCurrencyService");
 const TransactionCurrencyService = require("./transactionCurrencyService");
 const AccountingPeriodService = require("./accountingPeriodService");
+const { logAudit } = require("../lib/audit");
 
 // GL Beginning Balance persistence - previously nonexistent (the manual
 // entry page only console.logged; gl_beginning_balance_headers/lines were
@@ -221,6 +222,30 @@ async function createGLBeginningBalance({ header, rows, user, companyId }) {
         `GL beginning balance is not balanced in base currency: total debit ${totalBaseDebit} vs total credit ${totalBaseCredit}.`
       );
     }
+
+    // headerId is the one safe, authoritative identifier this operation
+    // has - a single header can be created fresh OR reused across several
+    // calls for the same balanceDate (findOrCreateHeader above), so this
+    // event describes "a batch was saved under this header," never
+    // claiming the header itself was newly created. No per-line audit
+    // events, matching the curated-summary convention used everywhere
+    // else - line count/totals only, not a snapshot of every row.
+    await logAudit(conn, {
+      module: "GL_BEGINNING",
+      entityType: "GL_BEGINNING",
+      entityId: headerId,
+      companyId,
+      action: "CREATE",
+      description: `GL Beginning Balance batch saved under header #${headerId} (${rows.length} line(s), ${header.date})`,
+      afterData: {
+        balanceDate: header.date,
+        currencyCode: header.currency || "PHP",
+        lineCount: rows.length,
+        totalDebit: totalBaseDebit,
+        totalCredit: totalBaseCredit,
+      },
+      user,
+    });
 
     await conn.commit();
     return { headerId };

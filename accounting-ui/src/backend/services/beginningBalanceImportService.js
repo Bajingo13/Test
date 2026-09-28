@@ -655,6 +655,7 @@ async function commitImport({ module, batchId, user, companyId: requestedCompany
       module: "BEGINNING_BALANCE_IMPORT",
       entityType: "IMPORT_BATCH",
       entityId: batchId,
+      companyId,
       action: "COMMIT",
       description: `${module.toUpperCase()} beginning balance import committed: ${imported} row(s) imported, ${skippedDuplicates.length} skipped as duplicates, from file "${batch.file_name || "unknown"}"`,
       afterData: { imported, skippedDuplicates: skippedDuplicates.length, templateVersion: TEMPLATE_VERSION },
