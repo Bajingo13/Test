@@ -82,9 +82,14 @@ afterAll(async () => {
 });
 
 describe("Batch 9 - full migration chain is idempotent (executed, not just inspected)", () => {
-  test("cashcheck_migration.sql + the two quotation migrations are information_schema-guarded", () => {
+  test("cashcheck_migration.sql + the two quotation migrations + group-code report-section are information_schema-guarded", () => {
     const REPO_ROOT = path.join(__dirname, "..", "..", "..", "..");
-    for (const f of ["cashcheck_migration.sql", "quotation_migration.sql", "quotation_account_migration.sql"]) {
+    for (const f of [
+      "cashcheck_migration.sql",
+      "quotation_migration.sql",
+      "quotation_account_migration.sql",
+      "accounting_group_code_report_section_migration.sql",
+    ]) {
       const code = fs
         .readFileSync(path.join(REPO_ROOT, f), "utf8")
         .split("\n")

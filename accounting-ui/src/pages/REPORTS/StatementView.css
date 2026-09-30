@@ -1,0 +1,238 @@
+/* Reports Phase E.1: on-screen structured financial statement.
+   Plain white report surface, dark text, hierarchy through weight / spacing
+   / indentation / rules - not boxes or colour. */
+
+.stmt {
+  background: #fff;
+  color: #1a1a1a;
+  border: 1px solid #e2e2e2;
+  border-radius: 4px;
+  padding: 28px 32px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.stmt-head {
+  text-align: center;
+  margin-bottom: 18px;
+}
+.stmt-company {
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: 0.02em;
+}
+.stmt-title {
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-top: 2px;
+}
+.stmt-subtitle {
+  color: #555;
+  font-size: 12px;
+}
+
+.stmt-scroll {
+  overflow-x: auto;
+}
+
+.stmt-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.stmt-table th,
+.stmt-table td {
+  padding: 3px 8px;
+  vertical-align: top;
+  font-weight: 400;
+  text-align: left;
+}
+
+/* first column = descriptions, the rest = amounts */
+.stmt-table th:first-child,
+.stmt-table td:first-child {
+  width: 46%;
+}
+.stmt-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* column headers */
+.stmt-band th {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #666;
+  border-bottom: 1px solid #ddd;
+}
+.stmt-period th {
+  font-weight: 700;
+  border-bottom: 2px solid #333;
+  padding-bottom: 5px;
+}
+
+/* row hierarchy */
+.stmt-desc {
+  font-weight: 400;
+}
+.stmt-statement-heading .stmt-desc {
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding-top: 14px;
+}
+.stmt-section-heading .stmt-desc {
+  font-weight: 700;
+  padding-top: 8px;
+}
+.stmt-section-heading .stmt-num {
+  font-weight: 700;
+}
+.stmt-group .stmt-desc {
+  font-weight: 400;
+}
+.stmt-account .stmt-desc {
+  font-weight: 400;
+  color: #333;
+}
+.stmt-subtotal .stmt-desc,
+.stmt-subtotal .stmt-num {
+  font-weight: 700;
+}
+.stmt-subtotal td,
+.stmt-subtotal th {
+  border-top: 1px solid #bbb;
+}
+.stmt-computed-total .stmt-desc,
+.stmt-computed-total .stmt-num {
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+.stmt-computed-total td,
+.stmt-computed-total th {
+  border-top: 2px solid #333;
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+.stmt-synthetic .stmt-desc {
+  font-weight: 700;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* negatives stay obvious without relying on colour alone: the "-" is kept
+   by formatScreenAmount; a restrained tint is layered on top */
+.stmt-neg {
+  color: #a11;
+}
+
+.stmt-unclassified .stmt-desc {
+  font-style: italic;
+}
+
+.stmt-rule td {
+  border-bottom: 1px solid #ccc;
+  padding: 0;
+  height: 1px;
+}
+.stmt-spacer td {
+  padding: 0;
+  height: 10px;
+}
+
+.stmt-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: #1c4e8a;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.stmt-link:hover {
+  color: #143a68;
+}
+
+.stmt-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (max-width: 720px) {
+  .stmt {
+    padding: 18px 14px;
+    font-size: 12px;
+  }
+  .stmt-table th:first-child,
+  .stmt-table td:first-child {
+    width: auto;
+  }
+}
+
+/* --- shared report-page states (used by IncomeStatement / BalanceSheet) --- */
+.stmt-warning,
+.stmt-error,
+.stmt-empty {
+  border-radius: 4px;
+  padding: 10px 14px;
+  font-size: 13px;
+  margin-bottom: 14px;
+}
+.stmt-warning {
+  background: #fef6e7;
+  border: 1px solid #f0c674;
+  color: #7a5200;
+}
+.stmt-warning strong {
+  display: block;
+  margin-bottom: 2px;
+}
+.stmt-warning ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+.stmt-error {
+  background: #fdecec;
+  border: 1px solid #e0a1a1;
+  color: #8a1f1f;
+}
+.stmt-empty {
+  background: #f7f7f7;
+  border: 1px dashed #ccc;
+  color: #555;
+  text-align: center;
+}
+.stmt-loading {
+  color: #555;
+  font-size: 13px;
+  margin-bottom: 14px;
+}
+
+/* report-mode + comparison controls */
+.stmt-hint {
+  display: block;
+  font-size: 11px;
+  color: #8a6d3b;
+  margin-top: 3px;
+}
+.stmt-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+.stmt-check input {
+  margin: 0;
+}

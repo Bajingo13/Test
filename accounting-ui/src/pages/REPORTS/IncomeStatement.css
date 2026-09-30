@@ -27,10 +27,12 @@
 }
 
 /* MODIFIED */
+/* Phase G.1: 4 columns so Date From | Date To | Report Mode | Comparison
+   line up on one desktop row (collapses to 1 column under 900px below). */
 .is-grid {
   display: grid !important;
-  grid-template-columns: repeat(3, minmax(220px, 1fr)) !important;
-  gap: 22px !important;
+  grid-template-columns: repeat(4, minmax(190px, 1fr)) !important;
+  gap: 20px !important;
   align-items: end;
 }
 
@@ -59,6 +61,54 @@
   font-size: 15px !important;
   background: var(--bg-surface) !important;
   box-sizing: border-box !important;
+}
+
+/* Phase G.1: the "Previous Month" comparison is a compact inline checkbox,
+   NOT a full field. Undo the generic .is-grid input sizing above (which
+   otherwise renders the checkbox as a 52px bordered box) and align it with
+   the other filter controls. Business rule unchanged - the checkbox is
+   disabled unless Date From/Date To span one whole calendar month. */
+.is-grid input[type="checkbox"] {
+  width: 16px !important;
+  height: 16px !important;
+  padding: 0 !important;
+  border-radius: 3px !important;
+  margin: 0;
+  flex: none;
+  accent-color: var(--accent-blue);
+  cursor: pointer;
+}
+.is-grid .is-compare-field {
+  justify-content: flex-end;
+  gap: 4px;
+}
+.is-grid .is-compare-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+  margin-bottom: 0;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.4;
+  cursor: pointer;
+  user-select: none;
+}
+.is-grid .is-compare-check--disabled,
+.is-grid .is-compare-check--disabled input {
+  color: #9a9a9a;
+  cursor: not-allowed;
+}
+.is-grid .is-compare-hint {
+  font-size: 11px;
+  line-height: 1.35;
+  color: #8a6d3b;
+}
+
+@media (max-width: 900px) {
+  .is-grid .is-compare-field {
+    justify-content: flex-start;
+  }
 }
 
 /* MODIFIED */

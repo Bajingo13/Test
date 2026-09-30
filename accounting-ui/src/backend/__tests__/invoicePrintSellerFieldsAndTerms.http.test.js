@@ -88,6 +88,12 @@ async function cleanupStaleFixtures() {
   }
 
   if (companyIds.length) {
+    // FK-safe order: this fixture also creates a base-currency row (and the
+    // invoice flow writes a currency snapshot) that reference companies.id -
+    // remove those test-created child rows before the parent company row,
+    // scoped strictly to this fixture's own company ids.
+    await pool.query("DELETE FROM transaction_currency_snapshots WHERE company_id IN (?)", [companyIds]);
+    await pool.query("DELETE FROM currencies WHERE company_id IN (?)", [companyIds]);
     await pool.query("DELETE FROM companies WHERE id IN (?)", [companyIds]);
   }
   await pool.execute("DELETE FROM chart_of_accounts WHERE code LIKE 'TESTINVF%'");

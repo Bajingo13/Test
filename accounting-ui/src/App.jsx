@@ -7,6 +7,7 @@ import Dashboard from "./pages/DASHBOARD/dashboard";
 import COA from "./pages/FILESETUP/COA";
 import GenLib from "./pages/FILESETUP/GenLib";
 import GroupCodes from "./pages/FILESETUP/GroupCodes";
+import ReportSections from "./pages/FILESETUP/ReportSections";
 import Login from "./pages/login/login";
 import AcceptInvite from "./pages/ADMIN/AcceptInvite";
 import PendingInvitations from "./pages/ADMIN/PendingInvitations";
@@ -66,7 +67,6 @@ import BalanceSheet from "./pages/REPORTS/BalanceSheet.jsx";
 import BankReconciliation from "./pages/REPORTS/BankReconciliation.jsx";
 import BankReconciliationWorkspace from "./pages/REPORTS/BankReconciliationWorkspace.jsx";
 import BankReconDashboard from "./pages/REPORTS/BankReconDashboard.jsx";
-import ComparativeIncomeStatement from "./pages/REPORTS/ComparativeIncomeStatement.jsx";
 import ARAgingReport from "./pages/REPORTS/ARAging.jsx";
 import APAgingReport from "./pages/REPORTS/APAging.jsx";
 import ARAgingSummaryReport from "./pages/REPORTS/ARAgingSummary.jsx";
@@ -87,6 +87,22 @@ import Form2307 from "./pages/REPORTS/Form2307.jsx";
 import EwtAudit from "./pages/REPORTS/EwtAudit.jsx";
 import GeneralLedger from "./pages/REPORTS/GeneralLedger.jsx";
 import CashFlowStatement from "./pages/REPORTS/CashFlowStatement.jsx";
+import JournalBook from "./pages/REPORTS/JournalBook.jsx";
+import IncomeBook from "./pages/REPORTS/IncomeBook.jsx";
+import CashReceiptBook from "./pages/REPORTS/CashReceiptBook.jsx";
+import CashDisbursementBook from "./pages/REPORTS/CashDisbursementBook.jsx";
+import AccountsPayableBook from "./pages/REPORTS/AccountsPayableBook.jsx";
+import PettyCashBook from "./pages/REPORTS/PettyCashBook.jsx";
+import DebitCreditMemoBook from "./pages/REPORTS/DebitCreditMemoBook.jsx";
+import SummaryOfBooksByTotals from "./pages/REPORTS/SummaryOfBooksByTotals.jsx";
+import NetSummaryOfBooks from "./pages/REPORTS/NetSummaryOfBooks.jsx";
+import DailyCashPositionReport from "./pages/REPORTS/DailyCashPositionReport.jsx";
+import ArStatementOfAccounts from "./pages/REPORTS/ArStatementOfAccounts.jsx";
+import ArBillingsAndCollections from "./pages/REPORTS/ArBillingsAndCollections.jsx";
+import ArOverdueAccounts from "./pages/REPORTS/ArOverdueAccounts.jsx";
+import ApListOfPayablesAndPayments from "./pages/REPORTS/ApListOfPayablesAndPayments.jsx";
+import ApOverdueAccounts from "./pages/REPORTS/ApOverdueAccounts.jsx";
+import FixedAssetLapsing from "./pages/REPORTS/FixedAssetLapsing.jsx";
 
 function PlaceholderPage({ title }) {
   return (
@@ -155,6 +171,7 @@ function AppLayout() {
           <Route path="/general-libraries" element={<GenLib />} />
           <Route path="/group-code" element={<GroupCodes />} />
           <Route path="/group-codes" element={<GroupCodes />} />
+          <Route path="/report-sections" element={<ReportSections />} />
           <Route path="/industry" element={<Industry />} />
           <Route path="/category-code" element={<CategoryCode />} />
           <Route path="/beginning-balances" element={<BeginningBalance />} />
@@ -217,6 +234,22 @@ function AppLayout() {
           <Route path="/reports/2307" element={<Form2307 />} />
           <Route path="/reports/expanded-withholding-tax-report" element={<MonthlyExpandedTaxAlphalist />} />
           <Route path="/reports/ewt-audit" element={<EwtAudit />} />
+          <Route path="/reports/books/journal" element={<JournalBook />} />
+          <Route path="/reports/books/income" element={<IncomeBook />} />
+          <Route path="/reports/books/cash-receipt" element={<CashReceiptBook />} />
+          <Route path="/reports/books/cash-disbursement" element={<CashDisbursementBook />} />
+          <Route path="/reports/books/accounts-payable" element={<AccountsPayableBook />} />
+          <Route path="/reports/books/petty-cash" element={<PettyCashBook />} />
+          <Route path="/reports/books/debit-credit-memo" element={<DebitCreditMemoBook />} />
+          <Route path="/reports/books/summary-totals" element={<SummaryOfBooksByTotals />} />
+          <Route path="/reports/books/net-summary" element={<NetSummaryOfBooks />} />
+          <Route path="/reports/daily-cash-position" element={<DailyCashPositionReport />} />
+          <Route path="/reports/ar-statement-of-accounts" element={<ArStatementOfAccounts />} />
+          <Route path="/reports/ar-billings-and-collections" element={<ArBillingsAndCollections />} />
+          <Route path="/reports/ar-overdue-accounts" element={<ArOverdueAccounts />} />
+          <Route path="/reports/ap-payables-and-payments" element={<ApListOfPayablesAndPayments />} />
+          <Route path="/reports/ap-overdue-accounts" element={<ApOverdueAccounts />} />
+          <Route path="/reports/fixed-asset-lapsing" element={<FixedAssetLapsing />} />
 
           <Route
   path="/beginning-balances/gl"

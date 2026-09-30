@@ -20,12 +20,16 @@ import {
   ArrowDownToLine,
   ArrowUpFromLine,
   FileStack,
+  Layers,
 } from "lucide-react";
 
 export const FILE_SETUP_MENU = [
   { id: "coa", label: "Chart of Accounts", icon: BookOpen, path: "/coa" },
   { id: "general-libraries", label: "General Libraries", icon: Library, path: "/general-libraries" },
   { id: "group-code", label: "Group Code", icon: Tags, path: "/group-code" },
+  // Phase M.1: dynamic master data for Group Code's Report Section
+  // dropdown - previously hard-coded, now a real maintenance page.
+  { id: "report-sections", label: "Report Sections", icon: Layers, path: "/report-sections" },
   { id: "industry", label: "Industry", icon: Building2, path: "/industry" },
   { id: "category-code", label: "Category Code", icon: FolderTree, path: "/category-code" },
   {

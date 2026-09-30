@@ -151,6 +151,35 @@ const MIGRATION_ORDER = [
   // re-run is a no-op. No dependency on any table above beyond the
   // baseline existing at all.
   "system_settings_migration.sql",
+  // company_profile rerun guard - idempotency-only fix for the chain
+  // above: after companies_contact_bir_fields_migration.sql renames
+  // company_profile -> company_profile_deprecated, a rerun of
+  // 000_baseline_schema_migration.sql resurrects an EMPTY company_profile
+  // (its CREATE TABLE IF NOT EXISTS no longer sees the renamed table),
+  // drifting the schema. This drops ONLY that stray empty resurrection,
+  // and only once retirement has completed (company_profile_deprecated
+  // present). Never touches companies or company_profile_deprecated, never
+  // drops a table with rows. Must run AFTER
+  // companies_contact_bir_fields_migration.sql.
+  "company_profile_rerun_guard_migration.sql",
+  // Account Group Code report classification - two additive nullable
+  // columns on account_group_codes (report_section VARCHAR(32),
+  // display_order INT). No backfill, NO name-based auto-classification -
+  // existing groups stay report_section = NULL. Guarded by
+  // information_schema; re-run is a no-op. Depends only on 000_baseline
+  // (owns account_group_codes).
+  "accounting_group_code_report_section_migration.sql",
+  // Phase M.1: Report Section master data - new report_sections table,
+  // seeded with the exact same 11 sections already live in
+  // groupCodeClassification.js, so every existing account_group_codes.
+  // report_section value keeps validating unchanged. Depends only on
+  // 000_baseline (no FK to any other table - account_group_codes.
+  // report_section stays a plain VARCHAR match, same as before).
+  "report_sections_master_migration.sql",
+  // Phase M.1: FILESETUP.REPORT_SECTIONS permission rows (VIEW/CONFIGURE)
+  // + ADMIN grant - must run after user_access_control_migration.sql
+  // (owns permissions/role_permissions/roles).
+  "report_sections_permissions_migration.sql",
 ];
 
 module.exports = { MIGRATION_ORDER };

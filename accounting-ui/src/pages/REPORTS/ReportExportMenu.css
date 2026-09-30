@@ -1,0 +1,56 @@
+/* Reports Phase G: unified Print / Export dropdown (IS + BS toolbars). */
+
+.rem {
+  position: relative;
+  display: inline-block;
+}
+
+.rem-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.rem-caret {
+  font-size: 0.8em;
+  line-height: 1;
+}
+
+.rem-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  min-width: 170px;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: #fff;
+  border: 1px solid #cfcfcf;
+  border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+}
+
+.rem-item {
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  background: none;
+  font: inherit;
+  text-align: left;
+  color: #1a1a1a;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.rem-item:hover,
+.rem-item:focus-visible {
+  background: #eef2f7;
+  outline: none;
+}
+
+@media print {
+  .rem,
+  .rem-menu {
+    display: none !important;
+  }
+}

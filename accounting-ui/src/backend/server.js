@@ -25,6 +25,16 @@ const loginRateLimiter = rateLimit({
 });
 const LedgerReportService = require("./services/LedgerReportService");
 const FinancialStatementService = require("./services/financialStatementService");
+const FinancialStatementStructureService = require("./services/financialStatementStructureService");
+const StructuredStatementRequest = require("./lib/structuredStatementRequest");
+const GroupCodeClassification = require("./services/groupCodeClassification");
+const ReportSectionService = require("./services/reportSectionService");
+const ArStatementService = require("./services/ArStatementService");
+const ArBillingsCollectionsService = require("./services/ArBillingsCollectionsService");
+const ArOverdueAccountsService = require("./services/ArOverdueAccountsService");
+const ApListOfPayablesPaymentsService = require("./services/ApListOfPayablesPaymentsService");
+const ApOverdueAccountsService = require("./services/ApOverdueAccountsService");
+const FixedAssetLapsingService = require("./services/FixedAssetLapsingService");
 const { buildXlsxTemplate } = require("./services/TemplateExportService");
 const { templateImportUpload, coaImportUpload, handleUpload } = require("./lib/uploadMiddleware");
 const COAImportService = require("./services/COAImportService");
@@ -103,7 +113,7 @@ const {
 // base/FX account) is already fully reconstructable from
 // transaction_applications itself (section 9), so this entry summarizes
 // rather than repeats it.
-async function logFxSettlementAudit(conn, { req, moduleKey, appliedType, appliedId, applications, fxResult }) {
+async function logFxSettlementAudit(conn, { req, moduleKey, appliedType, appliedId, applications, fxResult, companyId }) {
   if (!fxResult || (fxResult.totalGainAmount === 0 && fxResult.totalLossAmount === 0)) return;
 
   const withFx = applications.filter((a) => a && a.fxDifference !== 0);
@@ -111,6 +121,7 @@ async function logFxSettlementAudit(conn, { req, moduleKey, appliedType, applied
     module: moduleKey,
     entityType: appliedType,
     entityId: appliedId,
+    companyId,
     action: "FOREIGN_SETTLEMENT_POSTED",
     description:
       `${appliedType} #${appliedId} posted a realized foreign-exchange settlement: ` +
@@ -1350,6 +1361,21 @@ app.post("/api/invoices", authenticateToken, authorizePermission("TRANSACTIONS.I
       companyId,
     });
 
+    await logAudit(conn, {
+      module: "INV",
+      entityType: "INV",
+      entityId: invoiceId,
+      companyId,
+      action: "CREATE",
+      description: `Invoice ${voucherNo} created (${finalStatus})`,
+      afterData: {
+        voucherNo, customerName, transactionDate, status: finalStatus,
+        totalDebit: currencyResult.baseTotalDebit, totalCredit: currencyResult.baseTotalCredit,
+        currencyCode: currencyResult.currencyCode,
+      },
+      user: req.user,
+    });
+
     await conn.commit();
 
     res.json({
@@ -1416,7 +1442,7 @@ app.put("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACTION
     // (Phase 7C.1's existingAtcCode - see reconcileEwtTaxEntry's own
     // comment for why comparing against this exact stored value is what
     // exempts an untouched legacy re-save from the new line requirement).
-    const [ownerRows] = await conn.execute("SELECT company_id, transaction_date, status, atc_code, verification_token FROM invoice_headers WHERE id = ?", [id]);
+    const [ownerRows] = await conn.execute("SELECT company_id, transaction_date, status, atc_code, voucher_no, customer_name, total_debit, total_credit, verification_token FROM invoice_headers WHERE id = ?", [id]);
     if (!ownerRows.length || ownerRows[0].company_id !== companyId) {
       await conn.rollback();
       return res.status(404).json({ message: "Invoice not found" });
@@ -1601,6 +1627,33 @@ app.put("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACTION
       companyId,
     });
 
+    await logAudit(conn, {
+      module: "INV",
+      entityType: "INV",
+      entityId: Number(id),
+      companyId,
+      action: "EDIT",
+      description: `Invoice ${normalizeVoucherNo(voucherNo)} edited`,
+      beforeData: {
+        voucherNo: ownerRows[0].voucher_no,
+        customerName: ownerRows[0].customer_name,
+        transactionDate: existingDateISO,
+        status: ownerRows[0].status,
+        totalDebit: ownerRows[0].total_debit,
+        totalCredit: ownerRows[0].total_credit,
+      },
+      afterData: {
+        voucherNo: normalizeVoucherNo(voucherNo),
+        customerName,
+        transactionDate: transactionDate || existingDateISO,
+        status: finalStatus,
+        totalDebit: currencyResult.baseTotalDebit,
+        totalCredit: currencyResult.baseTotalCredit,
+        currencyCode: currencyResult.currencyCode,
+      },
+      user: req.user,
+    });
+
     await conn.commit();
 
     res.json({
@@ -1628,7 +1681,14 @@ app.delete("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACT
 
     await conn.beginTransaction();
 
-    const [ownerRows] = await conn.execute("SELECT company_id, transaction_date, status FROM invoice_headers WHERE id = ?", [id]);
+    // FOR UPDATE: locks this invoice's own row for the life of the
+    // transaction, so a concurrent applyInvoicePayment() call (which takes
+    // the SAME FOR UPDATE lock on this row before inserting its
+    // transaction_applications row) is forced to serialize against this
+    // delete rather than racing past the active-application guard below.
+    // Whichever side acquires the lock first is the one whose view of
+    // "does an application exist" is authoritative for the other.
+    const [ownerRows] = await conn.execute("SELECT company_id, transaction_date, status, voucher_no, customer_name FROM invoice_headers WHERE id = ? FOR UPDATE", [id]);
     if (!ownerRows.length || ownerRows[0].company_id !== companyId) {
       await conn.rollback();
       return res.status(404).json({ message: "Invoice not found" });
@@ -1642,6 +1702,25 @@ app.delete("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACT
     const delDateISO = AccountingPeriodService.toDateOnly(ownerRows[0].transaction_date);
     await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate: delDateISO, operation: "DELETE", user: req.user }, conn);
 
+    // Payment-application integrity guard: a transaction_applications row
+    // is "active" simply by existing (this codebase has no status column
+    // or soft-delete concept for applications - see applyInvoicePayment/
+    // updateInvoicePaymentStatus, which both treat row existence as the
+    // sole signal). Deleting an invoice that still has one would silently
+    // destroy an OR's documented settlement history with no audit trail of
+    // the loss. Reject rather than delete the application rows.
+    const [[activeApp]] = await conn.execute(
+      "SELECT COUNT(*) AS n FROM transaction_applications WHERE source_type = 'INV' AND source_id = ?",
+      [id]
+    );
+    if (Number(activeApp.n) > 0) {
+      await conn.rollback();
+      return res.status(409).json({
+        message: "This invoice has one or more active payment applications and cannot be deleted.",
+        code: "INVOICE_HAS_ACTIVE_PAYMENTS",
+      });
+    }
+
     await conn.execute(
       `DELETE FROM transaction_applications
        WHERE source_type = 'INV'
@@ -1650,6 +1729,22 @@ app.delete("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACT
     );
 
     await conn.execute("DELETE FROM invoice_headers WHERE id = ? AND company_id = ?", [id, companyId]);
+
+    await logAudit(conn, {
+      module: "INV",
+      entityType: "INV",
+      entityId: Number(id),
+      companyId,
+      action: "DELETE",
+      description: `Invoice ${ownerRows[0].voucher_no} deleted`,
+      beforeData: {
+        voucherNo: ownerRows[0].voucher_no,
+        customerName: ownerRows[0].customer_name,
+        status: ownerRows[0].status,
+        transactionDate: delDateISO,
+      },
+      user: req.user,
+    });
 
     await conn.commit();
 
@@ -1872,7 +1967,7 @@ app.post("/api/or", authenticateToken, authorizePermission("TRANSACTIONS.OR", "C
       transactionId: orId, applications: orApplications, perspective: "RECEIVABLE",
     });
     await logFxSettlementAudit(conn, {
-      req, moduleKey: "TRANSACTIONS.OR", appliedType: "OR", appliedId: orId,
+      req, moduleKey: "TRANSACTIONS.OR", appliedType: "OR", appliedId: orId, companyId,
       applications: orApplications, fxResult: orFxResult,
     });
 
@@ -1882,6 +1977,54 @@ app.post("/api/or", authenticateToken, authorizePermission("TRANSACTIONS.OR", "C
       baseCurrencyId: currencyResult.baseCurrencyId, baseCurrencyCode: currencyResult.baseCurrencyCode,
       rateInfo: currencyResult.rateInfo, foreignTotals: currencyResult.foreignTotals, baseTotals: currencyResult.baseTotals,
       userId: req.user.id, lockNow: isPosting,
+    });
+
+    // Phase 4: PAYMENT_APPLIED - a curated, document-level summary of the
+    // applications just created (same module/entityType as this OR's own
+    // CREATE event below), mirroring how logFxSettlementAudit already
+    // summarizes applications rather than writing one row per
+    // transaction_applications insert. Only fires when applications were
+    // actually created - an OR with zero invoiceApplications gets no event.
+    // orApplications[i] is the (possibly null, when skipped) result paired
+    // with invoiceApplications[i] at the same index, from the loop above.
+    const appliedPayments = invoiceApplications
+      .map((appItem, i) => ({ appItem, result: orApplications[i] }))
+      .filter((p) => p.result)
+      .map((p) => ({
+        sourceType: p.appItem.sourceType === "AR_BEGINNING" ? "AR_BEGINNING" : "INV",
+        sourceId: p.appItem.sourceId ?? p.appItem.invoiceId ?? null,
+        amount: p.result.foreignAmountApplied,
+        applicationDate: p.appItem.applicationDate || transactionDate,
+      }));
+    if (appliedPayments.length > 0) {
+      await logAudit(conn, {
+        module: "TRANSACTIONS.OR",
+        entityType: "OR",
+        entityId: orId,
+        companyId,
+        action: "PAYMENT_APPLIED",
+        description: `OR ${voucherNo} applied ${appliedPayments.length} payment(s)`,
+        afterData: { applications: appliedPayments },
+        user: req.user,
+      });
+    }
+
+    // CREATE only - payment/application auditing (invoiceApplications,
+    // transaction_applications) is a separate future phase, deliberately
+    // not touched here.
+    await logAudit(conn, {
+      module: "TRANSACTIONS.OR",
+      entityType: "OR",
+      entityId: orId,
+      companyId,
+      action: "CREATE",
+      description: `OR ${voucherNo} created (${finalStatus})`,
+      afterData: {
+        voucherNo, customerName, transactionDate, status: finalStatus,
+        totalDebit: currencyResult.baseTotalDebit, totalCredit: currencyResult.baseTotalCredit,
+        currencyCode: currencyResult.currencyCode,
+      },
+      user: req.user,
     });
 
     await conn.commit();
@@ -2038,7 +2181,7 @@ app.put("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
 
     await conn.beginTransaction();
 
-    const [ownerRows] = await conn.execute("SELECT company_id, transaction_date, status FROM or_headers WHERE id = ?", [id]);
+    const [ownerRows] = await conn.execute("SELECT company_id, transaction_date, status, voucher_no, customer_name, total_debit, total_credit FROM or_headers WHERE id = ?", [id]);
     if (!ownerRows.length || ownerRows[0].company_id !== companyId) {
       await conn.rollback();
       return res.status(404).json({ message: "OR not found" });
@@ -2068,12 +2211,37 @@ app.put("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
       `SELECT
          source_type AS sourceType,
          source_id AS sourceId,
-         amount
+         amount,
+         DATE_FORMAT(application_date, '%Y-%m-%d') AS applicationDate
        FROM transaction_applications
        WHERE applied_type = 'OR'
          AND applied_id = ?`,
       [id]
     );
+
+    // Phase 4: PAYMENT_UNAPPLIED - a curated, document-level summary of the
+    // applications about to be removed, using the oldApplications rows STEP
+    // 1 already loaded (no extra query). Only fires when there actually
+    // were old applications to remove.
+    if (oldApplications.length > 0) {
+      await logAudit(conn, {
+        module: "TRANSACTIONS.OR",
+        entityType: "OR",
+        entityId: Number(id),
+        companyId,
+        action: "PAYMENT_UNAPPLIED",
+        description: `OR ${ownerRows[0].voucher_no} removed ${oldApplications.length} payment(s)`,
+        beforeData: {
+          applications: oldApplications.map((a) => ({
+            sourceType: a.sourceType,
+            sourceId: a.sourceId,
+            amount: a.amount,
+            applicationDate: a.applicationDate,
+          })),
+        },
+        user: req.user,
+      });
+    }
 
     /*
      * STEP 2:
@@ -2293,7 +2461,7 @@ app.put("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
       transactionId: Number(id), applications: orApplications, perspective: "RECEIVABLE",
     });
     await logFxSettlementAudit(conn, {
-      req, moduleKey: "TRANSACTIONS.OR", appliedType: "OR", appliedId: Number(id),
+      req, moduleKey: "TRANSACTIONS.OR", appliedType: "OR", appliedId: Number(id), companyId,
       applications: orApplications, fxResult: orFxResult,
     });
 
@@ -2303,6 +2471,63 @@ app.put("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
       baseCurrencyId: currencyResult.baseCurrencyId, baseCurrencyCode: currencyResult.baseCurrencyCode,
       rateInfo: currencyResult.rateInfo, foreignTotals: currencyResult.foreignTotals, baseTotals: currencyResult.baseTotals,
       userId: req.user.id, lockNow: isPosting,
+    });
+
+    // Phase 4: PAYMENT_APPLIED - the reapply counterpart to STEP 1's
+    // PAYMENT_UNAPPLIED above, describing the NEW application set from
+    // STEP 7. orApplications[i] pairs with invoiceApplications[i] (same
+    // loop index, possibly null when a raw entry was skipped by
+    // applyInvoicePayment).
+    const editAppliedPayments = invoiceApplications
+      .map((appItem, i) => ({ appItem, result: orApplications[i] }))
+      .filter((p) => p.result)
+      .map((p) => ({
+        sourceType: p.appItem.sourceType === "AR_BEGINNING" ? "AR_BEGINNING" : "INV",
+        sourceId: p.appItem.sourceId ?? p.appItem.invoiceId ?? null,
+        amount: p.result.foreignAmountApplied,
+        applicationDate: p.appItem.applicationDate || transactionDate || existingDateISO,
+      }));
+    if (editAppliedPayments.length > 0) {
+      await logAudit(conn, {
+        module: "TRANSACTIONS.OR",
+        entityType: "OR",
+        entityId: Number(id),
+        companyId,
+        action: "PAYMENT_APPLIED",
+        description: `OR ${normalizeVoucherNo(voucherNo) || ""} applied ${editAppliedPayments.length} payment(s)`,
+        afterData: { applications: editAppliedPayments },
+        user: req.user,
+      });
+    }
+
+    // Document-level EDIT audit only - the invoiceApplications
+    // reversal/reapply above (STEPs 1-7) is described separately by the
+    // PAYMENT_UNAPPLIED/PAYMENT_APPLIED events above, not repeated here.
+    await logAudit(conn, {
+      module: "TRANSACTIONS.OR",
+      entityType: "OR",
+      entityId: Number(id),
+      companyId,
+      action: "EDIT",
+      description: `OR ${normalizeVoucherNo(voucherNo) || ""} edited`,
+      beforeData: {
+        voucherNo: ownerRows[0].voucher_no,
+        customerName: ownerRows[0].customer_name,
+        transactionDate: existingDateISO,
+        status: ownerRows[0].status,
+        totalDebit: ownerRows[0].total_debit,
+        totalCredit: ownerRows[0].total_credit,
+      },
+      afterData: {
+        voucherNo: normalizeVoucherNo(voucherNo) || "",
+        customerName,
+        transactionDate: transactionDate || existingDateISO,
+        status: finalStatus,
+        totalDebit: currencyResult.baseTotalDebit,
+        totalCredit: currencyResult.baseTotalCredit,
+        currencyCode: currencyResult.currencyCode,
+      },
+      user: req.user,
     });
 
     await conn.commit();
@@ -2413,6 +2638,7 @@ app.post("/api/or/:id/email", authenticateToken, authorizePermission("TRANSACTIO
       module: "TRANSACTIONS.OR",
       entityType: "OR",
       entityId: Number(or.id),
+      companyId,
       action: "EMAIL",
       description:
         `Emailed OR ${or.voucherNo} to ${recipient.email} (source=${recipient.source}) - ` +
@@ -2931,6 +3157,25 @@ app.post("/api/apv", authenticateToken, authorizePermission("TRANSACTIONS.APV", 
       userId: req.user.id, lockNow: String(finalStatus).toUpperCase() === "POSTED",
     });
 
+    // module/entityType: "TRANSACTIONS"/"APV" - matches APV's own existing
+    // Cancel/Void/Reverse/Delete audit events (see below in this file)
+    // rather than a short "APV" module code, so APV's whole audit trail
+    // stays under one consistent module value.
+    await logAudit(conn, {
+      module: "TRANSACTIONS",
+      entityType: "APV",
+      entityId: apvId,
+      companyId,
+      action: "CREATE",
+      description: `APV ${voucherNo} created (${finalStatus})`,
+      afterData: {
+        voucherNo, supplierName, transactionDate, status: finalStatus,
+        totalDebit: currencyResult.baseTotalDebit, totalCredit: currencyResult.baseTotalCredit,
+        currencyCode: currencyResult.currencyCode,
+      },
+      user: req.user,
+    });
+
     await conn.commit();
 
     res.json({
@@ -2996,7 +3241,7 @@ app.put("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV
     await assertVoucherNoUnique(conn, { module: "APV", companyId, voucherNo, excludeId: id });
     // atc_code fetched alongside for Phase 7C.1's existingAtcCode - see the
     // identical comment in PUT /api/invoices/:id above.
-    const [ownerRows] = await conn.execute("SELECT company_id, transaction_date, status, atc_code FROM apv_headers WHERE id = ?", [id]);
+    const [ownerRows] = await conn.execute("SELECT company_id, transaction_date, status, atc_code, voucher_no, supplier_name, total_debit, total_credit FROM apv_headers WHERE id = ?", [id]);
     if (!ownerRows.length || ownerRows[0].company_id !== companyId) {
       await conn.rollback();
       return res.status(404).json({ message: "APV not found" });
@@ -3155,6 +3400,36 @@ app.put("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV
 
     await updateApvPaymentStatus(conn, id);
 
+    // module/entityType: "TRANSACTIONS"/"APV" - matches APV's own existing
+    // Cancel/Void/Reverse/Delete/Create audit events, keeping APV's whole
+    // audit trail under one consistent module value.
+    await logAudit(conn, {
+      module: "TRANSACTIONS",
+      entityType: "APV",
+      entityId: Number(id),
+      companyId,
+      action: "EDIT",
+      description: `APV ${normalizeVoucherNo(voucherNo)} edited`,
+      beforeData: {
+        voucherNo: ownerRows[0].voucher_no,
+        supplierName: ownerRows[0].supplier_name,
+        transactionDate: existingDateISO,
+        status: ownerRows[0].status,
+        totalDebit: ownerRows[0].total_debit,
+        totalCredit: ownerRows[0].total_credit,
+      },
+      afterData: {
+        voucherNo: normalizeVoucherNo(voucherNo),
+        supplierName,
+        transactionDate: transactionDate || existingDateISO,
+        status: finalStatus,
+        totalDebit: currencyResult.baseTotalDebit,
+        totalCredit: currencyResult.baseTotalCredit,
+        currencyCode: currencyResult.currencyCode,
+      },
+      user: req.user,
+    });
+
     await conn.commit();
 
     res.json({
@@ -3182,7 +3457,12 @@ app.delete("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.
 
     await conn.beginTransaction();
 
-    const [ownerRows] = await conn.execute("SELECT company_id, transaction_date, status FROM apv_headers WHERE id = ?", [id]);
+    // FOR UPDATE: locks this APV's own row for the life of the
+    // transaction, so a concurrent applyApvPayment() call (which takes the
+    // SAME FOR UPDATE lock on this row before inserting its
+    // transaction_applications row) is forced to serialize against this
+    // delete rather than racing past the active-application guard below.
+    const [ownerRows] = await conn.execute("SELECT company_id, transaction_date, status, voucher_no, supplier_name FROM apv_headers WHERE id = ? FOR UPDATE", [id]);
     if (!ownerRows.length || ownerRows[0].company_id !== companyId) {
       await conn.rollback();
       return res.status(404).json({ message: "APV not found" });
@@ -3203,6 +3483,24 @@ app.delete("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.
     const delDateISO = AccountingPeriodService.toDateOnly(ownerRows[0].transaction_date);
     await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate: delDateISO, operation: "DELETE", user: req.user }, conn);
 
+    // Payment-application integrity guard: same rationale as the identical
+    // guard in DELETE /api/invoices/:id above - a transaction_applications
+    // row is "active" simply by existing. Reusing the existing
+    // APV_HAS_ACTIVE_PAYMENTS code (already used by POST /api/apv/:id/void
+    // for the equivalent "an active CV still settles this APV" case) rather
+    // than inventing a new one for a conceptually identical situation.
+    const [[activeApp]] = await conn.execute(
+      "SELECT COUNT(*) AS n FROM transaction_applications WHERE source_type = 'APV' AND source_id = ?",
+      [id]
+    );
+    if (Number(activeApp.n) > 0) {
+      await conn.rollback();
+      return res.status(409).json({
+        message: "This APV has one or more active payment applications and cannot be deleted.",
+        code: "APV_HAS_ACTIVE_PAYMENTS",
+      });
+    }
+
     await conn.execute(
       `DELETE FROM transaction_applications
        WHERE source_type = 'APV'
@@ -3211,6 +3509,27 @@ app.delete("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.
     );
 
     await conn.execute("DELETE FROM apv_headers WHERE id = ? AND company_id = ?", [id, companyId]);
+
+    // module/entityType: "TRANSACTIONS"/"APV" - matches APV's own existing
+    // Cancel/Void/Reverse audit events (see below in this file) rather than
+    // the JV/Petty-Cash-style short module code, so APV's own audit trail
+    // stays under one consistent module value instead of fragmenting across
+    // "TRANSACTIONS" (cancel/void/reverse) and "APV" (delete).
+    await logAudit(conn, {
+      module: "TRANSACTIONS",
+      entityType: "APV",
+      entityId: Number(id),
+      companyId,
+      action: "DELETE",
+      description: `APV ${ownerRows[0].voucher_no} deleted`,
+      beforeData: {
+        voucherNo: ownerRows[0].voucher_no,
+        supplierName: ownerRows[0].supplier_name,
+        status: ownerRows[0].status,
+        transactionDate: delDateISO,
+      },
+      user: req.user,
+    });
 
     await conn.commit();
 
@@ -3286,7 +3605,7 @@ app.post("/api/apv/:id/cancel", authenticateToken, authorizePermission("TRANSACT
 
     await conn.execute("UPDATE apv_headers SET status = ? WHERE id = ? AND company_id = ?", [CANCELLED, id, companyId]);
     await logAudit(conn, {
-      module: "TRANSACTIONS", entityType: "APV", entityId: Number(id), action: "CANCEL",
+      module: "TRANSACTIONS", entityType: "APV", entityId: Number(id), companyId, action: "CANCEL",
       description: `Cancelled APV ${rows[0].voucher_no || id}. Reason: ${reason}`.slice(0, 500),
       beforeData: { status: prev }, afterData: { status: CANCELLED, reason },
       user: { ...req.user, ...requestMeta(req) },
@@ -3358,7 +3677,7 @@ app.post("/api/apv/:id/void", authenticateToken, authorizePermission("TRANSACTIO
 
     await conn.execute("UPDATE apv_headers SET status = ? WHERE id = ? AND company_id = ?", [VOID, id, companyId]);
     await logAudit(conn, {
-      module: "TRANSACTIONS", entityType: "APV", entityId: Number(id), action: "VOID",
+      module: "TRANSACTIONS", entityType: "APV", entityId: Number(id), companyId, action: "VOID",
       description: `Voided APV ${rows[0].voucher_no || id}. Reason: ${reason}`.slice(0, 500),
       beforeData: { status: prev }, afterData: { status: VOID, reason },
       user: { ...req.user, ...requestMeta(req) },
@@ -3537,7 +3856,7 @@ app.post("/api/apv/:id/reverse", authenticateToken, authorizePermission("TRANSAC
     const result = await performReversal(conn, { module: "APV", companyId, original, reason, user: req.user, reversalDate });
 
     await logAudit(conn, {
-      module: "TRANSACTIONS", entityType: "APV", entityId: Number(id), action: "REVERSE",
+      module: "TRANSACTIONS", entityType: "APV", entityId: Number(id), companyId, action: "REVERSE",
       description: `Reversed APV ${original.voucher_no} via JV ${result.reversalVoucherNo} dated ${reversalDate}. Reason: ${reason}`.slice(0, 500),
       beforeData: { status: "Posted" },
       afterData: { status: "Posted", reversalJvId: result.reversalJvId, reversalVoucher: result.reversalVoucherNo, reversalDate, reason },
@@ -3844,6 +4163,21 @@ app.post("/api/purchase-orders", authenticateToken, authorizePermission("TRANSAC
       userId: req.user.id, lockNow: isPosting,
     });
 
+    await logAudit(conn, {
+      module: "PO",
+      entityType: "PO",
+      entityId: poId,
+      companyId,
+      action: "CREATE",
+      description: `Purchase Order ${voucherNo} created (${finalStatus})`,
+      afterData: {
+        voucherNo, supplierName, transactionDate, status: finalStatus,
+        totalDebit: currencyResult.baseTotalDebit, totalCredit: currencyResult.baseTotalCredit,
+        currencyCode: currencyResult.currencyCode,
+      },
+      user: req.user,
+    });
+
     await conn.commit();
 
     res.json({
@@ -3904,7 +4238,7 @@ app.put("/api/purchase-orders/:id", authenticateToken, authorizePermission("TRAN
 
     await conn.beginTransaction();
 
-    const [ownerRows] = await conn.execute("SELECT company_id, transaction_date FROM purchase_order_headers WHERE id = ?", [id]);
+    const [ownerRows] = await conn.execute("SELECT company_id, transaction_date, voucher_no, supplier_name, status, total_debit, total_credit FROM purchase_order_headers WHERE id = ?", [id]);
     if (!ownerRows.length || ownerRows[0].company_id !== companyId) {
       await conn.rollback();
       return res.status(404).json({ message: "Purchase Order not found" });
@@ -4006,6 +4340,33 @@ app.put("/api/purchase-orders/:id", authenticateToken, authorizePermission("TRAN
       userId: req.user.id, lockNow: isPosting,
     });
 
+    await logAudit(conn, {
+      module: "PO",
+      entityType: "PO",
+      entityId: Number(id),
+      companyId,
+      action: "EDIT",
+      description: `Purchase Order ${normalizeVoucherNo(voucherNo)} edited`,
+      beforeData: {
+        voucherNo: ownerRows[0].voucher_no,
+        supplierName: ownerRows[0].supplier_name,
+        transactionDate: existingDateISO,
+        status: ownerRows[0].status,
+        totalDebit: ownerRows[0].total_debit,
+        totalCredit: ownerRows[0].total_credit,
+      },
+      afterData: {
+        voucherNo: normalizeVoucherNo(voucherNo),
+        supplierName,
+        transactionDate: transactionDate || existingDateISO,
+        status: finalStatus,
+        totalDebit: currencyResult.baseTotalDebit,
+        totalCredit: currencyResult.baseTotalCredit,
+        currencyCode: currencyResult.currencyCode,
+      },
+      user: req.user,
+    });
+
     await conn.commit();
 
     res.json({
@@ -4027,7 +4388,7 @@ app.delete("/api/purchase-orders/:id", authenticateToken, authorizePermission("T
     const { id } = req.params;
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId || req.body?.companyId);
 
-    const [ownerRows] = await pool.execute("SELECT company_id, transaction_date FROM purchase_order_headers WHERE id = ?", [id]);
+    const [ownerRows] = await pool.execute("SELECT company_id, transaction_date, voucher_no, supplier_name, status FROM purchase_order_headers WHERE id = ?", [id]);
     if (!ownerRows.length || ownerRows[0].company_id !== companyId) {
       return res.status(404).json({ message: "Purchase Order not found" });
     }
@@ -4035,6 +4396,26 @@ app.delete("/api/purchase-orders/:id", authenticateToken, authorizePermission("T
     await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate: delDateISO, operation: "DELETE", user: req.user });
 
     await pool.execute("DELETE FROM purchase_order_headers WHERE id = ? AND company_id = ?", [id, companyId]);
+
+    // This route has never used a transaction (pool.execute throughout, no
+    // conn/beginTransaction) - preserved as-is per the additive-only scope
+    // of this phase. The audit INSERT below uses the same bare `pool`, not a
+    // new connection/transaction, so no transaction boundary is introduced.
+    await logAudit(pool, {
+      module: "PO",
+      entityType: "PO",
+      entityId: Number(id),
+      companyId,
+      action: "DELETE",
+      description: `Purchase Order ${ownerRows[0].voucher_no} deleted`,
+      beforeData: {
+        voucherNo: ownerRows[0].voucher_no,
+        supplierName: ownerRows[0].supplier_name,
+        status: ownerRows[0].status,
+        transactionDate: delDateISO,
+      },
+      user: req.user,
+    });
 
     res.json({
       success: true,
@@ -4265,6 +4646,24 @@ app.post("/api/quotations", authenticateToken, authorizePermission("TRANSACTIONS
       );
     }
 
+    // Quotation has no currency/GL-posting concept (confirmed - never
+    // posts to the ledger), so afterData has no currencyCode field, unlike
+    // every module that does resolve one. CREATE only - the separate
+    // convert-to-invoice action is not audited by this phase.
+    await logAudit(conn, {
+      module: "QUOTATION",
+      entityType: "QUOTATION",
+      entityId: quotationId,
+      companyId,
+      action: "CREATE",
+      description: `Quotation ${quotationNo} created (${status || "Draft"})`,
+      afterData: {
+        quotationNo, customerName, quotationDate, status: status || "Draft",
+        totalAmount,
+      },
+      user: req.user,
+    });
+
     await conn.commit();
 
     res.json({
@@ -4295,7 +4694,7 @@ app.put("/api/quotations/:id", authenticateToken, authorizePermission("TRANSACTI
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.body?.companyId);
 
     const [existing] = await conn.execute(
-      "SELECT status FROM quotation_headers WHERE id = ? AND company_id = ?",
+      "SELECT status, quotation_no, customer_name, quotation_date, total_amount FROM quotation_headers WHERE id = ? AND company_id = ?",
       [id, companyId]
     );
 
@@ -4391,6 +4790,34 @@ app.put("/api/quotations/:id", authenticateToken, authorizePermission("TRANSACTI
       );
     }
 
+    // Quotation has no currency/GL-posting concept (confirmed - never posts
+    // to the ledger, same reasoning as its CREATE audit event), so afterData
+    // has no currencyCode field. quotationNo cannot change via this route
+    // (not in the UPDATE above), so before/after share the same value.
+    await logAudit(conn, {
+      module: "QUOTATION",
+      entityType: "QUOTATION",
+      entityId: Number(id),
+      companyId,
+      action: "EDIT",
+      description: `Quotation ${existing[0].quotation_no} edited`,
+      beforeData: {
+        quotationNo: existing[0].quotation_no,
+        customerName: existing[0].customer_name,
+        quotationDate: existing[0].quotation_date,
+        status: existing[0].status,
+        totalAmount: existing[0].total_amount,
+      },
+      afterData: {
+        quotationNo: existing[0].quotation_no,
+        customerName,
+        quotationDate: quotationDate || existing[0].quotation_date,
+        status: status || "Draft",
+        totalAmount,
+      },
+      user: req.user,
+    });
+
     await conn.commit();
 
     res.json({
@@ -4413,14 +4840,38 @@ app.delete("/api/quotations/:id", authenticateToken, authorizePermission("TRANSA
     // Phase 7H: a user cannot delete another company's quotation by id.
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId || req.body?.companyId);
 
-    const [result] = await pool.execute(
+    // Read the row first (this route previously deleted immediately with no
+    // pre-read) so there is something authoritative to put in the audit
+    // event's beforeData - the delete/404 semantics are unchanged, just
+    // checked before the DELETE instead of via affectedRows after it.
+    const [ownerRows] = await pool.execute(
+      "SELECT quotation_no, customer_name, status, quotation_date FROM quotation_headers WHERE id = ? AND company_id = ?",
+      [id, companyId]
+    );
+    if (!ownerRows.length) {
+      return res.status(404).json({ message: "Quotation not found" });
+    }
+
+    await pool.execute(
       "DELETE FROM quotation_headers WHERE id = ? AND company_id = ?",
       [id, companyId]
     );
 
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ message: "Quotation not found" });
-    }
+    await logAudit(pool, {
+      module: "QUOTATION",
+      entityType: "QUOTATION",
+      entityId: Number(id),
+      companyId,
+      action: "DELETE",
+      description: `Quotation ${ownerRows[0].quotation_no} deleted`,
+      beforeData: {
+        quotationNo: ownerRows[0].quotation_no,
+        customerName: ownerRows[0].customer_name,
+        status: ownerRows[0].status,
+        quotationDate: ownerRows[0].quotation_date,
+      },
+      user: req.user,
+    });
 
     res.json({
       success: true,
@@ -4463,6 +4914,20 @@ app.post("/api/quotations/:id/convert-to-invoice", authenticateToken, authorizeP
         message: "This Quotation has already been converted to an Invoice.",
       });
     }
+
+    // Period-lock enforcement: this route creates a real invoice_headers
+    // row (transaction_date = CURDATE() at insert time below), exactly
+    // like the normal POST /api/invoices route above - it must go through
+    // the same AccountingPeriodService.assertPeriodOpen(...) gate that
+    // route already uses. CURDATE() is read via the SAME connection/
+    // transaction as the eventual insert (not a JS Date) so the checked
+    // date and the inserted date can never diverge across a Node-vs-MySQL
+    // timezone or midnight-boundary skew - the exact bug class
+    // AccountingPeriodService.toDateOnly()'s own comment warns about.
+    const [[{ today }]] = await conn.query("SELECT CURDATE() AS today");
+    await AccountingPeriodService.assertPeriodOpen({
+      companyId, transactionDate: AccountingPeriodService.toDateOnly(today), operation: "CREATE", user: req.user,
+    }, conn);
 
     const [arAccounts] = await conn.execute(
       `SELECT id, code, title FROM chart_of_accounts WHERE LOWER(title) LIKE '%receivable%' LIMIT 1`
@@ -4647,42 +5112,76 @@ app.post("/api/quotations/:id/convert-to-invoice", authenticateToken, authorizeP
 
 app.get("/api/posting/pending", authenticateToken, authorizePermission("POSTING", "VIEW"), async (req, res) => {
   try {
-    const [rows] = await pool.execute(`
+    // Company-isolation fix: this route previously had no company_id
+    // restriction at all, leaking every company's pending Draft documents
+    // to any user with POSTING.VIEW. resolveCompanyIdForRead() is the
+    // existing, purpose-built read-scope resolver (already used internally
+    // by currencyService.js's own listCurrencies()) - consumed here
+    // exactly as it already behaves, unmodified: SUPER_ADMIN with no
+    // companyId -> null (no filter, sees every company, consistent with
+    // the rest of this system); an explicit companyId -> validated against
+    // the caller's own access, single id; a normal user with no companyId
+    // -> the array of every company they're actually assigned to.
+    const scope = await CurrencyService.resolveCompanyIdForRead(req.user, req.query.companyId);
+
+    let companyFilter = "";
+    let filterParams = [];
+    if (Array.isArray(scope)) {
+      if (scope.length === 0) return res.json([]);
+      companyFilter = "AND company_id IN (?)";
+      filterParams = [scope];
+    } else if (scope !== null) {
+      companyFilter = "AND company_id = ?";
+      filterParams = [scope];
+    }
+    // else scope === null (SUPER_ADMIN, no companyId given) - no filter,
+    // companyFilter stays "" and filterParams stays [], exactly like today.
+
+    // pool.query (not .execute) so the IN (?) array-expansion shorthand
+    // works, the same convention already used elsewhere in this file (e.g.
+    // the bulk-posting route above). The SAME filterParams tuple is
+    // repeated once per UNION ALL branch, in the same order the five `?`
+    // placeholders appear below (Invoice, OR, APV, CV, PO) - each branch
+    // gets its own independent copy of the identical company scope.
+    const [rows] = await pool.query(
+      `
       SELECT 'INV' AS sourceType, id, voucher_no AS voucherNo, customer_name AS party,
         DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate, total_debit AS amount, status
-      FROM invoice_headers WHERE UPPER(status) = 'DRAFT'
+      FROM invoice_headers WHERE UPPER(status) = 'DRAFT' ${companyFilter}
 
       UNION ALL
 
       SELECT 'OR' AS sourceType, id, voucher_no AS voucherNo, customer_name AS party,
         DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate, total_debit AS amount, status
-      FROM or_headers WHERE UPPER(status) = 'DRAFT'
+      FROM or_headers WHERE UPPER(status) = 'DRAFT' ${companyFilter}
 
       UNION ALL
 
       SELECT 'APV' AS sourceType, id, voucher_no AS voucherNo, supplier_name AS party,
         DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate, total_credit AS amount, status
-      FROM apv_headers WHERE UPPER(status) = 'DRAFT'
+      FROM apv_headers WHERE UPPER(status) = 'DRAFT' ${companyFilter}
 
       UNION ALL
 
       SELECT 'CV' AS sourceType, id, voucher_no AS voucherNo, payee_name AS party,
         DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate, total_credit AS amount, status
-      FROM cv_headers WHERE UPPER(status) = 'DRAFT'
+      FROM cv_headers WHERE UPPER(status) = 'DRAFT' ${companyFilter}
 
       UNION ALL
 
       SELECT 'PO' AS sourceType, id, voucher_no AS voucherNo, supplier_name AS party,
         DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate, total_credit AS amount, status
-      FROM purchase_order_headers WHERE UPPER(status) = 'DRAFT'
+      FROM purchase_order_headers WHERE UPPER(status) = 'DRAFT' ${companyFilter}
 
       ORDER BY transactionDate DESC
-    `);
+      `,
+      [...filterParams, ...filterParams, ...filterParams, ...filterParams, ...filterParams]
+    );
 
     res.json(rows);
   } catch (err) {
     console.error("GET PENDING POSTING ERROR:", err);
-    res.status(500).json({ message: "Failed to load pending transactions" });
+    res.status(err.statusCode || 500).json({ message: err.statusCode ? err.message : "Failed to load pending transactions", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   }
 });
 
@@ -4692,15 +5191,19 @@ app.get("/api/posting/pending", authenticateToken, authorizePermission("POSTING"
 // specifically, since only they can carry a rate-mismatched application
 // (section 23/24) that must block this bulk path exactly like the
 // per-transaction Save/Post path already does.
+// module/entityType/auditLabel reuse each document's own existing audit
+// convention verbatim (Phase 1-6) - never a new "POSTING" module, so a
+// bulk-posted document's audit trail stays under the exact same
+// module/entityType as its CREATE/EDIT/DELETE events.
 const AR_POST_TARGETS = [
-  { table: "invoice_headers", status: "Posted", transactionType: "INV" },
-  { table: "or_headers", status: "Posted", transactionType: "OR", isPaymentDoc: true },
+  { table: "invoice_headers", status: "Posted", transactionType: "INV", module: "INV", entityType: "INV", auditLabel: "Invoice posted" },
+  { table: "or_headers", status: "Posted", transactionType: "OR", isPaymentDoc: true, module: "TRANSACTIONS.OR", entityType: "OR", auditLabel: "OR posted" },
 ];
 
 const AP_POST_TARGETS = [
-  { table: "apv_headers", status: "Posted", transactionType: "APV" },
-  { table: "cv_headers", status: "Posted", transactionType: "CV", isPaymentDoc: true },
-  { table: "purchase_order_headers", status: "Open" },
+  { table: "apv_headers", status: "Posted", transactionType: "APV", module: "TRANSACTIONS", entityType: "APV", auditLabel: "APV posted" },
+  { table: "cv_headers", status: "Posted", transactionType: "CV", isPaymentDoc: true, module: "TRANSACTIONS", entityType: "CV", auditLabel: "CV posted" },
+  { table: "purchase_order_headers", status: "Open", module: "PO", entityType: "PO", auditLabel: "Purchase Order opened" },
 ];
 
 app.post("/api/posting/post", authenticateToken, authorizePermission("POSTING", "POST"), async (req, res) => {
@@ -4780,6 +5283,33 @@ app.post("/api/posting/post", authenticateToken, authorizePermission("POSTING", 
 
       postedCount += result.affectedRows;
 
+      // Audit coverage: one event per document actually transitioned by the
+      // UPDATE above - draftIds is exactly that set (already narrowed past
+      // period-blocked and FX-blocked exclusions), never the broader
+      // pre-exclusion draftRows. transactionDate is read from draftRows
+      // (already fetched above for the period-lock check, no new query)
+      // via a lookup by id, using the same toDateOnly() this route already
+      // calls elsewhere. Written on the same conn, before commit, so it
+      // rolls back automatically with the status/rate-lock changes.
+      if (draftIds.length) {
+        const transactionDateById = new Map(
+          draftRows.map((r) => [r.id, AccountingPeriodService.toDateOnly(r.transactionDate)])
+        );
+        for (const docId of draftIds) {
+          await logAudit(conn, {
+            module: target.module,
+            entityType: target.entityType,
+            entityId: docId,
+            companyId,
+            action: "POST",
+            description: target.auditLabel,
+            beforeData: { status: "Draft" },
+            afterData: { status: target.status, transactionDate: transactionDateById.get(docId) },
+            user: req.user,
+          });
+        }
+      }
+
       if (target.transactionType && draftIds.length) {
         await conn.query(
           "UPDATE transaction_currency_snapshots SET rate_locked = 1 WHERE transaction_type = ? AND transaction_id IN (?)",
@@ -4839,6 +5369,17 @@ app.post("/api/apply-payment", authenticateToken, authorizePermission("POSTING",
       });
     }
 
+    // Security fix: this route only ever represents an APV being settled
+    // by a CV - an arbitrary appliedType would let a caller write a
+    // transaction_applications row that no other part of the system
+    // recognizes as a real settlement (previously any string was accepted
+    // and written verbatim).
+    if (appliedType !== "CV") {
+      return res.status(400).json({
+        message: "Only CV can apply a payment to an APV.",
+      });
+    }
+
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.body.companyId);
 
     await conn.beginTransaction();
@@ -4851,6 +5392,10 @@ app.post("/api/apply-payment", authenticateToken, authorizePermission("POSTING",
       operation: "POST", user: req.user,
     }, conn);
 
+    // Security fix: FOR UPDATE - the same row-lock pattern applyApvPayment()
+    // uses, so two concurrent requests against the same APV serialize
+    // instead of both reading the same stale balance and both passing the
+    // over-application check below.
     const [apvRows] = await conn.execute(
       `SELECT
         id,
@@ -4858,13 +5403,28 @@ app.post("/api/apply-payment", authenticateToken, authorizePermission("POSTING",
         COALESCE(paid_amount, 0) AS paidAmount,
         COALESCE(balance_amount, total_credit) AS balanceAmount
       FROM apv_headers
-      WHERE id = ? AND company_id = ?`,
+      WHERE id = ? AND company_id = ?
+      FOR UPDATE`,
       [sourceId, companyId]
     );
 
     if (apvRows.length === 0) {
       await conn.rollback();
       return res.status(404).json({ message: "APV not found." });
+    }
+
+    // Security fix: the applied-side CV must exist and belong to the SAME
+    // company as the source APV - previously appliedId was written
+    // verbatim with no existence or ownership check at all, which allowed
+    // a transaction_applications row to reference another company's CV, or
+    // no CV at all.
+    const [cvRows] = await conn.execute(
+      `SELECT company_id AS companyId FROM cv_headers WHERE id = ?`,
+      [appliedId]
+    );
+    if (cvRows.length === 0 || cvRows[0].companyId !== companyId) {
+      await conn.rollback();
+      return res.status(404).json({ message: "CV not found." });
     }
 
     const balanceAmount = Number(apvRows[0].balanceAmount || 0);
@@ -5110,7 +5670,7 @@ app.post("/api/cv", authenticateToken, authorizePermission("TRANSACTIONS.CV", "C
       transactionId: cvId, applications: cvApplications, perspective: "PAYABLE",
     });
     await logFxSettlementAudit(conn, {
-      req, moduleKey: "TRANSACTIONS.CV", appliedType: "CV", appliedId: cvId,
+      req, moduleKey: "TRANSACTIONS.CV", appliedType: "CV", appliedId: cvId, companyId,
       applications: cvApplications, fxResult: cvFxResult,
     });
 
@@ -5120,6 +5680,52 @@ app.post("/api/cv", authenticateToken, authorizePermission("TRANSACTIONS.CV", "C
       baseCurrencyId: currencyResult.baseCurrencyId, baseCurrencyCode: currencyResult.baseCurrencyCode,
       rateInfo: currencyResult.rateInfo, foreignTotals: currencyResult.foreignTotals, baseTotals: currencyResult.baseTotals,
       userId: req.user.id, lockNow: isPosting,
+    });
+
+    // Phase 4: PAYMENT_APPLIED - curated, document-level summary of the
+    // applications just created, mirroring OR CREATE's own PAYMENT_APPLIED
+    // event and the existing logFxSettlementAudit summarization pattern.
+    // cvApplications[i] pairs with apvApplications[i] at the same index
+    // (possibly null when applyApvPayment skipped a raw entry).
+    const cvAppliedPayments = apvApplications
+      .map((appItem, i) => ({ appItem, result: cvApplications[i] }))
+      .filter((p) => p.result)
+      .map((p) => ({
+        sourceType: p.appItem.sourceType === "AP_BEGINNING" ? "AP_BEGINNING" : "APV",
+        sourceId: p.appItem.sourceId ?? p.appItem.apvId ?? null,
+        amount: p.result.foreignAmountApplied,
+        applicationDate: p.appItem.applicationDate || transactionDate,
+      }));
+    if (cvAppliedPayments.length > 0) {
+      await logAudit(conn, {
+        module: "TRANSACTIONS",
+        entityType: "CV",
+        entityId: cvId,
+        companyId,
+        action: "PAYMENT_APPLIED",
+        description: `CV ${voucherNo} applied ${cvAppliedPayments.length} payment(s)`,
+        afterData: { applications: cvAppliedPayments },
+        user: req.user,
+      });
+    }
+
+    // module/entityType: "TRANSACTIONS"/"CV" - matches CV's own existing
+    // Cancel/Void/Reverse audit events, keeping CV's audit trail under one
+    // consistent module value. CREATE only - APV application auditing is
+    // described separately by PAYMENT_APPLIED above, not repeated here.
+    await logAudit(conn, {
+      module: "TRANSACTIONS",
+      entityType: "CV",
+      entityId: cvId,
+      companyId,
+      action: "CREATE",
+      description: `CV ${voucherNo} created (${finalStatus})`,
+      afterData: {
+        voucherNo, payeeName: finalPayeeName, transactionDate, status: finalStatus,
+        totalDebit: currencyResult.baseTotalDebit, totalCredit: currencyResult.baseTotalCredit,
+        currencyCode: currencyResult.currencyCode,
+      },
+      user: req.user,
     });
 
     await conn.commit();
@@ -5284,7 +5890,7 @@ app.put("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
 
     await conn.beginTransaction();
 
-    const [ownerRows] = await conn.execute("SELECT company_id, transaction_date, status FROM cv_headers WHERE id = ?", [id]);
+    const [ownerRows] = await conn.execute("SELECT company_id, transaction_date, status, voucher_no, payee_name, total_debit, total_credit FROM cv_headers WHERE id = ?", [id]);
     if (!ownerRows.length || ownerRows[0].company_id !== companyId) {
       await conn.rollback();
       return res.status(404).json({ message: "CV not found" });
@@ -5313,12 +5919,37 @@ app.put("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
       `SELECT
          source_type AS sourceType,
          source_id AS sourceId,
-         amount
+         amount,
+         DATE_FORMAT(application_date, '%Y-%m-%d') AS applicationDate
        FROM transaction_applications
        WHERE applied_type = 'CV'
          AND applied_id = ?`,
       [id]
     );
+
+    // Phase 4: PAYMENT_UNAPPLIED - curated, document-level summary of the
+    // applications about to be removed, using the oldApplications rows just
+    // loaded (no extra query). Only fires when there actually were old
+    // applications to remove. Mirrors OR EDIT's own PAYMENT_UNAPPLIED event.
+    if (oldApplications.length > 0) {
+      await logAudit(conn, {
+        module: "TRANSACTIONS",
+        entityType: "CV",
+        entityId: Number(id),
+        companyId,
+        action: "PAYMENT_UNAPPLIED",
+        description: `CV ${ownerRows[0].voucher_no} removed ${oldApplications.length} payment(s)`,
+        beforeData: {
+          applications: oldApplications.map((a) => ({
+            sourceType: a.sourceType,
+            sourceId: a.sourceId,
+            amount: a.amount,
+            applicationDate: a.applicationDate,
+          })),
+        },
+        user: req.user,
+      });
+    }
 
     await conn.execute(
       `DELETE FROM transaction_applications
@@ -5485,7 +6116,7 @@ app.put("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
       transactionId: Number(id), applications: cvApplications, perspective: "PAYABLE",
     });
     await logFxSettlementAudit(conn, {
-      req, moduleKey: "TRANSACTIONS.CV", appliedType: "CV", appliedId: Number(id),
+      req, moduleKey: "TRANSACTIONS.CV", appliedType: "CV", appliedId: Number(id), companyId,
       applications: cvApplications, fxResult: cvFxResult,
     });
 
@@ -5495,6 +6126,64 @@ app.put("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
       baseCurrencyId: currencyResult.baseCurrencyId, baseCurrencyCode: currencyResult.baseCurrencyCode,
       rateInfo: currencyResult.rateInfo, foreignTotals: currencyResult.foreignTotals, baseTotals: currencyResult.baseTotals,
       userId: req.user.id, lockNow: isPosting,
+    });
+
+    // Phase 4: PAYMENT_APPLIED - the reapply counterpart to the
+    // PAYMENT_UNAPPLIED event above, describing the NEW application set.
+    // cvApplications[i] pairs with apvApplications[i] at the same index
+    // (possibly null when applyApvPayment skipped a raw entry).
+    const cvEditAppliedPayments = apvApplications
+      .map((appItem, i) => ({ appItem, result: cvApplications[i] }))
+      .filter((p) => p.result)
+      .map((p) => ({
+        sourceType: p.appItem.sourceType === "AP_BEGINNING" ? "AP_BEGINNING" : "APV",
+        sourceId: p.appItem.sourceId ?? p.appItem.apvId ?? null,
+        amount: p.result.foreignAmountApplied,
+        applicationDate: p.appItem.applicationDate || transactionDate || existingDateISO,
+      }));
+    if (cvEditAppliedPayments.length > 0) {
+      await logAudit(conn, {
+        module: "TRANSACTIONS",
+        entityType: "CV",
+        entityId: Number(id),
+        companyId,
+        action: "PAYMENT_APPLIED",
+        description: `CV ${normalizeVoucherNo(voucherNo) || ""} applied ${cvEditAppliedPayments.length} payment(s)`,
+        afterData: { applications: cvEditAppliedPayments },
+        user: req.user,
+      });
+    }
+
+    // Document-level EDIT audit only - the apvApplications
+    // reversal/reapply above is described separately by the
+    // PAYMENT_UNAPPLIED/PAYMENT_APPLIED events above, not repeated here.
+    // module/entityType match CV's own existing Cancel/Void/Reverse/
+    // Delete/Create audit events.
+    await logAudit(conn, {
+      module: "TRANSACTIONS",
+      entityType: "CV",
+      entityId: Number(id),
+      companyId,
+      action: "EDIT",
+      description: `CV ${normalizeVoucherNo(voucherNo) || ""} edited`,
+      beforeData: {
+        voucherNo: ownerRows[0].voucher_no,
+        payeeName: ownerRows[0].payee_name,
+        transactionDate: existingDateISO,
+        status: ownerRows[0].status,
+        totalDebit: ownerRows[0].total_debit,
+        totalCredit: ownerRows[0].total_credit,
+      },
+      afterData: {
+        voucherNo: normalizeVoucherNo(voucherNo) || "",
+        payeeName: finalPayeeName,
+        transactionDate: transactionDate || existingDateISO,
+        status: finalStatus,
+        totalDebit: currencyResult.baseTotalDebit,
+        totalCredit: currencyResult.baseTotalCredit,
+        currencyCode: currencyResult.currencyCode,
+      },
+      user: req.user,
     });
 
     await conn.commit();
@@ -5554,7 +6243,7 @@ app.post("/api/cv/:id/cancel", authenticateToken, authorizePermission("TRANSACTI
     const unwind = await unwindCvApplications(conn, Number(id));
     await conn.execute("UPDATE cv_headers SET status = ? WHERE id = ? AND company_id = ?", [CANCELLED, id, companyId]);
     await logAudit(conn, {
-      module: "TRANSACTIONS", entityType: "CV", entityId: Number(id), action: "CANCEL",
+      module: "TRANSACTIONS", entityType: "CV", entityId: Number(id), companyId, action: "CANCEL",
       description: `Cancelled CV ${rows[0].voucher_no || id}. Reason: ${reason}`.slice(0, 500),
       beforeData: { status: prev }, afterData: { status: CANCELLED, reason, ...unwind },
       user: { ...req.user, ...requestMeta(req) },
@@ -5610,7 +6299,7 @@ app.post("/api/cv/:id/void", authenticateToken, authorizePermission("TRANSACTION
     const unwind = await unwindCvApplications(conn, Number(id));
     await conn.execute("UPDATE cv_headers SET status = ? WHERE id = ? AND company_id = ?", [VOID, id, companyId]);
     await logAudit(conn, {
-      module: "TRANSACTIONS", entityType: "CV", entityId: Number(id), action: "VOID",
+      module: "TRANSACTIONS", entityType: "CV", entityId: Number(id), companyId, action: "VOID",
       description: `Voided CV ${rows[0].voucher_no || id}. Reason: ${reason}`.slice(0, 500),
       beforeData: { status: prev }, afterData: { status: VOID, reason, ...unwind },
       user: { ...req.user, ...requestMeta(req) },
@@ -5673,7 +6362,7 @@ app.post("/api/cv/:id/reverse", authenticateToken, authorizePermission("TRANSACT
     const result = await performReversal(conn, { module: "CV", companyId, original, reason, user: req.user, reversalDate });
 
     await logAudit(conn, {
-      module: "TRANSACTIONS", entityType: "CV", entityId: Number(id), action: "REVERSE",
+      module: "TRANSACTIONS", entityType: "CV", entityId: Number(id), companyId, action: "REVERSE",
       description: `Reversed CV ${original.voucher_no} via JV ${result.reversalVoucherNo} dated ${reversalDate}. Reason: ${reason}`.slice(0, 500),
       beforeData: { status: "Posted" },
       afterData: {
@@ -5850,6 +6539,7 @@ app.post("/api/jv", authenticateToken, authorizePermission("TRANSACTIONS.JV", "C
       module: "JV",
       entityType: "JV",
       entityId: jvId,
+      companyId,
       action: isPosting ? "POST" : "CREATE",
       description:
         isPosting
@@ -6090,6 +6780,7 @@ app.put("/api/jv/:id", authenticateToken, authorizePermission("TRANSACTIONS.JV",
       module: "JV",
       entityType: "JV",
       entityId: Number(id),
+      companyId,
       action: isPostingNow ? "POST" : "UPDATE",
       description: isPostingNow
         ? `JV ${voucherNo} posted`
@@ -6152,6 +6843,7 @@ app.delete("/api/jv/:id", authenticateToken, authorizePermission("TRANSACTIONS.J
       module: "JV",
       entityType: "JV",
       entityId: Number(id),
+      companyId,
       action: "DELETE",
       description: `JV ${existing[0].voucher_no} deleted`,
       beforeData: existing[0],
@@ -6296,6 +6988,7 @@ app.post("/api/petty-cash", authenticateToken, authorizePermission("TRANSACTIONS
       module: "PETTY_CASH",
       entityType: "PETTY_CASH",
       entityId: pettyCashId,
+      companyId,
       action: isPosting ? "POST" : "CREATE",
       description: isPosting ? `Petty Cash Voucher ${voucherNo} created and posted` : `Petty Cash Voucher ${voucherNo} created (${finalStatus})`,
       afterData: {
@@ -6450,6 +7143,7 @@ app.put("/api/petty-cash/:id", authenticateToken, authorizePermission("TRANSACTI
       module: "PETTY_CASH",
       entityType: "PETTY_CASH",
       entityId: Number(id),
+      companyId,
       action: isPostingNow ? "POST" : "UPDATE",
       description: isPostingNow ? `Petty Cash Voucher ${voucherNo} posted` : `Petty Cash Voucher ${voucherNo} updated (${finalStatus})`,
       beforeData: existing[0],
@@ -6507,6 +7201,7 @@ app.delete("/api/petty-cash/:id", authenticateToken, authorizePermission("TRANSA
       module: "PETTY_CASH",
       entityType: "PETTY_CASH",
       entityId: Number(id),
+      companyId,
       action: "DELETE",
       description: `Petty Cash Voucher ${existing[0].voucher_no} deleted`,
       beforeData: existing[0],
@@ -6659,6 +7354,7 @@ function registerMemoRoutes(memoType, urlPrefix, permissionModule, label) {
         module: `MEMO_${memoType}`,
         entityType: `MEMO_${memoType}`,
         entityId: memoId,
+        companyId,
         action: isPosting ? "POST" : "CREATE",
         description: isPosting ? `${label} ${voucherNo} created and posted` : `${label} ${voucherNo} created (${finalStatus})`,
         afterData: {
@@ -6827,6 +7523,7 @@ function registerMemoRoutes(memoType, urlPrefix, permissionModule, label) {
         module: `MEMO_${memoType}`,
         entityType: `MEMO_${memoType}`,
         entityId: Number(id),
+        companyId,
         action: isPostingNow ? "POST" : "UPDATE",
         description: isPostingNow ? `${label} ${voucherNo} posted` : `${label} ${voucherNo} updated (${finalStatus})`,
         beforeData: existing[0],
@@ -6884,6 +7581,7 @@ function registerMemoRoutes(memoType, urlPrefix, permissionModule, label) {
         module: `MEMO_${memoType}`,
         entityType: `MEMO_${memoType}`,
         entityId: Number(id),
+        companyId,
         action: "DELETE",
         description: `${label} ${existing[0].voucher_no} deleted`,
         beforeData: existing[0],
@@ -6908,12 +7606,34 @@ registerMemoRoutes("CREDIT", "credit-memos", "TRANSACTIONS.DEBIT_CREDIT_MEMO", "
 
 // ===================== AUDIT LOG API =====================
 
+// Security fix: this route previously had no company scoping at all - any
+// user granted ADMIN.AUDIT_LOGS/VIEW (a plain role/permission check, not a
+// company-membership check - see permissionService.js) could retrieve
+// every company's audit history, including full before_data/after_data.
+// Fixed the same way every other company-scoped route in this codebase
+// already resolves and validates company access - NOT by trusting
+// req.query.companyId directly: resolveCompanyIdForWrite() validates a
+// caller-supplied companyId against the user's own access
+// (UserAccessService.userHasCompanyAccess, 403 if not permitted; SUPER_ADMIN
+// bypasses the check exactly like every other route) and otherwise falls
+// back to the user's single accessible company, or a clean 400 asking for
+// one explicitly if the user has more than one - the identical convention
+// GET /api/accounting-periods and every other multi-company list route
+// already use. No new authorization pattern was invented for this route.
+//
+// Legacy rows written before this fix (and the handful of intentionally
+// company-less system events - see lib/audit.js) have company_id = NULL.
+// WHERE company_id = ? never matches NULL in SQL, so those rows are simply
+// excluded from every company-scoped result - never shown to the wrong
+// company, never shown to everyone. That is the deliberately chosen, safe
+// behavior; no historical row was modified, backfilled, or guessed at.
 app.get("/api/audit-logs", authenticateToken, authorizePermission("ADMIN.AUDIT_LOGS", "VIEW"), async (req, res) => {
   try {
     const { module, entityType, entityId, userId, from, to, limit } = req.query;
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
-    const clauses = [];
-    const params = [];
+    const clauses = ["company_id = ?"];
+    const params = [companyId];
 
     if (module) {
       clauses.push("module = ?");
@@ -6966,7 +7686,7 @@ app.get("/api/audit-logs", authenticateToken, authorizePermission("ADMIN.AUDIT_L
     res.json(rows);
   } catch (err) {
     console.error("GET AUDIT LOGS ERROR:", err);
-    res.status(500).json({ message: "Failed to load audit logs" });
+    res.status(err.statusCode || 500).json({ message: err.statusCode ? err.message : "Failed to load audit logs" });
   }
 });
 
@@ -6994,17 +7714,29 @@ app.use("/api/accounting-periods", require("./routes/accountingPeriods.routes"))
 
 // ===================== ACCOUNT GROUP CODES API =====================
 
+// Reports Classification Foundation: account_group_codes now also carries
+// report_section (VARCHAR(32) NULL) + display_order (INT NULL) - reporting
+// metadata only, no accounting impact. GET returns them; POST/PUT accept +
+// validate them (a section must be legal for the group's account_class -
+// see groupCodeClassification.js); an old payload that omits them stays
+// valid and PUT leaves an existing classification untouched.
 app.get("/api/group-codes", authenticateToken, authorizePermission("FILESETUP.GROUP_CODES", "VIEW"), async (req, res) => {
   try {
+    // Ordering fallback (documented): display_order ascending with NULLs
+    // last, then group_code ascending. Member-account ordering within a
+    // group (by account code, or a configured sequence) is a report-time
+    // concern, not this list's.
     const [rows] = await pool.execute(`
       SELECT
         id,
         group_code AS groupCode,
         group_description AS groupDescription,
         account_class AS accountClass,
+        report_section AS reportSection,
+        display_order AS displayOrder,
         status
       FROM account_group_codes
-      ORDER BY group_code ASC
+      ORDER BY (display_order IS NULL), display_order ASC, group_code ASC
     `);
 
     res.json(rows);
@@ -7014,18 +7746,43 @@ app.get("/api/group-codes", authenticateToken, authorizePermission("FILESETUP.GR
   }
 });
 
+// Read-only classification readiness over ACTIVE group codes. Group codes
+// are a shared catalog in the current architecture, so there is no
+// per-company scoping and no balances are read here - only the group
+// code / class / section metadata.
+app.get("/api/group-codes/classification-readiness", authenticateToken, authorizePermission("FILESETUP.GROUP_CODES", "VIEW"), async (req, res) => {
+  try {
+    const [rows] = await pool.execute(
+      `SELECT group_code, group_description, account_class, report_section
+       FROM account_group_codes
+       WHERE status = 'ACTIVE'`
+    );
+    res.json(GroupCodeClassification.getClassificationReadiness(rows));
+  } catch (err) {
+    console.error("GROUP CODE CLASSIFICATION READINESS ERROR:", err);
+    res.status(500).json({ message: "Failed to compute group code classification readiness" });
+  }
+});
+
 app.post("/api/group-codes", authenticateToken, authorizePermission("FILESETUP.GROUP_CODES", "CONFIGURE"), async (req, res) => {
   try {
-    const { groupCode, groupDescription, accountClass, status } = req.body;
+    const { groupCode, groupDescription, accountClass, status, reportSection, displayOrder } = req.body;
+
+    // Phase M.1: report_section validity is now checked against the
+    // report_sections master table (DB-backed), so this call is awaited.
+    const check = await GroupCodeClassification.validateGroupCodeClassification({ accountClass, reportSection, displayOrder });
+    if (!check.ok) return res.status(400).json({ message: check.error });
 
     const [result] = await pool.execute(
       `INSERT INTO account_group_codes
-       (group_code, group_description, account_class, status)
-       VALUES (?, ?, ?, ?)`,
+       (group_code, group_description, account_class, report_section, display_order, status)
+       VALUES (?, ?, ?, ?, ?, ?)`,
       [
         groupCode,
         groupDescription,
         accountClass || "",
+        check.value.reportSection,
+        check.value.displayOrder,
         status || "ACTIVE",
       ]
     );
@@ -7049,22 +7806,31 @@ app.post("/api/group-codes", authenticateToken, authorizePermission("FILESETUP.G
 app.put("/api/group-codes/:id", authenticateToken, authorizePermission("FILESETUP.GROUP_CODES", "CONFIGURE"), async (req, res) => {
   try {
     const { id } = req.params;
-    const { groupCode, groupDescription, accountClass, status } = req.body;
+    const { groupCode, groupDescription, accountClass, status, reportSection, displayOrder } = req.body;
+
+    // Backward compatible: a payload that omits reportSection AND
+    // displayOrder does not touch those columns at all - an existing
+    // classification survives an old client's edit. Only when the user
+    // explicitly sends one of them do we validate + update it.
+    const touchesClassification =
+      Object.prototype.hasOwnProperty.call(req.body, "reportSection") ||
+      Object.prototype.hasOwnProperty.call(req.body, "displayOrder");
+
+    const setCols = ["group_code = ?", "group_description = ?", "account_class = ?", "status = ?"];
+    const params = [groupCode, groupDescription, accountClass || "", status || "ACTIVE"];
+
+    if (touchesClassification) {
+      const check = await GroupCodeClassification.validateGroupCodeClassification({ accountClass, reportSection, displayOrder });
+      if (!check.ok) return res.status(400).json({ message: check.error });
+      setCols.push("report_section = ?", "display_order = ?");
+      params.push(check.value.reportSection, check.value.displayOrder);
+    }
+
+    params.push(id);
 
     await pool.execute(
-      `UPDATE account_group_codes SET
-        group_code = ?,
-        group_description = ?,
-        account_class = ?,
-        status = ?
-       WHERE id = ?`,
-      [
-        groupCode,
-        groupDescription,
-        accountClass || "",
-        status || "ACTIVE",
-        id,
-      ]
+      `UPDATE account_group_codes SET ${setCols.join(", ")} WHERE id = ?`,
+      params
     );
 
     res.json({
@@ -7081,6 +7847,36 @@ app.delete("/api/group-codes/:id", authenticateToken, authorizePermission("FILES
   try {
     const { id } = req.params;
 
+    // Phase H.1 integrity safeguard: a Group Code that is still assigned to
+    // Chart of Accounts rows must not be deleted, or those COA rows would be
+    // orphaned on the financial statements. coa_groups links to
+    // account_group_codes by the group_code STRING (there is no DB foreign
+    // key), so this is an explicit application-level reference check. No
+    // cascade, no reassignment, no NULLing - the user detaches the accounts
+    // first (or sets the Group Code Inactive). If the id does not exist the
+    // pre-existing lenient behaviour is preserved (DELETE hits 0 rows, still
+    // reports success).
+    const [ownerRows] = await pool.execute(
+      "SELECT group_code AS groupCode FROM account_group_codes WHERE id = ?",
+      [id]
+    );
+    if (ownerRows.length) {
+      const [usageRows] = await pool.execute(
+        "SELECT COUNT(*) AS refCount FROM coa_groups WHERE group_code = ?",
+        [ownerRows[0].groupCode]
+      );
+      const refCount = Number(usageRows[0].refCount) || 0;
+      if (refCount > 0) {
+        return res.status(409).json({
+          message:
+            "This Group Code cannot be deleted because it is assigned to one or more Chart of Accounts records.",
+          code: "GROUP_CODE_IN_USE",
+          error: "GROUP_CODE_IN_USE",
+          references: { coaGroups: refCount },
+        });
+      }
+    }
+
     await pool.execute("DELETE FROM account_group_codes WHERE id = ?", [id]);
 
     res.json({
@@ -7090,6 +7886,73 @@ app.delete("/api/group-codes/:id", authenticateToken, authorizePermission("FILES
   } catch (err) {
     console.error("DELETE GROUP CODE ERROR:", err);
     res.status(500).json({ message: "Failed to delete group code" });
+  }
+});
+
+// ===================== REPORT SECTIONS API (Phase M.1) =====================
+// Dynamic master data for the Report Section catalog Group Code's
+// report_section column validates against - replaces what used to be a
+// hard-coded array (see reportSectionService.js's header comment for the
+// full architecture note). Purely metadata, read-only with respect to
+// every transaction module, COA, tax/EWT/VAT, and currency logic - nothing
+// here touches account_group_codes' group_code/group_description/
+// account_class/status columns, coa_groups, or any ledger table except a
+// read-only usage COUNT(*) on account_group_codes for the delete guard.
+app.get("/api/report-sections", authenticateToken, authorizePermission("FILESETUP.REPORT_SECTIONS", "VIEW"), async (req, res) => {
+  try {
+    const { accountClass, status } = req.query;
+    const rows = await ReportSectionService.listReportSections({ accountClass, status });
+    res.json(rows);
+  } catch (err) {
+    console.error("GET REPORT SECTIONS ERROR:", err);
+    res.status(500).json({ message: "Failed to load report sections" });
+  }
+});
+
+app.post("/api/report-sections", authenticateToken, authorizePermission("FILESETUP.REPORT_SECTIONS", "CONFIGURE"), async (req, res) => {
+  try {
+    const { code, name, accountClass, displayOrder, status } = req.body;
+    const result = await ReportSectionService.createReportSection({ code, name, accountClass, displayOrder, status });
+    res.json({ success: true, message: "Report section created successfully", id: result.id });
+  } catch (err) {
+    if (err.statusCode) {
+      return res.status(err.statusCode).json({ message: err.message, ...(err.code ? { code: err.code } : {}) });
+    }
+    console.error("CREATE REPORT SECTION ERROR:", err);
+    res.status(500).json({ message: "Failed to create report section" });
+  }
+});
+
+app.put("/api/report-sections/:id", authenticateToken, authorizePermission("FILESETUP.REPORT_SECTIONS", "CONFIGURE"), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { code, name, accountClass, displayOrder, status } = req.body;
+    await ReportSectionService.updateReportSection(id, { code, name, accountClass, displayOrder, status });
+    res.json({ success: true, message: "Report section updated successfully" });
+  } catch (err) {
+    if (err.statusCode) {
+      return res.status(err.statusCode).json({ message: err.message, ...(err.code ? { code: err.code } : {}) });
+    }
+    console.error("UPDATE REPORT SECTION ERROR:", err);
+    res.status(500).json({ message: "Failed to update report section" });
+  }
+});
+
+app.delete("/api/report-sections/:id", authenticateToken, authorizePermission("FILESETUP.REPORT_SECTIONS", "CONFIGURE"), async (req, res) => {
+  try {
+    const { id } = req.params;
+    await ReportSectionService.deleteReportSection(id);
+    res.json({ success: true, message: "Report section deleted successfully" });
+  } catch (err) {
+    if (err.statusCode) {
+      return res.status(err.statusCode).json({
+        message: err.message,
+        ...(err.code ? { code: err.code } : {}),
+        ...(err.references ? { references: err.references } : {}),
+      });
+    }
+    console.error("DELETE REPORT SECTION ERROR:", err);
+    res.status(500).json({ message: "Failed to delete report section" });
   }
 });
 
@@ -7303,6 +8166,25 @@ app.post("/api/arap-beginning-balances", authenticateToken, authorizePermission(
       ]
     );
 
+    // module/entityType picked from txnType (already computed above from
+    // the request's own balanceType, "AP_BEGINNING" or "AR_BEGINNING") -
+    // the exact same principle the DELETE audit phase already established
+    // for this shared route, never hardcoded to one side.
+    await logAudit(conn, {
+      module: txnType,
+      entityType: txnType,
+      entityId: lineId,
+      companyId,
+      action: "CREATE",
+      description: `${txnType === "AP_BEGINNING" ? "AP" : "AR"} Beginning Balance line for ${line.partyName || "unknown party"} created`,
+      afterData: {
+        partyName: line.partyName, referenceNo: line.referenceNo,
+        debit: converted.baseDebit, credit: converted.baseCredit,
+        balanceDate,
+      },
+      user: req.user,
+    });
+
     await conn.commit();
 
     res.json({ success: true, message: "Beginning balance saved successfully" });
@@ -7321,9 +8203,16 @@ app.put("/api/arap-beginning-balances", authenticateToken, authorizePermission("
   try {
     const { line, companyId: requestedCompanyId } = req.body;
 
+    // LEFT JOIN arap_payment_schedules on this exact line's own id - purely
+    // to read its current schedule_date as the EDIT-omission fallback
+    // below; does not affect the company/ownership check, which still runs
+    // entirely off h.company_id exactly as before.
     const [existingRows] = await conn.execute(
-      `SELECT l.id, l.foreign_paid_amount AS foreignPaidAmount, h.balance_type AS balanceType, h.balance_date AS balanceDate, h.company_id AS companyId
+      `SELECT l.id, l.foreign_paid_amount AS foreignPaidAmount, l.party_name AS partyName, l.reference_no AS referenceNo,
+              l.debit AS debit, l.credit AS credit, h.balance_type AS balanceType, h.balance_date AS balanceDate, h.company_id AS companyId,
+              s.schedule_date AS existingScheduleDate
        FROM arap_beginning_balance_lines l JOIN arap_beginning_balance_headers h ON h.id = l.header_id
+       LEFT JOIN arap_payment_schedules s ON s.beginning_balance_line_id = l.id
        WHERE l.id = ?`,
       [line.id]
     );
@@ -7338,6 +8227,20 @@ app.put("/api/arap-beginning-balances", authenticateToken, authorizePermission("
     }
 
     await conn.beginTransaction();
+
+    // Integrity fix: FOR UPDATE - the same row-lock pattern applyInvoicePayment()/
+    // applyApvPayment() already take on this exact row before writing a
+    // payment application, so a concurrent payment application and this
+    // edit genuinely serialize instead of the edit's later UPDATE
+    // silently overwriting a payment that landed in between. paid_amount/
+    // foreign_paid_amount are re-read HERE, under the lock, rather than
+    // trusting the pre-transaction existingRows snapshot above (which a
+    // concurrent payment could have already advanced).
+    const [[lockedLine]] = await conn.execute(
+      "SELECT paid_amount AS paidAmount, foreign_paid_amount AS foreignPaidAmount FROM arap_beginning_balance_lines WHERE id = ? FOR UPDATE",
+      [line.id]
+    );
+    const paidAmount = Number(lockedLine.paidAmount) || 0;
 
     await AccountingPeriodService.assertPeriodOpen({
       companyId, transactionDate: AccountingPeriodService.toDateOnly(existing.balanceDate),
@@ -7361,8 +8264,18 @@ app.put("/api/arap-beginning-balances", authenticateToken, authorizePermission("
       exchangeRate: currencyResult.rateInfo.exchangeRate,
     });
     const foreignOriginal = converted.foreignDebit || converted.foreignCredit;
-    const existingForeignPaid = Number(existing.foreignPaidAmount) || 0;
+    const existingForeignPaid = Number(lockedLine.foreignPaidAmount) || 0;
     const foreignBalance = TransactionCurrencyService.roundMoney(Math.max(foreignOriginal - existingForeignPaid, 0));
+
+    // Integrity fix: balance_amount is recomputed server-side from this
+    // line's own authoritative original amount and its already-applied
+    // paid_amount (read under the FOR UPDATE lock above) - never trusted
+    // from the client's line.balanceAmount. Matches the exact formula
+    // applyInvoicePayment()/applyApvPayment() already use to advance this
+    // same column (GREATEST(<debit for AR | credit for AP> - paid, 0)) and
+    // the formula this route's own CREATE uses when paid_amount is 0.
+    const originalAmount = txnType === "AP_BEGINNING" ? converted.baseCredit : converted.baseDebit;
+    const computedBalance = TransactionCurrencyService.roundMoney(Math.max(originalAmount - paidAmount, 0));
 
     await conn.execute(
       `
@@ -7394,7 +8307,7 @@ app.put("/api/arap-beginning-balances", authenticateToken, authorizePermission("
         line.dueDate || null,
         converted.baseDebit,
         converted.baseCredit,
-        Number(line.balanceAmount) || 0,
+        computedBalance,
         currencyResult.currencyId,
         foreignOriginal,
         foreignBalance,
@@ -7417,6 +8330,19 @@ app.put("/api/arap-beginning-balances", authenticateToken, authorizePermission("
       lockNow: true,
     });
 
+    // Integrity fix: when the request supplies neither scheduleDate nor
+    // dueDate, preserve the schedule row's own existing schedule_date
+    // (read via the LEFT JOIN above) rather than falling back to NULL
+    // (which violates the NOT NULL column - see the schedule_date
+    // investigation) or to balanceDate (which would silently overwrite a
+    // schedule date the user never touched with the beginning balance's
+    // original opening date). Only used when both request fields are
+    // omitted; existing.existingScheduleDate is null only in the
+    // structurally-unexpected case where no schedule row exists at all.
+    const existingScheduleDateISO = existing.existingScheduleDate
+      ? AccountingPeriodService.toDateOnly(existing.existingScheduleDate)
+      : null;
+
     await conn.execute(
       `
       UPDATE arap_payment_schedules SET
@@ -7426,12 +8352,40 @@ app.put("/api/arap-beginning-balances", authenticateToken, authorizePermission("
       WHERE beginning_balance_line_id = ?
       `,
       [
-        line.scheduleDate || line.dueDate || null,
+        line.scheduleDate || line.dueDate || existingScheduleDateISO,
         Number(line.scheduleAmount || line.balanceAmount) || 0,
         Number(line.scheduleAmount || line.balanceAmount) || 0,
         line.id,
       ]
     );
+
+    // module/entityType picked from txnType (already resolved above from the
+    // row's own balance_type) - the same dynamic AR/AP selection principle
+    // already established in this route's CREATE/DELETE auditing, never
+    // hardcoded to one side.
+    await logAudit(conn, {
+      module: txnType,
+      entityType: txnType,
+      entityId: line.id,
+      companyId,
+      action: "EDIT",
+      description: `${txnType === "AP_BEGINNING" ? "AP" : "AR"} Beginning Balance line for ${line.partyName || existing.partyName || "unknown party"} edited`,
+      beforeData: {
+        partyName: existing.partyName,
+        referenceNo: existing.referenceNo,
+        debit: existing.debit,
+        credit: existing.credit,
+        balanceDate: existing.balanceDate,
+      },
+      afterData: {
+        partyName: line.partyName,
+        referenceNo: line.referenceNo,
+        debit: converted.baseDebit,
+        credit: converted.baseCredit,
+        balanceDate: existing.balanceDate,
+      },
+      user: req.user,
+    });
 
     await conn.commit();
 
@@ -7451,14 +8405,17 @@ app.delete("/api/arap-beginning-balances/:id", authenticateToken, authorizePermi
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId || req.body?.companyId);
 
     const [ownerRows] = await pool.execute(
-      `SELECT h.company_id AS companyId, h.balance_date AS balanceDate FROM arap_beginning_balance_lines l JOIN arap_beginning_balance_headers h ON h.id = l.header_id WHERE l.id = ?`,
+      `SELECT h.company_id AS companyId, h.balance_date AS balanceDate, h.balance_type AS balanceType,
+              l.party_name AS partyName, l.reference_no AS referenceNo, l.debit AS debit, l.credit AS credit
+       FROM arap_beginning_balance_lines l JOIN arap_beginning_balance_headers h ON h.id = l.header_id WHERE l.id = ?`,
       [id]
     );
     if (!ownerRows.length || ownerRows[0].companyId !== companyId) {
       return res.status(404).json({ message: "Beginning balance line not found" });
     }
+    const delDateISO = AccountingPeriodService.toDateOnly(ownerRows[0].balanceDate);
     await AccountingPeriodService.assertPeriodOpen({
-      companyId, transactionDate: AccountingPeriodService.toDateOnly(ownerRows[0].balanceDate),
+      companyId, transactionDate: delDateISO,
       operation: "DELETE", user: req.user,
     });
 
@@ -7466,6 +8423,31 @@ app.delete("/api/arap-beginning-balances/:id", authenticateToken, authorizePermi
       `DELETE FROM arap_beginning_balance_lines WHERE id = ?`,
       [id]
     );
+
+    // This deletes exactly ONE beginning-balance LINE (one party's opening
+    // balance), never the whole header/batch - the audit event is scoped to
+    // match, not described as a bulk/document deletion. module/entityType
+    // reuse the same AR_BEGINNING/AP_BEGINNING constant this codebase
+    // already uses everywhere else for this exact concept (paymentApplicationService.js,
+    // TransactionCurrencyService calls in the create/edit routes above),
+    // picked from the row's own balance_type - never guessed.
+    const bbModule = ownerRows[0].balanceType === "AP" ? "AP_BEGINNING" : "AR_BEGINNING";
+    await logAudit(pool, {
+      module: bbModule,
+      entityType: bbModule,
+      entityId: Number(id),
+      companyId,
+      action: "DELETE",
+      description: `${bbModule === "AP_BEGINNING" ? "AP" : "AR"} Beginning Balance line for ${ownerRows[0].partyName || "unknown party"} deleted`,
+      beforeData: {
+        partyName: ownerRows[0].partyName,
+        referenceNo: ownerRows[0].referenceNo,
+        debit: ownerRows[0].debit,
+        credit: ownerRows[0].credit,
+        balanceDate: delDateISO,
+      },
+      user: req.user,
+    });
 
     res.json({ success: true, message: "Beginning balance removed successfully" });
   } catch (err) {
@@ -7667,6 +8649,365 @@ app.get("/api/reports/cash-flow-statement", authenticateToken, authorizePermissi
   }
 });
 
+// ====================== DAILY CASH POSITION REPORT ======================
+// Third of the 9 previously-"Coming Soon" reports identified in the
+// technical documentation audit. Same architecture and same bank_codes
+// account universe as Cash Flow Statement immediately above - not a new
+// recognition query: reuses the identical getBeginningBalances/getLedgerRows
+// calls, just scoped to a single reporting date (from = to = date) instead
+// of a range, with each account's debit/credit split into explicit Cash
+// Receipts/Cash Disbursements totals rather than exposing full row detail.
+// endingBalance = beginningBalance + (receipts - disbursements), the same
+// arithmetic Cash Flow Statement's own endingBalance = beginningBalance +
+// running_balance already performs. Internal transfers between two cash/
+// bank accounts are NOT netted - Cash Flow Statement doesn't net them
+// either, and no transfer-detection mechanism exists anywhere in this
+// codebase to reuse. No AR/AP/tax logic touched; read-only.
+app.get("/api/reports/daily-cash-position", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
+  try {
+    const { date } = req.query;
+
+    if (!date) {
+      return res.status(400).json({ message: "date is required" });
+    }
+
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+    const [bankAccounts] = await pool.execute(
+      `SELECT coa_code, account_name, bank_name FROM bank_codes WHERE status = 'ACTIVE' AND coa_code IS NOT NULL AND coa_code != ''`
+    );
+
+    const accountCodes = bankAccounts.map((b) => b.coa_code);
+
+    if (accountCodes.length === 0) {
+      return res.json({
+        asOfDate: date,
+        accounts: [],
+        totalBeginningBalance: 0,
+        totalCashReceipts: 0,
+        totalCashDisbursements: 0,
+        totalNetMovement: 0,
+        totalEndingBalance: 0,
+      });
+    }
+
+    const [rows, beginningBalances] = await Promise.all([
+      LedgerReportService.getLedgerRows({ from: date, to: date, accountCodes, companyId }),
+      LedgerReportService.getBeginningBalances({ before: date, accountCodes, companyId }),
+    ]);
+
+    const byAccount = new Map();
+    for (const code of accountCodes) {
+      const label = bankAccounts.find((b) => b.coa_code === code);
+      byAccount.set(code, {
+        accountCode: code,
+        accountTitle: (label && (label.account_name || label.bank_name)) || code,
+        beginningBalance: beginningBalances[code] || 0,
+        cashReceipts: 0,
+        cashDisbursements: 0,
+      });
+    }
+
+    for (const row of rows) {
+      const acct = byAccount.get(row.account_code);
+      if (!acct) continue;
+      acct.cashReceipts += Number(row.debit || 0);
+      acct.cashDisbursements += Number(row.credit || 0);
+    }
+
+    const accounts = Array.from(byAccount.values()).map((a) => {
+      const netMovement = a.cashReceipts - a.cashDisbursements;
+      return { ...a, netMovement, endingBalance: a.beginningBalance + netMovement };
+    });
+
+    const totalBeginningBalance = accounts.reduce((sum, a) => sum + a.beginningBalance, 0);
+    const totalCashReceipts = accounts.reduce((sum, a) => sum + a.cashReceipts, 0);
+    const totalCashDisbursements = accounts.reduce((sum, a) => sum + a.cashDisbursements, 0);
+    const totalNetMovement = accounts.reduce((sum, a) => sum + a.netMovement, 0);
+    const totalEndingBalance = accounts.reduce((sum, a) => sum + a.endingBalance, 0);
+
+    res.json({
+      asOfDate: date,
+      accounts,
+      totalBeginningBalance,
+      totalCashReceipts,
+      totalCashDisbursements,
+      totalNetMovement,
+      totalEndingBalance,
+    });
+  } catch (err) {
+    console.error("DAILY CASH POSITION REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate Daily Cash Position report",
+      error: err.message,
+    });
+  }
+});
+
+// ====================== BOOKS OF ACCOUNTS - JOURNAL BOOK ======================
+// Reports Phase L.1: the first of the seven "Books of Accounts" menu items
+// (see reportsMenuConfig.js) - the other six stay path:null/"Coming Soon".
+// Reuses LedgerReportService.getJournalBookRows, itself a thin filter
+// (source_type = 'JV') over the same canonical buildTransactionUnionSql
+// every other ledger/financial report is built on - Posted-only and company
+// isolation are inherited unchanged, no new recognition logic. Reuses the
+// existing REPORTS.FINANCIAL permission (same as Trial Balance / General
+// Ledger / Cash Flow) rather than introducing a new Books-of-Accounts
+// permission module for this single low-risk book.
+app.get("/api/reports/books/journal", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
+  try {
+    const { from, to } = req.query;
+
+    if (!from || !to) {
+      return res.status(400).json({ message: "from and to dates are required" });
+    }
+
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+    const rows = await LedgerReportService.getJournalBookRows({ from, to, companyId });
+    res.json(rows);
+  } catch (err) {
+    console.error("JOURNAL BOOK REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate Journal Book",
+      error: err.message,
+    });
+  }
+});
+
+// ====================== BOOKS OF ACCOUNTS - INCOME BOOK ======================
+// Reports Phase L.2: second Books of Accounts item. Same architecture as
+// Journal Book (Phase L.1) - source_type = 'INV' only, via the shared
+// LedgerReportService.getBookRows engine. No invoice creation/posting/
+// approval/tax logic touched; read-only.
+app.get("/api/reports/books/income", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
+  try {
+    const { from, to } = req.query;
+
+    if (!from || !to) {
+      return res.status(400).json({ message: "from and to dates are required" });
+    }
+
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+    const rows = await LedgerReportService.getIncomeBookRows({ from, to, companyId });
+    res.json(rows);
+  } catch (err) {
+    console.error("INCOME BOOK REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate Income Book",
+      error: err.message,
+    });
+  }
+});
+
+// ====================== BOOKS OF ACCOUNTS - CASH RECEIPT BOOK ======================
+// Reports Phase L.3: third Books of Accounts item. Same architecture as
+// Journal Book (Phase L.1) / Income Book (Phase L.2) - source_type = 'OR'
+// only, via the shared LedgerReportService.getBookRows engine. No Official
+// Receipt creation/settlement/application/tax logic touched; read-only.
+app.get("/api/reports/books/cash-receipt", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
+  try {
+    const { from, to } = req.query;
+
+    if (!from || !to) {
+      return res.status(400).json({ message: "from and to dates are required" });
+    }
+
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+    const rows = await LedgerReportService.getCashReceiptBookRows({ from, to, companyId });
+    res.json(rows);
+  } catch (err) {
+    console.error("CASH RECEIPT BOOK REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate Cash Receipt Book",
+      error: err.message,
+    });
+  }
+});
+
+// ====================== BOOKS OF ACCOUNTS - CASH DISBURSEMENT BOOK ======================
+// Reports Phase L.4: fourth Books of Accounts item. Same architecture as
+// Journal Book (L.1) / Income Book (L.2) / Cash Receipt Book (L.3) -
+// source_type = 'CV' only, via the shared LedgerReportService.getBookRows
+// engine. No Check Voucher creation/posting/void/cancel/reversal/APV-
+// settlement/tax logic touched; read-only.
+app.get("/api/reports/books/cash-disbursement", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
+  try {
+    const { from, to } = req.query;
+
+    if (!from || !to) {
+      return res.status(400).json({ message: "from and to dates are required" });
+    }
+
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+    const rows = await LedgerReportService.getCashDisbursementBookRows({ from, to, companyId });
+    res.json(rows);
+  } catch (err) {
+    console.error("CASH DISBURSEMENT BOOK REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate Cash Disbursement Book",
+      error: err.message,
+    });
+  }
+});
+
+// ====================== BOOKS OF ACCOUNTS - ACCOUNTS PAYABLE BOOK ======================
+// Reports Phase L.5: fifth Books of Accounts item. Same architecture as
+// Journal (L.1) / Income (L.2) / Cash Receipt (L.3) / Cash Disbursement
+// (L.4) Books - source_type = 'APV' only, via the shared
+// LedgerReportService.getBookRows engine. No Accounts Payable Voucher
+// creation/posting/void/cancel/reversal/CV-settlement/AP-aging/tax logic
+// touched; read-only. This is an accounting book (the Posted APV entries
+// exactly as recognized by the canonical ledger), not an outstanding-
+// payables or AP-aging report - later CV settlement never changes what it
+// shows (settlement only updates apv_headers.payment_status/balance_amount,
+// columns this report never reads).
+app.get("/api/reports/books/accounts-payable", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
+  try {
+    const { from, to } = req.query;
+
+    if (!from || !to) {
+      return res.status(400).json({ message: "from and to dates are required" });
+    }
+
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+    const rows = await LedgerReportService.getAccountsPayableBookRows({ from, to, companyId });
+    res.json(rows);
+  } catch (err) {
+    console.error("ACCOUNTS PAYABLE BOOK REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate Accounts Payable Book",
+      error: err.message,
+    });
+  }
+});
+
+// Reports Phase L.6: sixth Book of Accounts - source_type = 'PETTY CASH'
+// from the canonical LedgerReportService union (buildTransactionUnionSql).
+// No PCV creation/editing/posting/currency/reversal logic anywhere here -
+// read-only, and no PCV-specific lifecycle handling is needed either: the
+// repository has no /void, /cancel, or /reverse route for petty-cash at all
+// (only Draft and Posted, both enforced by the shared postedOnlySql filter
+// already used everywhere else), so a Posted PCV shows here exactly once,
+// exactly as recognized by the canonical ledger.
+app.get("/api/reports/books/petty-cash", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
+  try {
+    const { from, to } = req.query;
+
+    if (!from || !to) {
+      return res.status(400).json({ message: "from and to dates are required" });
+    }
+
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+    const rows = await LedgerReportService.getPettyCashBookRows({ from, to, companyId });
+    res.json(rows);
+  } catch (err) {
+    console.error("PETTY CASH BOOK REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate Petty Cash Book",
+      error: err.message,
+    });
+  }
+});
+
+// Reports Phase L.7: seventh and final individual Book of Accounts - a
+// single combined Book over TWO source types confirmed by reading
+// buildTransactionUnionSql directly: 'DEBIT MEMO' and 'CREDIT MEMO'
+// (CONCAT(h.memo_type, ' MEMO') from the shared memo_headers/memo_lines
+// pair's memo_type ENUM). No memo creation/editing/posting/currency/
+// reversal logic anywhere here - read-only, and no memo-specific lifecycle
+// handling is needed either: like Petty Cash, the repository has no
+// /void, /cancel, or /reverse route for either Debit or Credit Memo (only
+// Draft and Posted, both enforced by the shared postedOnlySql filter
+// already used everywhere else), so a Posted Debit or Credit Memo shows
+// here exactly once, exactly as recognized by the canonical ledger.
+app.get("/api/reports/books/debit-credit-memo", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
+  try {
+    const { from, to } = req.query;
+
+    if (!from || !to) {
+      return res.status(400).json({ message: "from and to dates are required" });
+    }
+
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+    const rows = await LedgerReportService.getDebitCreditMemoBookRows({ from, to, companyId });
+    res.json(rows);
+  } catch (err) {
+    console.error("DEBIT/CREDIT MEMO BOOK REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate Debit/Credit Memo Book",
+      error: err.message,
+    });
+  }
+});
+
+// ====================== BOOKS OF ACCOUNTS - SUMMARY OF BOOKS BY TOTALS ======================
+// First of the 9 previously-"Coming Soon" reports identified in the
+// technical documentation audit. Same architecture as the 7 individual
+// Books above - Posted-only, company-scoped, transaction_date-ranged, via
+// the shared LedgerReportService engine. Not a new recognition query: it
+// re-runs the exact same 7 getXBookRows() calls each individual Book page
+// already uses and reduces each to its own {totalDebit, totalCredit}, then
+// adds a grand total across all 7 - mathematically identical to opening
+// each of the 7 Book pages and reading their own TOTAL row. No AP/AR/tax
+// logic touched; read-only.
+app.get("/api/reports/books/summary-totals", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
+  try {
+    const { from, to } = req.query;
+
+    if (!from || !to) {
+      return res.status(400).json({ message: "from and to dates are required" });
+    }
+
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+    const summary = await LedgerReportService.getBooksSummaryTotals({ from, to, companyId });
+    res.json(summary);
+  } catch (err) {
+    console.error("SUMMARY OF BOOKS BY TOTALS REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate Summary of Books by Totals",
+      error: err.message,
+    });
+  }
+});
+
+// ====================== BOOKS OF ACCOUNTS - NET SUMMARY OF BOOKS ======================
+// Second of the 9 previously-"Coming Soon" reports identified in the
+// technical documentation audit. Same architecture as Summary of Books by
+// Totals immediately above - Posted-only, company-scoped, transaction_date-
+// ranged. Not a new recognition query and not a new aggregation: it calls
+// LedgerReportService.getNetSummaryOfBooks(), which itself calls the
+// unchanged getBooksSummaryTotals() and only adds a derived `net` field
+// (totalDebit - totalCredit) per Book. No AR/AP/tax logic touched;
+// read-only.
+app.get("/api/reports/books/net-summary", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
+  try {
+    const { from, to } = req.query;
+
+    if (!from || !to) {
+      return res.status(400).json({ message: "from and to dates are required" });
+    }
+
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+    const summary = await LedgerReportService.getNetSummaryOfBooks({ from, to, companyId });
+    res.json(summary);
+  } catch (err) {
+    console.error("NET SUMMARY OF BOOKS REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate Net Summary of Books",
+      error: err.message,
+    });
+  }
+});
+
 // ====================== OUTPUT VAT REPORT =================
 
 app.get("/api/reports/output-vat", authenticateToken, authorizePermission("REPORTS.BIR_COMPLIANCE", "VIEW"), async (req, res) => {
@@ -7698,8 +9039,54 @@ app.get("/api/reports/output-vat", authenticateToken, authorizePermission("REPOR
 
 // ====================== INCOME STATEMENT REPORT ======================
 
+// Reports Phase B: additive, opt-in structured view. `?view=structured`
+// delegates to the canonical financialStatementStructureService model
+// (Condensed/Detailed, current / previous-month / YTD columns, readiness +
+// unclassified diagnostics, optional strict gate). ANY request WITHOUT
+// view=structured falls through to the byte-identical legacy flat response
+// below - shape, status codes and callers unchanged.
+async function handleStructuredIncomeStatement(req, res) {
+  const parsed = StructuredStatementRequest.parseIncomeStatementParams(req.query);
+  if (!parsed.ok) return res.status(parsed.status).json(parsed.body);
+
+  const { mode, strict, periods } = parsed.value;
+  // Same backend-authoritative company scope as the legacy branch:
+  // resolveCompanyIdForWrite validates any requested companyId against the
+  // authenticated user's companies (or falls back to their own).
+  const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+  const model = await FinancialStatementStructureService.buildIncomeStatement({
+    companyId,
+    mode,
+    periods: periods.map((p) => ({ key: p.key, label: p.bandLabel, from: p.from, to: p.to })),
+  });
+
+  if (strict) {
+    const gate = StructuredStatementRequest.evaluateStrict(model);
+    if (gate.blocked) return res.status(gate.status).json(gate.body);
+  }
+
+  const columns = periods.map((p) => ({
+    key: p.key,
+    label: p.bandLabel,
+    periodLabel: p.periodLabel,
+    from: p.from,
+    to: p.to,
+  }));
+  return res.json({
+    ...model,
+    view: "structured",
+    columns,
+    meta: { ...model.meta, view: "structured", periods: columns },
+  });
+}
+
 app.get("/api/reports/income-statement", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
   try {
+    if (req.query.view === "structured") {
+      return await handleStructuredIncomeStatement(req, res);
+    }
+
     const { from, to } = req.query;
     // Checkpoint 6A fixed company scoping here (company_id = ? on every
     // branch). chart_of_accounts/coa_groups/account_group_codes remain
@@ -7738,8 +9125,57 @@ app.get("/api/reports/income-statement", authenticateToken, authorizePermission(
 
 // ====================== BALANCE SHEET REPORT ======================
 
+// Reports Phase C: additive, opt-in structured view. `?view=structured`
+// delegates to the canonical financialStatementStructureService model
+// (Condensed/Detailed; current + optional comparative as-of + DIFFERENCE;
+// canonical Phase A.1 Current Year Earnings; balanceCheck; readiness +
+// unclassified diagnostics; optional strict gate). ANY request WITHOUT
+// view=structured falls through to the byte-identical legacy flat response
+// below - shape, CYE behaviour, status codes and callers unchanged.
+async function handleStructuredBalanceSheet(req, res) {
+  const parsed = StructuredStatementRequest.parseBalanceSheetParams(req.query);
+  if (!parsed.ok) return res.status(parsed.status).json(parsed.body);
+
+  const { mode, strict, withDifference, columns } = parsed.value;
+  // Same backend-authoritative company scope as the legacy branch.
+  const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+  const model = await FinancialStatementStructureService.buildBalanceSheet({
+    companyId,
+    mode,
+    columns: columns.map((c) => ({ key: c.key, label: c.bandLabel, date: c.date })),
+    withDifference,
+  });
+
+  if (strict) {
+    const gate = StructuredStatementRequest.evaluateBalanceSheetStrict(model);
+    if (gate.blocked) return res.status(gate.status).json(gate.body);
+  }
+
+  // Enrich the model's slim {key,label} columns with periodLabel + date.
+  // The builder-produced DIFFERENCE column (if any) has no date and passes
+  // through with its label.
+  const byKey = new Map(columns.map((c) => [c.key, c]));
+  const enriched = model.columns.map((mc) => {
+    const src = byKey.get(mc.key);
+    return src
+      ? { key: mc.key, label: src.bandLabel, periodLabel: src.periodLabel, date: src.date }
+      : { key: mc.key, label: mc.label };
+  });
+  return res.json({
+    ...model,
+    view: "structured",
+    columns: enriched,
+    meta: { ...model.meta, view: "structured", asOf: enriched.filter((c) => c.date) },
+  });
+}
+
 app.get("/api/reports/balance-sheet", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
   try {
+    if (req.query.view === "structured") {
+      return await handleStructuredBalanceSheet(req, res);
+    }
+
     const { to } = req.query;
     // Checkpoint 6A: company_id = ? on every branch (chart_of_accounts/
     // coa_groups/account_group_codes remain unfiltered by design).
@@ -7931,6 +9367,84 @@ app.get("/api/reports/ap-aging-summary", authenticateToken, authorizePermission(
   }
 });
 
+// ====================== AP LIST OF PAYABLES AND PAYMENTS ======================
+// Seventh of the 9 previously-"Coming Soon" reports identified in the
+// technical documentation audit. A period, multi-supplier summary - the
+// AP structural mirror of AR Billings & Collections, NOT a copy of it:
+// Payments here are reconstructed from transaction_applications (not a
+// flat cv_headers total), because unlike Invoice/OR, APV/CV DO have a
+// void/cancel/reverse lifecycle, and only the transaction_applications
+// reconstruction self-corrects for it. Payables use the EXACT VOID/
+// CANCELLED + reversal-JV exclusion agingReportService.js's own AP branch
+// already established (mirrored, not imported - see
+// ApListOfPayablesPaymentsService.js). agingReportService.js itself is
+// NOT modified. No AR/tax logic touched; read-only.
+app.get("/api/reports/ap-payables-and-payments", authenticateToken, authorizePermission("REPORTS.AP", "VIEW"), async (req, res) => {
+  try {
+    const { partyId, from, to } = req.query;
+
+    if (!from || !to) {
+      return res.status(400).json({ message: "from and to dates are required" });
+    }
+
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+    if (partyId) {
+      const [partyRows] = await pool.execute("SELECT company_id FROM general_libraries WHERE id = ?", [partyId]);
+      if (!partyRows.length || partyRows[0].company_id !== companyId) {
+        return res.status(404).json({ message: "Party not found" });
+      }
+    }
+
+    const report = await ApListOfPayablesPaymentsService.getApPayablesAndPayments({ from, to, companyId, partyId });
+
+    res.json({ from, to, ...report });
+  } catch (err) {
+    console.error("AP LIST OF PAYABLES AND PAYMENTS REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate AP List of Payables and Payments report",
+      error: err.message,
+    });
+  }
+});
+
+// ====================== AP LIST OF OVERDUE ACCOUNTS ======================
+// Eighth of the 9 previously-"Coming Soon" reports identified in the
+// technical documentation audit. Built directly on the existing,
+// UNCHANGED AgingReportService - the same engine AP Aging and AP Aging
+// Summary immediately above already use, and the exact AP mirror of AR
+// List of Overdue Accounts. Not a new recognition query, not a new
+// balance calculation: calls the unchanged getAgingRows("AP", ...) and
+// drops the "current" (not-yet-due) bucket. See
+// ApOverdueAccountsService.js for the full rationale, including two
+// documented, inherited (not invented) characteristics: Draft APVs ARE
+// included (only VOID/CANCELLED plus reversed APVs are excluded by
+// Aging's own AP branch), and Debit/Credit Memos never appear (Aging's
+// row source never joins memo_headers). No AR/tax logic touched;
+// read-only.
+app.get("/api/reports/ap-overdue-accounts", authenticateToken, authorizePermission("REPORTS.AP", "VIEW"), async (req, res) => {
+  try {
+    const { asOf, currency, partyId, status } = req.query;
+    const reportDate = asOf || new Date().toISOString().slice(0, 10);
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+    const { rows, bucketTotals, parties } = await ApOverdueAccountsService.getOverdueAccounts({
+      companyId,
+      asOfDate: reportDate,
+      currencyCode: currency,
+      partyId,
+      status,
+    });
+
+    res.json({ asOfDate: reportDate, rows, bucketTotals, parties });
+  } catch (err) {
+    console.error("AP LIST OF OVERDUE ACCOUNTS REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate AP List of Overdue Accounts report",
+      error: err.message,
+    });
+  }
+});
 
 // ====================== AR AGING REPORT ======================
 app.get("/api/reports/ar-aging", authenticateToken, authorizePermission("REPORTS.AR", "VIEW"), async (req, res) => {
@@ -7978,6 +9492,43 @@ app.get("/api/reports/ar-aging-summary", authenticateToken, authorizePermission(
     console.error("AR AGING SUMMARY REPORT ERROR:", err.message);
     res.status(500).json({
       message: "Failed to generate AR aging summary report",
+      error: err.message,
+    });
+  }
+});
+
+// ====================== AR LIST OF OVERDUE ACCOUNTS ======================
+// Sixth of the 9 previously-"Coming Soon" reports identified in the
+// technical documentation audit. Built directly on the existing,
+// UNCHANGED AgingReportService - the same engine AR Aging and AR Aging
+// Summary immediately above already use. Not a new recognition query, not
+// a new balance calculation: calls the unchanged getAgingRows("AR", ...)
+// and drops the "current" (not-yet-due) bucket, since this report is
+// specifically the overdue subset of Aging's inclusive row set. See
+// ArOverdueAccountsService.js for the full rationale, including two
+// documented, inherited (not invented) characteristics: Draft invoices
+// are included (Aging's AR branch has no status filter), and Debit/Credit
+// Memos never appear (Aging's row source never joins memo_headers). No
+// AP/tax logic touched; read-only.
+app.get("/api/reports/ar-overdue-accounts", authenticateToken, authorizePermission("REPORTS.AR", "VIEW"), async (req, res) => {
+  try {
+    const { asOf, currency, partyId, status } = req.query;
+    const reportDate = asOf || new Date().toISOString().slice(0, 10);
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+    const { rows, bucketTotals, parties } = await ArOverdueAccountsService.getOverdueAccounts({
+      companyId,
+      asOfDate: reportDate,
+      currencyCode: currency,
+      partyId,
+      status,
+    });
+
+    res.json({ asOfDate: reportDate, rows, bucketTotals, parties });
+  } catch (err) {
+    console.error("AR LIST OF OVERDUE ACCOUNTS REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate AR List of Overdue Accounts report",
       error: err.message,
     });
   }
@@ -8133,6 +9684,105 @@ app.get("/api/reports/subsidiary-ledger", authenticateToken, authorizePermission
     console.error("SUBSIDIARY LEDGER REPORT ERROR:", err.message);
     res.status(500).json({
       message: "Failed to generate subsidiary ledger",
+      error: err.message,
+    });
+  }
+});
+
+// ====================== AR STATEMENT OF ACCOUNTS ======================
+// Fourth of the 9 previously-"Coming Soon" reports identified in the
+// technical documentation audit. Same account universe and same 4-source
+// union (invoice_headers/or_headers/arap_beginning_balance_lines/
+// memo_headers) the Subsidiary Ledger route immediately above already
+// uses for its AR branch - that route is unchanged by this addition. The
+// one genuine addition beyond Subsidiary Ledger is a true pre-period
+// Beginning Balance (see ArStatementService.js), so the running balance
+// shown is a real carried-forward figure instead of starting at 0.
+// Payment allocation (transaction_applications) is not consumed, same as
+// Subsidiary Ledger - an OR's own total is used as a flat payment on its
+// transaction_date regardless of which invoice(s) it was later applied
+// to. No AP/tax logic touched; read-only.
+app.get("/api/reports/ar-statement-of-accounts", authenticateToken, authorizePermission("REPORTS.AR", "VIEW"), async (req, res) => {
+  try {
+    const { partyId, from, to } = req.query;
+
+    if (!partyId) {
+      return res.status(400).json({ message: "partyId is required" });
+    }
+
+    if (!from || !to) {
+      return res.status(400).json({ message: "from and to dates are required" });
+    }
+
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+    const [partyRows] = await pool.execute(
+      "SELECT company_id, code, name FROM general_libraries WHERE id = ?",
+      [partyId]
+    );
+    if (!partyRows.length || partyRows[0].company_id !== companyId) {
+      return res.status(404).json({ message: "Party not found" });
+    }
+
+    const statement = await ArStatementService.getArStatementOfAccounts({ partyId, from, to, companyId });
+
+    res.json({
+      partyId: Number(partyId),
+      partyCode: partyRows[0].code,
+      partyName: partyRows[0].name,
+      from,
+      to,
+      ...statement,
+    });
+  } catch (err) {
+    console.error("AR STATEMENT OF ACCOUNTS REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate AR Statement of Accounts",
+      error: err.message,
+    });
+  }
+});
+
+// ====================== AR BILLINGS & COLLECTIONS ======================
+// Fifth of the 9 previously-"Coming Soon" reports identified in the
+// technical documentation audit. A period, multi-customer SUMMARY - not a
+// second AR Statement of Accounts. Pure composition: for each customer in
+// scope it calls the unchanged ArStatementService.getArStatementOfAccounts
+// (the AR Statement of Accounts route immediately above is untouched by
+// this addition) and buckets the already-computed rows into Billings/
+// Debit Memos/Collections/Credit Memos - no new recognition SQL, no new
+// balance math. Collections is the flat OR total (same source AR
+// Statement/Subsidiary Ledger already use), deliberately NOT
+// transaction_applications, since an OR can be legitimately unallocated
+// (invoiceApplications = []) and would otherwise be silently excluded
+// from a "Collections" total despite representing real cash received.
+// partyId is optional here (unlike AR Statement, where it's required) -
+// omit it for a company-wide, all-active-customers view. No AP/tax logic
+// touched; read-only.
+app.get("/api/reports/ar-billings-and-collections", authenticateToken, authorizePermission("REPORTS.AR", "VIEW"), async (req, res) => {
+  try {
+    const { partyId, from, to } = req.query;
+
+    if (!from || !to) {
+      return res.status(400).json({ message: "from and to dates are required" });
+    }
+
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+    if (partyId) {
+      const [partyRows] = await pool.execute("SELECT company_id FROM general_libraries WHERE id = ?", [partyId]);
+      if (!partyRows.length || partyRows[0].company_id !== companyId) {
+        return res.status(404).json({ message: "Party not found" });
+      }
+    }
+
+    const report = await ArBillingsCollectionsService.getArBillingsAndCollections({ from, to, companyId, partyId });
+
+    res.json({ from, to, ...report });
+  } catch (err) {
+    console.error("AR BILLINGS & COLLECTIONS REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate AR Billings & Collections report",
       error: err.message,
     });
   }
@@ -8306,6 +9956,35 @@ app.get("/api/reports/fixed-asset-register", authenticateToken, authorizePermiss
   } catch (err) {
     console.error("FIXED ASSET REGISTER REPORT ERROR:", err.message);
     res.status(500).json({ message: "Failed to generate fixed asset register", error: err.message });
+  }
+});
+
+// ====================== FIXED ASSET LAPSING REPORT ======================
+// Period depreciation roll-forward (Beginning Accumulated Depreciation ->
+// Depreciation Expense for the Period -> Ending Accumulated
+// Depreciation) for every ACTIVE fixed asset, over a From/To date range.
+// Reuses the fixed-asset-register route's own straight-line formula
+// unchanged (see FixedAssetLapsingService.js) - not a new recognition
+// query, not a new depreciation method, not a schema change. Read-only;
+// the existing fixed-asset-register route and fixed_assets CRUD routes
+// above are untouched. Same REPORTS.FIXED_ASSETS/VIEW permission as the
+// existing Fixed Asset Register - no new permission introduced. Like
+// every fixed-asset route in this file, fixed_assets has no
+// company_id/branch_id column, so this report is NOT company- or
+// branch-scoped (inherited limitation, not invented here).
+app.get("/api/reports/fixed-asset-lapsing", authenticateToken, authorizePermission("REPORTS.FIXED_ASSETS", "VIEW"), async (req, res) => {
+  try {
+    const { from, to } = req.query;
+    if (!from) return res.status(400).json({ message: "From date is required" });
+    if (!to) return res.status(400).json({ message: "To date is required" });
+    if (from > to) return res.status(400).json({ message: "From date must not be after To date" });
+
+    const { rows, grandTotals } = await FixedAssetLapsingService.getFixedAssetLapsing({ from, to });
+
+    res.json({ from, to, rows, grandTotals });
+  } catch (err) {
+    console.error("FIXED ASSET LAPSING REPORT ERROR:", err.message);
+    res.status(500).json({ message: "Failed to generate Fixed Asset Lapsing report", error: err.message });
   }
 });
 
