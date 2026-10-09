@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { generateNextCode } from "../../utils/genLibCode";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
+import RecordViewModal from "../../components/RecordViewModal";
 import "./GenLib.css";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
@@ -122,6 +123,36 @@ export default function GenLib() {
     setSelectedId(record.id);
     setForm({ ...record });
     setMode("view");
+  }
+
+  const selectedRecord = records.find((item) => item.id === selectedId) || null;
+
+  function getRecordDetails(record) {
+    return [
+      { label: "Code", value: record.code },
+      { label: "Name", value: record.name },
+      { label: "Type", value: record.type },
+      { label: "Status", value: record.status },
+      { label: "Start Date", value: record.startDate },
+      { label: "Category", value: record.category },
+      { label: "Address Line 1", value: record.address1 },
+      { label: "Address Line 2", value: record.address2 },
+      { label: "Address Line 3", value: record.address3 },
+      { label: "Attention", value: record.attention },
+      { label: "Position", value: record.position },
+      { label: "Telephone No.", value: record.telephone },
+      { label: "Fax No.", value: record.fax },
+      { label: "Mobile No.", value: record.mobile },
+      { label: "Email", value: record.email },
+      { label: "TIN", value: record.tin },
+      { label: "ATC Code", value: record.atcCode },
+      { label: "EWT Code", value: record.ewtCode },
+      { label: "Branch Code", value: record.branchCode },
+      { label: "RDO Code", value: record.rdoCode },
+      { label: "Prospective Client", value: record.isProspective ? "Yes" : "No" },
+      { label: "Client", value: record.isClient ? "Yes" : "No" },
+      { label: "Notes", value: record.notes, wide: true },
+    ];
   }
 
   function updateField(key, value) {
@@ -361,73 +392,36 @@ export default function GenLib() {
             </div>
           </div>
 
+          {/* Selecting a record loads it into the page exactly as before (so
+              Edit / Delete / Previous / Next act on it) but keeps the dialog
+              open; the record's details show below the list. */}
+          <RecordViewModal
+            open={showTable}
+            onClose={() => setShowTable(false)}
+            title="View Records"
+            subtitle="Select a record to see its details."
+            searchValue={search}
+            onSearchChange={setSearch}
+            searchPlaceholder="Search code, name, type..."
+            columns={[
+              { key: "code", label: "Code" },
+              { key: "name", label: "Name" },
+              { key: "type", label: "Type" },
+              { key: "status", label: "Status" },
+              { key: "email", label: "Email" },
+              { key: "mobile", label: "Mobile" },
+            ]}
+            records={filteredRecords}
+            loading={loading}
+            emptyMessage="No matching records."
+            selectedId={selectedId}
+            onSelect={loadRecord}
+            selectedRecord={selectedRecord}
+            detailsTitle="Selected Record"
+            getDetails={getRecordDetails}
+          />
+
           <div className="gl-card">
-            {showTable && (
-              <div className="gl-table-section">
-                <div className="gl-table-top">
-                  <h3>Records</h3>
-                  <span>{filteredRecords.length} item(s)</span>
-                  <input
-                    className="gl-search"
-                    type="text"
-                    placeholder="Search code, name, type..."
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                  />
-                  <button
-                    type="button"
-                    className="gl-table-close"
-                    onClick={() => setShowTable(false)}
-                    aria-label="Close"
-                  >
-                    &times;
-                  </button>
-                </div>
-
-                <div className="gl-table-wrap">
-                  <table className="gl-table">
-                    <thead>
-                      <tr>
-                        <th>Code</th>
-                        <th>Name</th>
-                        <th>Type</th>
-                        <th>Status</th>
-                        <th>Email</th>
-                        <th>Mobile</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filteredRecords.length > 0 ? (
-                        filteredRecords.map((item) => (
-                          <tr
-                            key={item.id}
-                            className={selectedId === item.id ? "selected-row" : ""}
-                            onClick={() => {
-                              loadRecord(item);
-                              setShowTable(false);
-                            }}
-                          >
-                            <td>{item.code}</td>
-                            <td>{item.name}</td>
-                            <td>{item.type}</td>
-                            <td>{item.status}</td>
-                            <td>{item.email}</td>
-                            <td>{item.mobile}</td>
-                          </tr>
-                        ))
-                      ) : (
-                        <tr>
-                          <td colSpan="6" className="empty-cell">
-                            No matching records.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-
             <div className="gl-top-grid">
               <div className="field">
                 <label>Code</label>

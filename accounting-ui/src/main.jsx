@@ -4,6 +4,7 @@ import App from "./App.jsx";
 import { installAuthFetchGuard } from "./utils/installAuthFetchGuard";
 import './theme.css'
 import './index.css'
+import './styles/actionButtons.css'
 
 installAuthFetchGuard();
 

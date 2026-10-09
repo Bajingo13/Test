@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
 import { matchesDateRange } from "../../utils/dateRangeFilter.mjs";
+import RecordViewModal from "../../components/RecordViewModal";
 import "./COA.css";
 import "../../components/RecurringTemplateModal.css";
 
@@ -210,9 +211,48 @@ export default function COA() {
     setShowPicker(true);
   }
 
+  // Selecting in the View dialog loads the account into the page exactly as
+  // before (so Edit / Delete / Previous / Next act on it), but keeps the
+  // dialog open so the user can keep browsing; its details show below the list.
   function pickAccount(account) {
     loadAccount(account);
-    setShowPicker(false);
+  }
+
+  const selectedAccount = accounts.find((item) => item.id === selectedId) || null;
+
+  function getAccountDetails(account) {
+    return [
+      { label: "Code", value: account.code },
+      { label: "Title", value: account.title },
+      { label: "Class", value: account.accountClass },
+      { label: "Date", value: account.date },
+      { label: "Description", value: account.description, wide: true },
+      {
+        label: "Validation Rules",
+        wide: true,
+        value: account.validations?.length ? (
+          <span className="rvm-tags">
+            {account.validations.map((item) => (
+              <span key={item} className="rvm-tag">{item}</span>
+            ))}
+          </span>
+        ) : null,
+      },
+      {
+        label: "Group Codes",
+        wide: true,
+        value: account.groups?.length ? (
+          <span className="rvm-tags">
+            {account.groups.map((item) => (
+              <span key={item.id} className="rvm-tag">
+                {item.code}
+                {item.description ? ` - ${item.description}` : ""}
+              </span>
+            ))}
+          </span>
+        ) : null,
+      },
+    ];
   }
 
   async function handleSave() {
@@ -522,81 +562,46 @@ export default function COA() {
             </div>
           </div>
 
-          {showPicker && (
-            <div className="coa-picker-panel">
-              <div className="coa-picker-header">
-                <div>
-                  <h3>Accounts</h3>
-                  <span>{filteredAccounts.length} item(s)</span>
-                </div>
-                <input
-                  type="text"
-                  placeholder="Search code or title"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  className="coa-picker-search"
-                />
-                <label className="coa-picker-date-label">
+          <RecordViewModal
+            open={showPicker}
+            onClose={() => setShowPicker(false)}
+            title="View Accounts"
+            subtitle="Select an account to see its details."
+            searchValue={search}
+            onSearchChange={setSearch}
+            searchPlaceholder="Search code or title"
+            filters={
+              <>
+                <label className="rvm-filter">
                   From
                   <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} aria-label="Filter from account date" />
                 </label>
-                <label className="coa-picker-date-label">
+                <label className="rvm-filter">
                   To
                   <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} aria-label="Filter to account date" />
                 </label>
                 {(dateFrom || dateTo) && (
-                  <button type="button" className="coa-picker-date-clear" onClick={() => { setDateFrom(""); setDateTo(""); }}>
+                  <button type="button" className="rvm-filter-clear" onClick={() => { setDateFrom(""); setDateTo(""); }}>
                     Clear Dates
                   </button>
                 )}
-                <button
-                  type="button"
-                  className="coa-picker-close"
-                  onClick={() => setShowPicker(false)}
-                  aria-label="Close"
-                >
-                  &times;
-                </button>
-              </div>
-
-              <div className="coa-picker-table-wrap">
-                <table className="coa-picker-table">
-                  <thead>
-                    <tr>
-                      <th>Code</th>
-                      <th>Title</th>
-                      <th>Class</th>
-                      <th>Date</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {loading ? (
-                      <tr>
-                        <td colSpan={4} className="empty-cell">Loading accounts...</td>
-                      </tr>
-                    ) : filteredAccounts.length > 0 ? (
-                      filteredAccounts.map((account) => (
-                        <tr
-                          key={account.id}
-                          className={selectedId === account.id ? "selected-row" : ""}
-                          onClick={() => pickAccount(account)}
-                        >
-                          <td>{account.code}</td>
-                          <td>{account.title}</td>
-                          <td>{account.accountClass}</td>
-                          <td>{account.date}</td>
-                        </tr>
-                      ))
-                    ) : (
-                      <tr>
-                        <td colSpan={4} className="empty-cell">No accounts found.</td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
+              </>
+            }
+            columns={[
+              { key: "code", label: "Code" },
+              { key: "title", label: "Title" },
+              { key: "accountClass", label: "Class" },
+              { key: "date", label: "Date" },
+            ]}
+            records={filteredAccounts}
+            loading={loading}
+            emptyMessage="No accounts found."
+            selectedId={selectedId}
+            onSelect={pickAccount}
+            selectedRecord={selectedAccount}
+            detailsTitle="Selected Account"
+            getDetails={getAccountDetails}
+          />
 
           <div className="coa-card">
             <div className="coa-grid">

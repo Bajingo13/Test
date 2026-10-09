@@ -1,0 +1,249 @@
+/* RecordViewModal - shared File Setup "View" dialog.
+   Shell (overlay / card / header / close / footer) comes from
+   RecurringTemplateModal.css (rtm-*); only the inner layout lives here.
+   Colors use theme.css tokens so light and dark themes both work. */
+
+.rvm-modal {
+  width: min(920px, 96vw);
+}
+
+.rvm-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* Sections keep their natural height; on short screens the body scrolls
+   (rtm-body has overflow-y: auto) instead of squeezing the list to nothing. */
+.rvm-body > * {
+  flex-shrink: 0;
+}
+
+/* ---- search / filters row ---------------------------------------------- */
+
+.rvm-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+/* The app has a global `input { height: 42px }`, so sizes here use
+   border-box with a fixed height rather than adding padding on top of it. */
+.rvm-search {
+  flex: 1 1 240px;
+  min-width: 0;
+  box-sizing: border-box;
+  height: 40px;
+  border: 1px solid var(--border-color-strong);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  border-radius: 10px;
+  padding: 0 12px;
+  font-size: 14px;
+}
+
+.rvm-search:focus {
+  outline: none;
+  border-color: var(--accent-indigo);
+  box-shadow: 0 0 0 3px var(--accent-indigo-bg);
+}
+
+.rvm-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.rvm-filter input {
+  box-sizing: border-box;
+  height: 36px;
+  border: 1px solid var(--border-color-strong);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  border-radius: 8px;
+  padding: 0 8px;
+  font-size: 13px;
+}
+
+.rvm-filter-clear {
+  border: 1px solid var(--border-color-strong);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.rvm-filter-clear:hover {
+  background: var(--bg-surface-muted);
+  color: var(--text-primary);
+}
+
+.rvm-count {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+/* ---- record list --------------------------------------------------------- */
+
+.rvm-list-wrap {
+  max-height: min(38vh, 340px);
+  overflow: auto;
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+}
+
+.rvm-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.rvm-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-surface-muted);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.rvm-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-primary);
+}
+
+.rvm-row {
+  cursor: pointer;
+  transition: background-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.rvm-row:hover {
+  background: var(--bg-surface-muted);
+}
+
+.rvm-row:focus-visible {
+  outline: 2px solid var(--accent-indigo);
+  outline-offset: -2px;
+}
+
+.rvm-row.is-selected {
+  background: var(--accent-indigo-bg);
+  box-shadow: inset 3px 0 0 var(--accent-indigo);
+}
+
+/* Selected row: indigo tint + left accent bar mark the selection; the text
+   stays in the regular text color so it is fully readable in both themes. */
+.rvm-row.is-selected td {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.rvm-empty {
+  text-align: center;
+  color: var(--text-secondary);
+  padding: 24px 12px;
+}
+
+/* ---- selected-record details -------------------------------------------- */
+
+.rvm-details {
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  background: var(--bg-surface-muted);
+  padding: 14px 16px;
+}
+
+.rvm-details-title {
+  margin: 0 0 12px;
+  font-size: 13px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+}
+
+.rvm-details-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px 18px;
+  margin: 0;
+}
+
+.rvm-detail {
+  min-width: 0;
+}
+
+.rvm-detail--wide {
+  grid-column: 1 / -1;
+}
+
+.rvm-detail dt {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  margin-bottom: 3px;
+}
+
+.rvm-detail dd {
+  margin: 0;
+  font-size: 14px;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.rvm-details-empty {
+  margin: 0;
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+
+/* Small inline tags used for multi-value details (e.g. validation rules). */
+.rvm-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.rvm-tag {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--accent-indigo-border);
+  background: var(--bg-surface);
+  color: var(--accent-indigo-hover);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .rvm-list-wrap {
+    max-height: 34vh;
+  }
+
+  .rvm-count {
+    margin-left: 0;
+  }
+
+  .rvm-details-grid {
+    grid-template-columns: 1fr;
+  }
+}

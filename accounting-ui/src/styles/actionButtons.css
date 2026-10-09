@@ -1,0 +1,242 @@
+/* Shared action-button interaction for File Setup toolbars and Reports
+   action rows. Loaded once from main.jsx; every selector is scoped to an
+   existing page container, so no other screen is affected.
+
+   States:
+     default  - neutral surface (toolbar actions only; Save / Generate keep
+                their filled primary color as the page's main call-to-action)
+     hover    - subtle surface tint
+     active   - clear indigo highlight + slight press-in while clicking
+     focus    - the last-clicked button keeps a soft indigo tint until focus
+                moves elsewhere, so it is obvious which action was used;
+                keyboard focus gets a visible ring
+   Only colors / shadow / transform change - padding, font and size are left
+   exactly as each page defines them. All colors come from theme.css tokens,
+   so light and dark themes both work. The highlight itself is the indigo
+   tint + indigo border; the label stays in --text-primary so it remains
+   fully readable on that tint in both themes. */
+
+/* ---- 1. Toolbar / secondary actions: neutral by default ---------------- */
+
+.coa-toolbar .btn,
+.gl-toolbar .btn,
+.group-toolbar .group-btn {
+  background: var(--bg-surface);
+  border-color: var(--border-color-strong);
+  color: var(--text-secondary);
+}
+
+/* Report action buttons have no border, so the neutral outline is drawn
+   with an inset shadow - this keeps their size identical. */
+.aa-actions .secondary,
+.aa-actions .dark,
+.lgr-actions .secondary,
+.lgr-actions .dark,
+.tb-actions .secondary,
+.tb-actions .dark,
+.is-actions .secondary,
+.bs-actions .secondary,
+.report-actions .btn-clear,
+.report-actions .btn-export {
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  box-shadow: inset 0 0 0 1px var(--border-color-strong);
+}
+
+/* ---- 2. Shared transition for every button in scope -------------------- */
+
+.coa-page .btn,
+.gl-page .btn,
+.group-page .group-btn,
+.group-page .primary-btn,
+.group-page .danger-btn,
+.fs-btn,
+.arap-btn,
+.aa-actions button,
+.lgr-actions button,
+.tb-actions button,
+.is-actions button,
+.bs-actions button,
+.report-actions button,
+.cs-btn-primary,
+.cs-btn-secondary,
+.ptl-btn-primary,
+.ptl-btn-secondary,
+.brc-btn {
+  transition:
+    background-color 0.18s ease,
+    border-color 0.18s ease,
+    color 0.18s ease,
+    box-shadow 0.18s ease,
+    transform 0.12s ease;
+}
+
+/* ---- 3. Hover: subtle feedback on neutral buttons ---------------------- */
+
+.coa-toolbar .btn:hover:not(:disabled),
+.gl-toolbar .btn:hover:not(:disabled),
+.group-toolbar .group-btn:hover:not(:disabled) {
+  background: var(--bg-surface-muted);
+  color: var(--text-primary);
+}
+
+.aa-actions .secondary:hover:not(:disabled),
+.aa-actions .dark:hover:not(:disabled),
+.lgr-actions .secondary:hover:not(:disabled),
+.lgr-actions .dark:hover:not(:disabled),
+.tb-actions .secondary:hover:not(:disabled),
+.tb-actions .dark:hover:not(:disabled),
+.is-actions .secondary:hover:not(:disabled),
+.bs-actions .secondary:hover:not(:disabled),
+.report-actions .btn-clear:hover:not(:disabled),
+.report-actions .btn-export:hover:not(:disabled) {
+  background: var(--bg-surface-muted);
+  color: var(--text-primary);
+}
+
+/* ---- 4. Clicked: soft highlight that stays on the last-clicked button
+          (mouse focus), stronger highlight while pressed ----------------- */
+
+.coa-toolbar .btn:focus:not(:focus-visible):not(:disabled),
+.gl-toolbar .btn:focus:not(:focus-visible):not(:disabled),
+.group-toolbar .group-btn:focus:not(:focus-visible):not(:disabled) {
+  background: var(--accent-indigo-bg);
+  border-color: var(--accent-indigo-border);
+  color: var(--text-primary);
+}
+
+.aa-actions .secondary:focus:not(:focus-visible):not(:disabled),
+.aa-actions .dark:focus:not(:focus-visible):not(:disabled),
+.lgr-actions .secondary:focus:not(:focus-visible):not(:disabled),
+.lgr-actions .dark:focus:not(:focus-visible):not(:disabled),
+.tb-actions .secondary:focus:not(:focus-visible):not(:disabled),
+.tb-actions .dark:focus:not(:focus-visible):not(:disabled),
+.is-actions .secondary:focus:not(:focus-visible):not(:disabled),
+.bs-actions .secondary:focus:not(:focus-visible):not(:disabled),
+.report-actions .btn-clear:focus:not(:focus-visible):not(:disabled),
+.report-actions .btn-export:focus:not(:focus-visible):not(:disabled) {
+  background: var(--accent-indigo-bg);
+  color: var(--text-primary);
+  box-shadow: inset 0 0 0 1px var(--accent-indigo-border);
+}
+
+.coa-toolbar .btn:active:not(:disabled):not(:focus-visible),
+.gl-toolbar .btn:active:not(:disabled):not(:focus-visible),
+.group-toolbar .group-btn:active:not(:disabled):not(:focus-visible) {
+  background: var(--accent-indigo-bg);
+  border-color: var(--accent-indigo);
+  color: var(--text-primary);
+  box-shadow: 0 0 0 3px var(--accent-indigo-bg);
+  transform: scale(0.97);
+}
+
+.aa-actions .secondary:active:not(:disabled):not(:focus-visible),
+.aa-actions .dark:active:not(:disabled):not(:focus-visible),
+.lgr-actions .secondary:active:not(:disabled):not(:focus-visible),
+.lgr-actions .dark:active:not(:disabled):not(:focus-visible),
+.tb-actions .secondary:active:not(:disabled):not(:focus-visible),
+.tb-actions .dark:active:not(:disabled):not(:focus-visible),
+.is-actions .secondary:active:not(:disabled):not(:focus-visible),
+.bs-actions .secondary:active:not(:disabled):not(:focus-visible),
+.report-actions .btn-clear:active:not(:disabled):not(:focus-visible),
+.report-actions .btn-export:active:not(:disabled):not(:focus-visible) {
+  background: var(--accent-indigo-bg);
+  color: var(--text-primary);
+  box-shadow:
+    inset 0 0 0 1px var(--accent-indigo),
+    0 0 0 3px var(--accent-indigo-bg);
+  transform: scale(0.97);
+}
+
+/* Delete keeps its meaning through a red tint - only on hover / click,
+   never as a permanent fill. */
+.coa-toolbar .btn-danger:hover:not(:disabled),
+.gl-toolbar .btn-danger:hover:not(:disabled),
+.group-toolbar .group-btn--danger:hover:not(:disabled),
+.coa-toolbar .btn-danger:focus:not(:focus-visible):not(:disabled),
+.gl-toolbar .btn-danger:focus:not(:focus-visible):not(:disabled),
+.group-toolbar .group-btn--danger:focus:not(:focus-visible):not(:disabled) {
+  background: var(--danger-bg);
+  border-color: var(--danger);
+  color: var(--danger-text);
+}
+
+.coa-toolbar .btn-danger:active:not(:disabled):not(:focus-visible),
+.gl-toolbar .btn-danger:active:not(:disabled):not(:focus-visible),
+.group-toolbar .group-btn--danger:active:not(:disabled):not(:focus-visible) {
+  background: var(--danger-bg);
+  border-color: var(--danger);
+  color: var(--danger-text);
+  box-shadow: 0 0 0 3px var(--danger-bg);
+}
+
+/* Filled primary / commit buttons (Save, Update, Generate, + Add on the
+   simple setup pages) keep their color and just get the same press-in. */
+.coa-page .btn:active:not(:disabled):not(:focus-visible),
+.gl-page .btn:active:not(:disabled):not(:focus-visible),
+.group-page .group-btn:active:not(:disabled):not(:focus-visible),
+.group-page .primary-btn:active:not(:disabled):not(:focus-visible),
+.group-page .danger-btn:active:not(:disabled):not(:focus-visible),
+.fs-btn:active:not(:disabled):not(:focus-visible),
+.arap-btn:active:not(:disabled):not(:focus-visible),
+.aa-actions button:active:not(:disabled):not(:focus-visible),
+.lgr-actions button:active:not(:disabled):not(:focus-visible),
+.tb-actions button:active:not(:disabled):not(:focus-visible),
+.is-actions button:active:not(:disabled):not(:focus-visible),
+.bs-actions button:active:not(:disabled):not(:focus-visible),
+.report-actions button:active:not(:disabled):not(:focus-visible),
+.cs-btn-primary:active:not(:disabled):not(:focus-visible),
+.cs-btn-secondary:active:not(:disabled):not(:focus-visible),
+.ptl-btn-primary:active:not(:disabled):not(:focus-visible),
+.ptl-btn-secondary:active:not(:disabled):not(:focus-visible),
+.brc-btn:active:not(:disabled):not(:focus-visible) {
+  transform: scale(0.97);
+}
+
+/* ---- 5. Keyboard focus: visible ring on every button in scope ---------- */
+
+.coa-page .btn:focus-visible,
+.gl-page .btn:focus-visible,
+.group-page .group-btn:focus-visible,
+.group-page .primary-btn:focus-visible,
+.group-page .danger-btn:focus-visible,
+.fs-btn:focus-visible,
+.arap-btn:focus-visible,
+.aa-actions button:focus-visible,
+.lgr-actions button:focus-visible,
+.tb-actions button:focus-visible,
+.is-actions button:focus-visible,
+.bs-actions button:focus-visible,
+.report-actions button:focus-visible,
+.cs-btn-primary:focus-visible,
+.cs-btn-secondary:focus-visible,
+.ptl-btn-primary:focus-visible,
+.ptl-btn-secondary:focus-visible,
+.brc-btn:focus-visible {
+  outline: 2px solid var(--accent-indigo);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .coa-page .btn,
+  .gl-page .btn,
+  .group-page .group-btn,
+  .group-page .primary-btn,
+  .group-page .danger-btn,
+  .fs-btn,
+  .arap-btn,
+  .aa-actions button,
+  .lgr-actions button,
+  .tb-actions button,
+  .is-actions button,
+  .bs-actions button,
+  .report-actions button,
+  .cs-btn-primary,
+  .cs-btn-secondary,
+  .ptl-btn-primary,
+  .ptl-btn-secondary,
+  .brc-btn {
+    transition: none;
+    transform: none !important;
+  }
+}

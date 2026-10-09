@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
 import usePermissions from "../../hooks/usePermissions";
+import RecordViewModal from "../../components/RecordViewModal";
 import "./GroupCodes.css";
 
 // Phase M.1: Report Section master data. Reuses GroupCodes.css verbatim
@@ -45,6 +46,7 @@ export default function ReportSections() {
   const [search, setSearch] = useState("");
   const [form, setForm] = useState(EMPTY_FORM);
   const [loading, setLoading] = useState(false);
+  const [showViewModal, setShowViewModal] = useState(false);
 
   const isEditing = mode === "add" || mode === "edit";
 
@@ -148,11 +150,28 @@ export default function ReportSections() {
     setMode("add");
   }
 
+  // Restores the selected record read-only (unchanged behavior), then opens
+  // the shared View dialog: list -> select -> details. Selecting there uses
+  // the same selectRecord() as clicking a row in the list below.
   function handleView() {
-    if (!selectedId) return;
-    const original = records.find((r) => r.id === selectedId);
-    if (original) setForm(toForm(original));
+    if (selectedId) {
+      const original = records.find((r) => r.id === selectedId);
+      if (original) setForm(toForm(original));
+    }
     setMode("view");
+    setShowViewModal(true);
+  }
+
+  const selectedRecord = records.find((r) => r.id === selectedId) || null;
+
+  function getReportSectionDetails(item) {
+    return [
+      { label: "Code", value: item.code },
+      { label: "Name", value: item.name },
+      { label: "Account Class", value: item.accountClass },
+      { label: "Display Order", value: item.displayOrder ?? "" },
+      { label: "Status", value: item.status },
+    ];
   }
 
   function handleEdit() {
@@ -334,7 +353,7 @@ export default function ReportSections() {
               type="button"
               className="group-btn"
               onClick={handleView}
-              disabled={!selectedId || mode === "view"}
+              disabled={records.length === 0}
             >
               View
             </button>
@@ -363,6 +382,31 @@ export default function ReportSections() {
             </button>
           </div>
         </div>
+
+        <RecordViewModal
+          open={showViewModal}
+          onClose={() => setShowViewModal(false)}
+          title="View Report Sections"
+          subtitle="Select a report section to see its details."
+          searchValue={search}
+          onSearchChange={setSearch}
+          searchPlaceholder="Search report section..."
+          columns={[
+            { key: "code", label: "Code" },
+            { key: "name", label: "Name" },
+            { key: "accountClass", label: "Account Class" },
+            { key: "displayOrder", label: "Order" },
+            { key: "status", label: "Status" },
+          ]}
+          records={filteredRecords}
+          loading={loading}
+          emptyMessage="No report sections found."
+          selectedId={selectedId}
+          onSelect={selectRecord}
+          selectedRecord={selectedRecord}
+          detailsTitle="Selected Report Section"
+          getDetails={getReportSectionDetails}
+        />
 
         <div className="group-card">
           <p className="group-mode-tag">{modeLabel}</p>

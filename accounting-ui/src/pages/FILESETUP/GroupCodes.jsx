@@ -3,6 +3,7 @@ import { authHeaders, handleAuthError } from "../../utils/authSession";
 import usePermissions from "../../hooks/usePermissions";
 import AutoResizeTextarea from "../../components/AutoResizeTextarea";
 import ReportSectionQuickAddModal from "../../components/ReportSectionQuickAddModal";
+import RecordViewModal from "../../components/RecordViewModal";
 import "./GroupCodes.css";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
@@ -54,6 +55,7 @@ export default function GroupCodes() {
   // itself filters to ACTIVE + the selected Account Class.
   const [sections, setSections] = useState([]);
   const [showSectionModal, setShowSectionModal] = useState(false);
+  const [showViewModal, setShowViewModal] = useState(false);
 
   const isEditing = mode === "add" || mode === "edit";
 
@@ -226,11 +228,32 @@ export default function GroupCodes() {
     setMode("add");
   }
 
+  // Restores the selected record read-only (unchanged behavior), then opens
+  // the shared View dialog: list -> select -> details. Selecting there uses
+  // the same selectRecord() as clicking a row in the list below.
   function handleView() {
-    if (!selectedId) return;
-    const original = records.find((r) => r.id === selectedId);
-    if (original) setForm(toForm(original));
+    if (selectedId) {
+      const original = records.find((r) => r.id === selectedId);
+      if (original) setForm(toForm(original));
+    }
     setMode("view");
+    setShowViewModal(true);
+  }
+
+  const selectedRecord = records.find((r) => r.id === selectedId) || null;
+
+  function getGroupCodeDetails(item) {
+    return [
+      { label: "Group Code", value: item.groupCode },
+      { label: "Description", value: item.groupDescription },
+      { label: "Account Class", value: item.accountClass },
+      {
+        label: "Report Section",
+        value: item.reportSection ? sectionLabel(item.reportSection) : "Unclassified",
+      },
+      { label: "Display Order", value: item.displayOrder ?? "" },
+      { label: "Status", value: item.status },
+    ];
   }
 
   function handleEdit() {
@@ -412,7 +435,7 @@ export default function GroupCodes() {
               type="button"
               className="group-btn"
               onClick={handleView}
-              disabled={!selectedId || mode === "view"}
+              disabled={records.length === 0}
             >
               View
             </button>
@@ -441,6 +464,36 @@ export default function GroupCodes() {
             </button>
           </div>
         </div>
+
+        <RecordViewModal
+          open={showViewModal}
+          onClose={() => setShowViewModal(false)}
+          title="View Group Codes"
+          subtitle="Select a group code to see its details."
+          searchValue={search}
+          onSearchChange={setSearch}
+          searchPlaceholder="Search group code..."
+          columns={[
+            { key: "groupCode", label: "Group Code" },
+            { key: "groupDescription", label: "Description" },
+            { key: "accountClass", label: "Class" },
+            {
+              key: "reportSection",
+              label: "Report Section",
+              render: (item) =>
+                item.reportSection ? sectionLabel(item.reportSection) : "Unclassified",
+            },
+            { key: "status", label: "Status" },
+          ]}
+          records={filteredRecords}
+          loading={loading}
+          emptyMessage="No group codes found."
+          selectedId={selectedId}
+          onSelect={selectRecord}
+          selectedRecord={selectedRecord}
+          detailsTitle="Selected Group Code"
+          getDetails={getGroupCodeDetails}
+        />
 
         <div className="group-card">
           {unclassifiedCount > 0 && (
