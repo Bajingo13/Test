@@ -211,11 +211,12 @@ export default function COA() {
     setShowPicker(true);
   }
 
-  // Selecting in the View dialog loads the account into the page exactly as
-  // before (so Edit / Delete / Previous / Next act on it), but keeps the
-  // dialog open so the user can keep browsing; its details show below the list.
+  // Selecting in the View dialog loads the account into the page form through
+  // the normal selection path (so Edit / Delete / Previous / Next act on it)
+  // and closes the dialog, returning the user straight to that form.
   function pickAccount(account) {
     loadAccount(account);
+    setShowPicker(false);
   }
 
   const selectedAccount = accounts.find((item) => item.id === selectedId) || null;
@@ -566,7 +567,7 @@ export default function COA() {
             open={showPicker}
             onClose={() => setShowPicker(false)}
             title="View Accounts"
-            subtitle="Select an account to see its details."
+            subtitle="Select an account to open it."
             searchValue={search}
             onSearchChange={setSearch}
             searchPlaceholder="Search code or title"

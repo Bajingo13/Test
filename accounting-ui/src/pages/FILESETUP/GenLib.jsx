@@ -392,14 +392,14 @@ export default function GenLib() {
             </div>
           </div>
 
-          {/* Selecting a record loads it into the page exactly as before (so
-              Edit / Delete / Previous / Next act on it) but keeps the dialog
-              open; the record's details show below the list. */}
+          {/* Selecting a record loads it into the page form through the normal
+              selection path (so Edit / Delete / Previous / Next act on it) and
+              closes the dialog, returning the user straight to that form. */}
           <RecordViewModal
             open={showTable}
             onClose={() => setShowTable(false)}
             title="View Records"
-            subtitle="Select a record to see its details."
+            subtitle="Select a record to open it."
             searchValue={search}
             onSearchChange={setSearch}
             searchPlaceholder="Search code, name, type..."
@@ -415,7 +415,10 @@ export default function GenLib() {
             loading={loading}
             emptyMessage="No matching records."
             selectedId={selectedId}
-            onSelect={loadRecord}
+            onSelect={(item) => {
+              loadRecord(item);
+              setShowTable(false);
+            }}
             selectedRecord={selectedRecord}
             detailsTitle="Selected Record"
             getDetails={getRecordDetails}

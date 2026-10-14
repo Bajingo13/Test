@@ -136,10 +136,14 @@ export default function ReportSections() {
     setMode("view");
   }
 
+  // Returns whether the record is now the selected one (false only when the
+  // user cancels the discard-changes prompt) so the View dialog knows
+  // whether to close.
   function selectRecord(item) {
-    if (item.id === selectedId && !isEditing) return;
-    if (!confirmDiscardIfEditing()) return;
+    if (item.id === selectedId && !isEditing) return true;
+    if (!confirmDiscardIfEditing()) return false;
     applySelection(item);
+    return true;
   }
 
   function handleAdd() {
@@ -151,8 +155,9 @@ export default function ReportSections() {
   }
 
   // Restores the selected record read-only (unchanged behavior), then opens
-  // the shared View dialog: list -> select -> details. Selecting there uses
-  // the same selectRecord() as clicking a row in the list below.
+  // the shared View dialog. Picking a record there uses the same
+  // selectRecord() as clicking a row in the list below, then closes the
+  // dialog so the record shows in the form.
   function handleView() {
     if (selectedId) {
       const original = records.find((r) => r.id === selectedId);
@@ -387,7 +392,7 @@ export default function ReportSections() {
           open={showViewModal}
           onClose={() => setShowViewModal(false)}
           title="View Report Sections"
-          subtitle="Select a report section to see its details."
+          subtitle="Select a report section to open it."
           searchValue={search}
           onSearchChange={setSearch}
           searchPlaceholder="Search report section..."
@@ -402,7 +407,9 @@ export default function ReportSections() {
           loading={loading}
           emptyMessage="No report sections found."
           selectedId={selectedId}
-          onSelect={selectRecord}
+          onSelect={(item) => {
+            if (selectRecord(item)) setShowViewModal(false);
+          }}
           selectedRecord={selectedRecord}
           detailsTitle="Selected Report Section"
           getDetails={getReportSectionDetails}

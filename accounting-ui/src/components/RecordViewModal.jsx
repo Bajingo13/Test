@@ -5,8 +5,10 @@ import "./RecordViewModal.css";
 /**
  * Shared "View" dialog for File Setup record pages:
  *   list (with the page's own search / filters)
- *     -> click a record (highlighted)
- *     -> its details appear below the list, in the same dialog.
+ *     -> click a record -> onSelect(record)
+ * The currently selected record is highlighted and its details are shown
+ * below the list. The File Setup pages load the picked record into their
+ * form and close the dialog in onSelect.
  *
  * Purely presentational - the page owns the data, the filtering and what
  * "selecting" a record means (onSelect). Reuses the rtm-* modal shell from
