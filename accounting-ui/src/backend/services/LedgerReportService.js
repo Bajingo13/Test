@@ -244,7 +244,150 @@ async function getBookRows({ sourceTypes, from, to, companyId }) {
     [...unionParams, ...sourceTypes]
   );
 
+  await attachBookPartyFields(rows, companyId);
   return rows;
+}
+
+// Books of Accounts standardized layout (Account Code | Account Title |
+// Customer/Supplier Name | TIN | Debit | Credit | General Reference |
+// Proj/Dept Code | Document No. Ref.). The party/TIN/reference fields are
+// resolved here, AFTER the canonical union query, so buildTransactionUnionSql
+// - which also feeds Income Statement / Balance Sheet / Trial Balance /
+// General Ledger - stays completely unchanged. Purely additive: every
+// existing row field (debit/credit included) is left exactly as returned.
+//
+// Per source type: the line table (gen_ref = general_libraries.code,
+// gen_name = that party's name, both entered per line in the voucher grid)
+// and the header's own party columns. Server-side constants only - never
+// derived from the request.
+const BOOK_PARTY_SOURCES = {
+  INV: { lines: "invoice_lines", fk: "invoice_id", headers: "invoice_headers", partyId: "customer_id", partyName: "customer_name", storedTin: null },
+  OR: { lines: "or_lines", fk: "or_id", headers: "or_headers", partyId: "customer_id", partyName: "customer_name", storedTin: null },
+  APV: { lines: "apv_lines", fk: "apv_id", headers: "apv_headers", partyId: "supplier_id", partyName: "supplier_name", storedTin: "payee_tin" },
+  CV: { lines: "cv_lines", fk: "cv_id", headers: "cv_headers", partyId: "payee_id", partyName: "payee_name", storedTin: "payee_tin" },
+  // Journal Vouchers have no header party - only per-line parties.
+  JV: { lines: "jv_lines", fk: "jv_id", headers: "jv_headers", partyId: null, partyName: null, storedTin: null },
+  "PETTY CASH": { lines: "petty_cash_lines", fk: "petty_cash_id", headers: "petty_cash_headers", partyId: "payee_id", partyName: "payee_name", storedTin: null },
+  "DEBIT MEMO": { lines: "memo_lines", fk: "memo_id", headers: "memo_headers", partyId: "party_id", partyName: "party_name", storedTin: null },
+  "CREDIT MEMO": { lines: "memo_lines", fk: "memo_id", headers: "memo_headers", partyId: "party_id", partyName: "party_name", storedTin: null },
+};
+
+const IN_CHUNK_SIZE = 1000;
+
+function chunk(list, size) {
+  const out = [];
+  for (let i = 0; i < list.length; i += size) out.push(list.slice(i, i + size));
+  return out;
+}
+
+const clean = (v) => (v == null ? "" : String(v).trim());
+
+// Adds party_name, party_tin, general_reference, proj_dept_code and
+// document_ref to each Book row. Rules:
+//   Name - the line's own party (gen_name, else its master name via gen_ref)
+//          when the line has one; otherwise the header party (stored name,
+//          else master name); otherwise blank. Never inferred from text.
+//   TIN  - only from an existing party master record of the SAME company
+//          (line gen_ref -> general_libraries.code, or header party id ->
+//          general_libraries.id). For APV/CV the TIN stored on the voucher
+//          (payee_tin) is used first when it belongs to that header party.
+//          No master record (none, deleted, other company) -> blank.
+//   General Reference = line gen_ref. Document No. Ref. = the row's voucher
+//   number (reference_no). Proj/Dept Code = null: transactions have no such
+//   column today, so nothing is shown rather than anything invented.
+async function attachBookPartyFields(rows, companyId) {
+  if (!rows.length) return;
+
+  // 1. Line + header party fields, grouped by physical line table.
+  const lineIdsByTable = new Map();
+  for (const row of rows) {
+    const src = BOOK_PARTY_SOURCES[row.source_type];
+    if (!src) continue;
+    if (!lineIdsByTable.has(src.lines)) lineIdsByTable.set(src.lines, { src, ids: new Set() });
+    lineIdsByTable.get(src.lines).ids.add(row.line_id);
+  }
+
+  const detailByKey = new Map();
+  for (const [table, { src, ids }] of lineIdsByTable) {
+    for (const idChunk of chunk([...ids], IN_CHUNK_SIZE)) {
+      const [details] = await pool.query(
+        `SELECT l.id AS line_id, l.gen_ref, l.gen_name,
+                ${src.partyId ? `h.${src.partyId}` : "NULL"} AS header_party_id,
+                ${src.partyName ? `h.${src.partyName}` : "NULL"} AS header_party_name,
+                ${src.storedTin ? `h.${src.storedTin}` : "NULL"} AS header_stored_tin
+           FROM ${src.lines} l
+           JOIN ${src.headers} h ON h.id = l.${src.fk}
+          WHERE h.company_id = ? AND l.id IN (?)`,
+        [companyId, idChunk]
+      );
+      for (const d of details) detailByKey.set(`${table}:${d.line_id}`, d);
+    }
+  }
+
+  // 2. Party master records referenced by those lines/headers (same company).
+  const codes = new Set();
+  const partyIds = new Set();
+  for (const d of detailByKey.values()) {
+    if (clean(d.gen_ref)) codes.add(clean(d.gen_ref));
+    if (d.header_party_id != null) partyIds.add(d.header_party_id);
+  }
+
+  const partyByCode = new Map(); // general_libraries.code is UNIQUE (case-insensitive)
+  const partyById = new Map();
+  const remember = (p) => {
+    partyById.set(p.id, p);
+    partyByCode.set(clean(p.code).toLowerCase(), p);
+  };
+  for (const codeChunk of chunk([...codes], IN_CHUNK_SIZE)) {
+    const [found] = await pool.query(
+      "SELECT id, code, name, tin FROM general_libraries WHERE company_id = ? AND code IN (?)",
+      [companyId, codeChunk]
+    );
+    found.forEach(remember);
+  }
+  for (const idChunk of chunk([...partyIds], IN_CHUNK_SIZE)) {
+    const [found] = await pool.query(
+      "SELECT id, code, name, tin FROM general_libraries WHERE company_id = ? AND id IN (?)",
+      [companyId, idChunk]
+    );
+    found.forEach(remember);
+  }
+
+  // 3. Resolve per row.
+  for (const row of rows) {
+    const src = BOOK_PARTY_SOURCES[row.source_type];
+    const d = src ? detailByKey.get(`${src.lines}:${row.line_id}`) : null;
+
+    let partyName = "";
+    let partyTin = "";
+    const genRef = clean(d && d.gen_ref);
+    const genName = clean(d && d.gen_name);
+
+    if (d) {
+      const headerMaster = d.header_party_id != null ? partyById.get(d.header_party_id) || null : null;
+      const storedTin = clean(d.header_stored_tin);
+
+      if (genRef || genName) {
+        // Line-level party (e.g. different parties on different JV lines).
+        const lineMaster = genRef ? partyByCode.get(genRef.toLowerCase()) || null : null;
+        partyName = genName || (lineMaster ? clean(lineMaster.name) : "");
+        if (lineMaster) {
+          const isHeaderParty = headerMaster && headerMaster.id === lineMaster.id;
+          partyTin = (isHeaderParty && storedTin) || clean(lineMaster.tin);
+        }
+      } else if (d.header_party_id != null || clean(d.header_party_name)) {
+        // Header party.
+        partyName = clean(d.header_party_name) || (headerMaster ? clean(headerMaster.name) : "");
+        if (headerMaster) partyTin = storedTin || clean(headerMaster.tin);
+      }
+    }
+
+    row.party_name = partyName;
+    row.party_tin = partyTin;
+    row.general_reference = genRef;
+    row.proj_dept_code = null;
+    row.document_ref = row.reference_no;
+  }
 }
 
 // Journal Book (Phase L.1) - source_type = 'JV' only. Kept as its own named

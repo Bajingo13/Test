@@ -390,7 +390,7 @@ describe("menu / route wiring", () => {
     expect(src).toMatch(/filenamePrefix="Income_Book"/);
   });
 
-  test("Income Book does not invent a customer/client column - not part of the canonical union's authoritative fields", () => {
+  test("Income Book reads no raw customer columns - the Customer/Supplier Name column shows the backend-resolved party_name only", () => {
     const src = read(FRONTEND, "IncomeBook.jsx");
     // no customer/client prop passed to BookReport, no independent join/fetch -
     // the explanatory comment mentioning "customer" is fine, code is not.
@@ -398,6 +398,10 @@ describe("menu / route wiring", () => {
     expect(src).not.toMatch(/fetch\(/);
     const bookReportSrc = read(FRONTEND, "BookReport.jsx");
     expect(bookReportSrc).not.toMatch(/customer_name|customerName/i);
+    // Standardized Books layout: party name/TIN come resolved from
+    // LedgerReportService.getBookRows (party_name / party_tin).
+    expect(bookReportSrc).toMatch(/row\.party_name/);
+    expect(bookReportSrc).toMatch(/row\.party_tin/);
   });
 });
 

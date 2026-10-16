@@ -3,6 +3,7 @@ import { authHeaders, handleAuthError } from "../../utils/authSession";
 import { downloadCsvText, typedRowsToCsv } from "./reportCsv.mjs";
 import ReportExportMenu from "./ReportExportMenu.jsx";
 import "./LedgerReport.css";
+import "./BookReport.css";
 
 // Reports Phase L.2: shared, explicit, config-driven renderer for a single
 // "Book of Accounts" report (Journal Book, Income Book, ...). Extracted from
@@ -14,6 +15,17 @@ import "./LedgerReport.css";
 // backend's canonical LedgerReportService union (source_type-filtered, via
 // getBookRows), and totals are a plain sum of the rows already on screen -
 // no financial math happens here.
+//
+// Standardized Books of Accounts layout (legacy BOOKS.XLT order, with
+// Customer/Supplier Name + TIN right after Account Title). Screen, CSV and
+// print all use this same order:
+//   Account Code | Account Title | Customer/Supplier Name | TIN | Debit |
+//   Credit | General Reference | Proj/Dept Code | Document No. Ref. |
+//   [typeColumn, e.g. Memo Type] | Date | Particulars
+// Party name / TIN / General Reference / Document No. Ref. are resolved by
+// the backend (getBookRows -> party_name, party_tin, general_reference,
+// document_ref); this component only displays them. Proj/Dept Code is blank
+// until transactions carry such a field (proj_dept_code is always null).
 
 const API_URL = import.meta.env.VITE_API_URL || "";
 
@@ -94,7 +106,15 @@ export default function BookReport({
     const q = search.trim().toLowerCase();
     if (!q) return rows;
     return rows.filter((r) => {
-      const parts = [r.reference_no, r.account_code, r.account_title, r.particulars];
+      const parts = [
+        r.reference_no,
+        r.account_code,
+        r.account_title,
+        r.particulars,
+        r.party_name,
+        r.party_tin,
+        r.general_reference,
+      ];
       if (typeColumn) parts.push(typeColumn.getValue(r));
       return parts.join(" ").toLowerCase().includes(q);
     });
@@ -120,13 +140,24 @@ export default function BookReport({
     const T = (v) => ({ t: "text", v: v == null ? "" : String(v) });
     const N = (v) => ({ t: "num", v: Number(v || 0).toFixed(2) });
 
-    const headerRow = [T("Date"), T(referenceLabel)];
+    // Same column order as the on-screen table below.
+    const headerRow = [
+      T("Account Code"),
+      T("Account Title"),
+      T("Customer/Supplier Name"),
+      T("TIN"),
+      T("Debit"),
+      T("Credit"),
+      T("General Reference"),
+      T("Proj/Dept Code"),
+      T("Document No. Ref."),
+    ];
     if (typeColumn) headerRow.push(T(typeColumn.label));
-    headerRow.push(T("Particulars"), T("Account Code"), T("Account Title"), T("Debit"), T("Credit"));
+    headerRow.push(T("Date"), T("Particulars"));
 
-    const totalRow = [T(""), T("")];
+    const totalRow = [T(""), T("TOTAL"), T(""), T(""), N(totals.debit), N(totals.credit), T(""), T(""), T("")];
     if (typeColumn) totalRow.push(T(""));
-    totalRow.push(T(""), T(""), T("TOTAL"), N(totals.debit), N(totals.credit));
+    totalRow.push(T(""), T(""));
 
     const csvRows = [
       [T(title.toUpperCase())],
@@ -134,9 +165,19 @@ export default function BookReport({
       [],
       headerRow,
       ...filteredRows.map((r) => {
-        const row = [T(r.transaction_date), T(r.reference_no)];
+        const row = [
+          T(r.account_code),
+          T(r.account_title),
+          T(r.party_name),
+          T(r.party_tin),
+          N(r.debit),
+          N(r.credit),
+          T(r.general_reference),
+          T(r.proj_dept_code),
+          T(r.document_ref),
+        ];
         if (typeColumn) row.push(T(typeColumn.getValue(r)));
-        row.push(T(r.particulars), T(r.account_code), T(r.account_title), N(r.debit), N(r.credit));
+        row.push(T(r.transaction_date), T(r.particulars));
         return row;
       }),
       [],
@@ -218,45 +259,56 @@ export default function BookReport({
                 : "No rows match your search."}
             </div>
           ) : (
-            <table className="lgr-table">
-              <thead>
-                <tr>
-                  <th>Date</th>
-                  <th>{referenceLabel}</th>
-                  {typeColumn ? <th>{typeColumn.label}</th> : null}
-                  <th>Particulars</th>
-                  <th>Account Code</th>
-                  <th>Account Title</th>
-                  <th>Debit</th>
-                  <th>Credit</th>
-                </tr>
-              </thead>
-
-              <tbody>
-                {filteredRows.map((row) => (
-                  <tr key={row.line_id}>
-                    <td>{row.transaction_date}</td>
-                    <td>{row.reference_no}</td>
-                    {typeColumn ? <td>{typeColumn.getValue(row)}</td> : null}
-                    <td>{row.particulars}</td>
-                    <td>{row.account_code}</td>
-                    <td>{row.account_title}</td>
-                    <td className="amount">{Number(row.debit) > 0 ? formatMoney(row.debit) : ""}</td>
-                    <td className="amount">{Number(row.credit) > 0 ? formatMoney(row.credit) : ""}</td>
+            <div className="bkr-table-wrap">
+              <table className="lgr-table bkr-table">
+                <thead>
+                  <tr>
+                    <th>Account Code</th>
+                    <th>Account Title</th>
+                    <th>Customer/Supplier Name</th>
+                    <th>TIN</th>
+                    <th className="amount">Debit</th>
+                    <th className="amount">Credit</th>
+                    <th>General Reference</th>
+                    <th>Proj/Dept Code</th>
+                    <th title={referenceLabel}>Document No. Ref.</th>
+                    {typeColumn ? <th>{typeColumn.label}</th> : null}
+                    <th>Date</th>
+                    <th>Particulars</th>
                   </tr>
-                ))}
-              </tbody>
+                </thead>
 
-              <tfoot>
-                <tr>
-                  <td colSpan={typeColumn ? 6 : 5} style={{ textAlign: "right" }}>
-                    TOTAL
-                  </td>
-                  <td className="amount">{formatMoney(totals.debit)}</td>
-                  <td className="amount">{formatMoney(totals.credit)}</td>
-                </tr>
-              </tfoot>
-            </table>
+                <tbody>
+                  {filteredRows.map((row) => (
+                    <tr key={row.line_id}>
+                      <td>{row.account_code}</td>
+                      <td>{row.account_title}</td>
+                      <td>{row.party_name}</td>
+                      <td className="bkr-nowrap">{row.party_tin}</td>
+                      <td className="amount">{Number(row.debit) > 0 ? formatMoney(row.debit) : ""}</td>
+                      <td className="amount">{Number(row.credit) > 0 ? formatMoney(row.credit) : ""}</td>
+                      <td>{row.general_reference}</td>
+                      <td>{row.proj_dept_code}</td>
+                      <td className="bkr-nowrap">{row.document_ref}</td>
+                      {typeColumn ? <td>{typeColumn.getValue(row)}</td> : null}
+                      <td className="bkr-nowrap">{row.transaction_date}</td>
+                      <td>{row.particulars}</td>
+                    </tr>
+                  ))}
+                </tbody>
+
+                <tfoot>
+                  <tr>
+                    <td colSpan={4} style={{ textAlign: "right" }}>
+                      TOTAL
+                    </td>
+                    <td className="amount">{formatMoney(totals.debit)}</td>
+                    <td className="amount">{formatMoney(totals.credit)}</td>
+                    <td colSpan={typeColumn ? 6 : 5} />
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
           )}
         </div>
       )}

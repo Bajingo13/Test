@@ -1,0 +1,65 @@
+/* Books of Accounts table (BookReport.jsx only). LedgerReport.css stays the
+   shared base for every ledger-style report; these rules are scoped to
+   .bkr-* so no other report changes. The standardized Books layout has up
+   to 12 columns, so the table scrolls horizontally on narrow screens and
+   uses a smaller font when printed. Colors come from theme.css tokens. */
+
+.bkr-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.lgr-table.bkr-table {
+  min-width: 1100px;
+}
+
+.lgr-table.bkr-table th {
+  white-space: nowrap;
+}
+
+.lgr-table.bkr-table th.amount {
+  text-align: right;
+}
+
+.lgr-table.bkr-table .bkr-nowrap {
+  white-space: nowrap;
+}
+
+@media print {
+  .bkr-table-wrap {
+    overflow: visible;
+  }
+
+  .lgr-table.bkr-table {
+    min-width: 0;
+    width: 100%;
+    font-size: 9px;
+  }
+
+  /* LedgerReport.css sets font-size on th/td directly, so the print size
+     has to be set on the cells too. All cells may wrap in print so the 12
+     columns fit a portrait page (no @page orientation change here - this
+     stylesheet is loaded app-wide, so it must not affect other reports). */
+  .lgr-table.bkr-table th,
+  .lgr-table.bkr-table td {
+    padding: 3px 4px;
+    font-size: 8px;
+    white-space: normal;
+  }
+
+  /* Long values (names, TINs, references) may break anywhere so all 12
+     columns fit a portrait page; headers use a slightly smaller size so
+     their labels rarely need to break. */
+  .lgr-table.bkr-table td,
+  .lgr-table.bkr-table th {
+    overflow-wrap: anywhere;
+  }
+
+  .lgr-table.bkr-table th {
+    font-size: 7px;
+  }
+
+  .lgr-table.bkr-table .amount {
+    white-space: nowrap;
+  }
+}

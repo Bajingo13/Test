@@ -506,7 +506,7 @@ describe("menu / route wiring", () => {
     expect(src).toMatch(/No Posted Check Vouchers found for the selected dates\./);
   });
 
-  test("Cash Disbursement Book does not invent supplier/APV-application/check-number/bank/EWT/VAT/payment-method fields not authoritative on the canonical union", () => {
+  test("Cash Disbursement Book reads no raw payee/APV-application/check-number/bank/EWT/VAT/payment-method fields - payee shows only as the backend-resolved party_name", () => {
     const src = read(FRONTEND, "CashDisbursementBook.jsx");
     // no such prop/column/field in actual code - the explanatory comment
     // mentioning these terms in prose is fine, code is not.
@@ -514,6 +514,7 @@ describe("menu / route wiring", () => {
     expect(src).not.toMatch(/fetch\(/);
     const bookReportSrc = read(FRONTEND, "BookReport.jsx");
     expect(bookReportSrc).not.toMatch(/payee_name|payeeName|checkNo|bankCode/);
+    expect(bookReportSrc).toMatch(/row\.party_name/);
   });
 });
 
