@@ -127,6 +127,13 @@ function accountCodeFilterSql(accountCodes) {
 }
 
 // Detail rows for a period, one running balance per account_code.
+//
+// line_id (the source line's own id) is additive, and so are the party/
+// reference fields attachBookPartyFields adds below (party_name, party_tin,
+// general_reference, proj_dept_code, document_ref) - the General Ledger's
+// standardized columns. Account codes, amounts, ordering and the
+// running_balance window are unchanged; Bank & Cash Movement and Daily Cash
+// Position (the other callers) simply ignore the extra fields.
 async function getLedgerRows({ from, to, accountCodes, companyId }) {
   const unionSql = buildTransactionUnionSql("BETWEEN ? AND ?");
   const unionParams = Array(9).fill([from, to, companyId]).flat();
@@ -135,6 +142,7 @@ async function getLedgerRows({ from, to, accountCodes, companyId }) {
   const [rows] = await pool.execute(
     `
     SELECT
+      tx.id AS line_id,
       tx.account_code,
       COALESCE(ca.title, tx.account_title) AS account_title,
       ca.account_class,
@@ -158,6 +166,7 @@ async function getLedgerRows({ from, to, accountCodes, companyId }) {
     [...unionParams, ...(accountCodes || [])]
   );
 
+  await attachBookPartyFields(rows, companyId);
   return rows;
 }
 
@@ -259,7 +268,11 @@ async function getBookRows({ sourceTypes, from, to, companyId }) {
 // Per source type: the line table (gen_ref = general_libraries.code,
 // gen_name = that party's name, both entered per line in the voucher grid)
 // and the header's own party columns. Server-side constants only - never
-// derived from the request.
+// derived from the request. Optional per-source overrides for sources whose
+// party lives on the line under other column names: lineRef / lineName
+// (default gen_ref / gen_name) and linePartyId (the line's own
+// general_libraries.id). Sources not listed here ('GL BEGINNING') have no
+// party, so their fields stay blank.
 const BOOK_PARTY_SOURCES = {
   INV: { lines: "invoice_lines", fk: "invoice_id", headers: "invoice_headers", partyId: "customer_id", partyName: "customer_name", storedTin: null },
   OR: { lines: "or_lines", fk: "or_id", headers: "or_headers", partyId: "customer_id", partyName: "customer_name", storedTin: null },
@@ -270,6 +283,10 @@ const BOOK_PARTY_SOURCES = {
   "PETTY CASH": { lines: "petty_cash_lines", fk: "petty_cash_id", headers: "petty_cash_headers", partyId: "payee_id", partyName: "payee_name", storedTin: null },
   "DEBIT MEMO": { lines: "memo_lines", fk: "memo_id", headers: "memo_headers", partyId: "party_id", partyName: "party_name", storedTin: null },
   "CREDIT MEMO": { lines: "memo_lines", fk: "memo_id", headers: "memo_headers", partyId: "party_id", partyName: "party_name", storedTin: null },
+  // AR / AP beginning balances (General Ledger only - not one of the seven
+  // Books): the customer/supplier is stored on each line.
+  AR: { lines: "arap_beginning_balance_lines", fk: "header_id", headers: "arap_beginning_balance_headers", partyId: null, partyName: null, storedTin: null, lineRef: "party_code", lineName: "party_name", linePartyId: "party_id" },
+  AP: { lines: "arap_beginning_balance_lines", fk: "header_id", headers: "arap_beginning_balance_headers", partyId: null, partyName: null, storedTin: null, lineRef: "party_code", lineName: "party_name", linePartyId: "party_id" },
 };
 
 const IN_CHUNK_SIZE = 1000;
@@ -311,7 +328,10 @@ async function attachBookPartyFields(rows, companyId) {
   for (const [table, { src, ids }] of lineIdsByTable) {
     for (const idChunk of chunk([...ids], IN_CHUNK_SIZE)) {
       const [details] = await pool.query(
-        `SELECT l.id AS line_id, l.gen_ref, l.gen_name,
+        `SELECT l.id AS line_id,
+                l.${src.lineRef || "gen_ref"} AS gen_ref,
+                l.${src.lineName || "gen_name"} AS gen_name,
+                ${src.linePartyId ? `l.${src.linePartyId}` : "NULL"} AS line_party_id,
                 ${src.partyId ? `h.${src.partyId}` : "NULL"} AS header_party_id,
                 ${src.partyName ? `h.${src.partyName}` : "NULL"} AS header_party_name,
                 ${src.storedTin ? `h.${src.storedTin}` : "NULL"} AS header_stored_tin
@@ -329,6 +349,7 @@ async function attachBookPartyFields(rows, companyId) {
   const partyIds = new Set();
   for (const d of detailByKey.values()) {
     if (clean(d.gen_ref)) codes.add(clean(d.gen_ref));
+    if (d.line_party_id != null) partyIds.add(d.line_party_id);
     if (d.header_party_id != null) partyIds.add(d.header_party_id);
   }
 
@@ -367,9 +388,13 @@ async function attachBookPartyFields(rows, companyId) {
       const headerMaster = d.header_party_id != null ? partyById.get(d.header_party_id) || null : null;
       const storedTin = clean(d.header_stored_tin);
 
-      if (genRef || genName) {
-        // Line-level party (e.g. different parties on different JV lines).
-        const lineMaster = genRef ? partyByCode.get(genRef.toLowerCase()) || null : null;
+      if (genRef || genName || d.line_party_id != null) {
+        // Line-level party (e.g. different parties on different JV lines, or
+        // the party stored on an AR/AP beginning-balance line).
+        const lineMaster =
+          (genRef ? partyByCode.get(genRef.toLowerCase()) : null) ||
+          (d.line_party_id != null ? partyById.get(d.line_party_id) : null) ||
+          null;
         partyName = genName || (lineMaster ? clean(lineMaster.name) : "");
         if (lineMaster) {
           const isHeaderParty = headerMaster && headerMaster.id === lineMaster.id;

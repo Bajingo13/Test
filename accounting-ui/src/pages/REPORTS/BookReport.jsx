@@ -260,7 +260,21 @@ export default function BookReport({
             </div>
           ) : (
             <div className="bkr-table-wrap">
-              <table className="lgr-table bkr-table">
+              <table className="lgr-table bkr-table bkr-table--books">
+                <colgroup>
+                  <col className="bkr-col-code" />
+                  <col className="bkr-col-title" />
+                  <col className="bkr-col-party" />
+                  <col className="bkr-col-tin" />
+                  <col className="bkr-col-amount" />
+                  <col className="bkr-col-amount" />
+                  <col className="bkr-col-ref" />
+                  <col className="bkr-col-proj" />
+                  <col className="bkr-col-doc" />
+                  {typeColumn ? <col className="bkr-col-type" /> : null}
+                  <col className="bkr-col-date" />
+                  <col className="bkr-col-particulars" />
+                </colgroup>
                 <thead>
                   <tr>
                     <th>Account Code</th>

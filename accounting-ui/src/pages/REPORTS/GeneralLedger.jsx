@@ -1,7 +1,76 @@
 import { useEffect, useMemo, useState } from "react";
 import "./LedgerReport.css";
+import "./BookReport.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
+
+// Standardized Books of Accounts columns for the General Ledger, used by the
+// screen table, CSV and Excel export alike. Account grouping, the running
+// balance and section totals are unchanged; Account Code/Title repeat on
+// every row so exported rows are self-contained. Party name / TIN / General
+// Reference / Document No. Ref. come resolved from the backend
+// (LedgerReportService.getLedgerRows -> party_name, party_tin,
+// general_reference, document_ref); Proj/Dept Code is blank until
+// transactions carry such a field.
+const GL_COLUMNS = [
+  "Account Code",
+  "Account Title",
+  "Customer/Supplier Name",
+  "TIN",
+  "Debit",
+  "Credit",
+  "Balance",
+  "General Reference",
+  "Proj/Dept Code",
+  "Document No. Ref.",
+  "Source",
+  "Date",
+  "Particulars",
+];
+
+function amountOrBlank(value) {
+  return Number(value || 0) > 0 ? Number(value).toFixed(2) : "";
+}
+
+// One exported row, in GL_COLUMNS order.
+function exportRow(row, balance) {
+  return [
+    row.account_code,
+    row.account_title,
+    row.party_name || "",
+    row.party_tin || "",
+    amountOrBlank(row.debit),
+    amountOrBlank(row.credit),
+    balance.toFixed(2),
+    row.general_reference || "",
+    row.proj_dept_code || "",
+    row.document_ref || row.reference_no || "",
+    row.source_type,
+    row.transaction_date,
+    row.particulars || "",
+  ];
+}
+
+// A section's opening-balance row, in GL_COLUMNS order: the amount under
+// Balance and the label under Particulars (as before).
+function beginningRow(section) {
+  return [
+    section.accountCode,
+    section.accountTitle,
+    "", "", "", "",
+    section.beginningBalance.toFixed(2),
+    "", "", "", "", "",
+    "BEGINNING BALANCE",
+  ];
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
 
 function authHeaders() {
   const token = localStorage.getItem("token");
@@ -113,18 +182,10 @@ export default function GeneralLedger() {
 
     for (const section of sections) {
       csvRows.push([`${section.accountCode} - ${section.accountTitle}`]);
-      csvRows.push(["DATE", "SOURCE", "REFERENCE", "PARTICULARS", "DEBIT", "CREDIT", "BALANCE"]);
-      csvRows.push(["", "", "", "BEGINNING BALANCE", "", "", section.beginningBalance.toFixed(2)]);
+      csvRows.push(GL_COLUMNS);
+      csvRows.push(beginningRow(section));
       for (const row of section.rows) {
-        csvRows.push([
-          row.transaction_date,
-          row.source_type,
-          row.reference_no || "",
-          row.particulars || "",
-          Number(row.debit || 0) > 0 ? Number(row.debit).toFixed(2) : "",
-          Number(row.credit || 0) > 0 ? Number(row.credit).toFixed(2) : "",
-          (section.beginningBalance + Number(row.running_balance || 0)).toFixed(2),
-        ]);
+        csvRows.push(exportRow(row, section.beginningBalance + Number(row.running_balance || 0)));
       }
       csvRows.push([]);
     }
@@ -145,42 +206,30 @@ export default function GeneralLedger() {
   function downloadExcel() {
     if (!sections.length) return alert("Please generate the General Ledger first.");
 
+    const span = GL_COLUMNS.length;
+    const cells = (values, tag = "td") => values.map((v) => `<${tag}>${escapeHtml(v)}</${tag}>`).join("");
+
     const htmlSections = sections
       .map(
         (section) => `
-          <tr><td colspan="7"><b>${section.accountCode} - ${section.accountTitle}</b></td></tr>
-          <tr>
-            <th>DATE</th><th>SOURCE</th><th>REFERENCE</th><th>PARTICULARS</th>
-            <th>DEBIT</th><th>CREDIT</th><th>BALANCE</th>
-          </tr>
-          <tr>
-            <td></td><td></td><td></td><td>BEGINNING BALANCE</td><td></td><td></td>
-            <td>${section.beginningBalance.toFixed(2)}</td>
-          </tr>
+          <tr><td colspan="${span}"><b>${escapeHtml(`${section.accountCode} - ${section.accountTitle}`)}</b></td></tr>
+          <tr>${cells(GL_COLUMNS, "th")}</tr>
+          <tr>${cells(beginningRow(section))}</tr>
           ${section.rows
             .map(
-              (row) => `
-                <tr>
-                  <td>${row.transaction_date}</td>
-                  <td>${row.source_type}</td>
-                  <td>${row.reference_no || ""}</td>
-                  <td>${row.particulars || ""}</td>
-                  <td>${Number(row.debit || 0) > 0 ? Number(row.debit).toFixed(2) : ""}</td>
-                  <td>${Number(row.credit || 0) > 0 ? Number(row.credit).toFixed(2) : ""}</td>
-                  <td>${(section.beginningBalance + Number(row.running_balance || 0)).toFixed(2)}</td>
-                </tr>
-              `
+              (row) =>
+                `<tr>${cells(exportRow(row, section.beginningBalance + Number(row.running_balance || 0)))}</tr>`
             )
             .join("")}
-          <tr><td colspan="7"></td></tr>
+          <tr><td colspan="${span}"></td></tr>
         `
       )
       .join("");
 
     const htmlTable = `
       <table border="1">
-        <tr><th colspan="7">GENERAL LEDGER</th></tr>
-        <tr><th colspan="7">FOR THE PERIOD ${formatAsOfDate(fromDate)} TO ${formatAsOfDate(toDate)}</th></tr>
+        <tr><th colspan="${span}">GENERAL LEDGER</th></tr>
+        <tr><th colspan="${span}">FOR THE PERIOD ${formatAsOfDate(fromDate)} TO ${formatAsOfDate(toDate)}</th></tr>
         <tr></tr>
         ${htmlSections}
       </table>
@@ -281,53 +330,83 @@ export default function GeneralLedger() {
                     </span>
                   </div>
 
-                  <table className="lgr-table">
-                    <thead>
-                      <tr>
-                        <th>Date</th>
-                        <th>Source</th>
-                        <th>Reference</th>
-                        <th>Particulars</th>
-                        <th>Debit</th>
-                        <th>Credit</th>
-                        <th>Balance</th>
-                      </tr>
-                    </thead>
-
-                    <tbody>
-                      {section.rows.map((row, idx) => (
-                        <tr key={idx}>
-                          <td>{row.transaction_date}</td>
-                          <td>{row.source_type}</td>
-                          <td>{row.reference_no}</td>
-                          <td>{row.particulars}</td>
-                          <td className="amount">
-                            {Number(row.debit) > 0 ? formatMoney(row.debit) : ""}
-                          </td>
-                          <td className="amount">
-                            {Number(row.credit) > 0 ? formatMoney(row.credit) : ""}
-                          </td>
-                          <td className="amount">
-                            {formatMoney(section.beginningBalance + Number(row.running_balance || 0))}
-                          </td>
+                  <div className="bkr-table-wrap">
+                    <table className="lgr-table bkr-table bkr-table--gl">
+                      <colgroup>
+                        <col className="bkr-col-code" />
+                        <col className="bkr-col-title" />
+                        <col className="bkr-col-party" />
+                        <col className="bkr-col-tin" />
+                        <col className="bkr-col-amount" />
+                        <col className="bkr-col-amount" />
+                        <col className="bkr-col-amount" />
+                        <col className="bkr-col-ref" />
+                        <col className="bkr-col-proj" />
+                        <col className="bkr-col-doc" />
+                        <col className="bkr-col-source" />
+                        <col className="bkr-col-date" />
+                        <col className="bkr-col-particulars" />
+                      </colgroup>
+                      <thead>
+                        <tr>
+                          <th>Account Code</th>
+                          <th>Account Title</th>
+                          <th>Customer/Supplier Name</th>
+                          <th>TIN</th>
+                          <th className="amount">Debit</th>
+                          <th className="amount">Credit</th>
+                          <th className="amount">Balance</th>
+                          <th>General Reference</th>
+                          <th>Proj/Dept Code</th>
+                          <th>Document No. Ref.</th>
+                          <th>Source</th>
+                          <th>Date</th>
+                          <th>Particulars</th>
                         </tr>
-                      ))}
-                    </tbody>
+                      </thead>
 
-                    <tfoot>
-                      <tr>
-                        <td colSpan={6} style={{ textAlign: "right" }}>
-                          Ending Balance
-                        </td>
-                        <td className="amount">
-                          {formatMoney(
-                            section.beginningBalance +
-                              Number(section.rows[section.rows.length - 1]?.running_balance || 0)
-                          )}
-                        </td>
-                      </tr>
-                    </tfoot>
-                  </table>
+                      <tbody>
+                        {section.rows.map((row, idx) => (
+                          <tr key={idx}>
+                            <td>{row.account_code}</td>
+                            <td>{row.account_title}</td>
+                            <td>{row.party_name}</td>
+                            <td className="bkr-nowrap">{row.party_tin}</td>
+                            <td className="amount">
+                              {Number(row.debit) > 0 ? formatMoney(row.debit) : ""}
+                            </td>
+                            <td className="amount">
+                              {Number(row.credit) > 0 ? formatMoney(row.credit) : ""}
+                            </td>
+                            <td className="amount">
+                              {formatMoney(section.beginningBalance + Number(row.running_balance || 0))}
+                            </td>
+                            <td>{row.general_reference}</td>
+                            <td>{row.proj_dept_code}</td>
+                            <td>{row.document_ref || row.reference_no}</td>
+                            <td>{row.source_type}</td>
+                            <td className="bkr-nowrap">{row.transaction_date}</td>
+                            <td>{row.particulars}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+
+                      <tfoot>
+                        <tr>
+                          <td colSpan={6} style={{ textAlign: "right" }}>
+                            Ending Balance
+                          </td>
+                          <td className="amount">
+                            {formatMoney(
+                              section.beginningBalance +
+                                Number(section.rows[section.rows.length - 1]?.running_balance || 0)
+                            )}
+                          </td>
+                          <td colSpan={6} />
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
                 </div>
               ))}
 
