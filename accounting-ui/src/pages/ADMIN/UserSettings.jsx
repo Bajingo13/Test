@@ -19,6 +19,7 @@ export default function UserSettings() {
   const [activeTab, setActiveTab] = useState("users");
   const [canView, setCanView] = useState(null);
   const [canEdit, setCanEdit] = useState(false);
+  const [currentUser, setCurrentUser] = useState(null);
 
   useEffect(() => {
     (async () => {
@@ -33,6 +34,7 @@ export default function UserSettings() {
         const edit = data.permissions.some((p) => p.moduleKey === "ADMIN.USER_SETTINGS" && p.action === "EDIT" && p.granted);
         setCanView(view);
         setCanEdit(edit);
+        setCurrentUser(data.user ? { id: data.user.id, roleCode: data.user.roleCode } : null);
       } catch (err) {
         console.error("CHECK USER SETTINGS ACCESS ERROR:", err);
         setCanView(false);
@@ -73,7 +75,7 @@ export default function UserSettings() {
       </div>
 
       <div className="us-card">
-        {activeTab === "users" && <UserList canEdit={canEdit} />}
+        {activeTab === "users" && <UserList canEdit={canEdit} currentUser={currentUser} />}
         {activeTab === "invitations" && <PendingInvitations embedded />}
       </div>
     </div>

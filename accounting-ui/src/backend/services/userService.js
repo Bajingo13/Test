@@ -4,16 +4,13 @@ const UserAccessService = require("./userAccessService");
 
 const VALID_STATUSES = ["ACTIVE", "INACTIVE", "SUSPENDED"];
 
-async function isSuperAdmin(roleCode) {
-  return roleCode === "SUPER_ADMIN";
-}
-
 // Non-Super-Admin actors only see users who share at least one company
 // with them - Admin's "manage users within assigned scope."
 async function listUsers(actingUser) {
   if (actingUser.roleCode === "SUPER_ADMIN") {
     const [rows] = await pool.execute(
       `SELECT u.id, u.username, u.email, u.full_name, u.status, u.last_login_at, u.locked_until, u.created_at, u.created_by,
+       (u.locked_until IS NOT NULL AND u.locked_until > NOW()) AS is_locked,
          r.id AS role_id, r.code AS role_code, r.name AS role_name,
          creator.username AS created_by_username
        FROM users u
@@ -26,6 +23,7 @@ async function listUsers(actingUser) {
 
   const [rows] = await pool.execute(
     `SELECT DISTINCT u.id, u.username, u.email, u.full_name, u.status, u.last_login_at, u.locked_until, u.created_at, u.created_by,
+       (u.locked_until IS NOT NULL AND u.locked_until > NOW()) AS is_locked,
        r.id AS role_id, r.code AS role_code, r.name AS role_name,
        creator.username AS created_by_username
      FROM users u
@@ -52,6 +50,7 @@ async function attachAccessSummaries(rows) {
 async function getUserOr404(id) {
   const [rows] = await pool.execute(
     `SELECT u.id, u.username, u.email, u.full_name, u.status, u.last_login_at, u.locked_until, u.created_at, u.created_by,
+       (u.locked_until IS NOT NULL AND u.locked_until > NOW()) AS is_locked,
        r.id AS role_id, r.code AS role_code, r.name AS role_name
      FROM users u LEFT JOIN roles r ON r.id = u.role_id
      WHERE u.id = ?`,
@@ -67,24 +66,74 @@ async function getUserOr404(id) {
 async function getUser(id, actingUser) {
   const user = await getUserOr404(id);
   await assertInScope(user, actingUser);
-  const { companies, branches } = await UserAccessService.getUserAccessSummary(id);
+  return withAccessSummary(user);
+}
+
+async function withAccessSummary(user) {
+  const { companies, branches } = await UserAccessService.getUserAccessSummary(user.id);
   return { ...user, companies, branches };
 }
 
-// Shared scope guard: non-Super-Admins can only touch users who share at
-// least one company with them, and can never touch a Super Admin.
+// Who may manage whom. Super Admin manages everyone (but never another
+// Super Admin's role - see updateUserAccess); Admin manages Accountants
+// only. Anyone not listed (Accountant) manages no one.
+const MANAGEABLE_ROLES_BY_ACTOR = {
+  SUPER_ADMIN: ["SUPER_ADMIN", "ADMIN", "ACCOUNTANT"],
+  ADMIN: ["ACCOUNTANT"],
+};
+
+// Roles an actor may assign through Edit Access. Super Admin is never
+// assignable here (mirrors invitationService's INVITABLE_ROLES_BY_INVITER).
+const ASSIGNABLE_ROLES_BY_ACTOR = {
+  SUPER_ADMIN: ["ADMIN", "ACCOUNTANT"],
+  ADMIN: ["ACCOUNTANT"],
+};
+
+function notFound() {
+  return Object.assign(new Error("User not found"), { statusCode: 404 });
+}
+
+function forbidden(message) {
+  return Object.assign(new Error(message), { statusCode: 403 });
+}
+
+function badRequest(message) {
+  return Object.assign(new Error(message), { statusCode: 400 });
+}
+
+function isSelf(target, actingUser) {
+  return Number(target.id) === Number(actingUser.id);
+}
+
+// Shared scope guard: non-Super-Admins can only see users who share at
+// least one company with them, and never a Super Admin. Anything outside
+// that scope gets exactly the same 404 as a user id that doesn't exist, so
+// the response reveals nothing about who exists elsewhere.
 async function assertInScope(targetUser, actingUser) {
   if (actingUser.roleCode === "SUPER_ADMIN") return;
+  if (isSelf(targetUser, actingUser)) return;
 
-  if (targetUser.role_code === "SUPER_ADMIN") {
-    throw Object.assign(new Error("You cannot view or manage Super Admin users."), { statusCode: 403 });
-  }
+  if (targetUser.role_code === "SUPER_ADMIN") throw notFound();
 
   const actingCompanyIds = new Set(await UserAccessService.getAccessibleCompanyIds(actingUser.id));
   const targetCompanyIds = await UserAccessService.getAccessibleCompanyIds(targetUser.id);
   const sharesCompany = targetCompanyIds.some((id) => actingCompanyIds.has(id));
-  if (!sharesCompany) {
-    throw Object.assign(new Error("You do not have access to this user."), { statusCode: 403 });
+  if (!sharesCompany) throw notFound();
+}
+
+// Visible is not the same as manageable: an Admin can see a fellow Admin
+// in a shared company but may not change them. Acting on your own account
+// is decided by each operation (own role/status changes are refused there).
+async function assertCanManage(targetUser, actingUser) {
+  await assertInScope(targetUser, actingUser);
+  if (isSelf(targetUser, actingUser)) return;
+  const manageable = MANAGEABLE_ROLES_BY_ACTOR[actingUser.roleCode] || [];
+  if (!manageable.includes(targetUser.role_code)) {
+    throw forbidden(
+      actingUser.roleCode === "ADMIN"
+        ? "Admins can only manage Accountant users."
+        : "You do not have permission to manage this user."
+    );
   }
 }
 
@@ -97,42 +146,105 @@ async function countActiveSuperAdmins(excludeUserId = null) {
   return rows[0].c;
 }
 
+function parseIdList(value, label) {
+  if (value === undefined || value === null) return null;
+  if (!Array.isArray(value)) throw badRequest(`${label} must be a list.`);
+  const ids = value.map(Number);
+  if (ids.some((n) => !Number.isInteger(n) || n <= 0)) {
+    throw badRequest(`Selected ${label.toLowerCase()} are not valid.`);
+  }
+  return [...new Set(ids)];
+}
+
+async function assertAllExist(table, ids, message) {
+  if (!ids.length) return;
+  const [rows] = await pool.query(`SELECT id FROM ${table} WHERE id IN (?)`, [ids]);
+  if (rows.length !== ids.length) throw badRequest(message);
+}
+
+// The actor edits only the memberships inside their own scope; anything
+// outside it is carried over untouched. Super Admin's scope is everything,
+// so their submission is the full list.
+function mergeMemberships(existingIds, submittedIds, actorScope) {
+  if (actorScope === null) return submittedIds;
+  const preserved = existingIds.filter((id) => !actorScope.has(id));
+  return [...new Set([...preserved, ...submittedIds])];
+}
+
+const sortIds = (ids) => [...ids].sort((a, b) => a - b);
+
 async function updateUserAccess(id, { fullName, roleId, companyIds, branchIds }, actingUser) {
   const target = await getUserOr404(id);
-  await assertInScope(target, actingUser);
+  await assertCanManage(target, actingUser);
 
+  // Validate everything before writing anything, so a rejected request
+  // leaves the user exactly as it was.
   let newRole = null;
   if (roleId && Number(roleId) !== target.role_id) {
+    if (isSelf(target, actingUser)) {
+      throw forbidden("You cannot change your own role.");
+    }
+    if (target.role_code === "SUPER_ADMIN") {
+      throw forbidden("A Super Admin's role cannot be changed.");
+    }
     const [roleRows] = await pool.execute("SELECT id, code, name FROM roles WHERE id = ?", [roleId]);
     newRole = roleRows[0];
     if (!newRole) {
-      throw Object.assign(new Error("Selected role does not exist."), { statusCode: 400 });
+      throw badRequest("Selected role does not exist.");
     }
-    if (newRole.code === "SUPER_ADMIN" && actingUser.roleCode !== "SUPER_ADMIN") {
-      throw Object.assign(new Error("Only a Super Admin can grant Super Admin access."), { statusCode: 403 });
-    }
-    if (target.role_code === "SUPER_ADMIN" && newRole.code !== "SUPER_ADMIN") {
-      const activeCount = await countActiveSuperAdmins(target.id);
-      if (activeCount === 0) {
-        throw Object.assign(new Error("Cannot change this user's role - they are the last active Super Admin."), { statusCode: 409 });
-      }
+    const assignable = ASSIGNABLE_ROLES_BY_ACTOR[actingUser.roleCode] || [];
+    if (!assignable.includes(newRole.code)) {
+      throw forbidden(`You cannot assign the ${newRole.name} role.`);
     }
   }
 
-  const companyIdList = Array.isArray(companyIds) ? companyIds.map(Number).filter(Boolean) : null;
-  const branchIdList = Array.isArray(branchIds) ? branchIds.map(Number).filter(Boolean) : null;
+  const submittedCompanyIds = parseIdList(companyIds, "Companies");
+  const submittedBranchIds = parseIdList(branchIds, "Branches");
 
-  if (actingUser.roleCode !== "SUPER_ADMIN" && (companyIdList || branchIdList)) {
-    const accessibleCompanyIds = new Set(await UserAccessService.getAccessibleCompanyIds(actingUser.id));
-    const accessibleBranchIds = new Set(await UserAccessService.getAccessibleBranchIds(actingUser.id));
-    const outOfScopeCompany = (companyIdList || []).find((cid) => !accessibleCompanyIds.has(cid));
-    const outOfScopeBranch = (branchIdList || []).find((bid) => !accessibleBranchIds.has(bid));
-    if (outOfScopeCompany || outOfScopeBranch) {
-      throw Object.assign(new Error("You can only assign companies/branches you yourself have access to."), { statusCode: 403 });
+  const isSuper = actingUser.roleCode === "SUPER_ADMIN";
+  const actorCompanyScope = isSuper ? null : new Set(await UserAccessService.getAccessibleCompanyIds(actingUser.id));
+  const actorBranchScope = isSuper ? null : new Set(await UserAccessService.getAccessibleBranchIds(actingUser.id));
+
+  if (submittedCompanyIds) {
+    await assertAllExist("companies", submittedCompanyIds, "Selected company does not exist.");
+    if (actorCompanyScope && submittedCompanyIds.some((cid) => !actorCompanyScope.has(cid))) {
+      throw forbidden("You can only assign companies/branches you yourself have access to.");
+    }
+  }
+  if (submittedBranchIds) {
+    await assertAllExist("branches", submittedBranchIds, "Selected branch does not exist.");
+    if (actorBranchScope && submittedBranchIds.some((bid) => !actorBranchScope.has(bid))) {
+      throw forbidden("You can only assign companies/branches you yourself have access to.");
     }
   }
 
-  const before = { fullName: target.full_name, roleCode: target.role_code };
+  const existingCompanyIds = await UserAccessService.getAccessibleCompanyIds(target.id);
+  const existingBranchIds = await UserAccessService.getAccessibleBranchIds(target.id);
+  const finalCompanyIds = submittedCompanyIds
+    ? mergeMemberships(existingCompanyIds, submittedCompanyIds, actorCompanyScope)
+    : existingCompanyIds;
+  const finalBranchIds = submittedBranchIds
+    ? mergeMemberships(existingBranchIds, submittedBranchIds, actorBranchScope)
+    : existingBranchIds;
+
+  // Super Admins bypass company scoping, so only other roles need a company.
+  const finalRoleCode = newRole ? newRole.code : target.role_code;
+  if (submittedCompanyIds && finalRoleCode !== "SUPER_ADMIN" && finalCompanyIds.length === 0) {
+    throw badRequest("Select at least one company for this user.");
+  }
+
+  const before = {
+    fullName: target.full_name,
+    roleCode: target.role_code,
+    companyIds: sortIds(existingCompanyIds),
+    branchIds: sortIds(existingBranchIds),
+  };
+  const after = {
+    fullName: fullName || target.full_name,
+    roleCode: finalRoleCode,
+    companyIds: sortIds(finalCompanyIds),
+    branchIds: sortIds(finalBranchIds),
+  };
 
   const conn = await pool.getConnection();
   try {
@@ -144,15 +256,15 @@ async function updateUserAccess(id, { fullName, roleId, companyIds, branchIds },
     if (newRole) {
       await conn.execute("UPDATE users SET role_id = ? WHERE id = ?", [newRole.id, id]);
     }
-    if (companyIdList) {
+    if (submittedCompanyIds) {
       await conn.execute("DELETE FROM user_companies WHERE user_id = ?", [id]);
-      for (const cid of companyIdList) {
+      for (const cid of finalCompanyIds) {
         await conn.execute("INSERT IGNORE INTO user_companies (user_id, company_id) VALUES (?, ?)", [id, cid]);
       }
     }
-    if (branchIdList) {
+    if (submittedBranchIds) {
       await conn.execute("DELETE FROM user_branches WHERE user_id = ?", [id]);
-      for (const bid of branchIdList) {
+      for (const bid of finalBranchIds) {
         await conn.execute("INSERT IGNORE INTO user_branches (user_id, branch_id) VALUES (?, ?)", [id, bid]);
       }
     }
@@ -169,7 +281,7 @@ async function updateUserAccess(id, { fullName, roleId, companyIds, branchIds },
       action: "ACCESS_UPDATED",
       description: `${actingUser.username} updated access for ${target.username}`,
       beforeData: before,
-      afterData: { fullName, roleCode: newRole?.code, companyIdList, branchIdList },
+      afterData: after,
       user: actingUser,
     });
 
@@ -181,7 +293,10 @@ async function updateUserAccess(id, { fullName, roleId, companyIds, branchIds },
     conn.release();
   }
 
-  return getUser(id, actingUser);
+  // No second scope check: the change is committed, and an Admin who just
+  // moved the user out of their shared companies must get a success
+  // response, not a misleading error for a change that did happen.
+  return withAccessSummary(await getUserOr404(id));
 }
 
 async function updateUserStatus(id, status, actingUser) {
@@ -190,9 +305,9 @@ async function updateUserStatus(id, status, actingUser) {
   }
 
   const target = await getUserOr404(id);
-  await assertInScope(target, actingUser);
+  await assertCanManage(target, actingUser);
 
-  if (target.id === actingUser.id && status !== "ACTIVE") {
+  if (isSelf(target, actingUser) && status !== "ACTIVE") {
     throw Object.assign(new Error("You cannot deactivate or suspend your own account."), { statusCode: 400 });
   }
 
@@ -223,12 +338,12 @@ async function updateUserStatus(id, status, actingUser) {
     user: actingUser,
   });
 
-  return getUser(id, actingUser);
+  return withAccessSummary(await getUserOr404(id));
 }
 
 async function unlockUser(id, actingUser) {
   const target = await getUserOr404(id);
-  await assertInScope(target, actingUser);
+  await assertCanManage(target, actingUser);
 
   await pool.execute("UPDATE users SET failed_login_count = 0, locked_until = NULL WHERE id = ?", [id]);
 
@@ -241,12 +356,12 @@ async function unlockUser(id, actingUser) {
     user: actingUser,
   });
 
-  return getUser(id, actingUser);
+  return withAccessSummary(await getUserOr404(id));
 }
 
 async function revokeSessions(id, actingUser) {
   const target = await getUserOr404(id);
-  await assertInScope(target, actingUser);
+  await assertCanManage(target, actingUser);
 
   await pool.execute("UPDATE users SET token_version = token_version + 1 WHERE id = ?", [id]);
 
@@ -262,4 +377,13 @@ async function revokeSessions(id, actingUser) {
   return { id, revoked: true };
 }
 
-module.exports = { listUsers, getUser, updateUserAccess, updateUserStatus, unlockUser, revokeSessions };
+module.exports = {
+  listUsers,
+  getUser,
+  updateUserAccess,
+  updateUserStatus,
+  unlockUser,
+  revokeSessions,
+  MANAGEABLE_ROLES_BY_ACTOR,
+  ASSIGNABLE_ROLES_BY_ACTOR,
+};

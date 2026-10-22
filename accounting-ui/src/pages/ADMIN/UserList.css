@@ -6,8 +6,9 @@
 }
 
 .ul-search-input {
-  flex: 1;
-  min-width: 220px;
+  flex: 1 1 220px;
+  width: 100%;
+  min-width: 0;
   height: 42px;
   border: 1px solid var(--border-color-strong);
   border-radius: 10px;
@@ -38,8 +39,17 @@
   margin-bottom: 16px;
 }
 
+/* The table scrolls inside its own box. contain: inline-size stops the
+   table min-width from widening the flex page on narrow screens, so the page
+   itself never scrolls sideways. */
+.ul-root {
+  min-width: 0;
+}
+
 .ul-table-wrap {
   overflow-x: auto;
+  max-width: 100%;
+  contain: inline-size;
 }
 
 .ul-table {
@@ -111,24 +121,129 @@
   color: var(--danger-text);
 }
 
-.ul-row-actions {
+.ul-status-locked {
+  background: var(--warning-bg);
+  color: var(--warning-text);
+}
+
+.ul-badges {
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
   gap: 4px;
 }
 
-.ul-link-btn {
-  border: none;
-  background: transparent;
-  color: var(--accent-blue);
-  font-weight: 700;
-  font-size: 12px;
-  cursor: pointer;
-  padding: 0;
-  text-decoration: underline;
-  text-align: left;
+.ul-you {
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  background: var(--neutral-bg);
+  color: var(--neutral-text);
 }
 
-.ul-link-btn.ul-danger {
+.ul-success-banner {
+  background: var(--success-bg);
+  color: var(--success-text);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+
+.ul-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 190px;
+}
+
+.ul-no-actions {
+  font-size: 12px;
+}
+
+.ul-btn {
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color-strong);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+}
+
+.ul-btn:hover:not(:disabled) {
+  background: var(--bg-surface-muted);
+}
+
+.ul-btn:focus-visible {
+  outline: 2px solid var(--accent-indigo);
+  outline-offset: 1px;
+}
+
+.ul-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.ul-btn-danger {
   color: var(--danger-text);
+}
+
+.ul-btn-danger:hover:not(:disabled) {
+  background: var(--danger-bg);
+}
+
+.ul-btn-danger-solid {
+  border-color: transparent;
+  background: var(--danger-bg);
+  color: var(--danger-text);
+}
+
+.ul-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(var(--shadow-rgb), 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  z-index: 1300;
+}
+
+.ul-confirm {
+  width: min(420px, 100%);
+  background: var(--bg-surface);
+  border-radius: 16px;
+  box-shadow: 0 28px 70px rgba(var(--shadow-rgb), 0.32);
+  padding: 20px 22px;
+}
+
+.ul-confirm h3 {
+  margin: 0 0 8px;
+  font-size: 17px;
+  color: var(--text-primary);
+}
+
+.ul-confirm p {
+  margin: 0 0 18px;
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+
+.ul-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.ul-confirm-actions .ul-btn {
+  height: 38px;
+  padding: 0 16px;
 }

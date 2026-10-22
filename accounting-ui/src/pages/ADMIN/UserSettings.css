@@ -54,3 +54,28 @@
   font-size: 13px;
   font-weight: 600;
 }
+
+/* Narrow screens: tighter gutters and wrapping tabs, so the page fits next
+   to the sidebar; the user table scrolls inside its own wrapper. */
+@media (max-width: 600px) {
+  .us-page {
+    padding: 16px;
+  }
+
+  .us-page h1 {
+    font-size: 22px;
+  }
+
+  .us-tabs {
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .us-tab {
+    padding: 8px 10px;
+  }
+
+  .us-card {
+    padding: 14px;
+  }
+}
