@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
+import { buildPermissionMatrix } from "../../utils/permissionMatrix.mjs";
 import "./RolePermissionMatrix.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
-const ACTIONS = ["VIEW", "CREATE", "EDIT", "DELETE", "SUBMIT", "APPROVE", "POST", "EXPORT", "CONFIGURE"];
 
 function authHeaders() {
   const token = localStorage.getItem("token");
@@ -66,14 +66,9 @@ export default function RolePermissionMatrix() {
     }
   }
 
-  const grouped = useMemo(() => {
-    const byModule = {};
-    permissions.forEach((p) => {
-      if (!byModule[p.module_key]) byModule[p.module_key] = {};
-      byModule[p.module_key][p.action] = p.permission_id;
-    });
-    return byModule;
-  }, [permissions]);
+  // Columns come from the permission catalog itself, so every permission
+  // (whatever its action) has a checkbox.
+  const matrix = useMemo(() => buildPermissionMatrix(permissions), [permissions]);
 
   const isDirty = useMemo(() => {
     return Object.keys(grants).some((id) => grants[id] !== originalGrants[id]);
@@ -83,8 +78,13 @@ export default function RolePermissionMatrix() {
     setGrants((prev) => ({ ...prev, [permissionId]: !prev[permissionId] }));
   }
 
+  function moduleIds(moduleKey) {
+    const row = matrix.modules.find((m) => m.moduleKey === moduleKey);
+    return row ? Object.values(row.cells).map((p) => p.permission_id) : [];
+  }
+
   function selectAllForModule(moduleKey) {
-    const ids = Object.values(grouped[moduleKey]);
+    const ids = moduleIds(moduleKey);
     setGrants((prev) => {
       const next = { ...prev };
       ids.forEach((id) => { next[id] = true; });
@@ -93,7 +93,7 @@ export default function RolePermissionMatrix() {
   }
 
   function clearAllForModule(moduleKey) {
-    const ids = Object.values(grouped[moduleKey]);
+    const ids = moduleIds(moduleKey);
     setGrants((prev) => {
       const next = { ...prev };
       ids.forEach((id) => { next[id] = false; });
@@ -192,20 +192,28 @@ export default function RolePermissionMatrix() {
               <thead>
                 <tr>
                   <th>Module</th>
-                  {ACTIONS.map((a) => <th key={a}>{a}</th>)}
+                  {matrix.actions.map((a) => <th key={a}>{a}</th>)}
                   <th>Row Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {Object.keys(grouped).sort().map((moduleKey) => (
+                {matrix.modules.map(({ moduleKey, cells }) => (
                   <tr key={moduleKey}>
                     <td className="rpm-module-cell">{moduleKey}</td>
-                    {ACTIONS.map((action) => {
-                      const permId = grouped[moduleKey][action];
-                      if (!permId) return <td key={action} className="rpm-na">-</td>;
+                    {matrix.actions.map((action) => {
+                      const perm = cells[action];
+                      if (!perm) return <td key={action} className="rpm-na">-</td>;
+                      const permId = perm.permission_id;
                       return (
                         <td key={action}>
-                          <input type="checkbox" checked={!!grants[permId]} onChange={() => toggle(permId)} />
+                          <input
+                            type="checkbox"
+                            checked={!!grants[permId]}
+                            onChange={() => toggle(permId)}
+                            title={perm.label || `${moduleKey}.${action}`}
+                            aria-label={`${moduleKey}.${action}`}
+                            data-permission={`${moduleKey}.${action}`}
+                          />
                         </td>
                       );
                     })}

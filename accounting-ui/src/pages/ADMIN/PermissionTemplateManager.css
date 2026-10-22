@@ -169,6 +169,10 @@
 
 .ptm-table-wrap {
   overflow-x: auto;
+  /* The column set comes from the permission catalog (40+ actions), so
+     the table scrolls inside this box instead of widening the page. */
+  max-width: 100%;
+  contain: inline-size;
 }
 
 .ptm-table {
@@ -201,6 +205,11 @@
   text-align: left;
   font-weight: 700;
   white-space: nowrap;
+  /* Keeps the module name visible while scrolling across actions. */
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--bg-surface);
 }
 
 .ptm-na {

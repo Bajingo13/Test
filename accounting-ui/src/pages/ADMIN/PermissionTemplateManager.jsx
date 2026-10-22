@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
+import { buildPermissionMatrix } from "../../utils/permissionMatrix.mjs";
 import "./PermissionTemplateManager.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
-const ACTIONS = ["VIEW", "CREATE", "EDIT", "DELETE", "SUBMIT", "APPROVE", "POST", "EXPORT", "CONFIGURE"];
 
 function authHeaders() {
   const token = localStorage.getItem("token");
@@ -99,14 +99,9 @@ export default function PermissionTemplateManager() {
     return [...keys].some((k) => !!grants[k] !== !!originalGrants[k]);
   }
 
-  const grouped = useMemo(() => {
-    const byModule = {};
-    items.forEach((i) => {
-      if (!byModule[i.module_key]) byModule[i.module_key] = {};
-      byModule[i.module_key][i.action] = i.permission_id;
-    });
-    return byModule;
-  }, [items]);
+  // Columns come from the permission catalog itself, so every permission
+  // (whatever its action) has a checkbox.
+  const matrix = useMemo(() => buildPermissionMatrix(items), [items]);
 
   function toggle(permissionId) {
     setGrants((prev) => ({ ...prev, [permissionId]: !prev[permissionId] }));
@@ -246,19 +241,27 @@ export default function PermissionTemplateManager() {
                   <thead>
                     <tr>
                       <th>Module</th>
-                      {ACTIONS.map((a) => <th key={a}>{a}</th>)}
+                      {matrix.actions.map((a) => <th key={a}>{a}</th>)}
                     </tr>
                   </thead>
                   <tbody>
-                    {Object.keys(grouped).sort().map((moduleKey) => (
+                    {matrix.modules.map(({ moduleKey, cells }) => (
                       <tr key={moduleKey}>
                         <td className="ptm-module-cell">{moduleKey}</td>
-                        {ACTIONS.map((action) => {
-                          const permId = grouped[moduleKey][action];
-                          if (!permId) return <td key={action} className="ptm-na">-</td>;
+                        {matrix.actions.map((action) => {
+                          const perm = cells[action];
+                          if (!perm) return <td key={action} className="ptm-na">-</td>;
+                          const permId = perm.permission_id;
                           return (
                             <td key={action}>
-                              <input type="checkbox" checked={!!grants[permId]} onChange={() => toggle(permId)} />
+                              <input
+                                type="checkbox"
+                                checked={!!grants[permId]}
+                                onChange={() => toggle(permId)}
+                                title={perm.label || `${moduleKey}.${action}`}
+                                aria-label={`${moduleKey}.${action}`}
+                                data-permission={`${moduleKey}.${action}`}
+                              />
                             </td>
                           );
                         })}

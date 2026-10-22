@@ -97,4 +97,60 @@ async function getEffectivePermissions(userId) {
   };
 }
 
-module.exports = { can, getEffectivePermissions };
+function badRequest(message) {
+  return Object.assign(new Error(message), { statusCode: 400 });
+}
+
+// Validates a request's [{ permissionId, granted, reason? }] list before
+// anything is written: every id must be a positive integer that exists in
+// the catalog. Exact duplicates collapse to one entry; the same id listed
+// with different granted values is rejected (there's no safe "winner").
+async function normalizeGrants(grants) {
+  if (!Array.isArray(grants)) {
+    throw badRequest("grants must be an array of { permissionId, granted }.");
+  }
+  const byId = new Map();
+  for (const g of grants) {
+    const permissionId = Number(g?.permissionId);
+    if (!Number.isInteger(permissionId) || permissionId <= 0) {
+      throw badRequest("Every grant needs a valid permissionId.");
+    }
+    const granted = !!g.granted;
+    const existing = byId.get(permissionId);
+    if (existing && existing.granted !== granted) {
+      throw badRequest(`Permission ${permissionId} is listed more than once with different values.`);
+    }
+    if (!existing) byId.set(permissionId, { permissionId, granted, reason: g.reason || null });
+  }
+  const ids = [...byId.keys()];
+  if (ids.length) {
+    const [rows] = await pool.query("SELECT id FROM permissions WHERE id IN (?)", [ids]);
+    if (rows.length !== ids.length) {
+      const known = new Set(rows.map((r) => r.id));
+      const unknown = ids.filter((id) => !known.has(id));
+      throw badRequest(`Unknown permission id(s): ${unknown.join(", ")}.`);
+    }
+  }
+  return [...byId.values()];
+}
+
+// Catalog metadata for audit records: id -> { permissionId, permission,
+// moduleKey, action, label }.
+async function describePermissions(ids) {
+  const map = new Map();
+  if (!ids.length) return map;
+  const [rows] = await pool.query("SELECT id, module_key, action, label FROM permissions WHERE id IN (?)", [ids]);
+  for (const r of rows) {
+    map.set(r.id, { permissionId: r.id, permission: `${r.module_key}.${r.action}`, moduleKey: r.module_key, action: r.action, label: r.label });
+  }
+  return map;
+}
+
+// "MODULE.ACTION" keys the user is currently granted (role + overrides,
+// Super Admin = everything) - the ceiling for what they may hand out.
+async function getGrantedPermissionKeys(userId) {
+  const { permissions } = await getEffectivePermissions(userId);
+  return new Set(permissions.filter((p) => p.granted).map((p) => `${p.moduleKey}.${p.action}`));
+}
+
+module.exports = { can, getEffectivePermissions, normalizeGrants, describePermissions, getGrantedPermissionKeys };

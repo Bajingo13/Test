@@ -31,6 +31,7 @@ async function getRolePermissions(roleId) {
 }
 
 const { logAudit } = require("../lib/audit");
+const PermissionService = require("./permissionService");
 
 // Bulk-replace a role's grants. SUPER_ADMIN's permissions are a hardcoded
 // always-allow bypass (see permissionService.can), not seeded rows - editing
@@ -45,15 +46,28 @@ async function setRolePermissions(roleId, grants, actingUser) {
   if (role.code === "SUPER_ADMIN") {
     throw Object.assign(new Error("Super Admin always has full access and cannot be restricted."), { statusCode: 400 });
   }
-  if (!Array.isArray(grants)) {
-    throw Object.assign(new Error("grants must be an array of { permissionId, granted }."), { statusCode: 400 });
+
+  // Validate every permission id before writing anything (400, not a
+  // foreign-key 500, and never a partial update).
+  const normalized = await PermissionService.normalizeGrants(grants);
+
+  const [currentRows] = await pool.execute("SELECT permission_id, granted FROM role_permissions WHERE role_id = ?", [roleId]);
+  const current = new Map(currentRows.map((r) => [r.permission_id, !!r.granted]));
+  const changed = normalized.filter((g) => (current.get(g.permissionId) || false) !== g.granted);
+  const meta = await PermissionService.describePermissions(changed.map((g) => g.permissionId));
+  const before = [];
+  const after = [];
+  for (const g of changed) {
+    const ref = meta.get(g.permissionId);
+    before.push({ ...ref, granted: current.get(g.permissionId) || false });
+    after.push({ ...ref, granted: g.granted });
   }
 
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
 
-    for (const g of grants) {
+    for (const g of normalized) {
       await conn.execute(
         `INSERT INTO role_permissions (role_id, permission_id, granted)
          VALUES (?, ?, ?)
@@ -67,8 +81,15 @@ async function setRolePermissions(roleId, grants, actingUser) {
       entityType: "ROLE",
       entityId: roleId,
       action: "PERMISSION_CHANGED",
-      description: `${actingUser.username} updated permissions for role ${role.name}`,
-      afterData: { grantCount: grants.length },
+      description: `${actingUser.username} updated permissions for role ${role.name}: ${after.filter((p) => p.granted).length} added, ${after.filter((p) => !p.granted).length} removed`,
+      beforeData: { role: role.code, permissions: before },
+      afterData: {
+        role: role.code,
+        permissions: after,
+        added: after.filter((p) => p.granted).map((p) => p.permission),
+        removed: after.filter((p) => !p.granted).map((p) => p.permission),
+        grantCount: normalized.length,
+      },
       user: actingUser,
     });
 

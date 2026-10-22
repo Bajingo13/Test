@@ -4,6 +4,7 @@ const pool = require("../db");
 const { logAudit } = require("../lib/audit");
 const EmailService = require("./emailService");
 const UserAccessService = require("./userAccessService");
+const TemplateService = require("./templateService");
 
 const DEFAULT_EXPIRY_DAYS = 7;
 const MIN_EXPIRY_DAYS = 1;
@@ -82,6 +83,16 @@ async function createInvitation({ email, fullName, roleId, companyIds, branchIds
     }
   }
 
+  // A permission template is copied into the new user's overrides on
+  // acceptance, so it must exist, grant something, and stay within what
+  // the inviter may hand out (see TemplateService.assertTemplateAssignable).
+  // Checked before anything is created - a rejected template leaves no
+  // invitation, token or email behind.
+  const hasTemplate = permissionTemplateId !== undefined && permissionTemplateId !== null && permissionTemplateId !== "";
+  if (hasTemplate) {
+    await TemplateService.assertTemplateAssignable(permissionTemplateId, { inviterId: actingUser.id, invitedRoleId: role.id });
+  }
+
   // Duplicate-email prevention: an existing account, or an already-pending
   // invitation for the same address.
   const [existingUser] = await pool.execute("SELECT id FROM users WHERE email = ?", [normalizedEmail]);
@@ -103,7 +114,7 @@ async function createInvitation({ email, fullName, roleId, companyIds, branchIds
     `INSERT INTO invitations
       (email, full_name, role_id, company_ids, branch_ids, permission_template_id, token_hash, status, expires_at, invited_by)
      VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', DATE_ADD(NOW(), INTERVAL ? DAY), ?)`,
-    [normalizedEmail, String(fullName).trim(), roleId, JSON.stringify(companyIdList), JSON.stringify(branchIdList), permissionTemplateId || null, hash, days, actingUser.id]
+    [normalizedEmail, String(fullName).trim(), roleId, JSON.stringify(companyIdList), JSON.stringify(branchIdList), hasTemplate ? Number(permissionTemplateId) : null, hash, days, actingUser.id]
   );
   const invitationId = result.insertId;
 
@@ -325,6 +336,21 @@ async function acceptInvitation({ token, password, acceptedTerms }) {
     const [existingUser] = await conn.execute("SELECT id FROM users WHERE email = ?", [invitation.email]);
     if (existingUser.length > 0) {
       throw Object.assign(new Error("An account with this email already exists."), { statusCode: 409 });
+    }
+
+    if (invitation.permission_template_id) {
+      try {
+        await TemplateService.assertTemplateAssignable(invitation.permission_template_id, {
+          inviterId: invitation.invited_by,
+          invitedRoleId: invitation.role_id,
+        });
+      } catch (templateErr) {
+        if (!templateErr.statusCode) throw templateErr;
+        throw Object.assign(
+          new Error("This invitation's permission template is no longer valid. Ask for a new invitation."),
+          { statusCode: 409 }
+        );
+      }
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
