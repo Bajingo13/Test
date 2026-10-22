@@ -8,11 +8,31 @@ function authHeaders() {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
-export default function InviteUserModal({ open, onClose, onInvited }) {
+// Mirrors invitationService's INVITABLE_ROLES_BY_INVITER - the server is
+// the authority (it rejects anything else); this only keeps the dropdown
+// from offering roles the inviter isn't allowed to choose.
+const INVITABLE_ROLES_BY_INVITER = {
+  SUPER_ADMIN: ["ADMIN", "ACCOUNTANT"],
+  ADMIN: ["ACCOUNTANT"],
+};
+
+// Everything the form needs before it can be submitted. If any request
+// fails the form stays disabled (with a Retry) rather than submitting an
+// invitation built from partial data.
+const LOOKUPS = [
+  { key: "roles", path: "/api/roles", label: "roles" },
+  { key: "companies", path: "/api/companies", label: "companies" },
+  { key: "branches", path: "/api/branches", label: "branches" },
+  { key: "templates", path: "/api/permission-templates", label: "permission templates" },
+];
+
+export default function InviteUserModal({ open, onClose, onInvited, inviterRoleCode = "" }) {
   const [roles, setRoles] = useState([]);
   const [companies, setCompanies] = useState([]);
   const [branches, setBranches] = useState([]);
   const [templates, setTemplates] = useState([]);
+  const [lookupsLoading, setLookupsLoading] = useState(false);
+  const [lookupError, setLookupError] = useState("");
 
   const [form, setForm] = useState({
     email: "",
@@ -28,27 +48,49 @@ export default function InviteUserModal({ open, onClose, onInvited }) {
   const [error, setError] = useState("");
   const [result, setResult] = useState(null);
 
+  async function loadLookups() {
+    setLookupsLoading(true);
+    setLookupError("");
+    const failed = [];
+    const loaded = {};
+    await Promise.all(
+      LOOKUPS.map(async ({ key, path, label }) => {
+        try {
+          const res = await fetch(`${API_URL}${path}`, { headers: authHeaders() });
+          const data = await res.json().catch(() => null);
+          if (!res.ok || !Array.isArray(data)) {
+            failed.push(label);
+            return;
+          }
+          loaded[key] = data;
+        } catch {
+          failed.push(label);
+        }
+      })
+    );
+    setRoles(loaded.roles || []);
+    setCompanies(loaded.companies || []);
+    setBranches(loaded.branches || []);
+    setTemplates(loaded.templates || []);
+    if (failed.length) {
+      setLookupError(`Could not load ${failed.join(", ")}. The invitation can't be sent until this loads - try again.`);
+    }
+    setLookupsLoading(false);
+  }
+
   useEffect(() => {
     if (!open) return;
     setForm({ email: "", fullName: "", roleId: "", companyIds: [], branchIds: [], expiresInDays: 7, permissionTemplateId: "" });
     setError("");
     setResult(null);
-
-    (async () => {
-      const [rolesRes, companiesRes, branchesRes, templatesRes] = await Promise.all([
-        fetch(`${API_URL}/api/roles`, { headers: authHeaders() }),
-        fetch(`${API_URL}/api/companies`, { headers: authHeaders() }),
-        fetch(`${API_URL}/api/branches`, { headers: authHeaders() }),
-        fetch(`${API_URL}/api/permission-templates`, { headers: authHeaders() }),
-      ]);
-      setRoles(await rolesRes.json());
-      setCompanies(await companiesRes.json());
-      setBranches(await branchesRes.json());
-      setTemplates(await templatesRes.json());
-    })();
+    loadLookups();
   }, [open]);
 
   if (!open) return null;
+
+  const allowedRoleCodes = INVITABLE_ROLES_BY_INVITER[inviterRoleCode] || [];
+  const invitableRoles = roles.filter((r) => allowedRoleCodes.includes(r.code));
+  const formReady = !lookupsLoading && !lookupError;
 
   function toggleCompany(id) {
     setForm((prev) => ({
@@ -72,8 +114,16 @@ export default function InviteUserModal({ open, onClose, onInvited }) {
     e.preventDefault();
     setError("");
 
+    if (!formReady) {
+      setError("The form hasn't finished loading. Please retry loading it first.");
+      return;
+    }
     if (!form.email.trim() || !form.fullName.trim() || !form.roleId) {
       setError("Email, full name, and role are required.");
+      return;
+    }
+    if (form.companyIds.length === 0) {
+      setError("Select at least one company for the invited user.");
       return;
     }
 
@@ -112,18 +162,28 @@ export default function InviteUserModal({ open, onClose, onInvited }) {
         <div className="ium-body">
           {result ? (
             <div className="ium-success-banner">
-              <p>Invitation sent to <strong>{result.email}</strong>.</p>
-              {result.emailDelivered === false && (
+              {result.emailDelivered === false ? (
                 <>
-                  <p className="ium-muted">
-                    Email delivery isn't configured yet - share this link with them manually:
-                  </p>
+                  <p>Invitation created — email not sent. Share the invitation link manually.</p>
+                  <p className="ium-muted">Invitation link for <strong>{result.email}</strong>:</p>
                   <code className="ium-link-box">{result.acceptUrl}</code>
                 </>
+              ) : (
+                <p>Invitation sent to <strong>{result.email}</strong>.</p>
               )}
             </div>
           ) : (
             <form onSubmit={handleSubmit}>
+              {lookupsLoading && <p className="ium-muted">Loading roles and companies...</p>}
+              {lookupError && (
+                <div className="ium-error-banner" role="alert">
+                  {lookupError}{" "}
+                  <button type="button" className="ium-btn-secondary" onClick={loadLookups}>
+                    Retry
+                  </button>
+                </div>
+              )}
+
               <div className="ium-field">
                 <label>Email Address</label>
                 <input
@@ -148,14 +208,14 @@ export default function InviteUserModal({ open, onClose, onInvited }) {
                 <label>Role</label>
                 <select value={form.roleId} onChange={(e) => setForm({ ...form, roleId: e.target.value })} required>
                   <option value="">Select role</option>
-                  {roles.map((r) => (
+                  {invitableRoles.map((r) => (
                     <option key={r.id} value={r.id}>{r.name}</option>
                   ))}
                 </select>
               </div>
 
               <div className="ium-field">
-                <label>Companies</label>
+                <label>Companies (at least one)</label>
                 <div className="ium-checkbox-group">
                   {companies.map((c) => (
                     <label key={c.id} className="ium-checkbox">
@@ -205,7 +265,7 @@ export default function InviteUserModal({ open, onClose, onInvited }) {
 
               <div className="ium-footer">
                 <button type="button" className="ium-btn-secondary" onClick={onClose}>Cancel</button>
-                <button type="submit" className="ium-btn-primary" disabled={submitting}>
+                <button type="submit" className="ium-btn-primary" disabled={submitting || !formReady}>
                   {submitting ? "Sending..." : "Send Invitation"}
                 </button>
               </div>

@@ -23,6 +23,7 @@ export default function PendingInvitations({ embedded = false }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [showInviteModal, setShowInviteModal] = useState(false);
+  const [roleCode, setRoleCode] = useState("");
 
   useEffect(() => {
     checkAccessThenLoad();
@@ -40,6 +41,7 @@ export default function PendingInvitations({ embedded = false }) {
       const canCreateInvites = data.permissions.some((p) => p.moduleKey === "ADMIN.INVITATIONS" && p.action === "CREATE" && p.granted);
       setCanView(canViewInvites);
       setCanCreate(canCreateInvites);
+      setRoleCode(data.user?.roleCode || "");
       if (canViewInvites) await loadInvitations();
     } catch (err) {
       console.error("CHECK ACCESS ERROR:", err);
@@ -188,6 +190,7 @@ export default function PendingInvitations({ embedded = false }) {
         open={showInviteModal}
         onClose={() => setShowInviteModal(false)}
         onInvited={loadInvitations}
+        inviterRoleCode={roleCode}
       />
     </>
   );

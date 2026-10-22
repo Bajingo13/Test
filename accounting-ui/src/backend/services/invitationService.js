@@ -9,6 +9,18 @@ const DEFAULT_EXPIRY_DAYS = 7;
 const MIN_EXPIRY_DAYS = 1;
 const MAX_EXPIRY_DAYS = 30;
 
+// Which roles each inviter role may invite. Enforced here on the server;
+// the Invite User dialog only mirrors it. Any role not listed (e.g.
+// ACCOUNTANT) may not invite anyone.
+const INVITABLE_ROLES_BY_INVITER = {
+  SUPER_ADMIN: ["ADMIN", "ACCOUNTANT"],
+  ADMIN: ["ACCOUNTANT"],
+};
+
+function canInviteRole(inviterRoleCode, targetRoleCode) {
+  return (INVITABLE_ROLES_BY_INVITER[inviterRoleCode] || []).includes(targetRoleCode);
+}
+
 function normalizeEmail(email) {
   return String(email || "").trim().toLowerCase();
 }
@@ -45,15 +57,20 @@ async function createInvitation({ email, fullName, roleId, companyIds, branchIds
     throw Object.assign(new Error("Selected role does not exist."), { statusCode: 400 });
   }
 
-  // Admins can never create a Super Admin, and can never invite anyone
-  // into a role higher than their own effective scope. Only a Super Admin
-  // may invite another Super Admin.
-  if (role.code === "SUPER_ADMIN" && actingUser.roleCode !== "SUPER_ADMIN") {
-    throw Object.assign(new Error("Only a Super Admin can invite another Super Admin."), { statusCode: 403 });
+  // Role hierarchy: Super Admin -> Admin / Accountant; Admin -> Accountant
+  // only; nobody else may invite (see INVITABLE_ROLES_BY_INVITER).
+  if (!canInviteRole(actingUser.roleCode, role.code)) {
+    throw Object.assign(new Error(`You are not allowed to invite users with the ${role.name} role.`), { statusCode: 403 });
   }
 
   const companyIdList = Array.isArray(companyIds) ? companyIds.map(Number).filter(Boolean) : [];
   const branchIdList = Array.isArray(branchIds) ? branchIds.map(Number).filter(Boolean) : [];
+
+  // Every invited user must belong to at least one company - a user with
+  // none can sign in but cannot use any company data.
+  if (companyIdList.length === 0) {
+    throw Object.assign(new Error("Select at least one company for the invited user."), { statusCode: 400 });
+  }
 
   if (actingUser.roleCode !== "SUPER_ADMIN") {
     const accessibleCompanyIds = new Set(await UserAccessService.getAccessibleCompanyIds(actingUser.id));
@@ -156,17 +173,25 @@ async function listInvitations(actingUser) {
   return rows;
 }
 
-async function getInvitationOr404(id) {
+// Resend/revoke may only act on an invitation the acting user sent, unless
+// they are a Super Admin - the same visibility rule listInvitations uses.
+// Anyone else gets the same 404 as for a non-existent id, so another
+// company's invitation can't even be confirmed to exist (and no new token
+// is ever generated for them).
+async function getManageableInvitationOr404(id, actingUser) {
   const [rows] = await pool.execute("SELECT * FROM invitations WHERE id = ?", [id]);
   const invitation = rows[0];
-  if (!invitation) {
+  const visible =
+    invitation &&
+    (actingUser.roleCode === "SUPER_ADMIN" || Number(invitation.invited_by) === Number(actingUser.id));
+  if (!visible) {
     throw Object.assign(new Error("Invitation not found"), { statusCode: 404 });
   }
   return invitation;
 }
 
 async function resendInvitation(id, actingUser) {
-  const invitation = await getInvitationOr404(id);
+  const invitation = await getManageableInvitationOr404(id, actingUser);
   if (invitation.status !== "PENDING") {
     throw Object.assign(new Error(`Cannot resend an invitation with status ${invitation.status}.`), { statusCode: 409 });
   }
@@ -207,7 +232,7 @@ async function resendInvitation(id, actingUser) {
 }
 
 async function revokeInvitation(id, actingUser) {
-  const invitation = await getInvitationOr404(id);
+  const invitation = await getManageableInvitationOr404(id, actingUser);
   if (invitation.status !== "PENDING") {
     throw Object.assign(new Error(`Cannot revoke an invitation with status ${invitation.status}.`), { statusCode: 409 });
   }
@@ -384,6 +409,7 @@ async function acceptInvitation({ token, password, acceptedTerms }) {
 }
 
 module.exports = {
+  INVITABLE_ROLES_BY_INVITER,
   createInvitation,
   listInvitations,
   resendInvitation,
