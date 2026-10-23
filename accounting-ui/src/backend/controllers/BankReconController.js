@@ -18,11 +18,31 @@ const {
   parseCsvRows,
 } = require("../services/StatementImportService");
 const { postAdjustmentAsJV } = require("../services/JournalSuggestionService");
+const {
+  sessionListFilter,
+  resolveCompanyForNewSession,
+  assertBookDocumentInCompany,
+} = require("../services/bankReconAccessService");
+
+// Routes guard every session / child id (bankReconAccessService.requireAccess)
+// and leave the owning session on req.reconSession; its company is stamped
+// on every Bank Reconciliation audit row.
+const auditCompany = (req) => req.reconSession?.companyId ?? null;
+
+function sendHttpError(res, err) {
+  if (err instanceof HttpError) {
+    res.status(err.statusCode).json({ message: err.message });
+    return true;
+  }
+  return false;
+}
 
 exports.listSessions = async (req, res) => {
   try {
-    const [rows] = await pool.execute(
-      `${BANK_RECON_SESSION_SELECT} ORDER BY s.id DESC`
+    const filter = await sessionListFilter(req.user);
+    const [rows] = await pool.query(
+      `${BANK_RECON_SESSION_SELECT}${filter.sql} ORDER BY s.id DESC`,
+      filter.params
     );
 
     res.json(rows);
@@ -46,6 +66,7 @@ exports.createSession = async (req, res) => {
       amountVarianceType,
       amountVarianceValue,
       notes,
+      companyId: requestedCompanyId,
     } = req.body;
 
     if (!bankAccountId) {
@@ -58,12 +79,21 @@ exports.createSession = async (req, res) => {
       return res.status(400).json({ message: "Period end cannot be before period start" });
     }
 
+    let companyId;
+    try {
+      companyId = await resolveCompanyForNewSession(req.user, requestedCompanyId);
+    } catch (err) {
+      if (sendHttpError(res, err)) return;
+      throw err;
+    }
+
     const userId = req.user?.id || null;
 
     await conn.beginTransaction();
 
     const [result] = await conn.execute(
       `INSERT INTO bank_recon_sessions(
+        company_id,
         bank_account_id,
         period_start,
         period_end,
@@ -76,8 +106,9 @@ exports.createSession = async (req, res) => {
         notes,
         created_by
       )
-      VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
+        companyId,
         bankAccountId,
         periodStart,
         periodEnd,
@@ -100,8 +131,9 @@ exports.createSession = async (req, res) => {
       entityId: sessionId,
       action: "CREATE",
       description: `Reconciliation session #${sessionId} created for bank account ${bankAccountId} (${periodStart} to ${periodEnd})`,
-      afterData: { bankAccountId, periodStart, periodEnd, statementBeginningBalance, statementEndingBalance },
+      afterData: { companyId, bankAccountId, periodStart, periodEnd, statementBeginningBalance, statementEndingBalance },
       user: req.user,
+      companyId,
     });
 
     await conn.commit();
@@ -168,7 +200,29 @@ exports.updateSession = async (req, res) => {
       amountVarianceType,
       amountVarianceValue,
       notes,
+      companyId: assignCompanyId,
     } = req.body;
+
+    // Legacy sessions created before company isolation have no company and
+    // are Super-Admin-only; a Super Admin can assign one (once). An owned
+    // session's company never changes.
+    let assignedCompanyId = null;
+    if (assignCompanyId !== undefined && assignCompanyId !== null && assignCompanyId !== "") {
+      if (existing.company_id) {
+        if (Number(assignCompanyId) !== Number(existing.company_id)) {
+          return res.status(400).json({ message: "This reconciliation already belongs to a company." });
+        }
+      } else if (req.user?.roleCode !== "SUPER_ADMIN") {
+        return res.status(404).json({ message: "Reconciliation session not found" });
+      } else {
+        try {
+          assignedCompanyId = await resolveCompanyForNewSession(req.user, assignCompanyId);
+        } catch (err) {
+          if (sendHttpError(res, err)) return;
+          throw err;
+        }
+      }
+    }
 
     const next = {
       periodStart: periodStart || existing.period_start,
@@ -207,7 +261,8 @@ exports.updateSession = async (req, res) => {
         date_tolerance_days = ?,
         amount_variance_type = ?,
         amount_variance_value = ?,
-        notes = ?
+        notes = ?,
+        company_id = COALESCE(company_id, ?)
       WHERE id = ?`,
       [
         next.periodStart,
@@ -218,6 +273,7 @@ exports.updateSession = async (req, res) => {
         next.amountVarianceType,
         next.amountVarianceValue,
         next.notes,
+        assignedCompanyId,
         id,
       ]
     );
@@ -229,8 +285,9 @@ exports.updateSession = async (req, res) => {
       action: "CONFIG_UPDATE",
       description: `Reconciliation session #${id} settings updated`,
       beforeData: existing,
-      afterData: next,
+      afterData: assignedCompanyId ? { ...next, companyId: assignedCompanyId } : next,
       user: req.user,
+      companyId: assignedCompanyId || auditCompany(req),
     });
 
     await conn.commit();
@@ -386,6 +443,7 @@ exports.importStatement = async (req, res) => {
           skippedCount: skippedRows.length,
         },
         user: req.user,
+        companyId: auditCompany(req),
       });
 
       await conn.commit();
@@ -505,6 +563,7 @@ exports.deleteImportBatch = async (req, res) => {
       description: `Import batch "${existing[0].file_name}" (${existing[0].row_count} rows) deleted from session #${existing[0].session_id}`,
       beforeData: existing[0],
       user: req.user,
+      companyId: auditCompany(req),
     });
 
     await conn.commit();
@@ -560,7 +619,8 @@ exports.runMatching = async (req, res) => {
       session.bankCoaAccountId,
       session.periodStart,
       session.periodEnd,
-      session.dateToleranceDays
+      session.dateToleranceDays,
+      session.companyId
     );
 
     const [confirmedRows] = await conn.execute(
@@ -661,6 +721,7 @@ exports.runMatching = async (req, res) => {
       description: `Matching engine run on session #${id}: ${stmtLines.length} line(s) processed, ${suggestedCount} with suggestions`,
       afterData: { processed: stmtLines.length, suggested: suggestedCount },
       user: req.user,
+      companyId: auditCompany(req),
     });
 
     await conn.commit();
@@ -711,8 +772,8 @@ exports.getMatchCandidates = async (req, res) => {
             `SELECT voucher_no AS voucherNo, payee_name AS payeeName,
                     DATE_FORMAT(transaction_date, '%Y-%m-%d') AS txnDate,
                     reference_no AS referenceNo, check_no AS checkNo, description
-             FROM cv_headers WHERE id = ?`,
-            [row.bookSourceId]
+             FROM cv_headers WHERE id = ? AND (? IS NULL OR company_id = ?)`,
+            [row.bookSourceId, auditCompany(req), auditCompany(req)]
           );
           detail = d[0] || null;
         } else if (row.bookSourceType === "OR") {
@@ -720,8 +781,8 @@ exports.getMatchCandidates = async (req, res) => {
             `SELECT voucher_no AS voucherNo, customer_name AS customerName,
                     DATE_FORMAT(transaction_date, '%Y-%m-%d') AS txnDate,
                     reference_no AS referenceNo, receipt_no AS receiptNo, check_no AS checkNo, description
-             FROM or_headers WHERE id = ?`,
-            [row.bookSourceId]
+             FROM or_headers WHERE id = ? AND (? IS NULL OR company_id = ?)`,
+            [row.bookSourceId, auditCompany(req), auditCompany(req)]
           );
           detail = d[0] || null;
         } else if (row.bookSourceType === "JV") {
@@ -729,8 +790,8 @@ exports.getMatchCandidates = async (req, res) => {
             `SELECT jh.voucher_no AS voucherNo, jh.prepared_for AS preparedFor,
                     DATE_FORMAT(jh.transaction_date, '%Y-%m-%d') AS txnDate,
                     jh.reference_no AS referenceNo, jh.description
-             FROM jv_headers jh WHERE jh.id = ?`,
-            [row.bookSourceId]
+             FROM jv_headers jh WHERE jh.id = ? AND (? IS NULL OR jh.company_id = ?)`,
+            [row.bookSourceId, auditCompany(req), auditCompany(req)]
           );
           detail = d[0] || null;
         }
@@ -766,7 +827,8 @@ exports.listBookItems = async (req, res) => {
       session.bankCoaAccountId,
       session.periodStart,
       session.periodEnd,
-      session.dateToleranceDays
+      session.dateToleranceDays,
+      session.companyId
     );
 
     const [confirmedRows] = await conn.execute(
@@ -849,6 +911,7 @@ exports.confirmMatch = async (req, res) => {
       beforeData: { status: match.status },
       afterData: { status: "CONFIRMED" },
       user: req.user,
+      companyId: auditCompany(req),
     });
 
     await conn.commit();
@@ -919,6 +982,7 @@ exports.bulkConfirmMatches = async (req, res) => {
       description: `Bulk-confirmed ${exactMatches.length} exact match(es) in session #${sessionId}`,
       afterData: { confirmedCount: exactMatches.length },
       user: req.user,
+      companyId: auditCompany(req),
     });
 
     await conn.commit();
@@ -973,6 +1037,13 @@ exports.createManualMatch = async (req, res) => {
       return res.status(400).json({ message: "Statement line is already matched" });
     }
 
+    try {
+      await assertBookDocumentInCompany(bookSourceType, bookSourceId, auditCompany(req));
+    } catch (err) {
+      if (sendHttpError(res, err)) return;
+      throw err;
+    }
+
     const userId = req.user?.id || null;
 
     await conn.beginTransaction();
@@ -1014,6 +1085,7 @@ exports.createManualMatch = async (req, res) => {
       description: `Manually matched statement line #${statementLineId} to ${bookSourceType} #${bookSourceId}`,
       afterData: { bookSourceType, bookSourceId, bookLineId, amount },
       user: req.user,
+      companyId: auditCompany(req),
     });
 
     await conn.commit();
@@ -1078,6 +1150,7 @@ exports.unmatch = async (req, res) => {
       beforeData: { status: match.status },
       afterData: { status: "REJECTED" },
       user: req.user,
+      companyId: auditCompany(req),
     });
 
     await conn.commit();
@@ -1141,6 +1214,7 @@ exports.ignoreStatementLine = async (req, res) => {
       beforeData: { matchStatus: line.matchStatus },
       afterData: { matchStatus: nextStatus },
       user: req.user,
+      companyId: auditCompany(req),
     });
 
     await conn.commit();
@@ -1179,7 +1253,8 @@ exports.getOutstandingItems = async (req, res) => {
       session.bankCoaAccountId,
       session.periodStart,
       session.periodEnd,
-      session.dateToleranceDays
+      session.dateToleranceDays,
+      session.companyId
     );
 
     const [confirmedRows] = await conn.execute(
@@ -1269,6 +1344,14 @@ exports.createAdjustment = async (req, res) => {
       return res.status(400).json({ message: "Cannot modify a finalized session" });
     }
 
+    const [lineRows] = await conn.execute(
+      "SELECT id FROM bank_recon_statement_lines WHERE id = ? AND session_id = ?",
+      [statementLineId, id]
+    );
+    if (lineRows.length === 0) {
+      return res.status(404).json({ message: "Statement line not found" });
+    }
+
     await conn.beginTransaction();
 
     const [result] = await conn.execute(
@@ -1293,6 +1376,7 @@ exports.createAdjustment = async (req, res) => {
       description: `Adjustment (${adjustmentType}) added for statement line #${statementLineId} in session #${id}`,
       afterData: { adjustmentType, amount, suggestedAccountId },
       user: req.user,
+      companyId: auditCompany(req),
     });
 
     await conn.commit();
@@ -1371,6 +1455,7 @@ exports.approveAdjustment = async (req, res) => {
       beforeData: { status: adj.status },
       afterData: { status: "APPROVED" },
       user: req.user,
+      companyId: auditCompany(req),
     });
 
     await conn.commit();
@@ -1430,6 +1515,7 @@ exports.rejectAdjustment = async (req, res) => {
       beforeData: { status: adj.status },
       afterData: { status: "REJECTED" },
       user: req.user,
+      companyId: auditCompany(req),
     });
 
     await conn.commit();
@@ -1523,6 +1609,7 @@ exports.finalizeSession = async (req, res) => {
         unresolvedStatementLinesCount: summary.unresolvedStatementLinesCount,
       },
       user: req.user,
+      companyId: auditCompany(req),
     });
 
     await conn.commit();
@@ -1577,6 +1664,7 @@ exports.reopenSession = async (req, res) => {
       description: `Session #${id} reopened: ${reason}`,
       afterData: { reason },
       user: req.user,
+      companyId: auditCompany(req),
     });
 
     await conn.commit();

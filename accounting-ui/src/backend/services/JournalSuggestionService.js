@@ -1,6 +1,5 @@
 const { logAudit } = require("../lib/audit");
 const { HttpError } = require("../lib/httpError");
-const CurrencyService = require("./currencyService");
 const AccountingPeriodService = require("./accountingPeriodService");
 
 // Only APPROVED adjustments (with an account already picked) can post, and
@@ -12,7 +11,8 @@ async function postAdjustmentAsJV(conn, adjustmentId, user) {
     `SELECT a.*, sl.debit AS lineDebit, sl.credit AS lineCredit,
             sl.reference_no AS lineReferenceNo, sl.check_no AS lineCheckNo,
             DATE_FORMAT(sl.txn_date, '%Y-%m-%d') AS txnDate,
-            s.status AS sessionStatus, s.bank_account_id AS bankAccountId
+            s.status AS sessionStatus, s.bank_account_id AS bankAccountId,
+            s.company_id AS sessionCompanyId
      FROM bank_recon_adjustments a
      JOIN bank_recon_statement_lines sl ON sl.id = a.statement_line_id
      JOIN bank_recon_sessions s ON s.id = a.session_id
@@ -64,7 +64,13 @@ async function postAdjustmentAsJV(conn, adjustmentId, user) {
   const amount = Number(adj.amount);
   const userId = user?.id || null;
   const voucherNo = `JV-BR-${adj.session_id}-${adj.id}`;
-  const companyId = await CurrencyService.resolveCompanyIdForWrite(user, null);
+  // The JV belongs to the reconciliation's own company - never to whatever
+  // company the posting user happens to resolve to. A legacy session with
+  // no company can't post until a Super Admin assigns one.
+  const companyId = adj.sessionCompanyId;
+  if (!companyId) {
+    throw new HttpError(409, "Assign a company to this reconciliation session before posting adjustments.");
+  }
 
   // Checkpoint 5 section 25: locked on the generated JV's own date (the
   // bank statement line's txn_date) - viewing/reconciling historical
@@ -138,6 +144,7 @@ async function postAdjustmentAsJV(conn, adjustmentId, user) {
     description: `JV ${voucherNo} created and posted from bank reconciliation adjustment #${adjustmentId}`,
     afterData: { voucherNo, amount, sourceModule: "BANK_RECON", sourceReferenceId: Number(adjustmentId) },
     user,
+    companyId,
   });
 
   await logAudit(conn, {
@@ -149,6 +156,7 @@ async function postAdjustmentAsJV(conn, adjustmentId, user) {
     beforeData: { status: "APPROVED" },
     afterData: { status: "POSTED", jvId },
     user,
+    companyId,
   });
 
   return { jvId, voucherNo };

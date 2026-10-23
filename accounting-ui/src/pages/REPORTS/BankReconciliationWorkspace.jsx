@@ -24,6 +24,8 @@ export default function BankReconciliationWorkspace() {
   const navigate = useNavigate();
 
   const [session, setSession] = useState(null);
+  // Unknown and out-of-scope (another company's) sessions both come back 404.
+  const [notFound, setNotFound] = useState(false);
   const [form, setForm] = useState(null);
   const [saving, setSaving] = useState(false);
 
@@ -907,11 +909,16 @@ export default function BankReconciliationWorkspace() {
 
       if (!res.ok) {
         if (handleAuthError(res.status)) return;
+        if (res.status === 404) {
+          setNotFound(true);
+          return;
+        }
         alert(data.message || "Failed to load reconciliation session");
         navigate("/reports/bank-reconciliation");
         return;
       }
 
+      setNotFound(false);
       setSession(data);
       setForm({
         periodStart: data.periodStart,
@@ -967,6 +974,20 @@ export default function BankReconciliationWorkspace() {
     }
   }
 
+  if (notFound) {
+    return (
+      <div className="brc-page">
+        <div className="brc-card" role="alert">
+          <h2>Reconciliation not found</h2>
+          <p>This reconciliation session doesn't exist or isn't available to you.</p>
+          <button className="brc-btn" onClick={() => navigate("/reports/bank-reconciliation")}>
+            Back to Bank Reconciliation
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   if (!session || !form) {
     return (
       <div className="brc-page">
@@ -986,7 +1007,7 @@ export default function BankReconciliationWorkspace() {
             {session.bankAccountNo ? ` (${session.bankAccountNo})` : ""}
           </h1>
           <p>
-            Period {session.periodStart} to {session.periodEnd} &middot;{" "}
+            {session.companyName || "Unassigned company"} &middot; Period {session.periodStart} to {session.periodEnd} &middot;{" "}
             <span className={`brc-status-badge ${session.status.toLowerCase()}`}>
               {session.status === "IN_PROGRESS" ? "In Progress" : "Finalized"}
             </span>

@@ -3,6 +3,8 @@ const { round2, shiftDate } = require("./ConfidenceScoringService");
 const BANK_RECON_SESSION_SELECT = `
   SELECT
     s.id,
+    s.company_id AS companyId,
+    co.name AS companyName,
     s.bank_account_id AS bankAccountId,
     bc.bank_code AS bankCode,
     bc.bank_name AS bankName,
@@ -24,7 +26,16 @@ const BANK_RECON_SESSION_SELECT = `
     s.finalized_at AS finalizedAt
   FROM bank_recon_sessions s
   JOIN bank_codes bc ON bc.id = s.bank_account_id
+  LEFT JOIN companies co ON co.id = s.company_id
 `;
+
+// bank_codes and chart_of_accounts are global, so one bank account / cash GL
+// account can carry posted activity from several companies. Every book-side
+// query therefore adds the session's own company; a NULL company (legacy,
+// Super-Admin-only session) keeps the previous unfiltered behaviour.
+function companyClause(alias, companyId) {
+  return companyId ? { sql: ` AND ${alias}company_id = ?`, params: [Number(companyId)] } : { sql: "", params: [] };
+}
 
 async function loadBookTransactions(
   conn,
@@ -32,7 +43,8 @@ async function loadBookTransactions(
   bankCoaAccountId,
   periodStart,
   periodEnd,
-  toleranceDays
+  toleranceDays,
+  companyId = null
 ) {
   const widenDays = (Number(toleranceDays) || 0) * 2;
   const fromDate = shiftDate(periodStart, -widenDays);
@@ -43,8 +55,8 @@ async function loadBookTransactions(
             DATE_FORMAT(transaction_date, '%Y-%m-%d') AS txnDate,
             reference_no AS referenceNo, check_no AS checkNo, total_debit AS totalDebit, description
      FROM cv_headers
-     WHERE bank_account_id = ? AND status = 'Posted' AND transaction_date BETWEEN ? AND ?`,
-    [bankAccountId, fromDate, toDate]
+     WHERE bank_account_id = ? AND status = 'Posted' AND transaction_date BETWEEN ? AND ?${companyClause("", companyId).sql}`,
+    [bankAccountId, fromDate, toDate, ...companyClause("", companyId).params]
   );
 
   const [orRows] = await conn.execute(
@@ -53,8 +65,8 @@ async function loadBookTransactions(
             reference_no AS referenceNo, receipt_no AS receiptNo, check_no AS checkNo,
             total_debit AS totalDebit, description
      FROM or_headers
-     WHERE bank_account_id = ? AND status = 'Posted' AND transaction_date BETWEEN ? AND ?`,
-    [bankAccountId, fromDate, toDate]
+     WHERE bank_account_id = ? AND status = 'Posted' AND transaction_date BETWEEN ? AND ?${companyClause("", companyId).sql}`,
+    [bankAccountId, fromDate, toDate, ...companyClause("", companyId).params]
   );
 
   // Excludes JVs that themselves came from posting a bank-recon adjustment -
@@ -69,8 +81,8 @@ async function loadBookTransactions(
            FROM jv_lines jl
            JOIN jv_headers jh ON jh.id = jl.jv_id
            WHERE jl.account_id = ? AND jh.status = 'Posted' AND jh.transaction_date BETWEEN ? AND ?
-             AND (jh.source_module IS NULL OR jh.source_module != 'BANK_RECON')`,
-          [bankCoaAccountId, fromDate, toDate]
+             AND (jh.source_module IS NULL OR jh.source_module != 'BANK_RECON')${companyClause("jh.", companyId).sql}`,
+          [bankCoaAccountId, fromDate, toDate, ...companyClause("jh.", companyId).params]
         )
       )[0]
     : [];
@@ -150,7 +162,8 @@ async function computeSessionSummary(conn, session) {
     session.bankCoaAccountId,
     session.periodStart,
     session.periodEnd,
-    session.dateToleranceDays
+    session.dateToleranceDays,
+    session.companyId
   );
 
   const [confirmedRows] = await conn.execute(
@@ -174,13 +187,13 @@ async function computeSessionSummary(conn, session) {
 
   const [cvSum] = await conn.execute(
     `SELECT COALESCE(SUM(total_debit), 0) AS total FROM cv_headers
-     WHERE bank_account_id = ? AND status = 'Posted' AND transaction_date BETWEEN ? AND ?`,
-    [session.bankAccountId, session.periodStart, session.periodEnd]
+     WHERE bank_account_id = ? AND status = 'Posted' AND transaction_date BETWEEN ? AND ?${companyClause("", session.companyId).sql}`,
+    [session.bankAccountId, session.periodStart, session.periodEnd, ...companyClause("", session.companyId).params]
   );
   const [orSum] = await conn.execute(
     `SELECT COALESCE(SUM(total_debit), 0) AS total FROM or_headers
-     WHERE bank_account_id = ? AND status = 'Posted' AND transaction_date BETWEEN ? AND ?`,
-    [session.bankAccountId, session.periodStart, session.periodEnd]
+     WHERE bank_account_id = ? AND status = 'Posted' AND transaction_date BETWEEN ? AND ?${companyClause("", session.companyId).sql}`,
+    [session.bankAccountId, session.periodStart, session.periodEnd, ...companyClause("", session.companyId).params]
   );
 
   let jvNet = 0;
@@ -188,8 +201,8 @@ async function computeSessionSummary(conn, session) {
     const [jvSum] = await conn.execute(
       `SELECT COALESCE(SUM(jl.debit), 0) AS debitTotal, COALESCE(SUM(jl.credit), 0) AS creditTotal
        FROM jv_lines jl JOIN jv_headers jh ON jh.id = jl.jv_id
-       WHERE jl.account_id = ? AND jh.status = 'Posted' AND jh.transaction_date BETWEEN ? AND ?`,
-      [session.bankCoaAccountId, session.periodStart, session.periodEnd]
+       WHERE jl.account_id = ? AND jh.status = 'Posted' AND jh.transaction_date BETWEEN ? AND ?${companyClause("jh.", session.companyId).sql}`,
+      [session.bankCoaAccountId, session.periodStart, session.periodEnd, ...companyClause("jh.", session.companyId).params]
     );
     jvNet = Number(jvSum[0].debitTotal) - Number(jvSum[0].creditTotal);
   }

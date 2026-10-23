@@ -180,6 +180,7 @@ const MIGRATION_ORDER = [
   // + ADMIN grant - must run after user_access_control_migration.sql
   // (owns permissions/role_permissions/roles).
   "report_sections_permissions_migration.sql",
+  "bank_recon_company_scope_migration.sql",
 ];
 
 module.exports = { MIGRATION_ORDER };

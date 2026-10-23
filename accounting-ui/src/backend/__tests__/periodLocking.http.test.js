@@ -162,9 +162,11 @@ beforeAll(async () => {
   bankCodeId = bankCodeResult.insertId;
 
   const [sessionResult] = await pool.execute(
-    `INSERT INTO bank_recon_sessions (bank_account_id, period_start, period_end, statement_beginning_balance, statement_ending_balance, status, created_by)
-     VALUES (?, '2026-07-01', '2026-08-31', 0, 0, 'IN_PROGRESS', ?)`,
-    [bankCodeId, adminAId]
+    // Sessions are company-owned (bank_recon_company_scope_migration.sql);
+    // this one belongs to Company A, whose admin posts its adjustments.
+    `INSERT INTO bank_recon_sessions (company_id, bank_account_id, period_start, period_end, statement_beginning_balance, statement_ending_balance, status, created_by)
+     VALUES (?, ?, '2026-07-01', '2026-08-31', 0, 0, 'IN_PROGRESS', ?)`,
+    [companyAId, bankCodeId, adminAId]
   );
   bankSessionId = sessionResult.insertId;
 

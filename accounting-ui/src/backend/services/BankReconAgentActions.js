@@ -16,6 +16,47 @@ const {
 } = require("./BankMatchingService");
 const { scoreCandidate, classifyAdjustmentSuggestion } = require("./ConfidenceScoringService");
 const { resolveDateRange } = require("./PromptParser");
+const { AsyncLocalStorage } = require("async_hooks");
+const PermissionService = require("./permissionService");
+const {
+  assertSessionAccess,
+  assertRecordAccess,
+  resolveCompanyForNewSession,
+} = require("./bankReconAccessService");
+
+// ---- Access control for every agent action ----
+// The AI route itself only requires REPORTS.AI_RECONCILIATION/VIEW. Each turn
+// runs inside runAs(user, ...), and every exported action below goes through
+// a guard that (1) takes the user from that context - never from the
+// provider - (2) applies the same session/company guard as the REST routes,
+// and (3) requires the same Bank Reconciliation permission the equivalent
+// manual action needs (VIEW to read, CREATE to change). Outside runAs every
+// action is refused.
+const agentContext = new AsyncLocalStorage();
+
+function runAs(user, fn) {
+  return agentContext.run({ user, companyId: null }, fn);
+}
+
+function contextOrDeny() {
+  const ctx = agentContext.getStore();
+  if (!ctx?.user) throw new HttpError(403, "AI reconciliation actions require a signed-in user");
+  return ctx;
+}
+
+// Company of the session the current action is working on (audit rows).
+function agentCompany() {
+  return agentContext.getStore()?.companyId ?? null;
+}
+
+async function requireReconPermission(user, action) {
+  const allowed = await PermissionService.can(user.id, "REPORTS.BANK_RECONCILIATION", action);
+  if (!allowed) {
+    throw new HttpError(403, action === "VIEW"
+      ? "You do not have permission to view bank reconciliations."
+      : "You do not have permission to change bank reconciliations.");
+  }
+}
 
 // ---- Tier 1: always available (read-only or safely-reversible staging) ----
 
@@ -34,14 +75,20 @@ async function findOrCreateSession(input, user) {
     throw new HttpError(400, "bankAccountId is required");
   }
 
+  const companyId = await resolveCompanyForNewSession(user, input.companyId);
+  const ctx = agentContext.getStore();
+  if (ctx) ctx.companyId = companyId;
+
   const [existing] = await pool.execute(
-    `${BANK_RECON_SESSION_SELECT} WHERE s.bank_account_id = ? AND s.period_start = ? AND s.period_end = ?`,
-    [input.bankAccountId, periodStart, periodEnd]
+    `${BANK_RECON_SESSION_SELECT} WHERE s.company_id = ? AND s.bank_account_id = ? AND s.period_start = ? AND s.period_end = ?`,
+    [companyId, input.bankAccountId, periodStart, periodEnd]
   );
 
   if (existing.length > 0) {
     return { created: false, session: existing[0] };
   }
+
+  await requireReconPermission(user, "CREATE");
 
   const conn = await pool.getConnection();
   try {
@@ -49,12 +96,13 @@ async function findOrCreateSession(input, user) {
 
     const [result] = await conn.execute(
       `INSERT INTO bank_recon_sessions(
-        bank_account_id, period_start, period_end,
+        company_id, bank_account_id, period_start, period_end,
         statement_beginning_balance, statement_ending_balance,
         date_tolerance_days, amount_variance_type, amount_variance_value,
         status, notes, created_by
-      ) VALUES (?,?,?,0,0,?,?,?, 'IN_PROGRESS', ?, ?)`,
+      ) VALUES (?,?,?,?,0,0,?,?,?, 'IN_PROGRESS', ?, ?)`,
       [
+        companyId,
         input.bankAccountId,
         periodStart,
         periodEnd,
@@ -76,6 +124,7 @@ async function findOrCreateSession(input, user) {
       description: `[AI Agent] Reconciliation session #${sessionId} created for bank account ${input.bankAccountId} (${periodStart} to ${periodEnd})`,
       afterData: { bankAccountId: input.bankAccountId, periodStart, periodEnd },
       user,
+      companyId: agentCompany(),
     });
 
     await conn.commit();
@@ -181,7 +230,8 @@ async function runMatchingForSession(sessionId, user) {
       session.bankCoaAccountId,
       session.periodStart,
       session.periodEnd,
-      session.dateToleranceDays
+      session.dateToleranceDays,
+      session.companyId
     );
 
     const [confirmedRows] = await conn.execute(
@@ -266,6 +316,7 @@ async function runMatchingForSession(sessionId, user) {
       description: `[AI Agent] Matching engine run on session #${sessionId}: ${stmtLines.length} line(s) processed, ${suggestedCount} with suggestions`,
       afterData: { processed: stmtLines.length, suggested: suggestedCount },
       user,
+      companyId: agentCompany(),
     });
 
     await conn.commit();
@@ -328,6 +379,7 @@ async function updateSessionTolerance(sessionId, input, user) {
       beforeData: existing,
       afterData: next,
       user,
+      companyId: agentCompany(),
     });
 
     await conn.commit();
@@ -383,6 +435,7 @@ async function confirmMatch(matchId, user) {
       beforeData: { status: match.status },
       afterData: { status: "CONFIRMED" },
       user,
+      companyId: agentCompany(),
     });
 
     await conn.commit();
@@ -435,6 +488,7 @@ async function bulkConfirmExact(sessionId, user) {
       description: `[AI Agent] Bulk-confirmed ${exactMatches.length} exact match(es) in session #${sessionId}`,
       afterData: { confirmedCount: exactMatches.length },
       user,
+      companyId: agentCompany(),
     });
 
     await conn.commit();
@@ -447,16 +501,33 @@ async function bulkConfirmExact(sessionId, user) {
   }
 }
 
+// Guard wrappers. `kind` names how the first argument maps to a session;
+// the user always comes from runAs(), replacing whatever the caller passed.
+function guarded(fn, { kind = null, permission = "VIEW", passUser = false } = {}) {
+  return async (...args) => {
+    const ctx = contextOrDeny();
+    await requireReconPermission(ctx.user, permission);
+    if (kind) {
+      const session = await assertRecordAccess(kind, args[0], ctx.user);
+      ctx.companyId = session.companyId;
+    }
+    if (passUser) args[fn.length - 1] = ctx.user;
+    return fn(...args);
+  };
+}
+
 module.exports = {
-  listBankAccounts,
-  findOrCreateSession,
-  getSession,
-  getSessionSummary,
-  getOutstandingItems,
-  listAdjustments,
-  getLowConfidenceLines,
-  runMatchingForSession,
-  updateSessionTolerance,
-  confirmMatch,
-  bulkConfirmExact,
+  runAs,
+  listBankAccounts: guarded(listBankAccounts),
+  // creates only when needed - CREATE is required inside, at that point
+  findOrCreateSession: guarded(findOrCreateSession, { passUser: true }),
+  getSession: guarded(getSession, { kind: "session" }),
+  getSessionSummary: guarded(getSessionSummary, { kind: "session" }),
+  getOutstandingItems: guarded(getOutstandingItems, { kind: "session" }),
+  listAdjustments: guarded(listAdjustments, { kind: "session" }),
+  getLowConfidenceLines: guarded(getLowConfidenceLines, { kind: "session" }),
+  runMatchingForSession: guarded(runMatchingForSession, { kind: "session", permission: "CREATE", passUser: true }),
+  updateSessionTolerance: guarded(updateSessionTolerance, { kind: "session", permission: "CREATE", passUser: true }),
+  confirmMatch: guarded(confirmMatch, { kind: "match", permission: "CREATE", passUser: true }),
+  bulkConfirmExact: guarded(bulkConfirmExact, { kind: "session", permission: "CREATE", passUser: true }),
 };

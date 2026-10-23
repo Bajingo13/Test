@@ -11,6 +11,7 @@ function todayIso() {
 
 function emptySessionForm() {
   return {
+    companyId: "",
     bankAccountId: "",
     periodStart: todayIso(),
     periodEnd: todayIso(),
@@ -28,6 +29,9 @@ export default function BankReconciliation() {
 
   const [sessions, setSessions] = useState([]);
   const [bankAccounts, setBankAccounts] = useState([]);
+  // Companies the user may reconcile for (server-scoped). A session belongs
+  // to exactly one; the picker only appears when there is a real choice.
+  const [companies, setCompanies] = useState([]);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
   const [showNewForm, setShowNewForm] = useState(false);
@@ -37,7 +41,25 @@ export default function BankReconciliation() {
   useEffect(() => {
     loadSessions();
     loadBankAccounts();
+    loadCompanies();
   }, []);
+
+  async function loadCompanies() {
+    try {
+      const res = await fetch(`${API_BASE}/api/companies`, {
+        credentials: "include",
+        headers: authHeaders(),
+      });
+      const data = await res.json();
+      if (!res.ok || !Array.isArray(data)) {
+        if (handleAuthError(res.status)) return;
+        return;
+      }
+      setCompanies(data);
+    } catch (err) {
+      console.error("LOAD COMPANIES ERROR:", err);
+    }
+  }
 
   async function loadSessions() {
     try {
@@ -86,7 +108,7 @@ export default function BankReconciliation() {
     return sessions.filter((s) => {
       const matchesSearch =
         !q ||
-        [s.bankName, s.bankCode, s.bankAccountNo, s.notes]
+        [s.companyName, s.bankName, s.bankCode, s.bankAccountNo, s.notes]
           .join(" ")
           .toLowerCase()
           .includes(q);
@@ -105,11 +127,14 @@ export default function BankReconciliation() {
   }
 
   function openNewForm() {
-    setForm(emptySessionForm());
+    setForm({ ...emptySessionForm(), companyId: companies.length === 1 ? String(companies[0].id) : "" });
     setShowNewForm(true);
   }
 
   async function createSession() {
+    if (companies.length > 1 && !form.companyId) {
+      return alert("Select the company this reconciliation belongs to.");
+    }
     if (!form.bankAccountId) return alert("Bank account is required.");
     if (!form.periodStart || !form.periodEnd) {
       return alert("Period start and end are required.");
@@ -167,6 +192,24 @@ export default function BankReconciliation() {
           <h2>New Reconciliation Session</h2>
 
           <div className="brc-grid">
+            {companies.length > 1 && (
+              <div>
+                <label htmlFor="brc-company">Company</label>
+                <select
+                  id="brc-company"
+                  value={form.companyId}
+                  onChange={(e) => setForm({ ...form, companyId: e.target.value })}
+                >
+                  <option value="">Select company</option>
+                  {companies.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
             <div>
               <label>Bank Account</label>
               <select
@@ -314,6 +357,7 @@ export default function BankReconciliation() {
           <table className="brc-table">
             <thead>
               <tr>
+                <th>Company</th>
                 <th>Bank Account</th>
                 <th>Period</th>
                 <th>Statement Beginning</th>
@@ -326,7 +370,7 @@ export default function BankReconciliation() {
             <tbody>
               {filteredSessions.length === 0 ? (
                 <tr>
-                  <td colSpan="6" className="brc-empty">
+                  <td colSpan="7" className="brc-empty">
                     {sessions.length === 0
                       ? "No reconciliation sessions yet."
                       : "No sessions match your search/filter."}
@@ -335,6 +379,7 @@ export default function BankReconciliation() {
               ) : (
                 filteredSessions.map((s) => (
                   <tr key={s.id}>
+                    <td>{s.companyName || "Unassigned"}</td>
                     <td>
                       {s.bankCode} - {s.bankName}
                       {s.bankAccountNo ? ` (${s.bankAccountNo})` : ""}
