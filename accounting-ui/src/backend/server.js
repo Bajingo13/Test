@@ -7605,90 +7605,10 @@ registerMemoRoutes("DEBIT", "debit-memos", "TRANSACTIONS.DEBIT_CREDIT_MEMO", "De
 registerMemoRoutes("CREDIT", "credit-memos", "TRANSACTIONS.DEBIT_CREDIT_MEMO", "Credit Memo");
 
 // ===================== AUDIT LOG API =====================
-
-// Security fix: this route previously had no company scoping at all - any
-// user granted ADMIN.AUDIT_LOGS/VIEW (a plain role/permission check, not a
-// company-membership check - see permissionService.js) could retrieve
-// every company's audit history, including full before_data/after_data.
-// Fixed the same way every other company-scoped route in this codebase
-// already resolves and validates company access - NOT by trusting
-// req.query.companyId directly: resolveCompanyIdForWrite() validates a
-// caller-supplied companyId against the user's own access
-// (UserAccessService.userHasCompanyAccess, 403 if not permitted; SUPER_ADMIN
-// bypasses the check exactly like every other route) and otherwise falls
-// back to the user's single accessible company, or a clean 400 asking for
-// one explicitly if the user has more than one - the identical convention
-// GET /api/accounting-periods and every other multi-company list route
-// already use. No new authorization pattern was invented for this route.
-//
-// Legacy rows written before this fix (and the handful of intentionally
-// company-less system events - see lib/audit.js) have company_id = NULL.
-// WHERE company_id = ? never matches NULL in SQL, so those rows are simply
-// excluded from every company-scoped result - never shown to the wrong
-// company, never shown to everyone. That is the deliberately chosen, safe
-// behavior; no historical row was modified, backfilled, or guessed at.
-app.get("/api/audit-logs", authenticateToken, authorizePermission("ADMIN.AUDIT_LOGS", "VIEW"), async (req, res) => {
-  try {
-    const { module, entityType, entityId, userId, from, to, limit } = req.query;
-    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
-
-    const clauses = ["company_id = ?"];
-    const params = [companyId];
-
-    if (module) {
-      clauses.push("module = ?");
-      params.push(module);
-    }
-    if (entityType) {
-      clauses.push("entity_type = ?");
-      params.push(entityType);
-    }
-    if (entityId) {
-      clauses.push("entity_id = ?");
-      params.push(Number(entityId));
-    }
-    if (userId) {
-      clauses.push("user_id = ?");
-      params.push(Number(userId));
-    }
-    if (from) {
-      clauses.push("created_at >= ?");
-      params.push(from);
-    }
-    if (to) {
-      clauses.push("created_at <= ?");
-      params.push(to);
-    }
-
-    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-    const safeLimit = Math.min(Number(limit) || 200, 1000);
-
-    const [rows] = await pool.execute(
-      `SELECT
-        id,
-        module,
-        entity_type AS entityType,
-        entity_id AS entityId,
-        action,
-        description,
-        before_data AS beforeData,
-        after_data AS afterData,
-        user_id AS userId,
-        username,
-        created_at AS createdAt
-      FROM audit_logs
-      ${where}
-      ORDER BY id DESC
-      LIMIT ${safeLimit}`,
-      params
-    );
-
-    res.json(rows);
-  } catch (err) {
-    console.error("GET AUDIT LOGS ERROR:", err);
-    res.status(err.statusCode || 500).json({ message: err.statusCode ? err.message : "Failed to load audit logs" });
-  }
-});
+// List / detail / CSV export with company scoping (company events: users of
+// that company; company-less system events: Super Admin only) - see
+// routes/auditLogs.routes.js and services/auditLogService.js.
+app.use("/api/audit-logs", require("./routes/auditLogs.routes"));
 
 // ===================== BANK RECONCILIATION API =====================
 // Extracted into services/controllers/routes (see backend/routes/bankRecon.routes.js).
