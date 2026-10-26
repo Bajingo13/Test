@@ -385,3 +385,136 @@ describe("InviteUserModal.jsx", () => {
     expect(src).toMatch(/disabled=\{submitting \|\| !formReady\}/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// The accept-invite link carries the raw invitation token. It may be returned
+// to the inviting admin (manual sharing) but must never reach the server log.
+// These tests use the REAL emailService (no sendInvitationEmail mock) and
+// capture every console channel.
+describe("raw invitation token is never logged", () => {
+  const nodemailer = require("nodemailer");
+  const SMTP_KEYS = ["SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS", "SMTP_FROM"];
+  const savedEnv = {};
+  // One fake transport for the whole block: emailService caches the first
+  // transporter it creates, so each test steers this object's sendMail.
+  const fakeTransport = { sendMail: jest.fn() };
+  let logged;
+
+  function captureConsole() {
+    logged = [];
+    for (const method of ["log", "info", "warn", "error", "debug"]) {
+      jest.spyOn(console, method).mockImplementation((...args) => {
+        logged.push(args.map((a) => (a instanceof Error ? `${a.message}\n${a.stack}` : typeof a === "string" ? a : JSON.stringify(a))).join(" "));
+      });
+    }
+  }
+
+  function assertNotLogged(acceptUrl) {
+    const raw = tokenOf(acceptUrl);
+    const all = logged.join("\n");
+    expect(raw).toMatch(/^[0-9a-f]{64}$/);
+    expect(all).not.toContain(raw);
+    expect(all).not.toContain(acceptUrl);
+    expect(all).not.toMatch(/accept-invite\?token=/);
+  }
+
+  function useSmtp(configured) {
+    for (const k of SMTP_KEYS) delete process.env[k];
+    if (configured) {
+      Object.assign(process.env, { SMTP_HOST: "smtp.invalid.test", SMTP_PORT: "587", SMTP_USER: "invt-smtp-user", SMTP_PASS: "invt-smtp-pass", SMTP_FROM: "noreply@example.test" });
+    }
+  }
+
+  beforeAll(() => {
+    for (const k of SMTP_KEYS) savedEnv[k] = process.env[k];
+  });
+
+  beforeEach(() => {
+    jest.spyOn(nodemailer, "createTransport").mockReturnValue(fakeTransport);
+    fakeTransport.sendMail.mockReset();
+    captureConsole();
+  });
+
+  afterAll(() => {
+    for (const k of SMTP_KEYS) {
+      if (savedEnv[k] === undefined) delete process.env[k];
+      else process.env[k] = savedEnv[k];
+    }
+  });
+
+  test("A. SMTP not configured: no throw, manual link returned, token not logged, stored value is the hash", async () => {
+    useSmtp(false);
+    const res = await invite("adminA", { email: MAIL("log-nosmtp"), fullName: "Log NoSmtp", roleId: ids.ACCOUNTANT, companyIds: [ids.coA] });
+    expect(res.status).toBe(201);
+    expect(res.body.emailDelivered).toBe(false);
+    expect(res.body.acceptUrl).toMatch(/\/accept-invite\?token=[0-9a-f]{64}$/);
+    assertNotLogged(res.body.acceptUrl);
+    expect(logged.join("\n")).toContain(`invitation email for ${MAIL("log-nosmtp")} not sent`);
+    // D. integrity: stored value is the hash of the returned token, never the token
+    const row = await invitationRow(MAIL("log-nosmtp"));
+    const raw = tokenOf(res.body.acceptUrl);
+    expect(row.token_hash).toBe(sha256(raw));
+    expect(row.token_hash).not.toBe(raw);
+    expect(row.email_delivery_status).not.toBe("SENT");
+    // the returned link still works
+    const v = await request(app).get(`/api/invitations/validate/${raw}`);
+    expect(v.status).toBe(200);
+  });
+
+  test("A2. resend without SMTP: new manual link returned, not logged, old token replaced by the new hash", async () => {
+    useSmtp(false);
+    const created = await invite("adminA", { email: MAIL("log-resend"), fullName: "Log Resend", roleId: ids.ACCOUNTANT, companyIds: [ids.coA] });
+    const before = await invitationRow(MAIL("log-resend"));
+    captureConsole();
+    const res = await request(app).post(`/api/invitations/${before.id}/resend`).set(auth("adminA"));
+    expect(res.status).toBe(200);
+    expect(res.body.acceptUrl).toMatch(/accept-invite\?token=/);
+    assertNotLogged(res.body.acceptUrl);
+    const after = await invitationRow(MAIL("log-resend"));
+    expect(after.token_hash).toBe(sha256(tokenOf(res.body.acceptUrl)));
+    expect(tokenOf(res.body.acceptUrl)).not.toBe(tokenOf(created.body.acceptUrl));
+  });
+
+  test("B. delivery failure: manual link returned, error message logged, token not logged", async () => {
+    useSmtp(true);
+    fakeTransport.sendMail.mockRejectedValue(new Error("connect ECONNREFUSED smtp.invalid.test:587"));
+    const res = await invite("adminA", { email: MAIL("log-fail"), fullName: "Log Fail", roleId: ids.ACCOUNTANT, companyIds: [ids.coA] });
+    expect(res.status).toBe(201);
+    expect(res.body.emailDelivered).toBe(false);
+    expect(res.body.acceptUrl).toMatch(/accept-invite\?token=[0-9a-f]{64}$/);
+    expect(fakeTransport.sendMail).toHaveBeenCalledTimes(1);
+    assertNotLogged(res.body.acceptUrl);
+    const all = logged.join("\n");
+    expect(all).toContain("ECONNREFUSED");
+    expect(all).toContain(`invitation email for ${MAIL("log-fail")} not sent`);
+    expect(all).not.toContain("invt-smtp-pass");
+    const row = await invitationRow(MAIL("log-fail"));
+    expect(row.token_hash).toBe(sha256(tokenOf(res.body.acceptUrl)));
+  });
+
+  test("C. successful delivery: unchanged behaviour (link only in the email, not in the response or the log)", async () => {
+    useSmtp(true);
+    fakeTransport.sendMail.mockResolvedValue({ messageId: "invt-ok" });
+    const res = await invite("adminA", { email: MAIL("log-ok"), fullName: "Log Ok", roleId: ids.ACCOUNTANT, companyIds: [ids.coA] });
+    expect(res.status).toBe(201);
+    expect(res.body.emailDelivered).toBe(true);
+    expect(res.body.acceptUrl).toBeUndefined();
+    expect(fakeTransport.sendMail).toHaveBeenCalledTimes(1);
+    const mail = fakeTransport.sendMail.mock.calls[0][0];
+    expect(mail.to).toBe(MAIL("log-ok"));
+    const emailedUrl = mail.text.match(/https?:\/\/\S+accept-invite\?token=[0-9a-f]{64}/)[0];
+    expect(mail.html).toContain(emailedUrl);
+    assertNotLogged(emailedUrl);
+    // D. the emailed token is the one whose hash is stored
+    const row = await invitationRow(MAIL("log-ok"));
+    expect(row.token_hash).toBe(sha256(tokenOf(emailedUrl)));
+    expect(row.email_delivery_status).toBe("SENT");
+  });
+
+  test("emailService source no longer interpolates the accept URL into any log call", () => {
+    const src = fs.readFileSync(path.join(__dirname, "..", "services", "emailService.js"), "utf8");
+    const logCalls = src.match(/console\.\w+\([^;]*\);/g) || [];
+    expect(logCalls.length).toBeGreaterThan(0);
+    for (const call of logCalls) expect(call).not.toMatch(/acceptUrl|token/i);
+  });
+});

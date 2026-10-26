@@ -4,9 +4,13 @@ const nodemailer = require("nodemailer");
 // SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM). If they're not set, or the
 // send fails for any reason, we never crash the invitation workflow - the
 // invitation record is already created regardless of email delivery, and
-// the raw accept-invite link is logged server-side (never the token hash,
-// never any other secret) so the flow stays fully testable and an admin
-// can always manually share the link.
+// the caller hands the accept-invite link to the inviting admin in the API
+// response so it can be shared manually.
+//
+// The accept-invite link carries the raw invitation token, which is enough
+// to accept the invitation. It is therefore NEVER written to the server log
+// (stdout ends up in hosting/platform logs) - only the recipient and the
+// delivery outcome are.
 function isConfigured() {
   return Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS);
 }
@@ -47,7 +51,7 @@ If you weren't expecting this invitation, you can ignore this email.`;
 
   const transporter = getTransporter();
   if (!transporter) {
-    console.log(`[emailService] SMTP not configured - invitation link for ${to}: ${acceptUrl}`);
+    console.log(`[emailService] SMTP not configured - invitation email for ${to} not sent; link returned to the inviter for manual sharing.`);
     return { delivered: false, reason: "SMTP_NOT_CONFIGURED" };
   }
 
@@ -62,7 +66,7 @@ If you weren't expecting this invitation, you can ignore this email.`;
     return { delivered: true };
   } catch (err) {
     console.error("SEND INVITATION EMAIL ERROR:", err.message);
-    console.log(`[emailService] Delivery failed - invitation link for ${to}: ${acceptUrl}`);
+    console.log(`[emailService] Delivery failed - invitation email for ${to} not sent; link returned to the inviter for manual sharing.`);
     return { delivered: false, reason: "SEND_FAILED" };
   }
 }
