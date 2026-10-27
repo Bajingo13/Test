@@ -2,7 +2,7 @@ const pool = require("../db");
 const { logAudit } = require("../lib/audit");
 const TrialBalanceDifferenceService = require("./trialBalanceDifferenceService");
 const ValidationService = require("./trialBalanceValidationService");
-const CurrencyService = require("./currencyService");
+const UserAccessService = require("./userAccessService");
 const { postedOnlySql } = require("./reportRecognitionService");
 
 // The 3 header/line modules Trial Balance actually unions (see
@@ -760,26 +760,89 @@ async function runAllDetectors(params) {
   ];
 }
 
-// Debounce: return an existing still-RUNNING run for this user/params
-// started in the last 60s instead of starting a second one.
-async function findRecentRunningRun({ userId, from, to, tolerance }) {
+// ---- Company ownership ----
+// A run belongs to exactly one company (trial_balance_checker_runs.
+// company_id); its findings belong to it through run_id. The company is
+// chosen explicitly when the run starts and every later action (view,
+// export, mark investigated, recheck, adjustment draft) uses the run's
+// stored company - never the caller's first/lowest company.
+
+function httpError(message, statusCode) {
+  return Object.assign(new Error(message), { statusCode });
+}
+
+const RUN_NOT_FOUND = "Checker run not found";
+const FINDING_NOT_FOUND = "Finding not found";
+
+// Company for a NEW run. Unlike CurrencyService.resolveCompanyIdForWrite,
+// a Super Admin (or anyone with several companies) must pick one - there
+// is no lowest-company default.
+async function resolveRunCompany(user, requestedCompanyId) {
+  const hasRequest = requestedCompanyId !== undefined && requestedCompanyId !== null && String(requestedCompanyId).trim() !== "";
+  if (hasRequest) {
+    const id = Number(requestedCompanyId);
+    if (!Number.isInteger(id) || id <= 0) throw httpError("companyId must be a valid company id.", 400);
+    const [rows] = await pool.execute("SELECT id FROM companies WHERE id = ?", [id]);
+    if (!rows.length) throw httpError("Selected company does not exist.", 400);
+    if (user?.roleCode !== "SUPER_ADMIN" && !(await UserAccessService.userHasCompanyAccess(user?.id, id))) {
+      throw httpError("You do not have access to this company", 403);
+    }
+    return id;
+  }
+  if (user?.roleCode === "SUPER_ADMIN") {
+    throw httpError("Select a company to run the Trial Balance Checker.", 400);
+  }
+  const accessible = await UserAccessService.getAccessibleCompanyIds(user?.id);
+  if (accessible.length === 0) throw httpError("You are not assigned to any company.", 403);
+  if (accessible.length > 1) throw httpError("Select a company to run the Trial Balance Checker - you have access to more than one.", 400);
+  return accessible[0];
+}
+
+// Super Admin: every run, including legacy runs with no company. Anyone
+// else: only runs of a company they belong to. Unknown and out-of-scope
+// look identical (same 404), so another company's run is never confirmed.
+async function canAccessRunCompany(user, companyId) {
+  if (user?.roleCode === "SUPER_ADMIN") return true;
+  if (!companyId || !user?.id) return false;
+  return UserAccessService.userHasCompanyAccess(user.id, companyId);
+}
+
+async function getAccessibleRunRow(runId, user) {
+  const [rows] = await pool.execute(
+    `SELECT *, DATE_FORMAT(from_date, '%Y-%m-%d') AS from_date_fmt, DATE_FORMAT(to_date, '%Y-%m-%d') AS to_date_fmt
+     FROM trial_balance_checker_runs WHERE id = ?`,
+    [runId]
+  );
+  const run = rows[0];
+  if (!run || !(await canAccessRunCompany(user, run.company_id))) throw httpError(RUN_NOT_FOUND, 404);
+  return run;
+}
+
+// Debounce: return an existing still-RUNNING run for this user/params AND
+// company started in the last 60s instead of starting a second one - a
+// running Company A check is never handed back for Company B.
+async function findRecentRunningRun({ userId, companyId, from, to, tolerance }) {
   const [rows] = await pool.execute(
     `SELECT id FROM trial_balance_checker_runs
-     WHERE run_by <=> ? AND from_date <=> ? AND to_date <=> ? AND tolerance = ?
+     WHERE run_by <=> ? AND company_id = ? AND from_date <=> ? AND to_date <=> ? AND tolerance = ?
        AND run_state = 'RUNNING' AND created_at > (NOW() - INTERVAL 60 SECOND)
      ORDER BY id DESC LIMIT 1`,
-    [userId || null, from || null, to || null, tolerance]
+    [userId || null, companyId, from || null, to || null, tolerance]
   );
   return rows[0]?.id || null;
 }
 
+// companyId must already be resolved and access-checked by the caller
+// (resolveRunCompany for a new run, the prior run's own company for a
+// recheck).
 async function runCheck({ from, to, tolerance, user, companyId }) {
+  if (!companyId) throw httpError("A company is required to run the Trial Balance Checker.", 400);
   const tol = tolerance ?? "0";
   const userId = user?.id || null;
 
-  const existingRunId = await findRecentRunningRun({ userId, from, to, tolerance: tol });
+  const existingRunId = await findRecentRunningRun({ userId, companyId, from, to, tolerance: tol });
   if (existingRunId) {
-    return getRun(existingRunId);
+    return getRun(existingRunId, user);
   }
 
   const totals = await TrialBalanceDifferenceService.getTrialBalanceTotals({ from, to, companyId });
@@ -787,9 +850,9 @@ async function runCheck({ from, to, tolerance, user, companyId }) {
 
   const [runResult] = await pool.execute(
     `INSERT INTO trial_balance_checker_runs
-      (run_by, run_by_username, from_date, to_date, tolerance, total_debit, total_credit, difference, balance_status, run_state)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'RUNNING')`,
-    [userId, user?.username || null, from || null, to || null, tol, totals.totalDebit, totals.totalCredit, totals.difference, balance.status]
+      (company_id, run_by, run_by_username, from_date, to_date, tolerance, total_debit, total_credit, difference, balance_status, run_state)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'RUNNING')`,
+    [companyId, userId, user?.username || null, from || null, to || null, tol, totals.totalDebit, totals.totalCredit, totals.difference, balance.status]
   );
   const runId = runResult.insertId;
 
@@ -846,19 +909,13 @@ async function runCheck({ from, to, tolerance, user, companyId }) {
     throw err;
   }
 
-  return getRun(runId);
+  return getRun(runId, user);
 }
 
-async function getRun(runId) {
-  const [runRows] = await pool.execute(
-    `SELECT *, DATE_FORMAT(from_date, '%Y-%m-%d') AS from_date_fmt, DATE_FORMAT(to_date, '%Y-%m-%d') AS to_date_fmt
-     FROM trial_balance_checker_runs WHERE id = ?`,
-    [runId]
-  );
-  const run = runRows[0];
-  if (!run) {
-    throw Object.assign(new Error("Checker run not found"), { statusCode: 404 });
-  }
+// The run (and its findings) only if `user` may access the run's company;
+// otherwise the same 404 as an unknown id.
+async function getRun(runId, user) {
+  const run = await getAccessibleRunRow(runId, user);
 
   const [findings] = await pool.execute(
     `SELECT id, run_id, category, severity, source_module, source_table, transaction_id, transaction_number,
@@ -873,6 +930,7 @@ async function getRun(runId) {
 
   return {
     runId: run.id,
+    companyId: run.company_id,
     summary: {
       fromDate: run.from_date_fmt || null,
       toDate: run.to_date_fmt || null,
@@ -888,24 +946,29 @@ async function getRun(runId) {
   };
 }
 
-async function getFinding(findingId) {
+// finding -> run -> company. company_id is the owning run's company (NULL
+// for a legacy run). Unknown and out-of-scope findings get the same 404.
+async function getFinding(findingId, user) {
   const [rows] = await pool.execute(
-    `SELECT id, run_id, category, severity, source_module, source_table, transaction_id, transaction_number,
-       DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transaction_date, reference_no, account_code, account_title,
-       debit, credit, line_difference, status, reason, recommended_action, investigated, investigated_by,
-       investigated_note, investigated_at, adjustment_jv_id, created_at
-     FROM trial_balance_checker_findings WHERE id = ?`,
+    `SELECT f.id, f.run_id, r.company_id, f.category, f.severity, f.source_module, f.source_table, f.transaction_id, f.transaction_number,
+       DATE_FORMAT(f.transaction_date, '%Y-%m-%d') AS transaction_date, f.reference_no, f.account_code, f.account_title,
+       f.debit, f.credit, f.line_difference, f.status, f.reason, f.recommended_action, f.investigated, f.investigated_by,
+       f.investigated_note, f.investigated_at, f.adjustment_jv_id, f.created_at
+     FROM trial_balance_checker_findings f
+     JOIN trial_balance_checker_runs r ON r.id = f.run_id
+     WHERE f.id = ?`,
     [findingId]
   );
   const finding = rows[0];
-  if (!finding) {
-    throw Object.assign(new Error("Finding not found"), { statusCode: 404 });
+  if (!finding || !(await canAccessRunCompany(user, finding.company_id))) {
+    throw httpError(FINDING_NOT_FOUND, 404);
   }
   return finding;
 }
 
 async function markInvestigated(findingId, { note, user }) {
-  const finding = await getFinding(findingId);
+  // Access check before the update.
+  const finding = await getFinding(findingId, user);
 
   await pool.execute(
     `UPDATE trial_balance_checker_findings
@@ -923,17 +986,30 @@ async function markInvestigated(findingId, { note, user }) {
     beforeData: { investigated: !!finding.investigated },
     afterData: { investigated: true, note },
     user,
+    companyId: finding.company_id,
   });
 
-  return getFinding(findingId);
+  return getFinding(findingId, user);
 }
 
 // The only action in this service that writes to an existing table -
 // always creates a Draft-status JV (never Posted), mirroring the exact
 // insert shape POST /api/jv already uses. Nothing is auto-posted; a human
 // must open the JV module and post it explicitly.
+//
+// The JV belongs to the company the finding's run checked
+// (run.company_id) - never the caller's first/lowest company. A legacy run
+// with no stored company cannot produce a draft at all (409): its company
+// can't be known, and guessing would post into the wrong books.
 async function createAdjustmentDraft(findingId, { debitAccountCode, creditAccountCode, amount, explanation, user }) {
-  const finding = await getFinding(findingId);
+  const finding = await getFinding(findingId, user);
+  const companyId = finding.company_id;
+  if (!companyId) {
+    throw httpError(
+      "This checker run has no company assigned, so an adjustment draft cannot be created from it. Run the checker again for the company and create the draft from the new run.",
+      409
+    );
+  }
 
   if (!debitAccountCode || !creditAccountCode) {
     throw Object.assign(new Error("Both a debit and a credit account code are required."), { statusCode: 400 });
@@ -961,7 +1037,6 @@ async function createAdjustmentDraft(findingId, { debitAccountCode, creditAccoun
 
     const voucherNo = `TBADJ-${finding.id}-${Date.now()}`;
     const today = new Date().toISOString().slice(0, 10);
-    const companyId = await CurrencyService.resolveCompanyIdForWrite(user, null);
 
     const [headerResult] = await conn.execute(
       `INSERT INTO jv_headers
@@ -1003,6 +1078,7 @@ async function createAdjustmentDraft(findingId, { debitAccountCode, creditAccoun
       description: `Draft JV ${voucherNo} created from finding #${finding.id} (${finding.category}) - status Draft, not posted`,
       afterData: { jvId, voucherNo, debitAccountCode, creditAccountCode, amount: amountNum, explanation },
       user,
+      companyId,
     });
 
     await conn.commit();
@@ -1031,6 +1107,7 @@ function findingsToCsv(findings) {
 }
 
 module.exports = {
+  resolveRunCompany,
   runCheck,
   getRun,
   getFinding,

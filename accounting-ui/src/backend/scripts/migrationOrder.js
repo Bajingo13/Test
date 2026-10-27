@@ -181,6 +181,9 @@ const MIGRATION_ORDER = [
   // (owns permissions/role_permissions/roles).
   "report_sections_permissions_migration.sql",
   "bank_recon_company_scope_migration.sql",
+  // Trial Balance Checker company isolation: trial_balance_checker_runs.
+  // company_id (no backfill). Must run after trial_balance_checker_migration.sql.
+  "trial_balance_checker_company_scope_migration.sql",
 ];
 
 module.exports = { MIGRATION_ORDER };

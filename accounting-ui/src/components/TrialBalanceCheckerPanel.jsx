@@ -63,6 +63,13 @@ export default function TrialBalanceCheckerPanel({ open, from, to, tolerance, on
   const [draftForm, setDraftForm] = useState(null);
   const [draftSubmitting, setDraftSubmitting] = useState(false);
 
+  // The company the checker runs for. A user with exactly one company gets
+  // it automatically; a Super Admin or a user with several companies must
+  // pick one - there is never a lowest-company default. Every run stores
+  // this company, and its findings/drafts stay in it.
+  const [companyState, setCompanyState] = useState({ status: "idle", companies: [], isSuperAdmin: false, message: "" });
+  const [companyId, setCompanyId] = useState("");
+
   const missingParams = !from || !to;
 
   useEffect(() => {
@@ -70,19 +77,71 @@ export default function TrialBalanceCheckerPanel({ open, from, to, tolerance, on
     setRunResult(null);
     setCheckError("");
     setStatusError(null);
+    setStatus(null);
     setSearch("");
     setCategoryFilter("ALL");
     setSeverityFilter("ALL");
-    loadStatus();
+    loadCompanies();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, from, to, tolerance]);
 
+  useEffect(() => {
+    if (!open || missingParams || !companyId) return;
+    setRunResult(null);
+    setCheckError("");
+    loadStatus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, from, to, tolerance, companyId]);
+
+  async function loadCompanies() {
+    setCompanyState((s) => ({ ...s, status: "loading", message: "" }));
+    try {
+      const [meRes, companiesRes] = await Promise.all([
+        fetch(`${API_URL}/api/me/permissions`, { credentials: "include", headers: authHeaders() }),
+        fetch(`${API_URL}/api/companies`, { credentials: "include", headers: authHeaders() }),
+      ]);
+      if (!meRes.ok || !companiesRes.ok) throw new Error(`HTTP ${meRes.ok ? companiesRes.status : meRes.status}`);
+      const me = await meRes.json();
+      const companies = await companiesRes.json();
+      const isSuperAdmin = me?.user?.roleCode === "SUPER_ADMIN";
+      const list = Array.isArray(companies) ? companies : [];
+      setCompanyState({
+        status: "ready",
+        companies: list,
+        isSuperAdmin,
+        message: list.length ? "" : "You are not assigned to any company, so the checker cannot run.",
+      });
+      setCompanyId((current) => {
+        if (current && list.some((c) => String(c.id) === String(current))) return current;
+        return !isSuperAdmin && list.length === 1 ? String(list[0].id) : "";
+      });
+    } catch (err) {
+      if (import.meta.env.DEV) console.error("LOAD TB CHECKER COMPANIES ERROR:", err);
+      setCompanyId("");
+      setCompanyState({
+        status: "error",
+        companies: [],
+        isSuperAdmin: false,
+        message: "Unable to load your companies, so the checker cannot run. Please try again.",
+      });
+    }
+  }
+
+  function selectCompany(value) {
+    setCompanyId(value);
+    setStatus(null);
+    setStatusError(null);
+    setRunResult(null);
+    setCheckError("");
+  }
+
   async function loadStatus() {
+    if (!companyId) return;
     setStatusLoading(true);
     setStatusError(null);
     try {
       const res = await fetch(
-        `${API_URL}/api/reports/trial-balance-checker/status?from=${from}&to=${to}&tolerance=${tolerance}`,
+        `${API_URL}/api/reports/trial-balance-checker/status?from=${from}&to=${to}&tolerance=${tolerance}&companyId=${encodeURIComponent(companyId)}`,
         { credentials: "include", headers: authHeaders() }
       );
 
@@ -123,7 +182,7 @@ export default function TrialBalanceCheckerPanel({ open, from, to, tolerance, on
   }
 
   async function runCheck() {
-    if (checking) return;
+    if (checking || !companyId) return;
     setChecking(true);
     setCheckError("");
 
@@ -132,11 +191,21 @@ export default function TrialBalanceCheckerPanel({ open, from, to, tolerance, on
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json", ...authHeaders() },
-        body: JSON.stringify({ from, to, tolerance }),
+        body: JSON.stringify({ from, to, tolerance, companyId: Number(companyId) }),
       });
 
       if (res.status === 401 || res.status === 403) {
-        setCheckError("You don't have permission to run the Trial Balance Checker.");
+        let denied = null;
+        try {
+          denied = await res.json();
+        } catch {
+          denied = null;
+        }
+        setCheckError(
+          /company/i.test(denied?.message || "")
+            ? denied.message
+            : "You don't have permission to run the Trial Balance Checker."
+        );
         return;
       }
       if (res.status === 404) {
@@ -379,6 +448,49 @@ export default function TrialBalanceCheckerPanel({ open, from, to, tolerance, on
         </div>
 
         <div className="tbcp-body">
+          <div style={{ marginBottom: 12 }}>
+            {companyState.status === "loading" && <p className="tbcp-muted">Loading companies...</p>}
+
+            {companyState.status === "error" && (
+              <div className="tbcp-error-banner">
+                {companyState.message}
+                <div style={{ marginTop: 8 }}>
+                  <button type="button" className="tbcp-link-btn" onClick={loadCompanies}>
+                    Retry
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {companyState.status === "ready" && companyState.message && (
+              <div className="tbcp-error-banner">{companyState.message}</div>
+            )}
+
+            {companyState.status === "ready" && companyState.companies.length > 0 &&
+              (!companyState.isSuperAdmin && companyState.companies.length === 1 ? (
+                <p className="tbcp-muted">
+                  Company: <strong>{companyState.companies[0].name}</strong>
+                </p>
+              ) : (
+                <label style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <span>Company</span>
+                  <select
+                    className="tbcp-select"
+                    value={companyId}
+                    onChange={(e) => selectCompany(e.target.value)}
+                    aria-label="Company to check"
+                  >
+                    <option value="">Select a company...</option>
+                    {companyState.companies.map((c) => (
+                      <option key={c.id} value={String(c.id)}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ))}
+          </div>
+
           <div className="tbcp-summary-grid">
             <div className="tbcp-summary-item">
               <div className="label">Total Debit</div>
@@ -415,7 +527,11 @@ export default function TrialBalanceCheckerPanel({ open, from, to, tolerance, on
             </div>
           )}
 
-          {!runResult && !statusLoading && !statusError && (
+          {!companyId && companyState.status === "ready" && companyState.companies.length > 0 && (
+            <p className="tbcp-muted">Select a company to load its Trial Balance status and run the checker.</p>
+          )}
+
+          {companyId && !runResult && !statusLoading && !statusError && (
             <p className="tbcp-muted">
               This will inspect General Journal, AP Voucher, Check Voucher, and Beginning Balance
               records for the selected period and report every finding that could be contributing
@@ -610,7 +726,7 @@ export default function TrialBalanceCheckerPanel({ open, from, to, tolerance, on
             <button type="button" className="tbcp-btn-secondary" onClick={onClose}>
               Close
             </button>
-            <button type="button" className="tbcp-btn-primary" onClick={runCheck} disabled={checking}>
+            <button type="button" className="tbcp-btn-primary" onClick={runCheck} disabled={checking || !companyId}>
               {checking ? "Checking..." : runResult ? "Re-run Check" : "Run Full Check"}
             </button>
           </div>

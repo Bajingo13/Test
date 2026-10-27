@@ -31,7 +31,8 @@ exports.getStatus = async (req, res) => {
 exports.runCheck = async (req, res) => {
   try {
     const { from, to, tolerance } = req.body;
-    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.body.companyId);
+    // Explicit, validated company - no lowest-company default.
+    const companyId = await CheckerService.resolveRunCompany(req.user, req.body.companyId);
     const result = await CheckerService.runCheck({ from, to, tolerance, user: req.user, companyId });
     res.json(result);
   } catch (err) {
@@ -42,7 +43,7 @@ exports.runCheck = async (req, res) => {
 
 exports.getRun = async (req, res) => {
   try {
-    const result = await CheckerService.getRun(req.params.runId);
+    const result = await CheckerService.getRun(req.params.runId, req.user);
     res.json(result);
   } catch (err) {
     console.error("TRIAL BALANCE CHECKER GET RUN ERROR:", err.message);
@@ -52,14 +53,20 @@ exports.getRun = async (req, res) => {
 
 exports.recheck = async (req, res) => {
   try {
-    const prior = await CheckerService.getRun(req.params.runId);
-    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.body?.companyId);
+    // A recheck stays in the prior run's own company (access-checked by
+    // getRun); a company in the request body is ignored.
+    const prior = await CheckerService.getRun(req.params.runId, req.user);
+    if (!prior.companyId) {
+      return res.status(409).json({
+        message: "This checker run has no company assigned, so it cannot be re-run. Run a new check for the company instead.",
+      });
+    }
     const result = await CheckerService.runCheck({
       from: prior.summary.fromDate,
       to: prior.summary.toDate,
       tolerance: prior.summary.tolerance,
       user: req.user,
-      companyId,
+      companyId: prior.companyId,
     });
     res.json(result);
   } catch (err) {
@@ -98,7 +105,7 @@ exports.createAdjustmentDraft = async (req, res) => {
 
 exports.exportRun = async (req, res) => {
   try {
-    const run = await CheckerService.getRun(req.params.runId);
+    const run = await CheckerService.getRun(req.params.runId, req.user);
     const csv = CheckerService.findingsToCsv(run.findings);
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader("Content-Disposition", `attachment; filename="Trial_Balance_Checker_Run_${req.params.runId}.csv"`);

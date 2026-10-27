@@ -315,6 +315,13 @@ afterAll(async () => {
   await pool.query("DELETE FROM account_group_codes WHERE group_code LIKE 'RPT6A%'");
   await pool.query("DELETE FROM user_companies WHERE user_id IN (?,?)", [adminUserAId, adminUserBId]);
   await pool.query("DELETE FROM users WHERE id IN (?,?)", [adminUserAId, adminUserBId]);
+  // Checker runs now belong to a company (fk_tb_checker_run_company,
+  // ON DELETE RESTRICT) - remove this suite's runs before its companies.
+  await pool.query(
+    "DELETE f FROM trial_balance_checker_findings f JOIN trial_balance_checker_runs r ON r.id = f.run_id WHERE r.company_id IN (?,?)",
+    [companyAId, companyBId]
+  );
+  await pool.query("DELETE FROM trial_balance_checker_runs WHERE company_id IN (?,?)", [companyAId, companyBId]);
   await pool.query("DELETE FROM companies WHERE id IN (?,?)", [companyAId, companyBId]);
   await pool.end();
 });
