@@ -44,6 +44,8 @@ exports.create = async (req, res) => {
       description: `Created print template "${template.templateName}" (${template.moduleType}/${template.documentVariant})`,
       user: req.user,
       afterData: template,
+      // The template row's own company_id (document_print_templates).
+      companyId: template.companyId,
       ...requestMeta(req),
     });
 
@@ -69,6 +71,7 @@ exports.update = async (req, res) => {
       user: req.user,
       beforeData: before,
       afterData: template,
+      companyId: template.companyId,
       ...requestMeta(req),
     });
 
@@ -91,6 +94,7 @@ exports.setDefault = async (req, res) => {
       action: "SET_DEFAULT",
       description: `Set "${template.templateName}" as the default ${template.moduleType} print template`,
       user: req.user,
+      companyId: template.companyId,
       ...requestMeta(req),
     });
 
@@ -113,6 +117,7 @@ exports.activate = async (req, res) => {
       action: "ACTIVATE",
       description: `Activated print template "${template.templateName}"`,
       user: req.user,
+      companyId: template.companyId,
       ...requestMeta(req),
     });
 
@@ -154,6 +159,8 @@ exports.preview = async (req, res) => {
       action: "PREVIEW",
       description: `Previewed unsaved ${moduleType} print template config against ${moduleType} #${result.doc.voucherNo}`,
       user: req.user,
+      // The previewed transaction was loaded WHERE company_id = companyId.
+      companyId,
       ...requestMeta(req),
     });
 
@@ -195,6 +202,7 @@ exports.deactivate = async (req, res) => {
       action: "DEACTIVATE",
       description: `Deactivated print template "${template.templateName}"`,
       user: req.user,
+      companyId: template.companyId,
       ...requestMeta(req),
     });
 

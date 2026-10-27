@@ -225,6 +225,7 @@ async function generateYearPeriods({ companyId, year, user }) {
       description: `Generated ${created.length} accounting period(s) for ${year}`,
       afterData: { companyId, year, createdMonths: created.map((c) => c.month) },
       user,
+      companyId,
     });
     return { createdCount: created.length, skippedCount: 12 - created.length };
   } catch (err) {
@@ -357,6 +358,7 @@ async function transitionPeriod({ periodId, companyId, user, notes, fromStatuses
       beforeData: { status: current.status },
       afterData: { status: toStatus, notes },
       user,
+      companyId: current.company_id,
     });
 
     return await getPeriod(periodId, companyId);

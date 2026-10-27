@@ -324,6 +324,7 @@ async function calculate({ companyId, revaluationDate, userId }) {
       description: `Calculated FX revaluation for ${revaluationDate}: ${allItems.length} items, gain ${totalGain}, loss ${totalLoss}, ${itemsRequiringRate} requiring rate`,
       afterData: { revaluationDate, itemCount: allItems.length, totalGain, totalLoss, netEffect, itemsRequiringRate },
       user: userId ? { id: userId } : null,
+      companyId,
     });
 
     await conn.commit();
@@ -512,6 +513,7 @@ async function post({ sessionId, userId, companyId }) {
         description: `Posted FX revaluation for ${session.revaluation_date} as JV ${voucherNo} (#${jvId}): gain ${session.total_gain}, loss ${session.total_loss}`,
         afterData: { jvId, voucherNo, totalGain: session.total_gain, totalLoss: session.total_loss, netEffect: session.net_effect, itemCount: itemRows.length },
         user: userId ? { id: userId } : null,
+        companyId: session.company_id,
       });
 
       await conn.commit();
@@ -528,6 +530,7 @@ async function post({ sessionId, userId, companyId }) {
       action: "FX_REVALUATION_POSTED",
       description: `Posted FX revaluation for ${session.revaluation_date} - net zero movement, no JV required`,
       user: userId ? { id: userId } : null,
+      companyId: session.company_id,
     });
     await conn.commit();
     return { status: "POSTED", sessionId, jvId: null, voucherNo: null };
@@ -616,6 +619,7 @@ async function reverse({ sessionId, userId, companyId }) {
       beforeData: { status: "POSTED", jvId: session.jv_id },
       afterData: { status: "REVERSED", reversalJvId },
       user: userId ? { id: userId } : null,
+      companyId: session.company_id,
     });
 
     await conn.commit();

@@ -838,6 +838,8 @@ async function runCheck({ from, to, tolerance, user, companyId }) {
       description: `Trial Balance Checker run for ${from || "(all)"} to ${to || "(all)"}: ${balance.status}, difference ${balance.differenceFormatted}, ${findings.length} finding(s)`,
       afterData: { from, to, tolerance: tol, status: balance.status, findingCount: findings.length },
       user,
+      // Every detector above ran WHERE company_id = companyId.
+      companyId,
     });
   } catch (err) {
     await pool.execute(`UPDATE trial_balance_checker_runs SET run_state = 'FAILED' WHERE id = ?`, [runId]);

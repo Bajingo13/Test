@@ -1,5 +1,6 @@
 const pool = require("../db");
 const { logAudit } = require("../lib/audit");
+const { soleCompanyOfUser } = require("../lib/auditCompany");
 const PermissionService = require("./permissionService");
 
 // The Access Restrictions module (Super-Admin-only per spec) is a
@@ -78,6 +79,9 @@ async function createRestriction({ userId, permissionId, granted, reason, acting
       : null,
     afterData: { userId, username: targetUser.username, ...permissionRef, permissionId, granted: !!granted, reason: reason || null },
     user: actingUser,
+    // Overrides are per user (not per company): attributed only when the
+    // target user belongs to exactly one company.
+    companyId: await soleCompanyOfUser(pool, userId),
   });
 
   const [rows] = await pool.execute("SELECT id FROM user_permissions WHERE user_id = ? AND permission_id = ?", [userId, permissionId]);
@@ -119,6 +123,7 @@ async function deleteRestriction(id, actingUser) {
     },
     afterData: null,
     user: actingUser,
+    companyId: await soleCompanyOfUser(pool, restriction.user_id),
   });
 
   return { id, removed: true };
@@ -180,6 +185,7 @@ async function setUserAccess(userId, grants, actingUser) {
       beforeData: { userId: targetUser.id, username: targetUser.username, overrides: before },
       afterData: { userId: targetUser.id, username: targetUser.username, overrides: after, grantCount: normalized.length },
       user: actingUser,
+      companyId: await soleCompanyOfUser(conn, userId),
     });
 
     await conn.commit();

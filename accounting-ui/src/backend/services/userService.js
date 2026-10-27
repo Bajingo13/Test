@@ -1,5 +1,6 @@
 const pool = require("../db");
 const { logAudit } = require("../lib/audit");
+const { soleCompanyForAccess, soleCompanyOfUser } = require("../lib/auditCompany");
 const UserAccessService = require("./userAccessService");
 
 const VALID_STATUSES = ["ACTIVE", "INACTIVE", "SUSPENDED"];
@@ -274,6 +275,13 @@ async function updateUserAccess(id, { fullName, roleId, companyIds, branchIds },
     // pick up the new permission set on their very next request.
     await conn.execute("UPDATE users SET token_version = token_version + 1 WHERE id = ?", [id]);
 
+    // Company of the event: the one company spanned by the before AND
+    // after access sets (a move from A to B touches two - stays NULL).
+    const auditCompanyId = await soleCompanyForAccess(conn, {
+      companyIds: [...before.companyIds, ...after.companyIds],
+      branchIds: [...before.branchIds, ...after.branchIds],
+    });
+
     await logAudit(conn, {
       module: "USERS",
       entityType: "USER",
@@ -283,6 +291,7 @@ async function updateUserAccess(id, { fullName, roleId, companyIds, branchIds },
       beforeData: before,
       afterData: after,
       user: actingUser,
+      companyId: auditCompanyId,
     });
 
     await conn.commit();
@@ -336,6 +345,7 @@ async function updateUserStatus(id, status, actingUser) {
     beforeData: { status: target.status },
     afterData: { status },
     user: actingUser,
+    companyId: await soleCompanyOfUser(pool, id),
   });
 
   return withAccessSummary(await getUserOr404(id));
@@ -354,6 +364,7 @@ async function unlockUser(id, actingUser) {
     action: "USER_UNLOCKED",
     description: `${actingUser.username} unlocked ${target.username}'s account`,
     user: actingUser,
+    companyId: await soleCompanyOfUser(pool, id),
   });
 
   return withAccessSummary(await getUserOr404(id));
@@ -372,6 +383,7 @@ async function revokeSessions(id, actingUser) {
     action: "SESSION_REVOKED",
     description: `${actingUser.username} revoked all active sessions for ${target.username}`,
     user: actingUser,
+    companyId: await soleCompanyOfUser(pool, id),
   });
 
   return { id, revoked: true };

@@ -40,6 +40,7 @@ exports.getInvoicePrintDocument = async (req, res) => {
       action: INTENTS[intent],
       description: `INVOICE #${viewModel.document.invoiceNumber} print-view (intent=${intent}, mode=${withEntries ? "with_entries" : "without_entries"})`,
       user: req.user,
+      companyId,
       ...requestMeta(req),
     });
 
@@ -91,6 +92,7 @@ exports.exportInvoicePrintPdf = async (req, res) => {
       action: "PRINT_EXPORT_PDF",
       description: `INVOICE #${viewModel.document.invoiceNumber} PDF export (disposition=${disposition}, mode=${withEntries ? "with_entries" : "without_entries"})`,
       user: req.user,
+      companyId,
       ...requestMeta(req),
     });
 
@@ -123,6 +125,7 @@ exports.getInvoiceListPrintDocument = async (req, res) => {
       action: "PRINT_LIST_PREVIEW",
       description: `INVOICE list print-view (grouping=${viewModel.grouping}, from=${viewModel.from || ""}, to=${viewModel.to || ""}, count=${viewModel.count})`,
       user: req.user,
+      companyId,
       ...requestMeta(req),
     });
 
@@ -162,6 +165,7 @@ exports.exportInvoiceListPrintPdf = async (req, res) => {
       action: "PRINT_LIST_EXPORT_PDF",
       description: `INVOICE list PDF export (grouping=${grouping}, from=${from || ""}, to=${to || ""}, count=${viewModel.count}, disposition=${disposition})`,
       user: req.user,
+      companyId,
       ...requestMeta(req),
     });
 

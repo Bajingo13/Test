@@ -57,6 +57,7 @@ exports.getDocument = async (req, res) => {
       action: PRINT_ACTIONS[intent],
       description: `${transactionType.toUpperCase()} #${result.doc.voucherNo} print (mode=${mode}, intent=${intent}, copyType=${copyType}, copies=${copies})`,
       user: req.user,
+      companyId,
       ...requestMeta(req),
     });
 
@@ -84,6 +85,7 @@ exports.getList = async (req, res) => {
       action: LIST_ACTIONS[intent],
       description: `${transactionType.toUpperCase()} list print (grouping=${grouping}, from=${from || ""}, to=${to || ""}, records=${result.count}, copyType=${copyType || "Original"}, copies=${copies})`,
       user: req.user,
+      companyId,
       ...requestMeta(req),
     });
 

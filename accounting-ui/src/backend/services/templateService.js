@@ -1,5 +1,6 @@
 const pool = require("../db");
 const { logAudit } = require("../lib/audit");
+const { soleCompanyOfUser } = require("../lib/auditCompany");
 const PermissionService = require("./permissionService");
 
 function httpError(message, statusCode) {
@@ -307,6 +308,9 @@ async function applyTemplateToUser(templateId, userId, actingUser) {
       deniedCount: items.filter((i) => !i.granted).length,
     },
     user: actingUser,
+    // The template itself is global; the event is about the target user,
+    // so it follows that user's single company (NULL if several or none).
+    companyId: await soleCompanyOfUser(pool, userId),
   });
 
   return result;

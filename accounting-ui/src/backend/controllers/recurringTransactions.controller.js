@@ -69,6 +69,8 @@ exports.create = async (req, res) => {
       description: `Recurring template #${result.templateId} created for ${req.body.moduleType} (${req.body.templateName})`,
       afterData: { moduleType: req.body.moduleType, templateName: req.body.templateName, schedule: req.body.schedule },
       user: req.user,
+      // The company createTemplate() stored on the template row.
+      companyId,
       ...requestMeta(req),
     });
 
@@ -136,6 +138,8 @@ exports.update = async (req, res) => {
       description: `Recurring template #${req.params.id} edited`,
       afterData: req.body,
       user: req.user,
+      // The UPDATE above only matched a template owned by companyId.
+      companyId,
       ...requestMeta(req),
     });
 
@@ -154,7 +158,7 @@ exports.pause = async (req, res) => {
     await logAudit(pool, {
       module: "RECURRING.TRANSACTIONS", entityType: "RECURRING_TEMPLATE", entityId: Number(req.params.id),
       action: "TEMPLATE_PAUSED", description: `Recurring template #${req.params.id} paused`,
-      user: req.user, ...requestMeta(req),
+      user: req.user, companyId, ...requestMeta(req),
     });
     res.json({ success: true });
   } catch (err) {
@@ -180,7 +184,7 @@ exports.resume = async (req, res) => {
       module: "RECURRING.TRANSACTIONS", entityType: "RECURRING_TEMPLATE", entityId: Number(req.params.id),
       action: "TEMPLATE_RESUMED", description: `Recurring template #${req.params.id} resumed${result.catchUpPolicy ? ` (catch-up: ${result.catchUpPolicy})` : ""}`,
       afterData: { catchUpPolicy: result.catchUpPolicy || null, newNextRunDate: result.newNextRunDate || null },
-      user: req.user, ...requestMeta(req),
+      user: req.user, companyId, ...requestMeta(req),
     });
     res.json({ success: true, ...result });
   } catch (err) {
@@ -197,7 +201,7 @@ exports.stop = async (req, res) => {
     await logAudit(pool, {
       module: "RECURRING.TRANSACTIONS", entityType: "RECURRING_TEMPLATE", entityId: Number(req.params.id),
       action: "TEMPLATE_STOPPED", description: `Recurring template #${req.params.id} stopped`,
-      user: req.user, ...requestMeta(req),
+      user: req.user, companyId, ...requestMeta(req),
     });
     res.json({ success: true });
   } catch (err) {
@@ -242,7 +246,7 @@ exports.skip = async (req, res) => {
     await logAudit(pool, {
       module: "RECURRING.TRANSACTIONS", entityType: "RECURRING_TEMPLATE", entityId: Number(req.params.id),
       action: "OCCURRENCE_SKIPPED", description: `Occurrence ${occurrenceDate} skipped for recurring template #${req.params.id}: ${reason || "(no reason given)"}`,
-      user: req.user, ...requestMeta(req),
+      user: req.user, companyId, ...requestMeta(req),
     });
 
     res.json({ success: true, skippedDate: occurrenceDate, ...result });

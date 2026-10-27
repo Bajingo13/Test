@@ -244,6 +244,10 @@ async function processSchedule(scheduleId, { triggerType = "MANUAL", userId = nu
   const conn = await pool.getConnection();
   let occurrenceDate = null;
   let moduleType = null;
+  // Audit company: the template's own stored company_id, never
+  // resolveTemplateCompanyId()'s first-company fallback for legacy
+  // templates with none (those audit rows stay NULL / SYSTEM).
+  let auditCompanyId = null;
 
   try {
     await conn.beginTransaction();
@@ -267,6 +271,7 @@ async function processSchedule(scheduleId, { triggerType = "MANUAL", userId = nu
     template.amount_config = TemplateService.parseJsonColumn(template.amount_config, {});
     template.due_date_rule = TemplateService.parseJsonColumn(template.due_date_rule, {});
     moduleType = template.module_type;
+    auditCompanyId = template.company_id || null;
 
     if (template.status !== "ACTIVE") throw new HttpError(409, "This recurring template is not active.");
 
@@ -352,6 +357,7 @@ async function processSchedule(scheduleId, { triggerType = "MANUAL", userId = nu
           action: "OCCURRENCE_PERIOD_CLOSED",
           description: `Occurrence for ${occurrenceDate} on template #${template.id} was not generated - ${periodErr.message} (trigger=${triggerType}).`,
           user: userId ? { id: userId } : null,
+          companyId: auditCompanyId,
         });
         await conn.commit();
         return { status: "PERIOD_CLOSED", occurrenceDate, occurrenceId: closedResult.insertId, message: periodErr.message };
@@ -384,6 +390,7 @@ async function processSchedule(scheduleId, { triggerType = "MANUAL", userId = nu
         action: "OCCURRENCE_RATE_REVIEW_REQUIRED",
         description: `Occurrence for ${occurrenceDate} on template #${template.id} needs manual rate approval before it can generate (trigger=${triggerType}).`,
         user: userId ? { id: userId } : null,
+        companyId: auditCompanyId,
       });
       await conn.commit();
       return { status: "RATE_REVIEW_REQUIRED", occurrenceDate, occurrenceId: reviewResult.insertId };
@@ -517,6 +524,7 @@ async function processSchedule(scheduleId, { triggerType = "MANUAL", userId = nu
       description: `Generated ${moduleType.toUpperCase()} ${voucherNo} from recurring template #${template.id} for ${occurrenceDate} (trigger=${triggerType})`,
       afterData: { scheduleId, occurrenceDate, generatedId, voucherNo },
       user: userId ? { id: userId } : null,
+      companyId: auditCompanyId,
     });
 
     await conn.commit();
@@ -541,6 +549,7 @@ async function processSchedule(scheduleId, { triggerType = "MANUAL", userId = nu
           action: "OCCURRENCE_FAILED",
           description: `Failed to generate occurrence for ${occurrenceDate} (trigger=${triggerType}): ${safeErrorMessage(err)}`,
           user: userId ? { id: userId } : null,
+          companyId: auditCompanyId,
         });
       } catch (loggingErr) {
         console.error("RECURRING GENERATION - FAILED TO RECORD FAILURE:", loggingErr);

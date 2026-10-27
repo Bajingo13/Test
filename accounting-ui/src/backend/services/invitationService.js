@@ -2,6 +2,7 @@ const crypto = require("crypto");
 const bcrypt = require("bcryptjs");
 const pool = require("../db");
 const { logAudit } = require("../lib/audit");
+const { soleCompanyForAccess } = require("../lib/auditCompany");
 const EmailService = require("./emailService");
 const UserAccessService = require("./userAccessService");
 const TemplateService = require("./templateService");
@@ -147,6 +148,8 @@ async function createInvitation({ email, fullName, roleId, companyIds, branchIds
     description: `${actingUser.username} invited ${normalizedEmail} as ${role.name}`,
     afterData: { email: normalizedEmail, roleCode: role.code, companyIdList, branchIdList, emailDelivered: emailResult.delivered },
     user: actingUser,
+    // A company event only when the invitation covers exactly one company.
+    companyId: await soleCompanyForAccess(pool, { companyIds: companyIdList, branchIds: branchIdList }),
   });
 
   return {
@@ -237,6 +240,7 @@ async function resendInvitation(id, actingUser) {
     description: `${actingUser.username} resent invitation to ${invitation.email}`,
     afterData: { emailDelivered: emailResult.delivered },
     user: actingUser,
+    companyId: await soleCompanyForAccess(pool, { companyIds: invitation.company_ids, branchIds: invitation.branch_ids }),
   });
 
   return { id, emailDelivered: emailResult.delivered, acceptUrl: emailResult.delivered ? undefined : acceptUrl };
@@ -260,6 +264,7 @@ async function revokeInvitation(id, actingUser) {
     action: "INVITATION_REVOKED",
     description: `${actingUser.username} revoked invitation to ${invitation.email}`,
     user: actingUser,
+    companyId: await soleCompanyForAccess(pool, { companyIds: invitation.company_ids, branchIds: invitation.branch_ids }),
   });
 
   return { id, status: "REVOKED" };
@@ -406,6 +411,7 @@ async function acceptInvitation({ token, password, acceptedTerms }) {
       throw Object.assign(new Error("This invitation has already been used."), { statusCode: 410 });
     }
 
+    const auditCompanyId = await soleCompanyForAccess(conn, { companyIds, branchIds });
     await logAudit(conn, {
       module: "INVITATIONS",
       entityType: "INVITATION",
@@ -414,6 +420,7 @@ async function acceptInvitation({ token, password, acceptedTerms }) {
       description: `${invitation.email} accepted their invitation and activated their account`,
       afterData: { newUserId },
       user: { id: newUserId, username: invitation.email },
+      companyId: auditCompanyId,
     });
     await logAudit(conn, {
       module: "USERS",
@@ -422,6 +429,7 @@ async function acceptInvitation({ token, password, acceptedTerms }) {
       action: "USER_ACTIVATED",
       description: `Account activated via invitation for ${invitation.email}`,
       user: { id: newUserId, username: invitation.email },
+      companyId: auditCompanyId,
     });
 
     await conn.commit();
