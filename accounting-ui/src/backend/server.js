@@ -8447,7 +8447,11 @@ app.get("/api/reports/account-analysis", authenticateToken, authorizePermission(
       return res.status(400).json({ message: "from and to dates are required" });
     }
 
-    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+    // Same explicit, validated company as the Trial Balance report it is
+    // opened from (resolveSelectedCompany): only a single-company user may
+    // omit companyId; a Super Admin or multi-company user must send one -
+    // no lowest/first-company default.
+    const companyId = await TrialBalanceCheckerService.resolveSelectedCompany(req.user, req.query.companyId);
 
     // Reports Batch 1: previously a hand-rolled 6-source UNION (APV/CV/
     // AR-AP-Beginning/JV/Petty-Cash/Memo) missing Invoice, OR, and GL
@@ -8469,6 +8473,7 @@ app.get("/api/reports/account-analysis", authenticateToken, authorizePermission(
     res.json(rows);
   } catch (err) {
     console.error("ACCOUNT ANALYSIS REPORT ERROR:", err.message);
+    if (err.statusCode) return res.status(err.statusCode).json({ message: err.message });
     res.status(500).json({
       message: "Failed to generate account analysis",
       error: err.message,

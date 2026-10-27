@@ -9,6 +9,7 @@ import {
   trialBalanceQuery,
   trialBalanceStatusQuery,
 } from "../../utils/trialBalanceCompany.mjs";
+import { accountAnalysisLink } from "../../utils/accountAnalysisCompany.mjs";
 import "./TrialBalance.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
@@ -114,12 +115,10 @@ export default function TrialBalance() {
       .toUpperCase();
   };
 
+  // The drill-down carries this page's selected company, so Account
+  // Analysis shows the same company's ledger.
   const openAccountAnalysis = (row) => {
-    navigate(
-      `/reports/account-analysis?accountCode=${encodeURIComponent(
-        row.account_code
-      )}&from=${fromDate}&to=${toDate}`
-    );
+    navigate(accountAnalysisLink({ accountCode: row.account_code, from: fromDate, to: toDate, companyId }));
   };
 
   async function generateTrialBalance(forCompanyId = companyId) {

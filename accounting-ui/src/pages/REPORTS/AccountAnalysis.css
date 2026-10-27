@@ -55,6 +55,37 @@
   background: var(--bg-surface);
 }
 
+/* Account Analysis company context: "select a company" prompt and errors. */
+.aa-company-message {
+  margin: 14px 0 0;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: var(--bg-surface-muted);
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.aa-company-message.error {
+  background: var(--danger-bg);
+  color: var(--danger-text);
+}
+
+.aa-link-btn {
+  border: none;
+  background: none;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.aa-report-company {
+  margin: 0 0 4px;
+  font-weight: 700;
+}
+
 .aa-actions {
   display: flex;
   gap: 14px;
