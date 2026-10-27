@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { statusMatchesCompany, trialBalanceStatusQuery } from "../utils/trialBalanceCompany.mjs";
 import "./TrialBalanceCheckerPanel.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
@@ -41,7 +42,11 @@ function formatMoney(value) {
   });
 }
 
-export default function TrialBalanceCheckerPanel({ open, from, to, tolerance, onClose }) {
+// companyId / companyName come from the parent Trial Balance page's Company
+// filter - the page owns the one company context, so the panel never picks
+// a company of its own. Every run stores this company, and its findings and
+// adjustment drafts stay in it (enforced server-side).
+export default function TrialBalanceCheckerPanel({ open, companyId, companyName, from, to, tolerance, onClose }) {
   const navigate = useNavigate();
 
   const [status, setStatus] = useState(null);
@@ -63,13 +68,6 @@ export default function TrialBalanceCheckerPanel({ open, from, to, tolerance, on
   const [draftForm, setDraftForm] = useState(null);
   const [draftSubmitting, setDraftSubmitting] = useState(false);
 
-  // The company the checker runs for. A user with exactly one company gets
-  // it automatically; a Super Admin or a user with several companies must
-  // pick one - there is never a lowest-company default. Every run stores
-  // this company, and its findings/drafts stay in it.
-  const [companyState, setCompanyState] = useState({ status: "idle", companies: [], isSuperAdmin: false, message: "" });
-  const [companyId, setCompanyId] = useState("");
-
   const missingParams = !from || !to;
 
   useEffect(() => {
@@ -81,67 +79,19 @@ export default function TrialBalanceCheckerPanel({ open, from, to, tolerance, on
     setSearch("");
     setCategoryFilter("ALL");
     setSeverityFilter("ALL");
-    loadCompanies();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, from, to, tolerance]);
-
-  useEffect(() => {
-    if (!open || missingParams || !companyId) return;
-    setRunResult(null);
-    setCheckError("");
-    loadStatus();
+    if (companyId) loadStatus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, from, to, tolerance, companyId]);
 
-  async function loadCompanies() {
-    setCompanyState((s) => ({ ...s, status: "loading", message: "" }));
-    try {
-      const [meRes, companiesRes] = await Promise.all([
-        fetch(`${API_URL}/api/me/permissions`, { credentials: "include", headers: authHeaders() }),
-        fetch(`${API_URL}/api/companies`, { credentials: "include", headers: authHeaders() }),
-      ]);
-      if (!meRes.ok || !companiesRes.ok) throw new Error(`HTTP ${meRes.ok ? companiesRes.status : meRes.status}`);
-      const me = await meRes.json();
-      const companies = await companiesRes.json();
-      const isSuperAdmin = me?.user?.roleCode === "SUPER_ADMIN";
-      const list = Array.isArray(companies) ? companies : [];
-      setCompanyState({
-        status: "ready",
-        companies: list,
-        isSuperAdmin,
-        message: list.length ? "" : "You are not assigned to any company, so the checker cannot run.",
-      });
-      setCompanyId((current) => {
-        if (current && list.some((c) => String(c.id) === String(current))) return current;
-        return !isSuperAdmin && list.length === 1 ? String(list[0].id) : "";
-      });
-    } catch (err) {
-      if (import.meta.env.DEV) console.error("LOAD TB CHECKER COMPANIES ERROR:", err);
-      setCompanyId("");
-      setCompanyState({
-        status: "error",
-        companies: [],
-        isSuperAdmin: false,
-        message: "Unable to load your companies, so the checker cannot run. Please try again.",
-      });
-    }
-  }
-
-  function selectCompany(value) {
-    setCompanyId(value);
-    setStatus(null);
-    setStatusError(null);
-    setRunResult(null);
-    setCheckError("");
-  }
-
   async function loadStatus() {
-    if (!companyId) return;
+    const requestedCompanyId = companyId;
+    const query = trialBalanceStatusQuery({ from, to, tolerance, companyId: requestedCompanyId });
+    if (!query) return;
     setStatusLoading(true);
     setStatusError(null);
     try {
       const res = await fetch(
-        `${API_URL}/api/reports/trial-balance-checker/status?from=${from}&to=${to}&tolerance=${tolerance}&companyId=${encodeURIComponent(companyId)}`,
+        `${API_URL}/api/reports/trial-balance-checker/status?${query}`,
         { credentials: "include", headers: authHeaders() }
       );
 
@@ -172,7 +122,8 @@ export default function TrialBalanceCheckerPanel({ open, from, to, tolerance, on
         return;
       }
 
-      setStatus(data);
+      // Only a status for the company this panel is showing.
+      setStatus(statusMatchesCompany(data, requestedCompanyId) ? data : null);
     } catch (err) {
       if (import.meta.env.DEV) console.error("LOAD TB CHECKER STATUS ERROR:", err);
       setStatusError({ type: "network", message: "Unable to connect to the server. Please check your connection and try again." });
@@ -448,48 +399,15 @@ export default function TrialBalanceCheckerPanel({ open, from, to, tolerance, on
         </div>
 
         <div className="tbcp-body">
-          <div style={{ marginBottom: 12 }}>
-            {companyState.status === "loading" && <p className="tbcp-muted">Loading companies...</p>}
-
-            {companyState.status === "error" && (
-              <div className="tbcp-error-banner">
-                {companyState.message}
-                <div style={{ marginTop: 8 }}>
-                  <button type="button" className="tbcp-link-btn" onClick={loadCompanies}>
-                    Retry
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {companyState.status === "ready" && companyState.message && (
-              <div className="tbcp-error-banner">{companyState.message}</div>
-            )}
-
-            {companyState.status === "ready" && companyState.companies.length > 0 &&
-              (!companyState.isSuperAdmin && companyState.companies.length === 1 ? (
-                <p className="tbcp-muted">
-                  Company: <strong>{companyState.companies[0].name}</strong>
-                </p>
-              ) : (
-                <label style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                  <span>Company</span>
-                  <select
-                    className="tbcp-select"
-                    value={companyId}
-                    onChange={(e) => selectCompany(e.target.value)}
-                    aria-label="Company to check"
-                  >
-                    <option value="">Select a company...</option>
-                    {companyState.companies.map((c) => (
-                      <option key={c.id} value={String(c.id)}>
-                        {c.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              ))}
-          </div>
+          {companyId ? (
+            <p className="tbcp-muted" style={{ marginBottom: 12 }}>
+              Company: <strong>{companyName || `#${companyId}`}</strong>
+            </p>
+          ) : (
+            <div className="tbcp-error-banner">
+              Select a company on the Trial Balance page to continue.
+            </div>
+          )}
 
           <div className="tbcp-summary-grid">
             <div className="tbcp-summary-item">
@@ -525,10 +443,6 @@ export default function TrialBalanceCheckerPanel({ open, from, to, tolerance, on
                 </button>
               </div>
             </div>
-          )}
-
-          {!companyId && companyState.status === "ready" && companyState.companies.length > 0 && (
-            <p className="tbcp-muted">Select a company to load its Trial Balance status and run the checker.</p>
           )}
 
           {companyId && !runResult && !statusLoading && !statusError && (

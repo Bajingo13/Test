@@ -42,6 +42,7 @@ const GenLibImportService = require("./services/GenLibImportService");
 const GLBeginningBalanceService = require("./services/GLBeginningBalanceService");
 const BeginningBalanceCurrencyService = require("./services/beginningBalanceCurrencyService");
 const TrialBalanceDifferenceService = require("./services/trialBalanceDifferenceService");
+const TrialBalanceCheckerService = require("./services/trialBalanceCheckerService");
 const { computeEwtTaxableBase, computeEwtAmount } = require("./services/ewtCalculationService");
 const { loadVatControlAccountIds } = require("./services/vatControlAccounts");
 const TransactionPrintDataService = require("./services/transactionPrintDataService");
@@ -8417,11 +8418,15 @@ app.post("/api/gl-beginning-balances", authenticateToken, authorizePermission("F
 app.get("/api/reports/trial-balance", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
   try {
     const { from, to } = req.query;
-    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+    // Same explicit, validated company as the Trial Balance status and
+    // checker - a Super Admin or multi-company user must choose; there is
+    // no lowest/first-company default here.
+    const companyId = await TrialBalanceCheckerService.resolveSelectedCompany(req.user, req.query.companyId);
     const rows = await TrialBalanceDifferenceService.getTrialBalanceRows({ from, to, companyId });
     res.json(rows);
   } catch (err) {
     console.error("TRIAL BALANCE REPORT ERROR:", err.message);
+    if (err.statusCode) return res.status(err.statusCode).json({ message: err.message });
     res.status(500).json({
       message: "Failed to generate trial balance",
       error: err.message,

@@ -774,10 +774,12 @@ function httpError(message, statusCode) {
 const RUN_NOT_FOUND = "Checker run not found";
 const FINDING_NOT_FOUND = "Finding not found";
 
-// Company for a NEW run. Unlike CurrencyService.resolveCompanyIdForWrite,
-// a Super Admin (or anyone with several companies) must pick one - there
-// is no lowest-company default.
-async function resolveRunCompany(user, requestedCompanyId) {
+// The company for the Trial Balance flow - report, status and a NEW
+// checker run all resolve through here, so they always agree. Unlike
+// CurrencyService.resolveCompanyIdForWrite, a Super Admin (or anyone with
+// several companies) must pick one - there is no lowest/first-company
+// default. Only a user with exactly one company may omit it.
+async function resolveSelectedCompany(user, requestedCompanyId) {
   const hasRequest = requestedCompanyId !== undefined && requestedCompanyId !== null && String(requestedCompanyId).trim() !== "";
   if (hasRequest) {
     const id = Number(requestedCompanyId);
@@ -790,11 +792,11 @@ async function resolveRunCompany(user, requestedCompanyId) {
     return id;
   }
   if (user?.roleCode === "SUPER_ADMIN") {
-    throw httpError("Select a company to run the Trial Balance Checker.", 400);
+    throw httpError("Select a company to continue.", 400);
   }
   const accessible = await UserAccessService.getAccessibleCompanyIds(user?.id);
   if (accessible.length === 0) throw httpError("You are not assigned to any company.", 403);
-  if (accessible.length > 1) throw httpError("Select a company to run the Trial Balance Checker - you have access to more than one.", 400);
+  if (accessible.length > 1) throw httpError("Select a company to continue - you have access to more than one.", 400);
   return accessible[0];
 }
 
@@ -833,7 +835,7 @@ async function findRecentRunningRun({ userId, companyId, from, to, tolerance }) 
 }
 
 // companyId must already be resolved and access-checked by the caller
-// (resolveRunCompany for a new run, the prior run's own company for a
+// (resolveSelectedCompany for a new run, the prior run's own company for a
 // recheck).
 async function runCheck({ from, to, tolerance, user, companyId }) {
   if (!companyId) throw httpError("A company is required to run the Trial Balance Checker.", 400);
@@ -1107,7 +1109,7 @@ function findingsToCsv(findings) {
 }
 
 module.exports = {
-  resolveRunCompany,
+  resolveSelectedCompany,
   runCheck,
   getRun,
   getFinding,

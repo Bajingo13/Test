@@ -86,6 +86,36 @@ flex-direction: column;
   cursor: pointer;
 }
 
+/* Company context: "select a company" prompt and lookup errors. */
+.tb-company-message {
+  margin: 14px 0 0;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: var(--bg-surface-muted);
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.tb-company-message.error {
+  background: var(--danger-bg);
+  color: var(--danger-text);
+}
+
+.tb-link-btn {
+  border: none;
+  background: none;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.tb-report-title h3.tb-report-company {
+  margin-bottom: 2px;
+}
+
 .tb-filter-grid label {
 font-size: 14px;
 font-weight: 700;

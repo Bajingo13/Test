@@ -1,21 +1,24 @@
 const TrialBalanceDifferenceService = require("../services/trialBalanceDifferenceService");
 const ValidationService = require("../services/trialBalanceValidationService");
 const CheckerService = require("../services/trialBalanceCheckerService");
-const CurrencyService = require("../services/currencyService");
 
 // Cheap balanced/unbalanced/difference check - backs the persistent badge
 // on the Trial Balance report page. Does not run the full investigation or
-// persist anything; that's POST /check.
+// persist anything; that's POST /check. Same company resolution as the
+// report and the checker run (explicit, validated, no lowest-company
+// default), and the resolved company is echoed back so the page can match
+// a response to the company it asked about.
 exports.getStatus = async (req, res) => {
   try {
     const { from, to } = req.query;
     const tolerance = req.query.tolerance ?? "0";
-    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+    const companyId = await CheckerService.resolveSelectedCompany(req.user, req.query.companyId);
 
     const totals = await TrialBalanceDifferenceService.getTrialBalanceTotals({ from, to, companyId });
     const balance = ValidationService.evaluateBalance({ difference: totals.difference, tolerance });
 
     res.json({
+      companyId,
       totalDebit: totals.totalDebit,
       totalCredit: totals.totalCredit,
       difference: balance.differenceFormatted,
@@ -24,6 +27,7 @@ exports.getStatus = async (req, res) => {
     });
   } catch (err) {
     console.error("TRIAL BALANCE CHECKER STATUS ERROR:", err.message);
+    if (err.statusCode) return res.status(err.statusCode).json({ message: err.message });
     res.status(500).json({ message: "Failed to compute trial balance status", error: err.message });
   }
 };
@@ -32,7 +36,7 @@ exports.runCheck = async (req, res) => {
   try {
     const { from, to, tolerance } = req.body;
     // Explicit, validated company - no lowest-company default.
-    const companyId = await CheckerService.resolveRunCompany(req.user, req.body.companyId);
+    const companyId = await CheckerService.resolveSelectedCompany(req.user, req.body.companyId);
     const result = await CheckerService.runCheck({ from, to, tolerance, user: req.user, companyId });
     res.json(result);
   } catch (err) {

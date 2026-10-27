@@ -1,6 +1,14 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import TrialBalanceCheckerPanel from "../../components/TrialBalanceCheckerPanel";
+import {
+  createRequestGuard,
+  isCompanyLocked,
+  pickInitialCompany,
+  statusMatchesCompany,
+  trialBalanceQuery,
+  trialBalanceStatusQuery,
+} from "../../utils/trialBalanceCompany.mjs";
 import "./TrialBalance.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
@@ -25,6 +33,62 @@ export default function TrialBalance() {
   });
   const [balanceStatus, setBalanceStatus] = useState(null);
   const [checkerOpen, setCheckerOpen] = useState(false);
+
+  // The Company filter is the single company context for this page: the
+  // report, the status badge and the checker all use companyId. A user
+  // with one company gets it automatically; a Super Admin or a user with
+  // several companies must choose (no first/lowest-company default).
+  const [companyState, setCompanyState] = useState({ status: "loading", companies: [], isSuperAdmin: false });
+  const [companyId, setCompanyId] = useState("");
+  const requestGuard = useRef(createRequestGuard());
+
+  const companyLocked = companyState.status === "ready" && isCompanyLocked(companyState);
+  const selectedCompany = companyState.companies.find((c) => String(c.id) === String(companyId)) || null;
+
+  useEffect(() => {
+    loadCompanies();
+  }, []);
+
+  async function loadCompanies() {
+    setCompanyState((s) => ({ ...s, status: "loading" }));
+    try {
+      const [meRes, companiesRes] = await Promise.all([
+        fetch(`${API_URL}/api/me/permissions`, { credentials: "include", headers: authHeaders() }),
+        fetch(`${API_URL}/api/companies`, { credentials: "include", headers: authHeaders() }),
+      ]);
+      if (!meRes.ok || !companiesRes.ok) throw new Error(`HTTP ${meRes.ok ? companiesRes.status : meRes.status}`);
+      const me = await meRes.json();
+      const companies = await companiesRes.json();
+      const list = Array.isArray(companies) ? companies : [];
+      const isSuperAdmin = me?.user?.roleCode === "SUPER_ADMIN";
+      setCompanyState({ status: "ready", companies: list, isSuperAdmin });
+      setCompanyId((current) => pickInitialCompany({ companies: list, isSuperAdmin, current }));
+    } catch (err) {
+      console.error("TRIAL BALANCE COMPANIES ERROR:", err?.message || "network error");
+      requestGuard.current.invalidate();
+      setCompanyState({ status: "error", companies: [], isSuperAdmin: false });
+      setCompanyId("");
+      setRows([]);
+      setBalanceStatus(null);
+      setGenerated(false);
+      setCheckerOpen(false);
+    }
+  }
+
+  // Switching company drops everything shown for the previous one (and any
+  // response still in flight for it), then reloads for the new company if
+  // a report was on screen.
+  function changeCompany(value) {
+    const regenerate = generated && Boolean(value);
+    requestGuard.current.invalidate();
+    setCompanyId(value);
+    setRows([]);
+    setBalanceStatus(null);
+    setGenerated(false);
+    setCheckerOpen(false);
+    setLoading(false);
+    if (regenerate) generateTrialBalance(value);
+  }
 
   const totals = useMemo(() => {
     const debit = rows.reduce((sum, row) => sum + Number(row.debit || 0), 0);
@@ -58,7 +122,11 @@ export default function TrialBalance() {
     );
   };
 
-  async function generateTrialBalance() {
+  async function generateTrialBalance(forCompanyId = companyId) {
+    const query = trialBalanceQuery({ from: fromDate, to: toDate, companyId: forCompanyId });
+    if (!query) return; // no company selected - nothing is requested
+
+    const ticket = requestGuard.current.next();
     setLoading(true);
 
     const now = new Date();
@@ -71,34 +139,54 @@ export default function TrialBalance() {
 
     try {
       const res = await fetch(
-        `${API_URL}/api/reports/trial-balance?from=${fromDate}&to=${toDate}`,
+        `${API_URL}/api/reports/trial-balance?${query}`,
         { credentials: "include", headers: authHeaders() }
       );
+      if (!requestGuard.current.isCurrent(ticket)) return;
 
-      if (!res.ok) throw new Error("Failed to fetch trial balance");
+      if (!res.ok) {
+        let body = null;
+        try {
+          body = await res.json();
+        } catch {
+          body = null;
+        }
+        const message = res.status === 400 || res.status === 403 ? body?.message : null;
+        throw Object.assign(new Error("Failed to fetch trial balance"), { userMessage: message });
+      }
 
       const data = await res.json();
+      if (!requestGuard.current.isCurrent(ticket)) return;
       const finalRows = Array.isArray(data) ? data : data.data || [];
 
       setRows(finalRows);
-      await loadBalanceStatus();
+      await loadBalanceStatus(forCompanyId, ticket);
     } catch (err) {
+      if (!requestGuard.current.isCurrent(ticket)) return;
       console.error(err);
-      alert("Failed to generate Trial Balance. Please check the backend/server.");
+      alert(err.userMessage || "Failed to generate Trial Balance. Please check the backend/server.");
       setRows([]);
       setBalanceStatus(null);
     } finally {
-      setGenerated(true);
-      setLoading(false);
+      if (requestGuard.current.isCurrent(ticket)) {
+        setGenerated(true);
+        setLoading(false);
+      }
     }
   }
 
-  async function loadBalanceStatus() {
+  async function loadBalanceStatus(forCompanyId, ticket) {
+    const query = trialBalanceStatusQuery({ from: fromDate, to: toDate, tolerance: "0.01", companyId: forCompanyId });
+    if (!query) {
+      setBalanceStatus(null);
+      return;
+    }
     try {
       const res = await fetch(
-        `${API_URL}/api/reports/trial-balance-checker/status?from=${fromDate}&to=${toDate}&tolerance=0.01`,
+        `${API_URL}/api/reports/trial-balance-checker/status?${query}`,
         { credentials: "include", headers: authHeaders() }
       );
+      if (!requestGuard.current.isCurrent(ticket)) return;
 
       if (!res.ok) {
         setBalanceStatus(null);
@@ -106,8 +194,10 @@ export default function TrialBalance() {
       }
 
       const data = await res.json();
-      setBalanceStatus(data);
+      if (!requestGuard.current.isCurrent(ticket)) return;
+      setBalanceStatus(statusMatchesCompany(data, forCompanyId) ? data : null);
     } catch (err) {
+      if (!requestGuard.current.isCurrent(ticket)) return;
       console.error("TRIAL BALANCE STATUS ERROR:", err);
       setBalanceStatus(null);
     }
@@ -236,9 +326,21 @@ export default function TrialBalance() {
           </div>
 
           <div>
-            <label>Company</label>
-            <select>
-              <option>Select Company</option>
+            <label htmlFor="tb-company">Company</label>
+            <select
+              id="tb-company"
+              value={companyId}
+              onChange={(e) => changeCompany(e.target.value)}
+              disabled={companyState.status !== "ready" || companyLocked || companyState.companies.length === 0}
+            >
+              {!companyLocked && (
+                <option value="">{companyState.status === "loading" ? "Loading companies..." : "Select Company"}</option>
+              )}
+              {companyState.companies.map((c) => (
+                <option key={c.id} value={String(c.id)}>
+                  {c.name}
+                </option>
+              ))}
             </select>
           </div>
 
@@ -259,11 +361,28 @@ export default function TrialBalance() {
           </div>
         </div>
 
+        {companyState.status === "error" && (
+          <div className="tb-company-message error" role="alert">
+            Unable to load your companies, so the Trial Balance cannot be generated.{" "}
+            <button type="button" className="tb-link-btn" onClick={loadCompanies}>
+              Retry
+            </button>
+          </div>
+        )}
+        {companyState.status === "ready" && companyState.companies.length === 0 && (
+          <div className="tb-company-message error" role="alert">
+            You are not assigned to any company, so the Trial Balance cannot be generated.
+          </div>
+        )}
+        {companyState.status === "ready" && companyState.companies.length > 0 && !companyId && (
+          <div className="tb-company-message">Select a company to continue.</div>
+        )}
+
         <div className="tb-actions">
           <button
             className="primary"
-            onClick={generateTrialBalance}
-            disabled={loading}
+            onClick={() => generateTrialBalance()}
+            disabled={loading || !companyId}
           >
             {loading ? "Generating..." : "Generate Report"}
           </button>
@@ -271,6 +390,8 @@ export default function TrialBalance() {
           <button
             className="secondary"
             onClick={() => {
+              requestGuard.current.invalidate();
+              setLoading(false);
               setRows([]);
               setGenerated(false);
             }}
@@ -299,6 +420,7 @@ export default function TrialBalance() {
 
             <div className="tb-report-title">
               <h2>TRIAL BALANCE</h2>
+              {selectedCompany && <h3 className="tb-report-company">{selectedCompany.name}</h3>}
               <h3>AS OF {formatAsOfDate(toDate)}</h3>
             </div>
 
@@ -387,6 +509,8 @@ export default function TrialBalance() {
 
       <TrialBalanceCheckerPanel
         open={checkerOpen}
+        companyId={companyId}
+        companyName={selectedCompany?.name || ""}
         from={fromDate}
         to={toDate}
         tolerance="0.01"
