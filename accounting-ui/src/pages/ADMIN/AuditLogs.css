@@ -1,0 +1,469 @@
+/* Audit Logs - same page/card/heading conventions as the other
+   Administration pages (AccountingPeriodLocking.css, UserSettings.css);
+   colours come only from theme.css tokens so light and dark themes work. */
+
+.al-page {
+  padding: 28px;
+  background: var(--bg-page);
+  min-height: 100vh;
+  color: var(--text-primary);
+  min-width: 0;
+}
+
+.al-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+
+.al-page h1 {
+  margin: 0 0 8px;
+  font-size: 26px;
+  font-weight: 800;
+}
+
+.al-intro {
+  color: var(--text-secondary);
+  font-size: 14px;
+  margin: 0;
+  max-width: 760px;
+}
+
+.al-card {
+  background: var(--bg-surface);
+  border-radius: 14px;
+  padding: 22px;
+  box-shadow: 0 4px 16px rgba(var(--shadow-rgb), 0.06);
+  min-width: 0;
+}
+
+.al-muted {
+  color: var(--text-secondary);
+  font-size: 13px;
+  margin: 0;
+}
+
+/* ---- toolbar ---- */
+
+.al-toolbar {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 12px 14px;
+  align-items: end;
+  margin-bottom: 16px;
+}
+
+.al-control {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.al-control-wide {
+  grid-column: span 2;
+}
+
+.al-control > span {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.al-control input,
+.al-control select {
+  height: 40px;
+  border: 1px solid var(--border-color-strong);
+  border-radius: 10px;
+  padding: 0 10px;
+  font-size: 14px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.al-control input:focus-visible,
+.al-control select:focus-visible {
+  outline: 2px solid var(--accent-indigo);
+  outline-offset: 1px;
+}
+
+.al-toolbar-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* ---- buttons ---- */
+
+.al-btn {
+  height: 38px;
+  padding: 0 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border-color-strong);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 0.18s ease, border-color 0.18s ease;
+}
+
+.al-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.al-btn:focus-visible {
+  outline: 2px solid var(--accent-indigo);
+  outline-offset: 1px;
+}
+
+.al-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.al-btn-primary {
+  border-color: var(--dark-btn-bg);
+  background: var(--dark-btn-bg);
+  color: var(--dark-btn-text);
+}
+
+.al-btn-primary:hover:not(:disabled) {
+  background: var(--dark-btn-hover);
+}
+
+/* ---- states ---- */
+
+.al-state {
+  margin: 12px 0;
+}
+
+.al-error-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: var(--danger-bg);
+  color: var(--danger-text);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.al-empty {
+  text-align: center;
+  padding: 36px 12px;
+  color: var(--text-primary);
+}
+
+.al-empty p {
+  margin: 4px 0;
+}
+
+.al-notice {
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 14px;
+}
+
+.al-notice-success { background: var(--success-bg); color: var(--success-text); }
+.al-notice-warning { background: var(--warning-bg); color: var(--warning-text); }
+.al-notice-error { background: var(--danger-bg); color: var(--danger-text); }
+
+.al-inline-error {
+  color: var(--danger-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* ---- table ---- */
+
+/* The table scrolls inside its own box; contain keeps its min-width from
+   widening the page on narrow screens. */
+.al-table-wrap {
+  overflow-x: auto;
+  max-width: 100%;
+  contain: inline-size;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+}
+
+.al-table {
+  width: 100%;
+  min-width: 920px;
+  border-collapse: collapse;
+}
+
+.al-table th {
+  text-align: left;
+  padding: 10px;
+  font-size: 11px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  background: var(--bg-surface-muted);
+  border-bottom: 1px solid var(--border-color);
+  white-space: nowrap;
+}
+
+.al-table td {
+  padding: 10px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border-color);
+  vertical-align: top;
+  color: var(--text-primary);
+}
+
+.al-table tbody tr {
+  cursor: pointer;
+}
+
+.al-table tbody tr:hover {
+  background: var(--bg-hover);
+}
+
+.al-table tbody tr:focus-visible {
+  outline: 2px solid var(--accent-indigo);
+  outline-offset: -2px;
+}
+
+.al-table tbody tr.al-row-selected {
+  background: var(--accent-indigo-bg);
+}
+
+.al-nowrap {
+  white-space: nowrap;
+}
+
+.al-description {
+  max-width: 360px;
+  overflow-wrap: anywhere;
+}
+
+.al-company-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.al-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+/* ---- badges ---- */
+
+.al-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.al-scope-company { background: var(--info-bg); color: var(--info-text); }
+.al-scope-system { background: var(--warning-bg); color: var(--warning-text); }
+
+.al-action { font-size: 11px; }
+.al-tone-create { background: var(--success-bg); color: var(--success-text); }
+.al-tone-update { background: var(--info-bg); color: var(--info-text); }
+.al-tone-danger { background: var(--danger-bg); color: var(--danger-text); }
+.al-tone-security { background: var(--accent-indigo-bg); color: var(--accent-indigo); }
+.al-tone-neutral { background: var(--neutral-bg); color: var(--neutral-text); }
+
+/* Dark theme: the indigo / blue / red text tokens fall below 4.5:1 on their
+   own translucent tints (measured, worst on a selected row). Keep the tint
+   for the tone and use the primary text colour for the label. */
+[data-theme="dark"] .al-tone-security,
+[data-theme="dark"] .al-tone-update,
+[data-theme="dark"] .al-tone-danger,
+[data-theme="dark"] .al-scope-company {
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .al-tone-security {
+  box-shadow: inset 0 0 0 1px var(--accent-indigo-border);
+}
+
+/* ---- detail drawer ---- */
+
+.al-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(var(--shadow-rgb), 0.55);
+  display: flex;
+  justify-content: flex-end;
+  z-index: 1200;
+}
+
+.al-drawer {
+  width: min(600px, 100vw);
+  height: 100vh;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  box-shadow: -20px 0 50px rgba(var(--shadow-rgb), 0.28);
+  display: flex;
+  flex-direction: column;
+}
+
+.al-drawer-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 22px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.al-drawer-header h2 {
+  margin: 0 0 4px;
+  font-size: 18px;
+}
+
+.al-close {
+  border: none;
+  background: var(--bg-surface-muted);
+  color: var(--text-primary);
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  font-size: 20px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.al-close:focus-visible {
+  outline: 2px solid var(--accent-indigo);
+}
+
+.al-drawer-body {
+  padding: 18px 22px 28px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.al-badges-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.al-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 16px;
+  margin: 0 0 20px;
+}
+
+.al-field dt {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  margin-bottom: 2px;
+}
+
+.al-field dd {
+  margin: 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.al-section-title {
+  font-size: 14px;
+  margin: 0 0 6px;
+}
+
+.al-changes-summary {
+  margin-bottom: 8px;
+}
+
+.al-changes-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+}
+
+.al-changes {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.al-changes th,
+.al-changes td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-color);
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.al-changes thead th {
+  font-size: 11px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  background: var(--bg-surface-muted);
+}
+
+.al-changes tbody th {
+  font-weight: 700;
+  color: var(--text-secondary);
+  width: 34%;
+}
+
+.al-changes tr.al-changed td {
+  background: var(--warning-bg);
+  color: var(--text-primary);
+}
+
+/* ---- narrow screens ---- */
+
+@media (max-width: 600px) {
+  .al-page {
+    padding: 16px;
+  }
+
+  .al-page h1 {
+    font-size: 22px;
+  }
+
+  .al-card {
+    padding: 14px;
+  }
+
+  .al-toolbar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .al-control-wide {
+    grid-column: auto;
+  }
+
+  .al-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .al-drawer-header,
+  .al-drawer-body {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+}

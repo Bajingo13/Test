@@ -16,6 +16,7 @@ import RolePermissionMatrix from "./pages/ADMIN/RolePermissionMatrix";
 import AccessRestrictions from "./pages/ADMIN/AccessRestrictions";
 import PermissionTemplateManager from "./pages/ADMIN/PermissionTemplateManager";
 import AccountingPeriodLocking from "./pages/ADMIN/AccountingPeriodLocking";
+import AuditLogs from "./pages/ADMIN/AuditLogs";
 
 // FILE SETUP
 import Industry from "./pages/FILESETUP/Industry";
@@ -165,6 +166,7 @@ function AppLayout() {
           <Route path="/admin/access-restrictions" element={<AccessRestrictions />} />
           <Route path="/admin/permission-templates" element={<PermissionTemplateManager />} />
           <Route path="/admin/accounting-period-locking" element={<AccountingPeriodLocking />} />
+          <Route path="/admin/audit-logs" element={<AuditLogs />} />
           <Route path="/dashboard" element={<Dashboard />} />
 
           <Route path="/coa" element={<COA />} />

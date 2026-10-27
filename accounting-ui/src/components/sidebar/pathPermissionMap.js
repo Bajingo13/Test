@@ -90,6 +90,7 @@ const PATH_PERMISSIONS = {
   "/admin/access-restrictions": ["ADMIN.ACCESS_RESTRICTIONS", "VIEW"],
   "/admin/permission-templates": ["ADMIN.ROLES_PERMISSIONS", "VIEW"],
   "/admin/accounting-period-locking": ["ACCOUNTING_PERIODS", "VIEW"],
+  "/admin/audit-logs": ["ADMIN.AUDIT_LOGS", "VIEW"],
 };
 
 export function pathAllowed(path, can) {
