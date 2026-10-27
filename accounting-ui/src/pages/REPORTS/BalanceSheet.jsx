@@ -12,6 +12,7 @@ import {
 import StatementView from "./StatementView.jsx";
 import StatementPrintView from "./StatementPrintView.jsx";
 import ReportExportMenu from "./ReportExportMenu.jsx";
+import { accountAnalysisLink } from "../../utils/accountAnalysisCompany.mjs";
 import "./BalanceSheet.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
@@ -84,10 +85,11 @@ export default function BalanceSheet() {
     downloadCsvText(statementFilename(model), statementToCsv(model));
   }
 
+  // The drill-down carries the company this statement was built for
+  // (model.meta.companyId, resolved by the server), so Account Analysis
+  // shows the same company's ledger. No company -> Account Analysis asks.
   function openAccount(accountCode) {
-    navigate(
-      `/reports/account-analysis?accountCode=${encodeURIComponent(accountCode)}&from=2026-01-01&to=${toDate}`
-    );
+    navigate(accountAnalysisLink({ accountCode, from: "2026-01-01", to: toDate, companyId: model?.meta?.companyId }));
   }
 
   const warnings = statementWarnings(model);

@@ -204,8 +204,11 @@ export default function AccountAnalysis() {
       return;
     }
 
+    // Exports serialize the rows already on screen (fetched for companyId),
+    // so they always carry the displayed company - named in the header.
     const csvRows = [
       ["ACCOUNT ANALYSIS"],
+      [`Company: ${selectedCompany?.name || ""}`],
       [`${accountCode} - ${selectedAccount?.title || ""}`],
       [`Period: ${fromDate} to ${toDate}`],
       [],
@@ -247,6 +250,7 @@ export default function AccountAnalysis() {
     const htmlTable = `
       <table border="1">
         <tr><th colspan="5">ACCOUNT ANALYSIS</th></tr>
+        <tr><th colspan="5">Company: ${selectedCompany?.name || ""}</th></tr>
         <tr><th colspan="5">${accountCode} - ${selectedAccount?.title || ""}</th></tr>
         <tr><th colspan="5">Period: ${fromDate} to ${toDate}</th></tr>
         <tr>

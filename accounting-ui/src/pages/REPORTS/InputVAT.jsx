@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import "./AccountAnalysis.css";
 import { downloadCsv } from "./reportCsv";
+import { createRequestGuard, isCompanyLocked, pickInitialCompany } from "../../utils/trialBalanceCompany.mjs";
+import { accountAnalysisQuery } from "../../utils/accountAnalysisCompany.mjs";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
 
@@ -18,9 +20,55 @@ export default function InputVAT() {
   const [loading, setLoading] = useState(false);
   const [generated, setGenerated] = useState(false);
 
+  // Company context (same rule as Account Analysis, whose endpoint this
+  // report reuses): a single-company user gets theirs; a Super Admin or
+  // multi-company user must choose. No first/lowest-company default.
+  const [companyState, setCompanyState] = useState({ status: "loading", companies: [], isSuperAdmin: false });
+  const [companyId, setCompanyId] = useState("");
+  const requestGuard = useRef(createRequestGuard());
+
+  const companyLocked = companyState.status === "ready" && isCompanyLocked(companyState);
+  const selectedCompany = companyState.companies.find((c) => String(c.id) === String(companyId)) || null;
+
   useEffect(() => {
     loadAccounts();
+    loadCompanies();
   }, []);
+
+  async function loadCompanies() {
+    setCompanyState((s) => ({ ...s, status: "loading" }));
+    try {
+      const [meRes, companiesRes] = await Promise.all([
+        fetch(`${API_URL}/api/me/permissions`, { credentials: "include", headers: authHeaders() }),
+        fetch(`${API_URL}/api/companies`, { credentials: "include", headers: authHeaders() }),
+      ]);
+      if (!meRes.ok || !companiesRes.ok) throw new Error(`HTTP ${meRes.ok ? companiesRes.status : meRes.status}`);
+      const me = await meRes.json();
+      const companies = await companiesRes.json();
+      const list = Array.isArray(companies) ? companies : [];
+      const isSuperAdmin = me?.user?.roleCode === "SUPER_ADMIN";
+      setCompanyState({ status: "ready", companies: list, isSuperAdmin });
+      setCompanyId((current) => pickInitialCompany({ companies: list, isSuperAdmin, current }));
+    } catch (err) {
+      console.error("INPUT VAT COMPANIES ERROR:", err?.message || "network error");
+      requestGuard.current.invalidate();
+      setCompanyState({ status: "error", companies: [], isSuperAdmin: false });
+      setCompanyId("");
+      setRows([]);
+      setGenerated(false);
+      setLoading(false);
+    }
+  }
+
+  // Switching company drops the previous company's rows and any response
+  // still in flight for it.
+  function changeCompany(value) {
+    requestGuard.current.invalidate();
+    setCompanyId(value);
+    setRows([]);
+    setGenerated(false);
+    setLoading(false);
+  }
 
   async function loadAccounts() {
     try {
@@ -64,6 +112,7 @@ export default function InputVAT() {
     }
     const meta = [
       ["INPUT VAT REPORT"],
+      [`Company: ${selectedCompany?.name || ""}`],
       [`${accountCode} - ${selectedAccount?.title || ""}`],
       [`Period: ${fromDate} to ${toDate}`],
       [],
@@ -88,26 +137,42 @@ export default function InputVAT() {
       return;
     }
 
+    const query = accountAnalysisQuery({ from: fromDate, to: toDate, accountCode, companyId });
+    if (!query) return; // no company selected - nothing is requested
+
+    const ticket = requestGuard.current.next();
     setLoading(true);
 
     try {
       const res = await fetch(
-        `${API_URL}/api/reports/account-analysis?from=${fromDate}&to=${toDate}&accountCode=${accountCode}`,
+        `${API_URL}/api/reports/account-analysis?${query}`,
         { credentials: "include", headers: authHeaders() }
       );
+      if (!requestGuard.current.isCurrent(ticket)) return;
 
-      if (!res.ok) throw new Error("Failed to generate Input VAT report");
+      if (!res.ok) {
+        let body = null;
+        try {
+          body = await res.json();
+        } catch {
+          body = null;
+        }
+        const message = res.status === 400 || res.status === 403 ? body?.message : null;
+        throw Object.assign(new Error("Failed to generate Input VAT report"), { userMessage: message });
+      }
 
       const data = await res.json();
+      if (!requestGuard.current.isCurrent(ticket)) return;
       setRows(Array.isArray(data) ? data : []);
       setGenerated(true);
     } catch (err) {
+      if (!requestGuard.current.isCurrent(ticket)) return;
       console.error(err);
-      alert("Failed to generate Input VAT Report. Please check backend/server.");
+      alert(err.userMessage || "Failed to generate Input VAT Report. Please check backend/server.");
       setRows([]);
       setGenerated(true);
     } finally {
-      setLoading(false);
+      if (requestGuard.current.isCurrent(ticket)) setLoading(false);
     }
   }
 
@@ -142,16 +207,54 @@ export default function InputVAT() {
               ))}
             </select>
           </div>
+
+          <div>
+            <label htmlFor="ivat-company">Company</label>
+            <select
+              id="ivat-company"
+              value={companyId}
+              onChange={(e) => changeCompany(e.target.value)}
+              disabled={companyState.status !== "ready" || companyLocked || companyState.companies.length === 0}
+            >
+              {!companyLocked && (
+                <option value="">{companyState.status === "loading" ? "Loading companies..." : "Select Company"}</option>
+              )}
+              {companyState.companies.map((c) => (
+                <option key={c.id} value={String(c.id)}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
 
+        {companyState.status === "error" && (
+          <div className="aa-company-message error" role="alert">
+            Unable to load your companies, so the Input VAT report cannot be generated.{" "}
+            <button type="button" className="aa-link-btn" onClick={loadCompanies}>
+              Retry
+            </button>
+          </div>
+        )}
+        {companyState.status === "ready" && companyState.companies.length === 0 && (
+          <div className="aa-company-message error" role="alert">
+            You are not assigned to any company, so the Input VAT report cannot be generated.
+          </div>
+        )}
+        {companyState.status === "ready" && companyState.companies.length > 0 && !companyId && (
+          <div className="aa-company-message">Select a company to continue.</div>
+        )}
+
         <div className="aa-actions">
-          <button className="primary" onClick={generateReport} disabled={loading}>
+          <button className="primary" onClick={generateReport} disabled={loading || !companyId}>
             {loading ? "Generating..." : "Generate Report"}
           </button>
 
           <button
             className="secondary"
             onClick={() => {
+              requestGuard.current.invalidate();
+              setLoading(false);
               setRows([]);
               setGenerated(false);
             }}
@@ -173,6 +276,7 @@ export default function InputVAT() {
         <div className="aa-report-card">
           <div className="aa-report-title">
             <h2>INPUT VAT REPORT</h2>
+            {selectedCompany && <p className="aa-report-company">{selectedCompany.name}</p>}
             <h3>
               {accountCode} - {selectedAccount?.title || ""}
             </h3>
