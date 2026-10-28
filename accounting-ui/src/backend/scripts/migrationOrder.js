@@ -184,6 +184,14 @@ const MIGRATION_ORDER = [
   // Trial Balance Checker company isolation: trial_balance_checker_runs.
   // company_id (no backfill). Must run after trial_balance_checker_migration.sql.
   "trial_balance_checker_company_scope_migration.sql",
+  // RFP (Request for Payment) R1: rfp_headers / rfp_lines /
+  // rfp_status_history + TRANSACTIONS.RFP permissions and default ADMIN /
+  // ACCOUNTANT grants (no APPROVE for ACCOUNTANT). Must run after
+  // user_access_control_migration.sql (owns companies/branches/permissions/
+  // role_permissions; an explicit ACCOUNTANT RFP APPROVE granted = 0 row
+  // keeps its TRANSACTIONS.% catch-all from granting it on a chain re-run)
+  // and the currencies migration.
+  "rfp_schema_permissions_migration.sql",
 ];
 
 module.exports = { MIGRATION_ORDER };
