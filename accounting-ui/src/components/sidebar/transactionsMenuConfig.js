@@ -9,6 +9,7 @@ import {
   CreditCard,
   ShoppingCart,
   PiggyBank,
+  HandCoins,
   FileWarning,
   Repeat,
 } from "lucide-react";
@@ -26,7 +27,14 @@ export const TRANSACTIONS_MENU = [
   { id: "official-receipts", label: "Official Receipts", icon: Receipt, path: "/transactions/or" },
   { id: "check-voucher", label: "Check Voucher", icon: FileCheck2, path: "/transactions/cv" },
   { id: "journal-voucher", label: "Journal Voucher", icon: BookOpenCheck, path: "/transactions/jv" },
-  { id: "accounts-payable-voucher", label: "Accounts Payable Voucher", icon: CreditCard, path: "/transactions/apv" },
+  {
+    id: "accounts-payable-group",
+    label: "Accounts Payable",
+    children: [
+      { id: "accounts-payable-voucher", label: "Accounts Payable Voucher", icon: CreditCard, path: "/transactions/apv" },
+      { id: "request-for-payment", label: "Request for Payment", icon: HandCoins, path: "/transactions/rfp" },
+    ],
+  },
   { id: "purchase-order", label: "Purchase Order", icon: ShoppingCart, path: "/transactions/purchase-order" },
   { id: "petty-cash-voucher", label: "Petty Cash Voucher", icon: PiggyBank, path: "/transactions/petty-cash-voucher" },
   // Checkpoint 6: split from a single "Debit Credit Memo" entry - the old

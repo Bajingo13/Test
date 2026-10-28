@@ -55,6 +55,7 @@ import DebitMemo from "./pages/TRANSACTIONS/DebitMemo";
 import CreditMemo from "./pages/TRANSACTIONS/CreditMemo";
 import PurchaseOrder from "./pages/TRANSACTIONS/PurchaseOrder";
 import Quotation from "./pages/TRANSACTIONS/Quotation";
+import RFP from "./pages/TRANSACTIONS/RFP";
 
 // POSTING
 import Posting from "./pages/POSTING/Posting";
@@ -200,6 +201,7 @@ function AppLayout() {
           <Route path="/transactions/or" element={<OR />} />
           <Route path="/transactions/apv" element={<APV />} />
           <Route path="/transactions/accounts-payable-voucher" element={<APV />} />
+          <Route path="/transactions/rfp" element={<RFP />} />
           <Route path="/transactions/petty-cash-voucher" element={<PettyCashVoucher />} />
           <Route path="/transactions/debit-memo" element={<DebitMemo />} />
           <Route path="/transactions/credit-memo" element={<CreditMemo />} />

@@ -36,6 +36,7 @@ const PATH_PERMISSIONS = {
   "/transactions/cv": ["TRANSACTIONS.CV", "VIEW"],
   "/transactions/jv": ["TRANSACTIONS.JV", "VIEW"],
   "/transactions/apv": ["TRANSACTIONS.APV", "VIEW"],
+  "/transactions/rfp": ["TRANSACTIONS.RFP", "VIEW"],
   "/transactions/purchase-order": ["TRANSACTIONS.PURCHASE_ORDER", "VIEW"],
   "/transactions/petty-cash-voucher": ["TRANSACTIONS.PETTY_CASH", "VIEW"],
   "/transactions/debit-memo": ["TRANSACTIONS.DEBIT_CREDIT_MEMO", "VIEW"],

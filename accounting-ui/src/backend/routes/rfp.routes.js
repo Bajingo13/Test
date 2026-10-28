@@ -8,6 +8,8 @@ const ctrl = require("../controllers/rfp.controller");
 // Conversion to APV is R5. APPROVE covers every decision (approve /
 // return / reject); SUBMIT covers the requester side (submit / cancel).
 router.get("/", authenticateToken, authorizePermission("TRANSACTIONS.RFP", "VIEW"), ctrl.list);
+// Before /:id so "lookups" is never read as an RFP id.
+router.get("/lookups", authenticateToken, authorizePermission("TRANSACTIONS.RFP", "VIEW"), ctrl.lookups);
 router.get("/:id", authenticateToken, authorizePermission("TRANSACTIONS.RFP", "VIEW"), ctrl.get);
 router.post("/", authenticateToken, authorizePermission("TRANSACTIONS.RFP", "CREATE"), ctrl.create);
 router.put("/:id", authenticateToken, authorizePermission("TRANSACTIONS.RFP", "EDIT"), ctrl.update);

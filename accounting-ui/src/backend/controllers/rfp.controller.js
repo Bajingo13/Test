@@ -76,3 +76,11 @@ exports.history = async (req, res) => {
     sendError(res, err, "Failed to load the Request for Payment history", "RFP HISTORY ERROR");
   }
 };
+
+exports.lookups = async (req, res) => {
+  try {
+    res.json(await RfpService.getLookups({ user: req.user, query: req.query }));
+  } catch (err) {
+    sendError(res, err, "Failed to load the Request for Payment form options", "RFP LOOKUPS ERROR");
+  }
+};

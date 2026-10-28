@@ -780,9 +780,49 @@ async function getRfpHistory({ id, user }) {
   }));
 }
 
+// --- form lookups (R4) -----------------------------------------------------
+//
+// The choices the RFP form may offer for ONE explicitly selected company,
+// filtered by exactly the rules validatePayload enforces: active SUPPLIER
+// parties and active currencies of that company, its branches the caller
+// may use (Super Admin: all of them), and the global chart of accounts.
+// Exists because the generic /api/genlib and /api/coa lists need
+// FILESETUP.* permissions an Accountant (who may create RFPs) doesn't hold.
+async function getLookups({ user, query = {} }) {
+  const companyId = await resolveSelectedCompany(user, query.companyId);
+  const [suppliers] = await pool.execute(
+    `SELECT id, code, name, tin FROM general_libraries
+     WHERE company_id = ? AND UPPER(party_type) = 'SUPPLIER' AND UPPER(status) = 'ACTIVE'
+     ORDER BY name, id`,
+    [companyId]
+  );
+  const [currencies] = await pool.execute(
+    `SELECT id, currency_code, currency_name, is_base_currency FROM currencies
+     WHERE company_id = ? AND is_active = 1 ORDER BY is_base_currency DESC, currency_code`,
+    [companyId]
+  );
+  const [branches] = isSuperAdmin(user)
+    ? await pool.execute("SELECT id, name, code FROM branches WHERE company_id = ? ORDER BY name, id", [companyId])
+    : await pool.execute(
+        `SELECT b.id, b.name, b.code FROM branches b
+         JOIN user_branches ub ON ub.branch_id = b.id AND ub.user_id = ?
+         WHERE b.company_id = ? ORDER BY b.name, b.id`,
+        [user.id, companyId]
+      );
+  const [accounts] = await pool.execute("SELECT id, code, title FROM chart_of_accounts ORDER BY code, id");
+  return {
+    companyId,
+    suppliers: suppliers.map((s) => ({ id: s.id, code: s.code, name: s.name, tin: s.tin || null })),
+    currencies: currencies.map((c) => ({ id: c.id, code: c.currency_code, name: c.currency_name, isBase: !!c.is_base_currency })),
+    branches: branches.map((b) => ({ id: b.id, name: b.name, code: b.code || null })),
+    accounts: accounts.map((a) => ({ id: a.id, code: a.code, title: a.title })),
+  };
+}
+
 module.exports = {
   STATUSES,
   WORKFLOW,
+  getLookups,
   createRfp,
   listRfps,
   getRfp,
