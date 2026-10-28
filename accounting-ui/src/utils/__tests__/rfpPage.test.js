@@ -12,7 +12,7 @@ beforeAll(async () => {
 
 const SRC = path.join(__dirname, "..", "..");
 const read = (...p) => fs.readFileSync(path.join(SRC, ...p), "utf8");
-const PAGE_FILES = ["RFP.jsx", "RfpForm.jsx", "RfpDetail.jsx", "RfpActionDialog.jsx"].map((f) => ["pages", "TRANSACTIONS", f]);
+const PAGE_FILES = ["RFP.jsx", "RfpForm.jsx", "RfpDetail.jsx", "RfpActionDialog.jsx", "RfpConvertDialog.jsx"].map((f) => ["pages", "TRANSACTIONS", f]);
 
 const validForm = (over = {}) => ({
   ...r.emptyForm(),
@@ -171,9 +171,16 @@ describe("actions", () => {
     expect(r.availableActions({ rfp: rfp("SUBMITTED", { requesterUserId: 5, submittedBy: 77 }), can: all, userId: 77 }).approve).toBe(false);
     expect(r.availableActions({ rfp: rfp("SUBMITTED"), can: only("VIEW", "SUBMIT"), userId: 99 })).toMatchObject({ approve: false, cancel: true, selfDecisionBlocked: false });
   });
-  test.each(["APPROVED", "REJECTED", "CANCELLED", "CONVERTED"])("%s offers no action at all (no convert, no resubmit)", (status) => {
+  test.each(["REJECTED", "CANCELLED", "CONVERTED"])("%s offers no action at all (no convert, no resubmit)", (status) => {
     const a = r.availableActions({ rfp: rfp(status), can: all, userId: 99 });
     expect(Object.values(a).some(Boolean)).toBe(false);
+  });
+  test("APPROVED offers only Convert to APV, and only with CONVERT (R5)", () => {
+    const a = r.availableActions({ rfp: rfp("APPROVED"), can: all, userId: 99 });
+    expect(Object.entries(a).filter(([, v]) => v).map(([k]) => k)).toEqual(["convert"]);
+    expect(r.availableActions({ rfp: rfp("APPROVED"), can: only("VIEW", "EDIT", "SUBMIT", "APPROVE"), userId: 99 }).convert).toBe(false);
+    // the requester may convert too - conversion is not a decision
+    expect(r.availableActions({ rfp: rfp("APPROVED"), can: only("VIEW", "CONVERT"), userId: 10 }).convert).toBe(true);
   });
   test("workflow dialogs: required reasons for return/reject, cancel wording, no convert", () => {
     expect(r.WORKFLOW_DIALOGS.return.note).toBe("required");
@@ -196,7 +203,7 @@ describe("returned RFP (R4.1)", () => {
 
   test("RETURNED offers Edit and Resubmit to the requester side - no decisions, no cancel, no delete", () => {
     expect(r.availableActions({ rfp: returned, can: all, userId: 10 })).toEqual({
-      edit: true, remove: false, submit: false, resubmit: true, cancel: false, approve: false, return: false, reject: false, selfDecisionBlocked: false,
+      edit: true, remove: false, submit: false, resubmit: true, cancel: false, approve: false, return: false, reject: false, convert: false, selfDecisionBlocked: false,
     });
   });
   test("Edit needs EDIT, Resubmit needs SUBMIT", () => {
@@ -243,6 +250,78 @@ describe("returned RFP (R4.1)", () => {
   });
 });
 
+describe("conversion to APV (R5)", () => {
+  const accounts = [
+    { id: 1, code: "2000", title: "Accounts Payable", isApControl: true, isTaxControl: false },
+    { id: 2, code: "6000", title: "Rent", isApControl: false, isTaxControl: false },
+    { id: 3, code: "1400", title: "Input VAT", isApControl: false, isTaxControl: true },
+  ];
+  const approved = {
+    id: 9, rfpNo: "RFP97-00012", status: "APPROVED", companyId: 4,
+    lines: [{ id: 51, accountId: 2, grossAmount: "10.00" }, { id: 52, accountId: null, grossAmount: "5.00" }],
+  };
+
+  test("dialog explains APPROVED -> CONVERTED and a Draft APV, with no posting or payment", () => {
+    expect(r.CONVERT_DIALOG.message).toMatch(/from APPROVED to CONVERTED/);
+    expect(r.CONVERT_DIALOG.message).toMatch(/new Draft Accounts Payable Voucher/);
+    expect(r.CONVERT_DIALOG.message).toMatch(/Nothing is posted or paid/);
+    expect(r.ACTION_LABELS.CONVERT_TO_APV).toBe("Converted to APV");
+    expect(r.historyActionLabel({ action: "CONVERT_TO_APV", previousStatus: "APPROVED" })).toBe("Converted to APV");
+  });
+
+  test("defaults: APV-<RFP no>, today's local date, the only AP CODE account, blank accounts for lines without one", () => {
+    expect(r.defaultApvNo("RFP97-00012")).toBe("APV-RFP97-00012");
+    expect(r.localDateString(new Date(2097, 0, 5))).toBe("2097-01-05");
+    expect(r.initialConvertForm({ rfp: approved, accounts, today: "2097-05-10" })).toEqual({
+      voucherNo: "APV-RFP97-00012", apvDate: "2097-05-10", apAccountId: "1", lineAccounts: { 52: "" },
+    });
+    const twoAp = [...accounts, { id: 4, code: "2010", title: "AP - Other", isApControl: true, isTaxControl: false }];
+    expect(r.initialConvertForm({ rfp: approved, accounts: twoAp, today: "2097-05-10" }).apAccountId).toBe("");
+  });
+
+  test("account choices: AP CODE for the payable, never a tax-control account on a line", () => {
+    expect(r.apAccountOptions(accounts).map((a) => a.id)).toEqual([1]);
+    expect(r.lineAccountOptions(accounts).map((a) => a.id)).toEqual([1, 2]);
+    expect(r.linesNeedingAccount(approved).map((l) => l.id)).toEqual([52]);
+  });
+
+  test("validation requires number, valid date, AP account and every missing line account", () => {
+    const ok = { voucherNo: "APV-1", apvDate: "2097-05-10", apAccountId: "1", lineAccounts: { 52: "2" } };
+    expect(r.validateConvertForm(ok).valid).toBe(true);
+    const bad = r.validateConvertForm({ voucherNo: " ", apvDate: "2097-02-31", apAccountId: "", lineAccounts: { 52: "" } });
+    expect(bad.valid).toBe(false);
+    expect(bad.errors).toMatchObject({ voucherNo: expect.any(String), apvDate: expect.any(String), apAccountId: expect.any(String), lineAccounts: { 52: expect.any(String) } });
+    expect(r.validateConvertForm({ ...ok, voucherNo: "X".repeat(51) }).errors.voucherNo).toMatch(/50/);
+  });
+
+  test("payload carries only the conversion inputs - never a company, status, lines or totals", () => {
+    const p = r.buildConvertPayload({ voucherNo: "  APV-1 ", apvDate: "2097-05-10", apAccountId: "1", lineAccounts: { 52: "2" } });
+    expect(p).toEqual({ voucherNo: "APV-1", apvDate: "2097-05-10", apAccountId: 1, lineAccounts: { 52: 2 } });
+    expect(r.buildConvertPayload({ voucherNo: "A", apvDate: "2097-05-10", apAccountId: "1", lineAccounts: {} })).not.toHaveProperty("lineAccounts");
+    for (const k of ["companyId", "status", "lines", "totalCredit", "currency", "supplierId"]) expect(p).not.toHaveProperty(k);
+  });
+
+  test("APV link only where the APV page resolves the same company (single-company user with APV VIEW)", () => {
+    const converted = { status: "CONVERTED", companyId: 4, convertedApvId: 77 };
+    const one = [{ id: 4, name: "Co" }];
+    expect(r.canOpenApvPage({ rfp: converted, companies: one, isSuperAdmin: false, canViewApv: true })).toBe(true);
+    expect(r.canOpenApvPage({ rfp: converted, companies: one, isSuperAdmin: false, canViewApv: false })).toBe(false);
+    expect(r.canOpenApvPage({ rfp: converted, companies: one, isSuperAdmin: true, canViewApv: true })).toBe(false);
+    expect(r.canOpenApvPage({ rfp: converted, companies: [...one, { id: 5 }], isSuperAdmin: false, canViewApv: true })).toBe(false);
+    expect(r.canOpenApvPage({ rfp: { ...converted, convertedApvId: null }, companies: one, isSuperAdmin: false, canViewApv: true })).toBe(false);
+    expect(r.apvPagePath(77)).toBe("/transactions/apv?id=77");
+  });
+
+  test("detail / dialog wiring", () => {
+    const detail = read("pages", "TRANSACTIONS", "RfpDetail.jsx");
+    const dialog = read("pages", "TRANSACTIONS", "RfpConvertDialog.jsx");
+    expect(detail).toContain('onAction("convert")');
+    expect(detail).toContain("Converted to APV");
+    expect(dialog).toContain("initialConvertForm");
+    expect(dialog).not.toMatch(/companyId/);
+  });
+});
+
 describe("error messages", () => {
   test("409 / 400 / 403 keep the server's user-safe message", () => {
     expect(r.errorMessage(409, { message: "Cannot approve a Request for Payment that is APPROVED (allowed from: SUBMITTED)." })).toMatch(/Cannot approve/);
@@ -275,13 +354,14 @@ describe("source checks", () => {
     expect(read("components", "sidebar", "pathPermissionMap.js")).toMatch(/"\/transactions\/rfp": \["TRANSACTIONS\.RFP", "VIEW"\]/);
     expect(read("App.jsx")).toMatch(/<Route path="\/transactions\/rfp" element={<RFP \/>} \/>/);
   });
-  test("page: page-level VIEW gate, explicit company selection, no company from the URL, no convert", () => {
+  test("page: page-level VIEW gate, explicit company selection, no company from the URL, company-free convert", () => {
     const src = read("pages", "TRANSACTIONS", "RFP.jsx");
     expect(src).toMatch(/You do not have permission to view Requests for Payment\./);
     expect(src).toMatch(/pickInitialCompany\(\{ companies: list, isSuperAdmin, current \}\)/);
     expect(src).toMatch(/Select a company to continue\./);
     expect(src).not.toMatch(/searchParams\.get\("company/);
-    expect(src).not.toMatch(/convert/i);
+    // R5: the conversion body comes only from buildConvertPayload (no company)
+    expect(src).toContain("/convert`, { method: \"POST\", body: buildConvertPayload(form) }");
     expect(src).toMatch(/guards\.current\.list\.isCurrent\(ticket\)/);
     expect(src).toMatch(/guards\.current\.detail\.isCurrent\(ticket\)/);
     expect(src).toMatch(/guards\.current\.lookups\.isCurrent\(ticket\)/);

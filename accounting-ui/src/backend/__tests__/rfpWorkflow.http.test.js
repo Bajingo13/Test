@@ -386,11 +386,14 @@ describe("transition matrix", () => {
     }
   });
 
-  test("there is no convert action yet", async () => {
+  // R5 adds POST /:id/convert (covered by rfpConversion.http.test.js); a
+  // bare request without the conversion inputs changes nothing.
+  test("convert without its inputs is refused and leaves the RFP APPROVED", async () => {
     const id = await submitted();
     await act("adminA", id, "approve");
-    expect((await act("adminA", id, "convert")).status).toBe(404);
+    expect((await act("adminA", id, "convert")).status).toBe(400);
     expect((await header(id)).status).toBe("APPROVED");
+    expect((await header(id)).converted_apv_id).toBeNull();
   });
 });
 

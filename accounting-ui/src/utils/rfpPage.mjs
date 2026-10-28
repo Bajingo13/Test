@@ -58,6 +58,7 @@ export const ACTION_LABELS = {
   RETURN: "Returned",
   REJECT: "Rejected",
   CANCEL: "Cancelled",
+  CONVERT_TO_APV: "Converted to APV",
 };
 
 // --- money (whole cents, never floating point) -----------------------------
@@ -255,13 +256,15 @@ export function hasActiveFilters({ status = "", search = "", from = "", to = "" 
 
 // --- actions ---------------------------------------------------------------
 
-// What the page may offer for this RFP and user. Mirrors R2/R3/R4.1: DRAFT
-// and RETURNED are editable, only DRAFT is deletable; SUBMIT (DRAFT),
-// RESUBMIT (RETURNED) and CANCEL are requester-side (SUBMIT permission); APPROVE/RETURN/REJECT need APPROVE and are never offered to
-// the RFP's requester or submitter - Super Admin included. The server
-// re-checks everything.
+// What the page may offer for this RFP and user. Mirrors R2/R3/R4.1/R5:
+// DRAFT and RETURNED are editable, only DRAFT is deletable; SUBMIT (DRAFT),
+// RESUBMIT (RETURNED) and CANCEL are requester-side (SUBMIT permission);
+// APPROVE/RETURN/REJECT need APPROVE and are never offered to the RFP's
+// requester or submitter - Super Admin included; CONVERT (APPROVED only)
+// needs CONVERT. The server re-checks everything (conversion also needs
+// APV CREATE there).
 export function availableActions({ rfp, can, userId }) {
-  const none = { edit: false, remove: false, submit: false, resubmit: false, cancel: false, approve: false, return: false, reject: false, selfDecisionBlocked: false };
+  const none = { edit: false, remove: false, submit: false, resubmit: false, cancel: false, approve: false, return: false, reject: false, convert: false, selfDecisionBlocked: false };
   if (!rfp) return none;
   const status = rfp.status;
   const self = userId != null && (rfp.requesterUserId === userId || rfp.submittedBy === userId);
@@ -275,6 +278,7 @@ export function availableActions({ rfp, can, userId }) {
     approve: mayDecide && !self,
     return: mayDecide && !self,
     reject: mayDecide && !self,
+    convert: status === "APPROVED" && can("CONVERT"),
     selfDecisionBlocked: mayDecide && self,
   };
 }
@@ -331,6 +335,96 @@ export const WORKFLOW_DIALOGS = {
     tone: "danger",
   },
 };
+
+// --- conversion to a Draft APV (R5) ----------------------------------------
+
+export const CONVERT_DIALOG = {
+  title: "Convert to APV",
+  message:
+    "This Request for Payment will move from APPROVED to CONVERTED and a new Draft Accounts Payable Voucher will be created in its company. " +
+    "Nothing is posted or paid: record VAT and withholding on the APV and post it there.",
+  confirm: "Convert to APV",
+  tone: "primary",
+};
+
+export const APV_NO_MAX = 50;
+
+// The APV number the converter starts from (R0: "APV-<RFP number>").
+export function defaultApvNo(rfpNo) {
+  return `APV-${str(rfpNo)}`.slice(0, APV_NO_MAX);
+}
+
+// Local calendar date as YYYY-MM-DD (never toISOString - that is UTC).
+export function localDateString(date = new Date()) {
+  const p = (n) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${p(date.getMonth() + 1)}-${p(date.getDate())}`;
+}
+
+// Payable-credit choices: accounts flagged AP CODE in the Chart of Accounts.
+export function apAccountOptions(accounts = []) {
+  return accounts.filter((a) => a.isApControl);
+}
+
+// Accounts a line may be given: never a VAT / withholding control account.
+export function lineAccountOptions(accounts = []) {
+  return accounts.filter((a) => !a.isTaxControl);
+}
+
+// RFP lines that have no account and need one before conversion.
+export function linesNeedingAccount(rfp) {
+  return (rfp?.lines || []).filter((l) => l.accountId === null || l.accountId === undefined || l.accountId === "");
+}
+
+export function initialConvertForm({ rfp, accounts = [], today = localDateString() }) {
+  const ap = apAccountOptions(accounts);
+  return {
+    voucherNo: defaultApvNo(rfp?.rfpNo),
+    apvDate: today,
+    apAccountId: ap.length === 1 ? String(ap[0].id) : "",
+    lineAccounts: Object.fromEntries(linesNeedingAccount(rfp).map((l) => [String(l.id), ""])),
+  };
+}
+
+export function validateConvertForm(form) {
+  const errors = { lineAccounts: {} };
+  const voucherNo = str(form.voucherNo).trim();
+  if (!voucherNo) errors.voucherNo = "APV number is required.";
+  else if (voucherNo.length > APV_NO_MAX) errors.voucherNo = `At most ${APV_NO_MAX} characters.`;
+  if (!str(form.apvDate).trim()) errors.apvDate = "APV date is required.";
+  else if (!isValidDate(form.apvDate)) errors.apvDate = "Enter a valid date.";
+  if (!str(form.apAccountId)) errors.apAccountId = "Select the Accounts Payable account.";
+  for (const [lineId, accountId] of Object.entries(form.lineAccounts || {})) {
+    if (!str(accountId)) errors.lineAccounts[lineId] = "Select an account.";
+  }
+  const valid = Object.keys(errors).length === 1 && Object.keys(errors.lineAccounts).length === 0;
+  return { valid, errors };
+}
+
+// Exactly the fields POST /api/rfp/:id/convert accepts. Never a company -
+// the server always uses the RFP's own company.
+export function buildConvertPayload(form) {
+  const lineAccounts = Object.fromEntries(
+    Object.entries(form.lineAccounts || {}).map(([lineId, accountId]) => [lineId, Number(accountId)])
+  );
+  return {
+    voucherNo: str(form.voucherNo).trim(),
+    apvDate: form.apvDate,
+    apAccountId: Number(form.apAccountId),
+    ...(Object.keys(lineAccounts).length ? { lineAccounts } : {}),
+  };
+}
+
+// The APV page resolves its company by itself (it has no company selector),
+// so a link to it only lands on the right APV for a non-Super-Admin user
+// whose single company is the RFP's. Everyone else is told the APV number.
+export function canOpenApvPage({ rfp, companies = [], isSuperAdmin, canViewApv }) {
+  if (!rfp?.convertedApvId || !canViewApv || isSuperAdmin) return false;
+  return companies.length === 1 && str(companies[0].id) === str(rfp.companyId);
+}
+
+export function apvPagePath(apvId) {
+  return `/transactions/apv?id=${encodeURIComponent(str(apvId))}`;
+}
 
 // Note for a workflow dialog: trimmed, null when blank. `ok` is false when a
 // required note is blank or any note is over the limit.

@@ -69,6 +69,15 @@ exports.return = workflow("RETURN", "Failed to return the Request for Payment");
 exports.reject = workflow("REJECT", "Failed to reject the Request for Payment");
 exports.cancel = workflow("CANCEL", "Failed to cancel the Request for Payment");
 
+// R5: APPROVED -> CONVERTED with a new Draft APV in the RFP's own company.
+exports.convert = async (req, res) => {
+  try {
+    res.json(await RfpService.convertRfp({ id: req.params.id, body: req.body, user: { ...req.user, ...requestMeta(req) } }));
+  } catch (err) {
+    sendError(res, err, "Failed to convert the Request for Payment to an APV", "RFP CONVERT ERROR");
+  }
+};
+
 exports.history = async (req, res) => {
   try {
     res.json(await RfpService.getRfpHistory({ id: req.params.id, user: req.user }));

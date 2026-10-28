@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { STATUS_META, VAT_TREATMENTS, formatAmount, historyActionLabel, showDecision } from "../../utils/rfpPage.mjs";
 
 export function StatusBadge({ status }) {
@@ -23,9 +24,11 @@ function Field({ label, children, wide }) {
 }
 
 // Read-only RFP view: header, lines, workflow metadata, the actions this
-// user may take now, and the status history. No Convert action (R5).
-export default function RfpDetail({ rfp, accountsById, actions, onAction, onEdit, history }) {
-  const anyAction = actions.edit || actions.remove || actions.submit || actions.resubmit || actions.cancel || actions.approve || actions.return || actions.reject;
+// user may take now (including Convert to APV, R5), the resulting APV of a
+// converted RFP, and the status history. `apvPath` is set only when the
+// APV page can open that APV for this user.
+export default function RfpDetail({ rfp, accountsById, actions, onAction, onEdit, history, apvPath }) {
+  const anyAction = actions.edit || actions.remove || actions.submit || actions.resubmit || actions.cancel || actions.approve || actions.return || actions.reject || actions.convert;
   const account = (id) => {
     if (!id) return null;
     const a = accountsById.get(Number(id));
@@ -50,6 +53,7 @@ export default function RfpDetail({ rfp, accountsById, actions, onAction, onEdit
               {actions.approve ? <button type="button" className="rfp-btn rfp-btn-primary" onClick={() => onAction("approve")}>Approve</button> : null}
               {actions.return ? <button type="button" className="rfp-btn rfp-btn-warning" onClick={() => onAction("return")}>Return</button> : null}
               {actions.reject ? <button type="button" className="rfp-btn rfp-btn-danger" onClick={() => onAction("reject")}>Reject</button> : null}
+              {actions.convert ? <button type="button" className="rfp-btn rfp-btn-primary" onClick={() => onAction("convert")}>Convert to APV</button> : null}
               {actions.cancel ? <button type="button" className="rfp-btn rfp-btn-secondary" onClick={() => onAction("cancel")}>Cancel RFP</button> : null}
               {actions.remove ? <button type="button" className="rfp-btn rfp-btn-danger-ghost" onClick={() => onAction("delete")}>Delete</button> : null}
             </div>
@@ -70,6 +74,23 @@ export default function RfpDetail({ rfp, accountsById, actions, onAction, onEdit
                 {actions.edit || actions.resubmit
                   ? "Make the corrections with Edit, then Resubmit it for approval. It stays RETURNED until it is resubmitted."
                   : "Waiting for the requester to correct and resubmit it."}
+              </p>
+            </div>
+          </div>
+        ) : null}
+
+        {rfp.status === "CONVERTED" ? (
+          <div className="rfp-banner rfp-banner-success rfp-converted" role="note">
+            <div>
+              <strong>Converted to APV {rfp.convertedApvNo || `#${rfp.convertedApvId}`}</strong>
+              {rfp.convertedApvStatus ? <> <span className="rfp-apv-status">{rfp.convertedApvStatus}</span></> : null}
+              <p>
+                {apvPath ? (
+                  <Link className="rfp-link-btn rfp-strong" to={apvPath}>Open the APV</Link>
+                ) : (
+                  <>Open it from Transactions → Accounts Payable Voucher in this company.</>
+                )}{" "}
+                Record VAT and withholding on the APV and post it there; this request can no longer be changed.
               </p>
             </div>
           </div>
@@ -96,6 +117,15 @@ export default function RfpDetail({ rfp, accountsById, actions, onAction, onEdit
             {showDecision(rfp) ? <Field label="Decided by">{rfp.decidedByUsername}</Field> : null}
             {showDecision(rfp) ? <Field label="Decided at">{formatDateTime(rfp.decidedAt)}</Field> : null}
             {showDecision(rfp) ? <Field label="Decision note" wide>{rfp.decisionNote ? <span className="rfp-prewrap">{rfp.decisionNote}</span> : null}</Field> : null}
+          </div>
+        ) : null}
+
+        {rfp.convertedAt ? (
+          <div className="rfp-detail-grid rfp-workflow-meta">
+            <Field label="Converted by">{rfp.convertedByUsername}</Field>
+            <Field label="Converted at">{formatDateTime(rfp.convertedAt)}</Field>
+            <Field label="APV">{rfp.convertedApvNo}</Field>
+            <Field label="APV status">{rfp.convertedApvStatus}</Field>
           </div>
         ) : null}
       </div>

@@ -6,9 +6,12 @@ import {
   RFP_STATUSES,
   STATUS_META,
   WORKFLOW_DIALOGS,
+  apvPagePath,
   availableActions,
   belongsToCompany,
+  buildConvertPayload,
   buildPayload,
+  canOpenApvPage,
   emptyForm,
   errorMessage,
   formFromRfp,
@@ -21,6 +24,7 @@ import {
 import RfpForm from "./RfpForm";
 import RfpDetail, { StatusBadge, formatDateTime } from "./RfpDetail";
 import RfpActionDialog from "./RfpActionDialog";
+import RfpConvertDialog from "./RfpConvertDialog";
 import "./RFP.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
@@ -56,7 +60,7 @@ const DELETE_DIALOG = {
 };
 
 // Request for Payment (RFP): list / create / edit / view with the R3
-// workflow actions. Company context follows Trial Balance: a single-company
+// workflow actions and the R5 conversion to a Draft APV. Company context follows Trial Balance: a single-company
 // user's company is preselected and locked; a Super Admin or multi-company
 // user must choose, and nothing is requested before they do. The view is
 // driven by the URL (?new=1, ?id=N, ?id=N&edit=1) - the RFP id is the only
@@ -197,6 +201,8 @@ export default function RFP() {
   const wrongCompany = detail.rfp && !belongsToCompany(detail.rfp, companyId) ? detail.rfp : null;
   const actions = useMemo(() => availableActions({ rfp, can, userId: ctx.userId }), [rfp, can, ctx.userId]);
   const accountsById = useMemo(() => new Map((lookups.data?.accounts || []).map((a) => [a.id, a])), [lookups.data]);
+  const canViewApv = ctx.isSuperAdmin || ctx.perms.has("TRANSACTIONS.APV.VIEW");
+  const apvPath = canOpenApvPage({ rfp, companies, isSuperAdmin: ctx.isSuperAdmin, canViewApv }) ? apvPagePath(rfp.convertedApvId) : null;
   const visibleRows = useMemo(() => refineList(list.rows, filters), [list.rows, filters]);
 
   async function save(form) {
@@ -240,6 +246,19 @@ export default function RFP() {
       return;
     }
     setNotice(`Request for Payment ${r.data.rfpNo} is now ${STATUS_META[r.data.status]?.label || r.data.status}.`);
+    loadDetail();
+  }
+
+  // R5: the payload never carries a company - the server uses the RFP's own.
+  async function confirmConvert(form) {
+    setDialog((d) => ({ ...d, busy: true, error: "" }));
+    const r = await api(`/api/rfp/${encodeURIComponent(rfpId)}/convert`, { method: "POST", body: buildConvertPayload(form) });
+    if (!r.ok) {
+      setDialog((d) => ({ ...d, busy: false, error: errorMessage(r.status, r.data, "The Request for Payment could not be converted.") }));
+      return;
+    }
+    setDialog(null);
+    setNotice(`Request for Payment ${r.data.rfpNo} was converted to ${r.data.apv?.status || "Draft"} APV ${r.data.apv?.voucherNo || ""}.`);
     loadDetail();
   }
 
@@ -485,12 +504,26 @@ export default function RFP() {
           accountsById={accountsById}
           actions={actions}
           history={history}
+          apvPath={apvPath}
           onEdit={() => go({ id: rfpId, edit: "1" })}
           onAction={(key) => setDialog({ key, busy: false, error: "" })}
         />
       )}
 
-      {dialog && rfp ? (
+      {dialog && rfp && dialog.key === "convert" ? (
+        <RfpConvertDialog
+          key={`convert-${rfp.id}-${lookups.status}`}
+          rfp={rfp}
+          accounts={lookups.data?.accounts || []}
+          accountsStatus={lookups.status}
+          accountsError={lookups.error}
+          busy={dialog.busy}
+          error={dialog.error}
+          onConfirm={confirmConvert}
+          onClose={() => setDialog(null)}
+        />
+      ) : null}
+      {dialog && rfp && dialog.key !== "convert" ? (
         <RfpActionDialog
           key={dialog.key}
           config={dialog.key === "delete" ? DELETE_DIALOG : WORKFLOW_DIALOGS[dialog.key]}

@@ -3,8 +3,8 @@
 //
 // An RFP is a pre-accounting request to pay a supplier. Nothing here
 // touches the ledger: no journal, APV, AP balance or payment is created.
-// Workflow (submit / approve / return / reject / cancel) is R3 and
-// conversion to a Draft APV is R5.
+// Workflow (submit / approve / return / reject / cancel) is R3; R5 converts
+// an APPROVED request into a Draft APV (see convertRfp).
 //
 // Company isolation:
 //   - the company of a NEW RFP comes from the strict selector shared with
@@ -19,6 +19,8 @@ const { isValidDateOnly, toDateOnly } = require("../lib/dateOnly");
 const UserAccessService = require("./userAccessService");
 const { resolveSelectedCompany } = require("./trialBalanceCheckerService");
 const { VAT_TREATMENTS } = require("./vatCalculationService");
+const PermissionService = require("./permissionService");
+const { createApvRecord } = require("./apvCreateService");
 
 const MODULE = "TRANSACTIONS.RFP";
 const ENTITY = "RFP";
@@ -464,7 +466,8 @@ async function getRfp({ id, user }) {
     `SELECT h.*, DATE_FORMAT(h.rfp_date, '%Y-%m-%d') AS rfp_date_fmt,
             DATE_FORMAT(h.requested_payment_date, '%Y-%m-%d') AS requested_payment_date_fmt,
             c.name AS company_name, b.name AS branch_name, u.username AS requester_username,
-            cur.currency_code, sb.username AS submitted_by_username, dcu.username AS decided_by_username
+            cur.currency_code, sb.username AS submitted_by_username, dcu.username AS decided_by_username,
+            cvu.username AS converted_by_username, apv.voucher_no AS converted_apv_no, apv.status AS converted_apv_status
      FROM rfp_headers h
      JOIN companies c ON c.id = h.company_id
      LEFT JOIN branches b ON b.id = h.branch_id
@@ -472,6 +475,8 @@ async function getRfp({ id, user }) {
      LEFT JOIN currencies cur ON cur.id = h.currency_id
      LEFT JOIN users sb ON sb.id = h.submitted_by
      LEFT JOIN users dcu ON dcu.id = h.decided_by
+     LEFT JOIN users cvu ON cvu.id = h.converted_by
+     LEFT JOIN apv_headers apv ON apv.id = h.converted_apv_id AND apv.company_id = h.company_id
      WHERE h.id = ?${scope.sql}`,
     [rfpId, ...scope.params]
   );
@@ -506,6 +511,10 @@ async function getRfp({ id, user }) {
     decidedAt: h.decided_at,
     decisionNote: h.decision_note,
     convertedApvId: h.converted_apv_id,
+    convertedApvNo: h.converted_apv_no ?? null,
+    convertedApvStatus: h.converted_apv_status ?? null,
+    convertedBy: h.converted_by,
+    convertedByUsername: h.converted_by_username ?? null,
     convertedAt: h.converted_at,
     createdAt: h.created_at,
     updatedAt: h.updated_at,
@@ -794,6 +803,258 @@ async function getRfpHistory({ id, user }) {
   }));
 }
 
+// --- conversion to a Draft APV (R5) ----------------------------------------
+//
+//   CONVERT_TO_APV   APPROVED -> CONVERTED   (TRANSACTIONS.RFP.CONVERT, and
+//                                             TRANSACTIONS.APV.CREATE)
+//
+// One transaction: lock the RFP (company-scoped, FOR UPDATE), create the APV
+// through the same createApvRecord the APV page uses, link it, write the
+// history row and the audit row. Any failure rolls all of it back. The APV
+// is created in the RFP's STORED company - a client company is never used.
+//
+// The APV is a Draft journal: one debit per RFP line (its account, its
+// gross amount) and one Accounts Payable credit for the total. VAT and
+// withholding are NOT split here - the RFP's VAT treatment is a hint (see
+// the R1 migration) carried into the line particulars, and the VAT / EWT
+// entries are recorded on the APV with its own tax modals before posting.
+// Nothing is posted, paid or applied.
+const CONVERT_FIELDS = ["voucherNo", "apvDate", "apAccountId", "lineAccounts", "companyId"];
+const AP_CONTROL_VALIDATION = "AP CODE";
+// Same set the transaction grid keeps off ordinary journal lines
+// (taxAccountRules.mjs PROTECTED_TAX_VALIDATIONS): these accounts enter a
+// journal only through the tax modals.
+const TAX_CONTROL_VALIDATIONS = ["INPUT VAT", "OUTPUT VAT", "EXPANDED TAX", "FINAL TAX"];
+const VOUCHER_NO_MAX = 50;
+const PARTICULARS_MAX = 255;
+const VAT_LABELS = { STANDARD: "VAT standard (gross, VAT not yet split)", ZERO_RATED: "VAT zero-rated", EXEMPT: "VAT exempt" };
+
+function parseConvertBody(body) {
+  const input = body === undefined || body === null ? {} : body;
+  if (typeof input !== "object" || Array.isArray(input)) throw httpError("Request body must be an object.", 400);
+  const unknown = Object.keys(input).filter((k) => !CONVERT_FIELDS.includes(k));
+  if (unknown.length) throw httpError(`Unsupported field(s) for conversion: ${unknown.join(", ")}.`, 400);
+
+  const voucherNo = optionalText(input.voucherNo, "APV number", VOUCHER_NO_MAX);
+  if (input.apvDate === undefined || input.apvDate === null || input.apvDate === "") throw httpError("APV date is required.", 400);
+  const apvDate = parseDate(input.apvDate, "APV date");
+  if (input.apAccountId === undefined || input.apAccountId === null || input.apAccountId === "") {
+    throw httpError("Accounts Payable account is required.", 400);
+  }
+  const apAccountId = parseId(input.apAccountId, "apAccountId");
+
+  const lineAccounts = new Map();
+  if (input.lineAccounts !== undefined && input.lineAccounts !== null) {
+    if (typeof input.lineAccounts !== "object" || Array.isArray(input.lineAccounts)) {
+      throw httpError("lineAccounts must be an object of RFP line id to account id.", 400);
+    }
+    for (const [lineId, accountId] of Object.entries(input.lineAccounts)) {
+      lineAccounts.set(parseId(lineId, "lineAccounts line id"), parseId(accountId, "lineAccounts account id"));
+    }
+  }
+  const companyId = optionalId(input.companyId, "companyId");
+  return { voucherNo, apvDate, apAccountId, lineAccounts, companyId };
+}
+
+async function loadAccounts(conn, ids) {
+  if (!ids.length) return new Map();
+  const [rows] = await conn.query(
+    `SELECT a.id, a.code, a.title, GROUP_CONCAT(v.validation_name SEPARATOR '\\n') AS validations
+     FROM chart_of_accounts a LEFT JOIN coa_validations v ON v.coa_id = a.id
+     WHERE a.id IN (?) GROUP BY a.id, a.code, a.title`,
+    [ids]
+  );
+  return new Map(rows.map((r) => [r.id, {
+    id: r.id,
+    code: r.code,
+    title: r.title,
+    validations: new Set(String(r.validations || "").split("\n").map((v) => v.trim().toUpperCase()).filter(Boolean)),
+  }]));
+}
+
+function isTaxControl(account) {
+  return TAX_CONTROL_VALIDATIONS.some((v) => account.validations.has(v));
+}
+
+function particularsFor(line) {
+  const parts = [line.description];
+  if (line.reference) parts.push(`Ref ${line.reference}`);
+  if (line.vatTreatment) parts.push(VAT_LABELS[line.vatTreatment] || `VAT ${line.vatTreatment}`);
+  return parts.join(" | ").slice(0, PARTICULARS_MAX);
+}
+
+async function convertRfp({ id, body, user }) {
+  const rfpId = parseId(id, "RFP id");
+  const input = parseConvertBody(body);
+  // An RFP CONVERT grant is not a way around APV rights: the caller must
+  // also be allowed to create APVs (Super Admin bypasses, as everywhere).
+  if (!isSuperAdmin(user) && !(await PermissionService.can(user.id, "TRANSACTIONS.APV", "CREATE"))) {
+    throw httpError("Converting a Request for Payment creates an APV, which you do not have permission to create.", 403);
+  }
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    // Locks the row, company-scoped in SQL (another company's RFP is the
+    // same 404 as an unknown one). A concurrent conversion of the same RFP
+    // waits here and then sees CONVERTED -> 409.
+    const header = await loadAccessibleRfp(conn, rfpId, user, { forUpdate: true });
+    if (input.companyId !== null && input.companyId !== header.company_id) {
+      throw httpError("The APV is always created in the Request for Payment's own company; a different company cannot be chosen.", 400);
+    }
+    if (header.status !== "APPROVED") {
+      throw httpError(`Only an APPROVED Request for Payment can be converted to an APV (this one is ${header.status}).`, 409);
+    }
+    if (header.converted_apv_id !== null) {
+      throw httpError("This Request for Payment has already been converted to an APV.", 409);
+    }
+
+    const lines = await readLines(conn, rfpId);
+    if (!lines.length) throw httpError("This Request for Payment has no lines to convert.", 409);
+    for (const [lineId] of input.lineAccounts) {
+      const line = lines.find((l) => l.id === lineId);
+      if (!line) throw httpError(`lineAccounts: line ${lineId} is not a line of this Request for Payment.`, 400);
+      if (line.accountId !== null) {
+        throw httpError(`Line ${lines.indexOf(line) + 1} already has its approved account; only lines without an account can be given one.`, 400);
+      }
+    }
+    const resolved = lines.map((l) => ({ ...l, apvAccountId: l.accountId ?? input.lineAccounts.get(l.id) ?? null }));
+    const missing = resolved.findIndex((l) => l.apvAccountId === null);
+    if (missing >= 0) throw httpError(`Line ${missing + 1} has no account. Choose an account for it before converting.`, 400);
+
+    const accounts = await loadAccounts(conn, [...new Set([input.apAccountId, ...resolved.map((l) => l.apvAccountId)])]);
+    const ap = accounts.get(input.apAccountId);
+    if (!ap) throw httpError("Accounts Payable account not found.", 400);
+    if (!ap.validations.has(AP_CONTROL_VALIDATION)) {
+      throw httpError(`The Accounts Payable account must be flagged "${AP_CONTROL_VALIDATION}" in the Chart of Accounts.`, 400);
+    }
+    for (const [i, l] of resolved.entries()) {
+      const account = accounts.get(l.apvAccountId);
+      if (!account) throw httpError(`Line ${i + 1}: account not found.`, l.accountId === null ? 400 : 409);
+      if (isTaxControl(account)) {
+        throw httpError(
+          `Line ${i + 1}: ${account.code} is a VAT / withholding control account; record tax on the APV with its tax entries instead.`,
+          l.accountId === null ? 400 : 409
+        );
+      }
+    }
+
+    // The supplier code becomes the AP line's subsidiary reference, as the
+    // APV page sets it when a supplier is picked.
+    const [suppliers] = await conn.execute(
+      "SELECT code FROM general_libraries WHERE id = ? AND company_id = ?",
+      [header.supplier_id, header.company_id]
+    );
+    if (!suppliers.length) throw httpError("This Request for Payment's supplier no longer exists in its company.", 409);
+    const [[requester]] = await conn.execute("SELECT username FROM users WHERE id = ?", [header.requester_user_id]);
+    const [[branch]] = header.branch_id
+      ? await conn.execute("SELECT name FROM branches WHERE id = ?", [header.branch_id])
+      : [[null]];
+
+    const total = Number(header.total_amount);
+    const voucherNo = input.voucherNo || `APV-${header.rfp_no}`;
+    const apvLines = [
+      ...resolved.map((l) => {
+        const account = accounts.get(l.apvAccountId);
+        return {
+          accountId: account.id, accountCode: account.code, accountTitle: account.title,
+          particulars: particularsFor(l), debit: Number(l.grossAmount), credit: 0, genRef: "", genName: "",
+        };
+      }),
+      {
+        accountId: ap.id, accountCode: ap.code, accountTitle: ap.title,
+        particulars: `Accounts Payable - ${header.supplier_name || ""}`.slice(0, PARTICULARS_MAX),
+        debit: 0, credit: total, genRef: suppliers[0].code || "", genName: header.supplier_name || "",
+      },
+    ];
+    const remarks = [
+      `Converted from Request for Payment ${header.rfp_no} (requested by ${requester?.username || "unknown"}${branch?.name ? `, branch ${branch.name}` : ""}).`,
+      "Line amounts are the RFP gross amounts: record VAT and withholding on this APV before posting.",
+      header.remarks ? `RFP remarks: ${header.remarks}` : null,
+    ].filter(Boolean).join("\n");
+
+    const apv = await createApvRecord(conn, {
+      user,
+      body: {
+        voucherNo,
+        supplierId: header.supplier_id,
+        supplierName: header.supplier_name,
+        transactionDate: input.apvDate,
+        dueDate: toDateString(header.requested_payment_date),
+        referenceNo: header.supporting_reference || "",
+        description: header.purpose,
+        remarks,
+        totalDebit: total,
+        totalCredit: total,
+        status: "Draft",
+        lines: apvLines,
+        currency: { currencyId: header.currency_id, rateDate: input.apvDate },
+      },
+      resolveCompanyId: async () => header.company_id,
+    });
+
+    const [result] = await conn.execute(
+      `UPDATE rfp_headers SET status = 'CONVERTED', converted_apv_id = ?, converted_by = ?, converted_at = NOW()
+       WHERE id = ? AND company_id = ? AND status = 'APPROVED' AND converted_apv_id IS NULL`,
+      [apv.id, user.id, rfpId, header.company_id]
+    );
+    if (result.affectedRows !== 1) throw httpError("The Request for Payment changed while it was being converted. Reload and try again.", 409);
+
+    await conn.execute(
+      "INSERT INTO rfp_status_history (rfp_id, previous_status, new_status, action, user_id, note) VALUES (?, ?, ?, ?, ?, ?)",
+      [rfpId, "APPROVED", "CONVERTED", "CONVERT_TO_APV", user.id, `APV ${apv.voucherNo}`]
+    );
+    const [[updated]] = await conn.execute("SELECT converted_at FROM rfp_headers WHERE id = ?", [rfpId]);
+
+    await logAudit(conn, {
+      module: MODULE,
+      entityType: ENTITY,
+      entityId: rfpId,
+      action: "CONVERT_TO_APV",
+      description: `${user.username} converted Request for Payment ${header.rfp_no} to Draft APV ${apv.voucherNo} (APPROVED -> CONVERTED)`,
+      beforeData: { rfpNo: header.rfp_no, companyId: header.company_id, status: "APPROVED", convertedApvId: null },
+      afterData: {
+        rfpNo: header.rfp_no,
+        companyId: header.company_id,
+        previousStatus: "APPROVED",
+        status: "CONVERTED",
+        apvId: apv.id,
+        apvVoucherNo: apv.voucherNo,
+        apvStatus: apv.status,
+        apvDate: input.apvDate,
+        apAccountId: ap.id,
+        totalAmount: header.total_amount,
+        convertedBy: user.id,
+        convertedAt: updated.converted_at,
+      },
+      user,
+      companyId: header.company_id,
+    });
+
+    await conn.commit();
+    return {
+      id: rfpId,
+      rfpNo: header.rfp_no,
+      companyId: header.company_id,
+      previousStatus: "APPROVED",
+      status: "CONVERTED",
+      convertedAt: updated.converted_at,
+      convertedBy: user.id,
+      apv: { id: apv.id, voucherNo: apv.voucherNo, status: apv.status, companyId: apv.companyId, totalAmount: header.total_amount },
+    };
+  } catch (err) {
+    await conn.rollback().catch(() => {});
+    if (err?.code === "ER_DUP_ENTRY") {
+      // Race backstops: the unique APV link, or the per-company voucher number.
+      if (/uq_rfp_converted_apv/.test(err.message || "")) throw httpError("This Request for Payment has already been converted to an APV.", 409);
+      throw httpError("That APV number already exists for this company.", 409);
+    }
+    throw err;
+  } finally {
+    conn.release();
+  }
+}
+
 // --- form lookups (R4) -----------------------------------------------------
 //
 // The choices the RFP form may offer for ONE explicitly selected company,
@@ -823,13 +1084,22 @@ async function getLookups({ user, query = {} }) {
          WHERE b.company_id = ? ORDER BY b.name, b.id`,
         [user.id, companyId]
       );
-  const [accounts] = await pool.execute("SELECT id, code, title FROM chart_of_accounts ORDER BY code, id");
+  // Validation flags drive the R5 conversion dialog: AP CODE accounts are
+  // the payable-credit choices; tax-control accounts never take a line.
+  const [accounts] = await pool.execute(
+    `SELECT a.id, a.code, a.title,
+            MAX(UPPER(v.validation_name) = ?) AS is_ap_control,
+            MAX(UPPER(v.validation_name) IN (?, ?, ?, ?)) AS is_tax_control
+     FROM chart_of_accounts a LEFT JOIN coa_validations v ON v.coa_id = a.id
+     GROUP BY a.id, a.code, a.title ORDER BY a.code, a.id`,
+    [AP_CONTROL_VALIDATION, ...TAX_CONTROL_VALIDATIONS]
+  );
   return {
     companyId,
     suppliers: suppliers.map((s) => ({ id: s.id, code: s.code, name: s.name, tin: s.tin || null })),
     currencies: currencies.map((c) => ({ id: c.id, code: c.currency_code, name: c.currency_name, isBase: !!c.is_base_currency })),
     branches: branches.map((b) => ({ id: b.id, name: b.name, code: b.code || null })),
-    accounts: accounts.map((a) => ({ id: a.id, code: a.code, title: a.title })),
+    accounts: accounts.map((a) => ({ id: a.id, code: a.code, title: a.title, isApControl: !!a.is_ap_control, isTaxControl: !!a.is_tax_control })),
   };
 }
 
@@ -844,4 +1114,5 @@ module.exports = {
   deleteRfp,
   transitionRfp,
   getRfpHistory,
+  convertRfp,
 };
