@@ -50,3 +50,29 @@ exports.remove = async (req, res) => {
     sendError(res, err, "Failed to delete the Request for Payment", "RFP DELETE ERROR");
   }
 };
+
+// Workflow actions (R3): the route names the action, the service decides
+// the target status. Only an optional / required "note" is accepted.
+function workflow(action, fallback) {
+  return async (req, res) => {
+    try {
+      res.json(await RfpService.transitionRfp({ id: req.params.id, action, body: req.body, user: { ...req.user, ...requestMeta(req) } }));
+    } catch (err) {
+      sendError(res, err, fallback, `RFP ${action} ERROR`);
+    }
+  };
+}
+
+exports.submit = workflow("SUBMIT", "Failed to submit the Request for Payment");
+exports.approve = workflow("APPROVE", "Failed to approve the Request for Payment");
+exports.return = workflow("RETURN", "Failed to return the Request for Payment");
+exports.reject = workflow("REJECT", "Failed to reject the Request for Payment");
+exports.cancel = workflow("CANCEL", "Failed to cancel the Request for Payment");
+
+exports.history = async (req, res) => {
+  try {
+    res.json(await RfpService.getRfpHistory({ id: req.params.id, user: req.user }));
+  } catch (err) {
+    sendError(res, err, "Failed to load the Request for Payment history", "RFP HISTORY ERROR");
+  }
+};

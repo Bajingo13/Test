@@ -612,11 +612,182 @@ async function deleteRfp({ id, user }) {
   }
 }
 
+// --- workflow (R3) -------------------------------------------------------------
+//
+// The endpoint names the action; the action alone decides the target
+// status - a client never supplies one. Every other move is refused with
+// 409. RETURNED has no way out yet (edit + resubmit is a later workflow
+// decision) and CONVERTED is reached only by the R5 conversion.
+//
+//   SUBMIT   DRAFT              -> SUBMITTED  (TRANSACTIONS.RFP.SUBMIT)
+//   APPROVE  SUBMITTED          -> APPROVED   (TRANSACTIONS.RFP.APPROVE)
+//   RETURN   SUBMITTED          -> RETURNED   (TRANSACTIONS.RFP.APPROVE, note required)
+//   REJECT   SUBMITTED          -> REJECTED   (TRANSACTIONS.RFP.APPROVE, note required)
+//   CANCEL   DRAFT | SUBMITTED  -> CANCELLED  (TRANSACTIONS.RFP.SUBMIT - requester-side withdrawal)
+//
+// APPROVE / RETURN / REJECT are decisions: they set decided_by / decided_at
+// / decision_note, and the decider can be neither the requester nor the
+// submitter (maker-checker). No action here touches the ledger, an APV or
+// the conversion columns.
+const WORKFLOW = {
+  SUBMIT: { from: ["DRAFT"], to: "SUBMITTED", note: "optional", verb: "submitted" },
+  APPROVE: { from: ["SUBMITTED"], to: "APPROVED", note: "optional", decision: true, verb: "approved" },
+  RETURN: { from: ["SUBMITTED"], to: "RETURNED", note: "required", decision: true, verb: "returned" },
+  REJECT: { from: ["SUBMITTED"], to: "REJECTED", note: "required", decision: true, verb: "rejected" },
+  CANCEL: { from: ["DRAFT", "SUBMITTED"], to: "CANCELLED", note: "optional", verb: "cancelled" },
+};
+const WORKFLOW_NOTE_MAX = 500;
+
+function parseWorkflowBody(action, body) {
+  const input = body === undefined || body === null ? {} : body;
+  if (typeof input !== "object" || Array.isArray(input)) throw httpError("Request body must be an object.", 400);
+  const unknown = Object.keys(input).filter((k) => k !== "note");
+  if (unknown.length) throw httpError(`Unsupported field(s) for ${action}: ${unknown.join(", ")}. Only "note" is accepted.`, 400);
+  const note = optionalText(input.note, "Note", WORKFLOW_NOTE_MAX);
+  if (WORKFLOW[action].note === "required" && !note) {
+    throw httpError(`A note explaining why is required to ${action.toLowerCase()} a Request for Payment.`, 400);
+  }
+  return note;
+}
+
+// Re-checks the STORED RFP against the same rules a create/edit enforces
+// (supplier / branch / currency of its company, lines, dates, purpose,
+// total) - the database state is authoritative, never an earlier request.
+async function assertSubmittable(conn, header, user) {
+  const [requester] = await conn.execute("SELECT id FROM users WHERE id = ?", [header.requester_user_id]);
+  if (!requester.length) throw httpError("This Request for Payment cannot be submitted: its requester no longer exists.", 409);
+  const lines = await readLines(conn, header.id);
+  const stored = {
+    rfpDate: toDateString(header.rfp_date) ?? undefined,
+    requestedPaymentDate: toDateString(header.requested_payment_date) ?? undefined,
+    purpose: header.purpose ?? undefined,
+    supportingReference: header.supporting_reference,
+    remarks: header.remarks,
+    supplierId: header.supplier_id ?? undefined,
+    currencyId: header.currency_id ?? undefined,
+    branchId: header.branch_id,
+    totalAmount: header.total_amount,
+    lines: lines.map((l) => ({
+      description: l.description,
+      grossAmount: l.grossAmount,
+      accountId: l.accountId,
+      vatTreatment: l.vatTreatment,
+      reference: l.reference,
+    })),
+  };
+  try {
+    await validatePayload(conn, { companyId: header.company_id, body: stored, user });
+  } catch (err) {
+    if (err.statusCode === 400) throw httpError(`This Request for Payment cannot be submitted: ${err.message}`, 409);
+    throw err;
+  }
+}
+
+async function transitionRfp({ id, action, body, user }) {
+  const rule = WORKFLOW[action];
+  if (!rule) throw httpError("Unsupported workflow action.", 400);
+  const rfpId = parseId(id, "RFP id");
+  const note = parseWorkflowBody(action, body);
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    // Locks the row, company-scoped in SQL: another company's RFP is the
+    // same 404 as an unknown one, and concurrent actions on one RFP queue
+    // here - the loser then sees the new status and gets 409.
+    const header = await loadAccessibleRfp(conn, rfpId, user, { forUpdate: true });
+    const previous = header.status;
+    if (!rule.from.includes(previous)) {
+      throw httpError(`Cannot ${action.toLowerCase()} a Request for Payment that is ${previous} (allowed from: ${rule.from.join(", ")}).`, 409);
+    }
+    if (rule.decision && (user.id === header.requester_user_id || user.id === header.submitted_by)) {
+      throw httpError("You cannot decide on a Request for Payment you requested or submitted.", 403);
+    }
+    if (action === "SUBMIT") await assertSubmittable(conn, header, user);
+
+    let set = "status = ?";
+    const params = [rule.to];
+    if (action === "SUBMIT") {
+      set += ", submitted_by = ?, submitted_at = NOW()";
+      params.push(user.id);
+    } else if (rule.decision) {
+      set += ", decided_by = ?, decided_at = NOW(), decision_note = ?";
+      params.push(user.id, note);
+    }
+    const [result] = await conn.execute(
+      `UPDATE rfp_headers SET ${set} WHERE id = ? AND company_id = ? AND status = ?`,
+      [...params, rfpId, header.company_id, previous]
+    );
+    if (result.affectedRows !== 1) throw httpError("The Request for Payment changed while this action was running. Reload and try again.", 409);
+
+    await conn.execute(
+      "INSERT INTO rfp_status_history (rfp_id, previous_status, new_status, action, user_id, note) VALUES (?, ?, ?, ?, ?, ?)",
+      [rfpId, previous, rule.to, action, user.id, note]
+    );
+
+    const [[updated]] = await conn.execute(
+      `SELECT status, submitted_by, submitted_at, decided_by, decided_at, decision_note FROM rfp_headers WHERE id = ?`,
+      [rfpId]
+    );
+    await logAudit(conn, {
+      module: MODULE,
+      entityType: ENTITY,
+      entityId: rfpId,
+      action,
+      description: `${user.username} ${rule.verb} Request for Payment ${header.rfp_no} (${previous} -> ${rule.to})${note ? `: ${note}` : ""}`,
+      beforeData: { rfpNo: header.rfp_no, companyId: header.company_id, status: previous },
+      afterData: {
+        rfpNo: header.rfp_no,
+        companyId: header.company_id,
+        previousStatus: previous,
+        status: updated.status,
+        note,
+        ...(action === "SUBMIT" ? { submittedBy: updated.submitted_by, submittedAt: updated.submitted_at } : {}),
+        ...(rule.decision ? { decidedBy: updated.decided_by, decidedAt: updated.decided_at, decisionNote: updated.decision_note } : {}),
+      },
+      user,
+      companyId: header.company_id,
+    });
+
+    await conn.commit();
+    return { id: rfpId, rfpNo: header.rfp_no, companyId: header.company_id, previousStatus: previous, status: rule.to };
+  } catch (err) {
+    await conn.rollback().catch(() => {});
+    throw err;
+  } finally {
+    conn.release();
+  }
+}
+
+async function getRfpHistory({ id, user }) {
+  const rfpId = parseId(id, "RFP id");
+  await loadAccessibleRfp(pool, rfpId, user);
+  const [rows] = await pool.execute(
+    `SELECT h.id, h.previous_status, h.new_status, h.action, h.user_id, u.username, h.note, h.created_at
+     FROM rfp_status_history h LEFT JOIN users u ON u.id = h.user_id
+     WHERE h.rfp_id = ? ORDER BY h.id`,
+    [rfpId]
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    previousStatus: r.previous_status,
+    newStatus: r.new_status,
+    action: r.action,
+    userId: r.user_id,
+    username: r.username,
+    note: r.note,
+    createdAt: r.created_at,
+  }));
+}
+
 module.exports = {
   STATUSES,
+  WORKFLOW,
   createRfp,
   listRfps,
   getRfp,
   updateRfp,
   deleteRfp,
+  transitionRfp,
+  getRfpHistory,
 };
