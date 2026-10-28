@@ -7632,6 +7632,7 @@ app.use("/api/fx-revaluation", require("./routes/fxRevaluation.routes"));
 app.use("/api/currencies", require("./routes/currency.routes"));
 app.use("/api/exchange-rates", require("./routes/exchangeRate.routes"));
 app.use("/api/accounting-periods", require("./routes/accountingPeriods.routes"));
+app.use("/api/rfp", require("./routes/rfp.routes"));
 
 // ===================== ACCOUNT GROUP CODES API =====================
 

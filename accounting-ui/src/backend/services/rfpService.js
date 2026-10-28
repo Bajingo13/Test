@@ -1,0 +1,622 @@
+// Request for Payment (RFP) - R2 backend foundation: create / list / detail
+// / edit / delete of DRAFT requests, with server-side numbering.
+//
+// An RFP is a pre-accounting request to pay a supplier. Nothing here
+// touches the ledger: no journal, APV, AP balance or payment is created.
+// Workflow (submit / approve / return / reject / cancel) is R3 and
+// conversion to a Draft APV is R5.
+//
+// Company isolation:
+//   - the company of a NEW RFP comes from the strict selector shared with
+//     Trial Balance / Account Analysis (explicit + validated; inferred only
+//     for a user with exactly one company; never a lowest/first company).
+//   - every read/write of an existing RFP carries the company condition in
+//     SQL (user_companies sub-select), so another company's RFP is never
+//     fetched - it gets the same 404 as an unknown id.
+const pool = require("../db");
+const { logAudit } = require("../lib/audit");
+const { isValidDateOnly, toDateOnly } = require("../lib/dateOnly");
+const UserAccessService = require("./userAccessService");
+const { resolveSelectedCompany } = require("./trialBalanceCheckerService");
+const { VAT_TREATMENTS } = require("./vatCalculationService");
+
+const MODULE = "TRANSACTIONS.RFP";
+const ENTITY = "RFP";
+const NOT_FOUND = "Request for Payment not found";
+const STATUSES = ["DRAFT", "SUBMITTED", "APPROVED", "CONVERTED", "RETURNED", "REJECTED", "CANCELLED"];
+const MAX_LINES = 500;
+const NUMBER_LOCK_TIMEOUT_SECONDS = 10;
+const NUMBER_ATTEMPTS = 3;
+
+// Server-controlled fields: a request carrying any of them is rejected
+// outright rather than silently ignored, so a client can never believe it
+// set a requester, status, number, snapshot, total-of-record or workflow
+// field. (totalAmount is allowed - it is checked against the lines.)
+const SERVER_FIELDS = [
+  "id", "rfpNo", "rfp_no", "status", "requesterUserId", "requester_user_id", "requester",
+  "supplierName", "supplier_name", "supplierTin", "supplier_tin",
+  "submittedBy", "submitted_by", "submittedAt", "submitted_at",
+  "decidedBy", "decided_by", "decidedAt", "decided_at", "decisionNote", "decision_note",
+  "convertedApvId", "converted_apv_id", "convertedBy", "converted_by", "convertedAt", "converted_at",
+  "company_id", "branch_id", "currency_id", "total_amount", "createdAt", "created_at", "updatedAt", "updated_at",
+];
+
+function httpError(message, statusCode) {
+  return Object.assign(new Error(message), { statusCode });
+}
+
+function isSuperAdmin(user) {
+  return user?.roleCode === "SUPER_ADMIN";
+}
+
+function parseId(value, label) {
+  const s = String(value ?? "").trim();
+  if (!/^[1-9][0-9]{0,9}$/.test(s) || Number(s) > 2147483647) throw httpError(`${label} must be a valid id.`, 400);
+  return Number(s);
+}
+
+function optionalId(value, label) {
+  if (value === undefined || value === null || String(value).trim() === "") return null;
+  return parseId(value, label);
+}
+
+// Calendar-exact YYYY-MM-DD (rejects 2026-02-31, which a Date would roll over).
+function parseDate(value, label) {
+  if (!isValidDateOnly(value) || new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) !== value) {
+    throw httpError(`${label} must be a valid date (YYYY-MM-DD).`, 400);
+  }
+  return value;
+}
+
+function optionalText(value, label, maxLength) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string") throw httpError(`${label} must be text.`, 400);
+  const s = value.trim();
+  if (s.length > maxLength) throw httpError(`${label} must be at most ${maxLength} characters.`, 400);
+  return s || null;
+}
+
+function requiredText(value, label, maxLength) {
+  const s = optionalText(value, label, maxLength);
+  if (!s) throw httpError(`${label} is required.`, 400);
+  return s;
+}
+
+// Money as integer cents (BigInt) - never floating point. Accepts a
+// non-negative number or numeric string with at most 2 decimals; NaN,
+// Infinity, exponents, negatives and malformed values are rejected.
+function parseCents(value, label, maxIntegerDigits) {
+  const s = typeof value === "number" ? String(value) : typeof value === "string" ? value.trim() : "";
+  const m = s.match(/^(\d+)(?:\.(\d{1,2}))?$/);
+  if (!m || m[1].replace(/^0+(?=\d)/, "").length > maxIntegerDigits) {
+    throw httpError(`${label} must be a non-negative amount with at most 2 decimal places.`, 400);
+  }
+  return BigInt(m[1]) * 100n + BigInt((m[2] || "").padEnd(2, "0"));
+}
+
+function centsToString(cents) {
+  return `${cents / 100n}.${String(cents % 100n).padStart(2, "0")}`;
+}
+
+function assertNoServerFields(body) {
+  const sent = SERVER_FIELDS.filter((f) => Object.prototype.hasOwnProperty.call(body, f));
+  if (sent.length) throw httpError(`These fields are set by the server and cannot be supplied: ${sent.join(", ")}.`, 400);
+}
+
+// --- company scope -------------------------------------------------------
+
+// SQL fragment limiting rfp_headers (alias h) to the caller's companies.
+function companyScopeSql(user) {
+  if (isSuperAdmin(user)) return { sql: "", params: [] };
+  return { sql: " AND h.company_id IN (SELECT uc.company_id FROM user_companies uc WHERE uc.user_id = ?)", params: [user?.id ?? 0] };
+}
+
+// Locks (optionally) and returns an RFP the caller may see; another
+// company's RFP and an unknown id produce the same 404.
+async function loadAccessibleRfp(db, id, user, { forUpdate = false } = {}) {
+  const scope = companyScopeSql(user);
+  const [rows] = await db.execute(
+    `SELECT h.* FROM rfp_headers h WHERE h.id = ?${scope.sql}${forUpdate ? " FOR UPDATE" : ""}`,
+    [id, ...scope.params]
+  );
+  if (!rows.length) throw httpError(NOT_FOUND, 404);
+  return rows[0];
+}
+
+// --- payload validation ----------------------------------------------------
+
+// Validates everything a create/edit writes, against the RFP's company.
+// Returns the normalized record; nothing is written here.
+async function validatePayload(db, { companyId, body, user }) {
+  const rfpDate = parseDate(body.rfpDate, "RFP date");
+  const requestedPaymentDate = parseDate(body.requestedPaymentDate, "Requested payment date");
+  const purpose = requiredText(body.purpose, "Purpose", 5000);
+  const supportingReference = optionalText(body.supportingReference, "Supporting reference", 100);
+  const remarks = optionalText(body.remarks, "Remarks", 5000);
+
+  if (body.supplierId === undefined || body.supplierId === null || body.supplierId === "") throw httpError("Supplier is required.", 400);
+  const supplierId = parseId(body.supplierId, "supplierId");
+  if (body.currencyId === undefined || body.currencyId === null || body.currencyId === "") throw httpError("Currency is required.", 400);
+  const currencyId = parseId(body.currencyId, "currencyId");
+  const branchId = optionalId(body.branchId, "branchId");
+
+  if (!Array.isArray(body.lines) || body.lines.length === 0) throw httpError("At least one line is required.", 400);
+  if (body.lines.length > MAX_LINES) throw httpError(`An RFP can have at most ${MAX_LINES} lines.`, 400);
+
+  const lines = body.lines.map((line, i) => {
+    const n = i + 1;
+    if (!line || typeof line !== "object" || Array.isArray(line)) throw httpError(`Line ${n} is malformed.`, 400);
+    if (line.grossAmount === undefined || line.grossAmount === null || line.grossAmount === "") {
+      throw httpError(`Line ${n}: gross amount is required.`, 400);
+    }
+    let vatTreatment = null;
+    if (line.vatTreatment !== undefined && line.vatTreatment !== null && String(line.vatTreatment).trim() !== "") {
+      vatTreatment = String(line.vatTreatment).trim().toUpperCase();
+      if (!VAT_TREATMENTS.includes(vatTreatment)) {
+        throw httpError(`Line ${n}: VAT treatment must be one of ${VAT_TREATMENTS.join(", ")}.`, 400);
+      }
+    }
+    return {
+      description: requiredText(line.description, `Line ${n}: description`, 255),
+      cents: parseCents(line.grossAmount, `Line ${n}: gross amount`, 13),
+      accountId: optionalId(line.accountId, `Line ${n}: accountId`),
+      vatTreatment,
+      reference: optionalText(line.reference, `Line ${n}: reference`, 100),
+    };
+  });
+
+  const totalCents = lines.reduce((sum, l) => sum + l.cents, 0n);
+  if (totalCents >= 10n ** 18n) throw httpError("The total amount is too large.", 400);
+  if (body.totalAmount !== undefined && body.totalAmount !== null && body.totalAmount !== "") {
+    const claimed = parseCents(body.totalAmount, "Total amount", 16);
+    if (claimed !== totalCents) {
+      throw httpError(`Total amount ${centsToString(claimed)} does not match the sum of the lines (${centsToString(totalCents)}).`, 400);
+    }
+  }
+
+  // Supplier: a general_libraries row of THIS company, of type SUPPLIER.
+  // Unknown and another company's supplier get the same message.
+  const [suppliers] = await db.execute(
+    "SELECT id, name, tin, party_type, status FROM general_libraries WHERE id = ? AND company_id = ?",
+    [supplierId, companyId]
+  );
+  const supplier = suppliers[0];
+  if (!supplier) throw httpError("Supplier not found for the selected company.", 400);
+  if (String(supplier.party_type || "").toUpperCase() !== "SUPPLIER") throw httpError("The selected party is not a supplier.", 400);
+  if (String(supplier.status || "").toUpperCase() !== "ACTIVE") throw httpError("The selected supplier is not active.", 400);
+
+  // Branch (optional): must belong to the company and, below Super Admin,
+  // be one of the user's assigned branches (same rule as branchScope.js).
+  if (branchId !== null) {
+    const [branches] = await db.execute("SELECT id FROM branches WHERE id = ? AND company_id = ?", [branchId, companyId]);
+    if (!branches.length) throw httpError("Branch not found for the selected company.", 400);
+    if (!isSuperAdmin(user) && !(await UserAccessService.userHasBranchAccess(user?.id, branchId))) {
+      throw httpError("You do not have access to this branch", 403);
+    }
+  }
+
+  // Currency: currencies are company-scoped; no rate is resolved here
+  // (exchange rates belong to the APV at conversion).
+  const [currencies] = await db.execute(
+    "SELECT id, is_active FROM currencies WHERE id = ? AND company_id = ?",
+    [currencyId, companyId]
+  );
+  if (!currencies.length) throw httpError("Currency not found for the selected company.", 400);
+  if (!currencies[0].is_active) throw httpError("The selected currency is not active.", 400);
+
+  // Accounts: chart_of_accounts is global by design - existence only.
+  const accountIds = [...new Set(lines.map((l) => l.accountId).filter((v) => v !== null))];
+  if (accountIds.length) {
+    const [found] = await db.query("SELECT id FROM chart_of_accounts WHERE id IN (?)", [accountIds]);
+    const known = new Set(found.map((r) => r.id));
+    const missing = lines.findIndex((l) => l.accountId !== null && !known.has(l.accountId));
+    if (missing >= 0) throw httpError(`Line ${missing + 1}: account not found.`, 400);
+  }
+
+  return {
+    rfpDate,
+    requestedPaymentDate,
+    purpose,
+    supportingReference,
+    remarks,
+    supplierId,
+    supplierName: supplier.name,
+    supplierTin: supplier.tin || null,
+    branchId,
+    currencyId,
+    totalAmount: centsToString(totalCents),
+    lines: lines.map(({ cents, ...l }) => ({ ...l, grossAmount: centsToString(cents) })),
+  };
+}
+
+// --- numbering ---------------------------------------------------------------
+
+// RFP<yy>-<5 digits>, per company, year taken from the RFP date. Only
+// well-formed numbers of that company and year drive the sequence (same
+// rule as generateQuotationNo). Callers hold the per-company number lock.
+async function nextRfpNo(conn, companyId, rfpDate) {
+  const prefix = `RFP${rfpDate.slice(2, 4)}-`;
+  const [rows] = await conn.execute(
+    `SELECT rfp_no FROM rfp_headers
+     WHERE company_id = ? AND rfp_no REGEXP '^RFP[0-9][0-9]-[0-9]+$' AND rfp_no LIKE ?
+     ORDER BY CAST(SUBSTRING_INDEX(rfp_no, '-', -1) AS UNSIGNED) DESC LIMIT 1`,
+    [companyId, `${prefix}%`]
+  );
+  const seq = rows.length ? Number(rows[0].rfp_no.split("-").pop()) + 1 : 1;
+  return `${prefix}${String(seq).padStart(5, "0")}`;
+}
+
+// Serializes number generation per company for the life of the
+// transaction (a MySQL named lock, as runMigrations.js uses), so two
+// concurrent creates never compute the same next number. The
+// UNIQUE(company_id, rfp_no) key stays the final guarantee.
+async function acquireNumberLock(conn, companyId) {
+  const name = `astrea_rfp_no_${companyId}`;
+  const [[row]] = await conn.query("SELECT GET_LOCK(?, ?) AS got", [name, NUMBER_LOCK_TIMEOUT_SECONDS]);
+  if (row.got !== 1) throw httpError("Another Request for Payment is being numbered for this company. Please try again.", 409);
+  return name;
+}
+
+async function releaseNumberLock(conn, name) {
+  if (!name) return;
+  try {
+    await conn.query("SELECT RELEASE_LOCK(?)", [name]);
+  } catch (err) {
+    console.error("RFP NUMBER LOCK RELEASE ERROR:", err.message);
+  }
+}
+
+function isRfpNoConflict(err) {
+  return err?.code === "ER_DUP_ENTRY" && /uq_rfp_company_no/.test(err.message || "");
+}
+
+// --- persistence helpers -------------------------------------------------------
+
+async function insertLines(conn, rfpId, lines) {
+  for (const l of lines) {
+    await conn.execute(
+      "INSERT INTO rfp_lines (rfp_id, description, account_id, gross_amount, vat_treatment, reference) VALUES (?, ?, ?, ?, ?, ?)",
+      [rfpId, l.description, l.accountId, l.grossAmount, l.vatTreatment, l.reference]
+    );
+  }
+}
+
+async function readLines(db, rfpId) {
+  const [rows] = await db.execute(
+    `SELECT id, description, account_id, gross_amount, vat_treatment, reference
+     FROM rfp_lines WHERE rfp_id = ? ORDER BY id`,
+    [rfpId]
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    description: r.description,
+    accountId: r.account_id,
+    grossAmount: r.gross_amount,
+    vatTreatment: r.vat_treatment,
+    reference: r.reference,
+  }));
+}
+
+function toDateString(value) {
+  return value ? toDateOnly(value) : null;
+}
+
+// The audit/state view of an RFP: business fields only.
+function auditState(header, lines) {
+  return {
+    rfpNo: header.rfp_no,
+    companyId: header.company_id,
+    branchId: header.branch_id,
+    rfpDate: toDateString(header.rfp_date),
+    requesterUserId: header.requester_user_id,
+    supplierId: header.supplier_id,
+    supplierName: header.supplier_name,
+    supplierTin: header.supplier_tin,
+    purpose: header.purpose,
+    requestedPaymentDate: toDateString(header.requested_payment_date),
+    currencyId: header.currency_id,
+    totalAmount: header.total_amount,
+    supportingReference: header.supporting_reference,
+    remarks: header.remarks,
+    status: header.status,
+    lines: lines.map(({ id, ...l }) => l),
+  };
+}
+
+function changedFields(before, after) {
+  return Object.keys(after).filter((k) => JSON.stringify(before[k]) !== JSON.stringify(after[k]));
+}
+
+// --- operations ------------------------------------------------------------
+
+async function createRfp({ body, user }) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) throw httpError("Request body is required.", 400);
+  assertNoServerFields(body);
+  const companyId = await resolveSelectedCompany(user, body.companyId);
+
+  for (let attempt = 1; ; attempt += 1) {
+    const conn = await pool.getConnection();
+    let lockName = null;
+    try {
+      // The lock is taken BEFORE the transaction starts: under REPEATABLE
+      // READ the read snapshot is fixed at the transaction's first read, so
+      // it must postdate the previous holder's commit for nextRfpNo to see
+      // that holder's number. The lock is released only after commit.
+      lockName = await acquireNumberLock(conn, companyId);
+      await conn.beginTransaction();
+      const data = await validatePayload(conn, { companyId, body, user });
+      const rfpNo = await nextRfpNo(conn, companyId, data.rfpDate);
+
+      const [result] = await conn.execute(
+        `INSERT INTO rfp_headers (
+          company_id, branch_id, rfp_no, rfp_date, requester_user_id,
+          supplier_id, supplier_name, supplier_tin, purpose, requested_payment_date,
+          currency_id, total_amount, remarks, supporting_reference, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DRAFT')`,
+        [
+          companyId, data.branchId, rfpNo, data.rfpDate, user.id,
+          data.supplierId, data.supplierName, data.supplierTin, data.purpose, data.requestedPaymentDate,
+          data.currencyId, data.totalAmount, data.remarks, data.supportingReference,
+        ]
+      );
+      const rfpId = result.insertId;
+      await insertLines(conn, rfpId, data.lines);
+
+      const [[header]] = await conn.execute("SELECT * FROM rfp_headers WHERE id = ?", [rfpId]);
+      const state = auditState(header, await readLines(conn, rfpId));
+      await logAudit(conn, {
+        module: MODULE,
+        entityType: ENTITY,
+        entityId: rfpId,
+        action: "CREATE",
+        description: `${user.username} created Request for Payment ${rfpNo}`,
+        afterData: state,
+        user,
+        companyId,
+      });
+
+      await conn.commit();
+      return { id: rfpId, rfpNo, companyId, status: "DRAFT", totalAmount: data.totalAmount };
+    } catch (err) {
+      await conn.rollback().catch(() => {});
+      if (isRfpNoConflict(err)) {
+        if (attempt < NUMBER_ATTEMPTS) continue;
+        throw httpError("Could not assign a unique RFP number. Please try again.", 409);
+      }
+      throw err;
+    } finally {
+      await releaseNumberLock(conn, lockName);
+      conn.release();
+    }
+  }
+}
+
+async function listRfps({ user, query = {} }) {
+  const where = [];
+  const params = [];
+
+  const hasCompany = query.companyId !== undefined && query.companyId !== null && String(query.companyId).trim() !== "";
+  if (hasCompany) {
+    // Explicit filter: validated exactly like a selection (unknown 400,
+    // inaccessible 403).
+    const companyId = await resolveSelectedCompany(user, query.companyId);
+    where.push("h.company_id = ?");
+    params.push(companyId);
+  } else if (!isSuperAdmin(user)) {
+    // No filter: the union of the caller's companies (Super Admin: all).
+    const scope = companyScopeSql(user);
+    where.push(scope.sql.replace(/^ AND /, ""));
+    params.push(...scope.params);
+  }
+
+  if (query.status !== undefined && String(query.status).trim() !== "") {
+    const status = String(query.status).trim().toUpperCase();
+    if (!STATUSES.includes(status)) throw httpError(`status must be one of ${STATUSES.join(", ")}.`, 400);
+    where.push("h.status = ?");
+    params.push(status);
+  }
+
+  const [rows] = await pool.execute(
+    `SELECT h.id, h.rfp_no, h.company_id, c.name AS company_name, h.branch_id, b.name AS branch_name,
+            DATE_FORMAT(h.rfp_date, '%Y-%m-%d') AS rfp_date, h.requester_user_id, u.username AS requester_username,
+            h.supplier_id, h.supplier_name, h.purpose,
+            DATE_FORMAT(h.requested_payment_date, '%Y-%m-%d') AS requested_payment_date,
+            h.currency_id, cur.currency_code, h.total_amount, h.status, h.created_at, h.updated_at
+     FROM rfp_headers h
+     JOIN companies c ON c.id = h.company_id
+     LEFT JOIN branches b ON b.id = h.branch_id
+     LEFT JOIN users u ON u.id = h.requester_user_id
+     LEFT JOIN currencies cur ON cur.id = h.currency_id
+     ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+     ORDER BY h.id DESC`,
+    params
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    rfpNo: r.rfp_no,
+    companyId: r.company_id,
+    companyName: r.company_name,
+    branchId: r.branch_id,
+    branchName: r.branch_name,
+    rfpDate: r.rfp_date,
+    requesterUserId: r.requester_user_id,
+    requesterUsername: r.requester_username,
+    supplierId: r.supplier_id,
+    supplierName: r.supplier_name,
+    purpose: r.purpose,
+    requestedPaymentDate: r.requested_payment_date,
+    currencyId: r.currency_id,
+    currencyCode: r.currency_code,
+    totalAmount: r.total_amount,
+    status: r.status,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  }));
+}
+
+async function getRfp({ id, user }) {
+  const rfpId = parseId(id, "RFP id");
+  const scope = companyScopeSql(user);
+  const [rows] = await pool.execute(
+    `SELECT h.*, DATE_FORMAT(h.rfp_date, '%Y-%m-%d') AS rfp_date_fmt,
+            DATE_FORMAT(h.requested_payment_date, '%Y-%m-%d') AS requested_payment_date_fmt,
+            c.name AS company_name, b.name AS branch_name, u.username AS requester_username,
+            cur.currency_code, sb.username AS submitted_by_username, dcu.username AS decided_by_username
+     FROM rfp_headers h
+     JOIN companies c ON c.id = h.company_id
+     LEFT JOIN branches b ON b.id = h.branch_id
+     LEFT JOIN users u ON u.id = h.requester_user_id
+     LEFT JOIN currencies cur ON cur.id = h.currency_id
+     LEFT JOIN users sb ON sb.id = h.submitted_by
+     LEFT JOIN users dcu ON dcu.id = h.decided_by
+     WHERE h.id = ?${scope.sql}`,
+    [rfpId, ...scope.params]
+  );
+  const h = rows[0];
+  if (!h) throw httpError(NOT_FOUND, 404);
+  return {
+    id: h.id,
+    rfpNo: h.rfp_no,
+    companyId: h.company_id,
+    companyName: h.company_name,
+    branchId: h.branch_id,
+    branchName: h.branch_name,
+    rfpDate: h.rfp_date_fmt,
+    requesterUserId: h.requester_user_id,
+    requesterUsername: h.requester_username,
+    supplierId: h.supplier_id,
+    supplierName: h.supplier_name,
+    supplierTin: h.supplier_tin,
+    purpose: h.purpose,
+    requestedPaymentDate: h.requested_payment_date_fmt,
+    currencyId: h.currency_id,
+    currencyCode: h.currency_code,
+    totalAmount: h.total_amount,
+    supportingReference: h.supporting_reference,
+    remarks: h.remarks,
+    status: h.status,
+    submittedBy: h.submitted_by,
+    submittedByUsername: h.submitted_by_username,
+    submittedAt: h.submitted_at,
+    decidedBy: h.decided_by,
+    decidedByUsername: h.decided_by_username,
+    decidedAt: h.decided_at,
+    decisionNote: h.decision_note,
+    convertedApvId: h.converted_apv_id,
+    convertedAt: h.converted_at,
+    createdAt: h.created_at,
+    updatedAt: h.updated_at,
+    lines: await readLines(pool, h.id),
+  };
+}
+
+async function updateRfp({ id, body, user }) {
+  const rfpId = parseId(id, "RFP id");
+  if (!body || typeof body !== "object" || Array.isArray(body)) throw httpError("Request body is required.", 400);
+  assertNoServerFields(body);
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const header = await loadAccessibleRfp(conn, rfpId, user, { forUpdate: true });
+    // Ownership is fixed at creation: a companyId may be echoed back but
+    // never changed.
+    if (body.companyId !== undefined && body.companyId !== null && String(body.companyId).trim() !== ""
+        && Number(body.companyId) !== header.company_id) {
+      throw httpError("The company of a Request for Payment cannot be changed.", 400);
+    }
+    if (header.status !== "DRAFT") {
+      throw httpError(`Only a DRAFT Request for Payment can be edited (this one is ${header.status}).`, 409);
+    }
+
+    const data = await validatePayload(conn, { companyId: header.company_id, body, user });
+    const before = auditState(header, await readLines(conn, rfpId));
+
+    await conn.execute(
+      `UPDATE rfp_headers SET
+         branch_id = ?, rfp_date = ?, supplier_id = ?, supplier_name = ?, supplier_tin = ?,
+         purpose = ?, requested_payment_date = ?, currency_id = ?, total_amount = ?,
+         remarks = ?, supporting_reference = ?
+       WHERE id = ? AND company_id = ? AND status = 'DRAFT'`,
+      [
+        data.branchId, data.rfpDate, data.supplierId, data.supplierName, data.supplierTin,
+        data.purpose, data.requestedPaymentDate, data.currencyId, data.totalAmount,
+        data.remarks, data.supportingReference, rfpId, header.company_id,
+      ]
+    );
+    await conn.execute("DELETE FROM rfp_lines WHERE rfp_id = ?", [rfpId]);
+    await insertLines(conn, rfpId, data.lines);
+
+    const [[updated]] = await conn.execute("SELECT * FROM rfp_headers WHERE id = ?", [rfpId]);
+    const after = auditState(updated, await readLines(conn, rfpId));
+    const changed = changedFields(before, after);
+    await logAudit(conn, {
+      module: MODULE,
+      entityType: ENTITY,
+      entityId: rfpId,
+      action: "EDIT",
+      description: `${user.username} edited Request for Payment ${header.rfp_no}${changed.length ? ` (${changed.join(", ")})` : " (no changes)"}`,
+      beforeData: before,
+      afterData: { ...after, changedFields: changed },
+      user,
+      companyId: header.company_id,
+    });
+
+    await conn.commit();
+    return { id: rfpId, rfpNo: header.rfp_no, companyId: header.company_id, status: "DRAFT", totalAmount: data.totalAmount, changedFields: changed };
+  } catch (err) {
+    await conn.rollback().catch(() => {});
+    throw err;
+  } finally {
+    conn.release();
+  }
+}
+
+async function deleteRfp({ id, user }) {
+  const rfpId = parseId(id, "RFP id");
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const header = await loadAccessibleRfp(conn, rfpId, user, { forUpdate: true });
+    if (header.status !== "DRAFT") {
+      throw httpError(`Only a DRAFT Request for Payment can be deleted (this one is ${header.status}).`, 409);
+    }
+    // rfp_status_history is RESTRICT: an RFP with any workflow history is
+    // kept (it can only be cancelled, in R3).
+    const [[history]] = await conn.execute("SELECT COUNT(*) AS n FROM rfp_status_history WHERE rfp_id = ?", [rfpId]);
+    if (history.n > 0) {
+      throw httpError("This Request for Payment has workflow history and cannot be deleted.", 409);
+    }
+
+    const before = auditState(header, await readLines(conn, rfpId));
+    await conn.execute("DELETE FROM rfp_lines WHERE rfp_id = ?", [rfpId]);
+    await conn.execute("DELETE FROM rfp_headers WHERE id = ? AND company_id = ? AND status = 'DRAFT'", [rfpId, header.company_id]);
+    await logAudit(conn, {
+      module: MODULE,
+      entityType: ENTITY,
+      entityId: rfpId,
+      action: "DELETE",
+      description: `${user.username} deleted Request for Payment ${header.rfp_no}`,
+      beforeData: before,
+      user,
+      companyId: header.company_id,
+    });
+
+    await conn.commit();
+    return { id: rfpId, rfpNo: header.rfp_no, deleted: true };
+  } catch (err) {
+    await conn.rollback().catch(() => {});
+    throw err;
+  } finally {
+    conn.release();
+  }
+}
+
+module.exports = {
+  STATUSES,
+  createRfp,
+  listRfps,
+  getRfp,
+  updateRfp,
+  deleteRfp,
+};
