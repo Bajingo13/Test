@@ -37,6 +37,21 @@ export const LIMITS = {
   lines: 500,
 };
 
+// Statuses whose current record IS a decision. After a resubmission the
+// stored decision fields still describe the previous (historical) decision,
+// so they are shown only while the decision is the current state.
+export const DECISION_STATUSES = ["APPROVED", "RETURNED", "REJECTED"];
+
+export function showDecision(rfp) {
+  return Boolean(rfp?.decidedAt) && DECISION_STATUSES.includes(rfp.status);
+}
+
+// A SUBMIT out of RETURNED is a resubmission.
+export function historyActionLabel(entry) {
+  if (entry?.action === "SUBMIT" && entry.previousStatus === "RETURNED") return "Resubmitted";
+  return ACTION_LABELS[entry?.action] || entry?.action || "";
+}
+
 export const ACTION_LABELS = {
   SUBMIT: "Submitted",
   APPROVE: "Approved",
@@ -240,21 +255,22 @@ export function hasActiveFilters({ status = "", search = "", from = "", to = "" 
 
 // --- actions ---------------------------------------------------------------
 
-// What the page may offer for this RFP and user. Mirrors R2/R3: only DRAFT
-// is editable/deletable; SUBMIT/CANCEL are requester-side (SUBMIT
-// permission); APPROVE/RETURN/REJECT need APPROVE and are never offered to
+// What the page may offer for this RFP and user. Mirrors R2/R3/R4.1: DRAFT
+// and RETURNED are editable, only DRAFT is deletable; SUBMIT (DRAFT),
+// RESUBMIT (RETURNED) and CANCEL are requester-side (SUBMIT permission); APPROVE/RETURN/REJECT need APPROVE and are never offered to
 // the RFP's requester or submitter - Super Admin included. The server
 // re-checks everything.
 export function availableActions({ rfp, can, userId }) {
-  const none = { edit: false, remove: false, submit: false, cancel: false, approve: false, return: false, reject: false, selfDecisionBlocked: false };
+  const none = { edit: false, remove: false, submit: false, resubmit: false, cancel: false, approve: false, return: false, reject: false, selfDecisionBlocked: false };
   if (!rfp) return none;
   const status = rfp.status;
   const self = userId != null && (rfp.requesterUserId === userId || rfp.submittedBy === userId);
   const mayDecide = can("APPROVE") && status === "SUBMITTED";
   return {
-    edit: status === "DRAFT" && can("EDIT"),
+    edit: (status === "DRAFT" || status === "RETURNED") && can("EDIT"),
     remove: status === "DRAFT" && can("DELETE"),
     submit: status === "DRAFT" && can("SUBMIT"),
+    resubmit: status === "RETURNED" && can("SUBMIT"),
     cancel: (status === "DRAFT" || status === "SUBMITTED") && can("SUBMIT"),
     approve: mayDecide && !self,
     return: mayDecide && !self,
@@ -270,6 +286,16 @@ export const WORKFLOW_DIALOGS = {
     message: "This Request for Payment will move from DRAFT to SUBMITTED for approval. It can no longer be edited after submission.",
     note: "optional",
     confirm: "Submit",
+    tone: "primary",
+  },
+  // Same SUBMIT endpoint; the server reads the RETURNED status itself.
+  resubmit: {
+    action: "SUBMIT",
+    route: "submit",
+    title: "Resubmit Request for Payment",
+    message: "This Request for Payment will move from RETURNED back to SUBMITTED for approval. Save the corrections the approver asked for before resubmitting.",
+    note: "optional",
+    confirm: "Resubmit",
     tone: "primary",
   },
   approve: {

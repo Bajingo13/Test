@@ -24,6 +24,9 @@ const MODULE = "TRANSACTIONS.RFP";
 const ENTITY = "RFP";
 const NOT_FOUND = "Request for Payment not found";
 const STATUSES = ["DRAFT", "SUBMITTED", "APPROVED", "CONVERTED", "RETURNED", "REJECTED", "CANCELLED"];
+// A RETURNED request is corrected in place (same id, number and company)
+// and stays RETURNED until it is resubmitted.
+const EDITABLE_STATUSES = ["DRAFT", "RETURNED"];
 const MAX_LINES = 500;
 const NUMBER_LOCK_TIMEOUT_SECONDS = 10;
 const NUMBER_ATTEMPTS = 3;
@@ -525,8 +528,8 @@ async function updateRfp({ id, body, user }) {
         && Number(body.companyId) !== header.company_id) {
       throw httpError("The company of a Request for Payment cannot be changed.", 400);
     }
-    if (header.status !== "DRAFT") {
-      throw httpError(`Only a DRAFT Request for Payment can be edited (this one is ${header.status}).`, 409);
+    if (!EDITABLE_STATUSES.includes(header.status)) {
+      throw httpError(`Only a DRAFT or RETURNED Request for Payment can be edited (this one is ${header.status}).`, 409);
     }
 
     const data = await validatePayload(conn, { companyId: header.company_id, body, user });
@@ -537,11 +540,11 @@ async function updateRfp({ id, body, user }) {
          branch_id = ?, rfp_date = ?, supplier_id = ?, supplier_name = ?, supplier_tin = ?,
          purpose = ?, requested_payment_date = ?, currency_id = ?, total_amount = ?,
          remarks = ?, supporting_reference = ?
-       WHERE id = ? AND company_id = ? AND status = 'DRAFT'`,
+       WHERE id = ? AND company_id = ? AND status = ?`,
       [
         data.branchId, data.rfpDate, data.supplierId, data.supplierName, data.supplierTin,
         data.purpose, data.requestedPaymentDate, data.currencyId, data.totalAmount,
-        data.remarks, data.supportingReference, rfpId, header.company_id,
+        data.remarks, data.supportingReference, rfpId, header.company_id, header.status,
       ]
     );
     await conn.execute("DELETE FROM rfp_lines WHERE rfp_id = ?", [rfpId]);
@@ -563,7 +566,9 @@ async function updateRfp({ id, body, user }) {
     });
 
     await conn.commit();
-    return { id: rfpId, rfpNo: header.rfp_no, companyId: header.company_id, status: "DRAFT", totalAmount: data.totalAmount, changedFields: changed };
+    // Editing never changes the status: a RETURNED request stays RETURNED
+    // until it is explicitly resubmitted.
+    return { id: rfpId, rfpNo: header.rfp_no, companyId: header.company_id, status: header.status, totalAmount: data.totalAmount, changedFields: changed };
   } catch (err) {
     await conn.rollback().catch(() => {});
     throw err;
@@ -616,10 +621,11 @@ async function deleteRfp({ id, user }) {
 //
 // The endpoint names the action; the action alone decides the target
 // status - a client never supplies one. Every other move is refused with
-// 409. RETURNED has no way out yet (edit + resubmit is a later workflow
-// decision) and CONVERTED is reached only by the R5 conversion.
+// 409. A RETURNED request is corrected through the normal edit (it stays
+// RETURNED) and resubmitted with the same SUBMIT action and full
+// revalidation; CONVERTED is reached only by the R5 conversion.
 //
-//   SUBMIT   DRAFT              -> SUBMITTED  (TRANSACTIONS.RFP.SUBMIT)
+//   SUBMIT   DRAFT | RETURNED   -> SUBMITTED  (TRANSACTIONS.RFP.SUBMIT)
 //   APPROVE  SUBMITTED          -> APPROVED   (TRANSACTIONS.RFP.APPROVE)
 //   RETURN   SUBMITTED          -> RETURNED   (TRANSACTIONS.RFP.APPROVE, note required)
 //   REJECT   SUBMITTED          -> REJECTED   (TRANSACTIONS.RFP.APPROVE, note required)
@@ -629,8 +635,16 @@ async function deleteRfp({ id, user }) {
 // / decision_note, and the decider can be neither the requester nor the
 // submitter (maker-checker). No action here touches the ledger, an APV or
 // the conversion columns.
+//
+// Decision fields are never cleared (same convention as accounting
+// periods, whose reopen keeps closed_by / closed_at): after a resubmission
+// they still describe the last decision until the next one overwrites
+// them, the status says which metadata is current, and
+// rfp_status_history keeps every decision. A resubmission overwrites
+// submitted_by / submitted_at with the resubmitter - the requester never
+// changes, so maker-checker still blocks them.
 const WORKFLOW = {
-  SUBMIT: { from: ["DRAFT"], to: "SUBMITTED", note: "optional", verb: "submitted" },
+  SUBMIT: { from: ["DRAFT", "RETURNED"], to: "SUBMITTED", note: "optional", verb: "submitted" },
   APPROVE: { from: ["SUBMITTED"], to: "APPROVED", note: "optional", decision: true, verb: "approved" },
   RETURN: { from: ["SUBMITTED"], to: "RETURNED", note: "required", decision: true, verb: "returned" },
   REJECT: { from: ["SUBMITTED"], to: "REJECTED", note: "required", decision: true, verb: "rejected" },

@@ -171,7 +171,7 @@ describe("actions", () => {
     expect(r.availableActions({ rfp: rfp("SUBMITTED", { requesterUserId: 5, submittedBy: 77 }), can: all, userId: 77 }).approve).toBe(false);
     expect(r.availableActions({ rfp: rfp("SUBMITTED"), can: only("VIEW", "SUBMIT"), userId: 99 })).toMatchObject({ approve: false, cancel: true, selfDecisionBlocked: false });
   });
-  test.each(["APPROVED", "RETURNED", "REJECTED", "CANCELLED", "CONVERTED"])("%s offers no action at all (no convert, no resubmit)", (status) => {
+  test.each(["APPROVED", "REJECTED", "CANCELLED", "CONVERTED"])("%s offers no action at all (no convert, no resubmit)", (status) => {
     const a = r.availableActions({ rfp: rfp(status), can: all, userId: 99 });
     expect(Object.values(a).some(Boolean)).toBe(false);
   });
@@ -179,13 +179,67 @@ describe("actions", () => {
     expect(r.WORKFLOW_DIALOGS.return.note).toBe("required");
     expect(r.WORKFLOW_DIALOGS.reject.note).toBe("required");
     expect(r.WORKFLOW_DIALOGS.cancel.message).toBe("Canceling this RFP will permanently move it to CANCELLED.");
-    expect(Object.keys(r.WORKFLOW_DIALOGS).sort()).toEqual(["approve", "cancel", "reject", "return", "submit"]);
+    expect(Object.keys(r.WORKFLOW_DIALOGS).sort()).toEqual(["approve", "cancel", "reject", "resubmit", "return", "submit"]);
   });
   test("notes are trimmed, blank required notes block, 500 max", () => {
     expect(r.normalizeNote("  x  ", "required")).toEqual({ ok: true, note: "x" });
     expect(r.normalizeNote("   ", "required").ok).toBe(false);
     expect(r.normalizeNote("", "optional")).toEqual({ ok: true, note: null });
     expect(r.normalizeNote("x".repeat(501), "optional").ok).toBe(false);
+  });
+});
+
+describe("returned RFP (R4.1)", () => {
+  const all = () => true;
+  const only = (...a) => (x) => a.includes(x);
+  const returned = { status: "RETURNED", requesterUserId: 10, submittedBy: 10, decidedAt: "2026-10-01T00:00:00Z", decisionNote: "Attach invoice" };
+
+  test("RETURNED offers Edit and Resubmit to the requester side - no decisions, no cancel, no delete", () => {
+    expect(r.availableActions({ rfp: returned, can: all, userId: 10 })).toEqual({
+      edit: true, remove: false, submit: false, resubmit: true, cancel: false, approve: false, return: false, reject: false, selfDecisionBlocked: false,
+    });
+  });
+  test("Edit needs EDIT, Resubmit needs SUBMIT", () => {
+    expect(r.availableActions({ rfp: returned, can: only("VIEW", "EDIT"), userId: 99 })).toMatchObject({ edit: true, resubmit: false });
+    expect(r.availableActions({ rfp: returned, can: only("VIEW", "SUBMIT"), userId: 99 })).toMatchObject({ edit: false, resubmit: true });
+    expect(r.availableActions({ rfp: returned, can: only("VIEW"), userId: 99 })).toMatchObject({ edit: false, resubmit: false });
+  });
+  test("after resubmission the requester / resubmitter still gets no decisions (Super Admin too)", () => {
+    const resubmitted = { ...returned, status: "SUBMITTED", submittedBy: 22 };
+    expect(r.availableActions({ rfp: resubmitted, can: all, userId: 10 })).toMatchObject({ approve: false, return: false, reject: false, selfDecisionBlocked: true });
+    expect(r.availableActions({ rfp: resubmitted, can: all, userId: 22 })).toMatchObject({ approve: false, selfDecisionBlocked: true });
+    expect(r.availableActions({ rfp: resubmitted, can: all, userId: 33 })).toMatchObject({ approve: true, return: true, reject: true });
+  });
+  test("resubmit dialog goes to the existing submit route and explains RETURNED -> SUBMITTED", () => {
+    expect(r.WORKFLOW_DIALOGS.resubmit).toMatchObject({ action: "SUBMIT", route: "submit", note: "optional", confirm: "Resubmit" });
+    expect(r.WORKFLOW_DIALOGS.resubmit.message).toMatch(/from RETURNED back to SUBMITTED/);
+  });
+  test("decision fields are shown only while the decision is current", () => {
+    expect(r.showDecision(returned)).toBe(true);
+    expect(r.showDecision({ ...returned, status: "SUBMITTED" })).toBe(false);
+    expect(r.showDecision({ ...returned, status: "APPROVED" })).toBe(true);
+    expect(r.showDecision({ status: "RETURNED", decidedAt: null })).toBe(false);
+  });
+  test("history labels a SUBMIT out of RETURNED as a resubmission", () => {
+    expect(r.historyActionLabel({ action: "SUBMIT", previousStatus: "RETURNED" })).toBe("Resubmitted");
+    expect(r.historyActionLabel({ action: "SUBMIT", previousStatus: "DRAFT" })).toBe("Submitted");
+    expect(r.historyActionLabel({ action: "RETURN", previousStatus: "SUBMITTED" })).toBe("Returned");
+  });
+  test("editing a returned RFP sends no company, status or workflow fields", () => {
+    const p = r.buildPayload({ ...r.formFromRfp({ ...returned, rfpDate: "2026-01-02", requestedPaymentDate: "2026-01-09", supplierId: 7, currencyId: 3, purpose: "P", lines: [{ description: "L", grossAmount: "5.00" }] }) }, { companyId: "4", isCreate: false });
+    for (const k of ["companyId", "status", "submittedBy", "decidedBy", "decidedAt", "decisionNote", "convertedApvId", "requesterUserId"]) expect(p).not.toHaveProperty(k);
+  });
+  test("page / form / detail wiring", () => {
+    const page = read("pages", "TRANSACTIONS", "RFP.jsx");
+    const detail = read("pages", "TRANSACTIONS", "RfpDetail.jsx");
+    const form = read("pages", "TRANSACTIONS", "RfpForm.jsx");
+    expect(page).toContain("WORKFLOW_DIALOGS[key].route || key");
+    expect(page).toContain('returnNote={rfp.status === "RETURNED"');
+    expect(page).toContain("It is still RETURNED - resubmit it when the corrections are complete.");
+    expect(detail).toContain("Returned for correction");
+    expect(detail).toContain('onAction("resubmit")');
+    expect(detail).toContain("historyActionLabel(h)");
+    expect(form).toContain("Saving keeps this request RETURNED.");
   });
 });
 

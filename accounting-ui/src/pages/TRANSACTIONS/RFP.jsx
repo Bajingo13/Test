@@ -212,7 +212,13 @@ export default function RFP() {
       setFormError(errorMessage(r.status, r.data, "Unable to save the Request for Payment."));
       return;
     }
-    setNotice(isCreate ? `Request for Payment ${r.data.rfpNo} was created as a draft.` : `Request for Payment ${r.data.rfpNo} was updated.`);
+    setNotice(
+      isCreate
+        ? `Request for Payment ${r.data.rfpNo} was created as a draft.`
+        : r.data.status === "RETURNED"
+          ? `Request for Payment ${r.data.rfpNo} was updated. It is still RETURNED - resubmit it when the corrections are complete.`
+          : `Request for Payment ${r.data.rfpNo} was updated.`
+    );
     go({ id: String(r.data.id) });
   }
 
@@ -222,7 +228,7 @@ export default function RFP() {
     const r =
       key === "delete"
         ? await api(`/api/rfp/${encodeURIComponent(rfpId)}`, { method: "DELETE" })
-        : await api(`/api/rfp/${encodeURIComponent(rfpId)}/${key}`, { method: "POST", body: note ? { note } : {} });
+        : await api(`/api/rfp/${encodeURIComponent(rfpId)}/${WORKFLOW_DIALOGS[key].route || key}`, { method: "POST", body: note ? { note } : {} });
     if (!r.ok) {
       setDialog((d) => ({ ...d, busy: false, error: errorMessage(r.status, r.data, "The action could not be completed.") }));
       return;
@@ -449,7 +455,7 @@ export default function RFP() {
       ) : mode === "edit" ? (
         !actions.edit ? (
           <div className="rfp-card rfp-state">
-            Only DRAFT Requests for Payment can be edited by users with edit permission.
+            Only DRAFT or RETURNED Requests for Payment can be edited by users with edit permission.
             <div><button type="button" className="rfp-btn rfp-btn-secondary" onClick={() => go({ id: rfpId })}>View RFP</button></div>
           </div>
         ) : lookups.status === "ready" ? (
@@ -462,6 +468,7 @@ export default function RFP() {
             requesterName={rfp.requesterUsername}
             rfpNo={rfp.rfpNo}
             fallbackSupplier={{ id: rfp.supplierId, name: rfp.supplierName, tin: rfp.supplierTin }}
+            returnNote={rfp.status === "RETURNED" ? rfp.decisionNote || "" : undefined}
             saving={saving}
             serverError={formError}
             onSave={save}

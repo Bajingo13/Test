@@ -497,7 +497,7 @@ describe("edit", () => {
     expect(row.requester_user_id).toBe(users.adminA);
   });
 
-  test.each(["SUBMITTED", "APPROVED", "CONVERTED", "REJECTED", "CANCELLED", "RETURNED"])("%s is not editable (409, unchanged)", async (status) => {
+  test.each(["SUBMITTED", "APPROVED", "CONVERTED", "REJECTED", "CANCELLED"])("%s is not editable (409, unchanged; RETURNED is editable - see rfpResubmission)", async (status) => {
     const id = await create();
     await setStatus(id, status, status === "CONVERTED" ? `, converted_apv_id = ${2147482000 + id % 1000}` : "");
     const res = await api.update("adminA", id, bodyA({ purpose: "Changed" }));

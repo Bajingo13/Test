@@ -314,7 +314,8 @@ describe("return / reject", () => {
     expect(await history(id)).toHaveLength(1);
   });
 
-  test("returned and rejected RFPs cannot be approved, rejected, returned, cancelled or resubmitted", async () => {
+  // RETURNED -> SUBMITTED (resubmission) is covered by rfpResubmission.http.test.js.
+  test("returned and rejected RFPs cannot be approved, rejected, returned or cancelled; rejected cannot be resubmitted", async () => {
     for (const route of ["return", "reject"]) {
       const id = await submitted();
       expect((await act("adminA", id, route, { note: "no" })).status).toBe(200);
@@ -322,7 +323,7 @@ describe("return / reject", () => {
       expect((await act("adminA2", id, "reject", { note: "x" })).status).toBe(409);
       expect((await act("adminA2", id, "return", { note: "x" })).status).toBe(409);
       expect((await act("acctA", id, "cancel")).status).toBe(409);
-      expect((await act("acctA", id, "submit")).status).toBe(409);
+      if (route === "reject") expect((await act("acctA", id, "submit")).status).toBe(409);
       expect(await history(id)).toHaveLength(2);
     }
   });
@@ -368,7 +369,7 @@ describe("transition matrix", () => {
     SUBMITTED: ["approve", "return", "reject", "cancel"],
     APPROVED: [],
     CONVERTED: [],
-    RETURNED: [],
+    RETURNED: ["submit"],
     REJECTED: [],
     CANCELLED: [],
   };

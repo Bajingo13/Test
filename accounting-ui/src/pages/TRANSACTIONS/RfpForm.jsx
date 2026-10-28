@@ -13,6 +13,7 @@ export default function RfpForm({
   requesterName,
   rfpNo,
   fallbackSupplier,
+  returnNote,
   saving,
   serverError,
   onSave,
@@ -55,11 +56,20 @@ export default function RfpForm({
         <div>
           <h2>{mode === "create" ? "New Request for Payment" : `Edit ${rfpNo}`}</h2>
           <p className="rfp-subtle">
-            {mode === "create" ? "The RFP number is assigned when you save." : "Only DRAFT requests can be edited."}
+            {mode === "create" ? "The RFP number is assigned when you save." : "The RFP number and company stay the same."}
           </p>
         </div>
       </div>
 
+      {returnNote !== undefined ? (
+        <div className="rfp-banner rfp-banner-warning rfp-returned" role="note">
+          <div>
+            <strong>Returned for correction</strong>
+            {returnNote ? <p className="rfp-prewrap">Reason: {returnNote}</p> : null}
+            <p>Saving keeps this request RETURNED. Resubmit it from the request view when the corrections are complete.</p>
+          </div>
+        </div>
+      ) : null}
       {serverError ? <div className="rfp-banner rfp-banner-error" role="alert">{serverError}</div> : null}
       {attempted && !valid ? (
         <div className="rfp-banner rfp-banner-error" role="alert">Please fix the highlighted fields.</div>

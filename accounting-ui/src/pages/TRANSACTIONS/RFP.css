@@ -288,6 +288,7 @@
 .rfp-banner-info { background: var(--info-bg); color: var(--info-text); }
 .rfp-banner-warning { background: var(--warning-bg); color: var(--warning-text); }
 .rfp-banner .rfp-link-btn { color: inherit; }
+.rfp-returned p { margin: 6px 0 0; }
 
 /* status badges */
 .rfp-status {

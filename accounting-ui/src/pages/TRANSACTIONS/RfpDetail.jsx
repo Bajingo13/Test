@@ -1,4 +1,4 @@
-import { ACTION_LABELS, STATUS_META, VAT_TREATMENTS, formatAmount } from "../../utils/rfpPage.mjs";
+import { STATUS_META, VAT_TREATMENTS, formatAmount, historyActionLabel, showDecision } from "../../utils/rfpPage.mjs";
 
 export function StatusBadge({ status }) {
   const meta = STATUS_META[status] || { label: status, tone: "neutral" };
@@ -25,7 +25,7 @@ function Field({ label, children, wide }) {
 // Read-only RFP view: header, lines, workflow metadata, the actions this
 // user may take now, and the status history. No Convert action (R5).
 export default function RfpDetail({ rfp, accountsById, actions, onAction, onEdit, history }) {
-  const anyAction = actions.edit || actions.remove || actions.submit || actions.cancel || actions.approve || actions.return || actions.reject;
+  const anyAction = actions.edit || actions.remove || actions.submit || actions.resubmit || actions.cancel || actions.approve || actions.return || actions.reject;
   const account = (id) => {
     if (!id) return null;
     const a = accountsById.get(Number(id));
@@ -46,6 +46,7 @@ export default function RfpDetail({ rfp, accountsById, actions, onAction, onEdit
             <div className="rfp-actions" role="group" aria-label="Request for Payment actions">
               {actions.edit ? <button type="button" className="rfp-btn rfp-btn-secondary" onClick={onEdit}>Edit</button> : null}
               {actions.submit ? <button type="button" className="rfp-btn rfp-btn-primary" onClick={() => onAction("submit")}>Submit</button> : null}
+              {actions.resubmit ? <button type="button" className="rfp-btn rfp-btn-primary" onClick={() => onAction("resubmit")}>Resubmit</button> : null}
               {actions.approve ? <button type="button" className="rfp-btn rfp-btn-primary" onClick={() => onAction("approve")}>Approve</button> : null}
               {actions.return ? <button type="button" className="rfp-btn rfp-btn-warning" onClick={() => onAction("return")}>Return</button> : null}
               {actions.reject ? <button type="button" className="rfp-btn rfp-btn-danger" onClick={() => onAction("reject")}>Reject</button> : null}
@@ -61,8 +62,16 @@ export default function RfpDetail({ rfp, accountsById, actions, onAction, onEdit
           </div>
         ) : null}
         {rfp.status === "RETURNED" ? (
-          <div className="rfp-banner rfp-banner-warning" role="note">
-            This RFP was returned. Editing and resubmitting a returned RFP is not available yet.
+          <div className="rfp-banner rfp-banner-warning rfp-returned" role="note">
+            <div>
+              <strong>Returned for correction</strong>
+              {rfp.decisionNote ? <p className="rfp-prewrap">Reason: {rfp.decisionNote}</p> : null}
+              <p>
+                {actions.edit || actions.resubmit
+                  ? "Make the corrections with Edit, then Resubmit it for approval. It stays RETURNED until it is resubmitted."
+                  : "Waiting for the requester to correct and resubmit it."}
+              </p>
+            </div>
           </div>
         ) : null}
 
@@ -80,13 +89,13 @@ export default function RfpDetail({ rfp, accountsById, actions, onAction, onEdit
           <Field label="Remarks" wide>{rfp.remarks ? <span className="rfp-prewrap">{rfp.remarks}</span> : null}</Field>
         </div>
 
-        {rfp.submittedAt || rfp.decidedAt ? (
+        {rfp.submittedAt || showDecision(rfp) ? (
           <div className="rfp-detail-grid rfp-workflow-meta">
             {rfp.submittedAt ? <Field label="Submitted by">{rfp.submittedByUsername}</Field> : null}
             {rfp.submittedAt ? <Field label="Submitted at">{formatDateTime(rfp.submittedAt)}</Field> : null}
-            {rfp.decidedAt ? <Field label="Decided by">{rfp.decidedByUsername}</Field> : null}
-            {rfp.decidedAt ? <Field label="Decided at">{formatDateTime(rfp.decidedAt)}</Field> : null}
-            {rfp.decidedAt ? <Field label="Decision note" wide>{rfp.decisionNote ? <span className="rfp-prewrap">{rfp.decisionNote}</span> : null}</Field> : null}
+            {showDecision(rfp) ? <Field label="Decided by">{rfp.decidedByUsername}</Field> : null}
+            {showDecision(rfp) ? <Field label="Decided at">{formatDateTime(rfp.decidedAt)}</Field> : null}
+            {showDecision(rfp) ? <Field label="Decision note" wide>{rfp.decisionNote ? <span className="rfp-prewrap">{rfp.decisionNote}</span> : null}</Field> : null}
           </div>
         ) : null}
       </div>
@@ -138,7 +147,7 @@ export default function RfpDetail({ rfp, accountsById, actions, onAction, onEdit
             {history.rows.map((h) => (
               <li key={h.id}>
                 <div className="rfp-timeline-head">
-                  <strong>{ACTION_LABELS[h.action] || h.action}</strong>
+                  <strong>{historyActionLabel(h)}</strong>
                   <span className="rfp-subtle">{formatDateTime(h.createdAt)}</span>
                 </div>
                 <div className="rfp-timeline-body">
