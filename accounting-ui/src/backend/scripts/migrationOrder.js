@@ -205,6 +205,10 @@ const MIGRATION_ORDER = [
   // R8.3: idx_stmt_owner_date for session statement-history queries
   // (company + bank account + date range). Must run after the R8.2 migration.
   "r83_bank_statement_history_index_migration.sql",
+  // R8.4-A: opening-balance provenance on bank_recon_sessions (MANUAL /
+  // CARRIED + source session). Existing sessions become MANUAL. Must run after
+  // bank_recon_company_scope_migration.sql.
+  "r84_bank_recon_opening_balance_migration.sql",
 ];
 
 module.exports = { MIGRATION_ORDER };

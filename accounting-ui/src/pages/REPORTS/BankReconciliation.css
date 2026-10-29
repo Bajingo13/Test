@@ -362,6 +362,25 @@
   .brc-queue-item { flex-direction: column; }
 }
 
+.brc-opening-note {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.brc-session-context {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.brc-opening-warning {
+  color: var(--warning-text);
+  font-weight: 600;
+}
+
 .brc-mapping-box {
   background: var(--bg-surface-muted);
   border: 1px solid var(--border-color);

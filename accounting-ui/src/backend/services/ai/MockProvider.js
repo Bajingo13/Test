@@ -67,7 +67,18 @@ async function handleGenerate(params, user) {
   }
 
   const { input, usedDefaultPeriod } = await resolveSessionInput(params);
-  const { created, session } = await actions.findOrCreateSession(input, user);
+  let found;
+  try {
+    found = await actions.findOrCreateSession(input, user);
+  } catch (err) {
+    // R8.4-A: the assistant never invents an opening balance or overlaps
+    // an existing reconciliation - it explains why it stopped.
+    if (["OPENING_BALANCE_REQUIRED", "SESSION_OVERLAP", "SESSION_DUPLICATE"].includes(err.code)) {
+      return { replyText: `${err.message} Create or open the reconciliation in the workspace.`, sessionId: null };
+    }
+    throw err;
+  }
+  const { created, session } = found;
   await actions.runMatchingForSession(session.id, user);
   const { summary } = await actions.getSessionSummary(session.id);
 

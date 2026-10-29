@@ -14,6 +14,12 @@ const BANK_RECON_SESSION_SELECT = `
     DATE_FORMAT(s.period_start, '%Y-%m-%d') AS periodStart,
     DATE_FORMAT(s.period_end, '%Y-%m-%d') AS periodEnd,
     s.statement_beginning_balance AS statementBeginningBalance,
+    s.opening_balance_source AS openingBalanceSource,
+    s.opening_balance_source_session_id AS openingBalanceSourceSessionId,
+    DATE_FORMAT(src.period_start, '%Y-%m-%d') AS openingSourcePeriodStart,
+    DATE_FORMAT(src.period_end, '%Y-%m-%d') AS openingSourcePeriodEnd,
+    src.statement_ending_balance AS openingSourceEndingBalance,
+    src.status AS openingSourceStatus,
     s.statement_ending_balance AS statementEndingBalance,
     s.date_tolerance_days AS dateToleranceDays,
     s.amount_variance_type AS amountVarianceType,
@@ -27,6 +33,7 @@ const BANK_RECON_SESSION_SELECT = `
   FROM bank_recon_sessions s
   JOIN bank_codes bc ON bc.id = s.bank_account_id
   LEFT JOIN companies co ON co.id = s.company_id
+  LEFT JOIN bank_recon_sessions src ON src.id = s.opening_balance_source_session_id
 `;
 
 // bank_codes and chart_of_accounts are global, so one bank account / cash GL

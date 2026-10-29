@@ -137,7 +137,8 @@ beforeAll(async () => {
   ids.sB = (await api("adminB", "post", "/api/bank-recon/sessions", sessionBody)).body.id;
   // Legacy session from before company isolation.
   ids.sNull = (await pool.execute(
-    "INSERT INTO bank_recon_sessions (bank_account_id, period_start, period_end, status) VALUES (?, '2026-07-01', '2026-07-31', 'IN_PROGRESS')",
+    // June, so assigning it to Company A later does not overlap A's July session (R8.4-A).
+    "INSERT INTO bank_recon_sessions (bank_account_id, period_start, period_end, status) VALUES (?, '2026-06-01', '2026-06-30', 'IN_PROGRESS')",
     [ids.bank]
   ))[0].insertId;
 
@@ -423,7 +424,7 @@ describe("existing Bank Reconciliation behaviour (own company)", () => {
   });
 
   test("session create needs an explicit, permitted company for multi-company users", async () => {
-    const body = { bankAccountId: ids.bank, periodStart: "2026-08-01", periodEnd: "2026-08-31" };
+    const body = { bankAccountId: ids.bank, periodStart: "2026-08-01", periodEnd: "2026-08-31", statementBeginningBalance: 0 };
     let res = await api("adminAB", "post", "/api/bank-recon/sessions", body);
     expect(res.status).toBe(400);
     res = await api("adminA", "post", "/api/bank-recon/sessions", { ...body, companyId: ids.coB });

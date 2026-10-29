@@ -126,6 +126,41 @@ export default function BankReconciliation() {
     });
   }
 
+  // R8.4-A: what this new session would open with - carried from the
+  // previous finalized reconciliation of the same company + bank account,
+  // or to be entered by the accountant. The server decides; this only shows it.
+  const [openingInfo, setOpeningInfo] = useState(null);
+  useEffect(() => {
+    if (!showNewForm || !form.bankAccountId || !form.periodStart || (companies.length > 1 && !form.companyId)) {
+      setOpeningInfo(null);
+      return;
+    }
+    let cancelled = false;
+    const params = new URLSearchParams({ bankAccountId: form.bankAccountId, periodStart: form.periodStart });
+    if (form.companyId) params.set("companyId", form.companyId);
+    fetch(`${API_BASE}/api/bank-recon/sessions/opening-balance?${params}`, { credentials: "include", headers: authHeaders() })
+      .then(async (res) => {
+        const data = await res.json();
+        if (cancelled) return;
+        if (!res.ok) {
+          handleAuthError(res.status);
+          setOpeningInfo(null);
+          return;
+        }
+        setOpeningInfo(data);
+        if (data.source === "CARRIED") {
+          setForm((f) => ({ ...f, statementBeginningBalance: String(data.amount) }));
+        }
+      })
+      .catch(() => !cancelled && setOpeningInfo(null));
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showNewForm, form.companyId, form.bankAccountId, form.periodStart, companies.length]);
+
+  const openingCarried = openingInfo?.source === "CARRIED";
+
   function openNewForm() {
     setForm({ ...emptySessionForm(), companyId: companies.length === 1 ? String(companies[0].id) : "" });
     setShowNewForm(true);
@@ -141,6 +176,9 @@ export default function BankReconciliation() {
     }
     if (new Date(form.periodEnd) < new Date(form.periodStart)) {
       return alert("Period end cannot be before period start.");
+    }
+    if (!openingCarried && String(form.statementBeginningBalance).trim() === "") {
+      return alert("Enter the opening balance for this first reconciliation of the bank account.");
     }
 
     setSaving(true);
@@ -245,16 +283,26 @@ export default function BankReconciliation() {
             </div>
 
             <div>
-              <label>Statement Beginning Balance</label>
+              <label>{openingCarried ? "Opening Balance (carried)" : "Opening Balance (manually entered)"}</label>
               <input
                 type="number"
                 step="0.01"
                 value={form.statementBeginningBalance}
+                disabled={openingCarried}
                 onChange={(e) =>
                   setForm({ ...form, statementBeginningBalance: e.target.value })
                 }
                 placeholder="0.00"
               />
+              {openingInfo && (
+                <small className="brc-opening-note" data-testid="opening-note">
+                  {openingCarried
+                    ? `Carried from Bank Recon — ${openingInfo.fromSession.periodStart} to ${openingInfo.fromSession.periodEnd} (session #${openingInfo.fromSession.id})${openingInfo.gapDays ? `. Gap of ${openingInfo.gapDays} day(s) since that period.` : "."}`
+                    : openingInfo.reason === "PREVIOUS_NOT_FINALIZED"
+                    ? `Manually entered opening balance - the previous reconciliation (session #${openingInfo.previousSession.id}, ${openingInfo.previousSession.periodStart} to ${openingInfo.previousSession.periodEnd}) is not finalized.`
+                    : "Manually entered opening balance - no earlier finalized reconciliation for this bank account."}
+                </small>
+              )}
             </div>
 
             <div>

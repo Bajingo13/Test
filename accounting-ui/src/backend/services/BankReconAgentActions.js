@@ -13,6 +13,7 @@ const { HttpError } = require("../lib/httpError");
 const { BANK_RECON_SESSION_SELECT, computeSessionSummary } = require("./BankMatchingService");
 const MatchService = require("./bankReconMatchService");
 const QueueService = require("./bankReconQueueService");
+const SessionService = require("./bankReconSessionService");
 const { resolveDateRange } = require("./PromptParser");
 const { AsyncLocalStorage } = require("async_hooks");
 const PermissionService = require("./permissionService");
@@ -88,41 +89,20 @@ async function findOrCreateSession(input, user) {
 
   await requireReconPermission(user, "CREATE");
 
+  // R8.4-A: same rules as the workspace - no overlapping session, and the
+  // opening balance is carried from the previous finalized session or must
+  // be stated (input.statementBeginningBalance); never invented.
   const conn = await pool.getConnection();
   try {
-    await conn.beginTransaction();
-
-    const [result] = await conn.execute(
-      `INSERT INTO bank_recon_sessions(
-        company_id, bank_account_id, period_start, period_end,
-        statement_beginning_balance, statement_ending_balance,
-        date_tolerance_days, amount_variance_type, amount_variance_value,
-        status, notes, created_by
-      ) VALUES (?,?,?,?,0,0,?,?,?, 'IN_PROGRESS', ?, ?)`,
-      [
-        companyId,
-        input.bankAccountId,
-        periodStart,
-        periodEnd,
-        input.dateToleranceDays || 3,
-        input.amountVarianceType || "FIXED",
-        input.amountVarianceValue || 1.0,
-        "[AI Agent] Created from a chat prompt",
-        user?.id || null,
-      ]
-    );
-
-    const sessionId = result.insertId;
-
-    await logAudit(conn, {
-      module: "BANK_RECON",
-      entityType: "SESSION",
-      entityId: sessionId,
-      action: "CREATE",
-      description: `[AI Agent] Reconciliation session #${sessionId} created for bank account ${input.bankAccountId} (${periodStart} to ${periodEnd})`,
-      afterData: { bankAccountId: input.bankAccountId, periodStart, periodEnd },
+    await MatchService.beginReadCommitted(conn);
+    const { id: sessionId } = await SessionService.createSessionRecord(conn, {
       user,
-      companyId: agentCompany(),
+      companyId,
+      bankAccountId: Number(input.bankAccountId),
+      periodStart,
+      periodEnd,
+      input: { ...input, notes: "[AI Agent] Created from a chat prompt" },
+      auditPrefix: "[AI Agent] ",
     });
 
     await conn.commit();

@@ -17,6 +17,8 @@ const adjustment = requireAccess("adjustment");
 
 router.get("/sessions", authenticateToken, authorizePermission("REPORTS.BANK_RECONCILIATION", "VIEW"), ctrl.listSessions);
 router.post("/sessions", authenticateToken, authorizePermission("REPORTS.BANK_RECONCILIATION", "CREATE"), ctrl.createSession);
+// R8.4-A: opening balance a new session would get (before /sessions/:id).
+router.get("/sessions/opening-balance", authenticateToken, authorizePermission("REPORTS.BANK_RECONCILIATION", "VIEW"), ctrl.getOpeningBalance);
 router.get("/sessions/:id", authenticateToken, authorizePermission("REPORTS.BANK_RECONCILIATION", "VIEW"), session, ctrl.getSession);
 router.patch("/sessions/:id", authenticateToken, authorizePermission("REPORTS.BANK_RECONCILIATION", "CREATE"), session, ctrl.updateSession);
 router.post(

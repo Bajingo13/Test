@@ -18,6 +18,7 @@ const {
   assertSessionAccess,
 } = require("../services/bankReconAccessService");
 const QueueService = require("../services/bankReconQueueService");
+const SessionService = require("../services/bankReconSessionService");
 
 // Routes guard every session / child id (bankReconAccessService.requireAccess)
 // and leave the owning session on req.reconSession; its company is stamped
@@ -26,7 +27,7 @@ const auditCompany = (req) => req.reconSession?.companyId ?? null;
 
 function sendHttpError(res, err) {
   if (err instanceof HttpError) {
-    res.status(err.statusCode).json({ message: err.message, ...(err.code ? { code: err.code } : {}) });
+    res.status(err.statusCode).json({ message: err.message, ...(err.code ? { code: err.code } : {}), ...(err.details || {}) });
     return true;
   }
   return false;
@@ -47,99 +48,62 @@ exports.listSessions = async (req, res) => {
   }
 };
 
+// R8.4-A: request validation shared by session creation and the
+// opening-balance lookup. Malformed ids / dates are 400s.
+function parseSessionInput(src, { requireEnd = true } = {}) {
+  const bankAccountId = Number(src.bankAccountId);
+  if (!src.bankAccountId) throw new HttpError(400, "Bank account is required");
+  if (!Number.isInteger(bankAccountId) || bankAccountId <= 0) throw new HttpError(400, "Invalid bank account.", "INVALID_BANK_ACCOUNT");
+  const isDate = (v) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(Date.parse(`${v}T00:00:00Z`))
+    && new Date(`${v}T00:00:00Z`).toISOString().slice(0, 10) === v;
+  if (!src.periodStart || (requireEnd && !src.periodEnd)) throw new HttpError(400, "Period start and end are required");
+  if (!isDate(src.periodStart) || (src.periodEnd && !isDate(src.periodEnd))) throw new HttpError(400, "Period dates must be valid YYYY-MM-DD dates.", "INVALID_PERIOD");
+  if (src.periodEnd && src.periodEnd < src.periodStart) throw new HttpError(400, "Period end cannot be before period start");
+  return { bankAccountId, periodStart: src.periodStart, periodEnd: src.periodEnd };
+}
+
 exports.createSession = async (req, res) => {
   const conn = await pool.getConnection();
 
   try {
-    const {
-      bankAccountId,
-      periodStart,
-      periodEnd,
-      statementBeginningBalance,
-      statementEndingBalance,
-      dateToleranceDays,
-      amountVarianceType,
-      amountVarianceValue,
-      notes,
-      companyId: requestedCompanyId,
-    } = req.body;
+    const { bankAccountId, periodStart, periodEnd } = parseSessionInput(req.body);
+    const companyId = await resolveCompanyForNewSession(req.user, req.body.companyId);
 
-    if (!bankAccountId) {
-      return res.status(400).json({ message: "Bank account is required" });
-    }
-    if (!periodStart || !periodEnd) {
-      return res.status(400).json({ message: "Period start and end are required" });
-    }
-    if (new Date(periodEnd) < new Date(periodStart)) {
-      return res.status(400).json({ message: "Period end cannot be before period start" });
-    }
-
-    let companyId;
-    try {
-      companyId = await resolveCompanyForNewSession(req.user, requestedCompanyId);
-    } catch (err) {
-      if (sendHttpError(res, err)) return;
-      throw err;
-    }
-
-    const userId = req.user?.id || null;
-
-    await conn.beginTransaction();
-
-    const [result] = await conn.execute(
-      `INSERT INTO bank_recon_sessions(
-        company_id,
-        bank_account_id,
-        period_start,
-        period_end,
-        statement_beginning_balance,
-        statement_ending_balance,
-        date_tolerance_days,
-        amount_variance_type,
-        amount_variance_value,
-        status,
-        notes,
-        created_by
-      )
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [
-        companyId,
-        bankAccountId,
-        periodStart,
-        periodEnd,
-        Number(statementBeginningBalance) || 0,
-        Number(statementEndingBalance) || 0,
-        Number(dateToleranceDays) || 3,
-        amountVarianceType === "PERCENT" ? "PERCENT" : "FIXED",
-        Number(amountVarianceValue) || 1.0,
-        "IN_PROGRESS",
-        notes || "",
-        userId,
-      ]
-    );
-
-    const sessionId = result.insertId;
-
-    await logAudit(conn, {
-      module: "BANK_RECON",
-      entityType: "SESSION",
-      entityId: sessionId,
-      action: "CREATE",
-      description: `Reconciliation session #${sessionId} created for bank account ${bankAccountId} (${periodStart} to ${periodEnd})`,
-      afterData: { companyId, bankAccountId, periodStart, periodEnd, statementBeginningBalance, statementEndingBalance },
-      user: req.user,
-      companyId,
+    await beginReadCommitted(conn);
+    const { id, opening } = await SessionService.createSessionRecord(conn, {
+      user: req.user, companyId, bankAccountId, periodStart, periodEnd, input: req.body,
     });
-
     await conn.commit();
 
-    res.json({ success: true, id: sessionId, message: "Reconciliation session created" });
+    res.json({ success: true, id, opening, message: "Reconciliation session created" });
   } catch (err) {
     await conn.rollback();
+    if (err && (err.code === "ER_LOCK_DEADLOCK" || err.code === "ER_LOCK_WAIT_TIMEOUT")) {
+      return res.status(409).json({ message: "Another reconciliation for this bank account was being created. Try again.", code: "RECON_CONCURRENT_CHANGE" });
+    }
+    if (sendHttpError(res, err)) return;
     console.error("CREATE BANK RECON SESSION ERROR:", err);
     res.status(500).json({ message: "Failed to create reconciliation session" });
   } finally {
     conn.release();
+  }
+};
+
+// R8.4-A: what a new session for this company + bank account + start date
+// would open with - carried from the previous finalized session, or to be
+// entered manually. Read-only.
+exports.getOpeningBalance = async (req, res) => {
+  try {
+    const { bankAccountId, periodStart } = parseSessionInput(req.query, { requireEnd: false });
+    const companyId = await resolveCompanyForNewSession(req.user, req.query.companyId);
+    const [bank] = await pool.execute("SELECT id FROM bank_codes WHERE id = ?", [bankAccountId]);
+    if (!bank[0]) throw new HttpError(404, "Bank account not found");
+    const opening = await SessionService.resolveOpeningBalance(pool, { companyId, bankAccountId, periodStart });
+    res.json({ companyId, bankAccountId, periodStart, ...opening });
+  } catch (err) {
+    if (sendHttpError(res, err)) return;
+    console.error("GET OPENING BALANCE ERROR:", err);
+    res.status(500).json({ message: "Failed to load the opening balance" });
   }
 };
 
@@ -170,7 +134,7 @@ exports.updateSession = async (req, res) => {
     const { id } = req.params;
 
     const [existingRows] = await conn.execute(
-      "SELECT * FROM bank_recon_sessions WHERE id = ?",
+      "SELECT *, DATE_FORMAT(period_start, '%Y-%m-%d') AS period_start_iso, DATE_FORMAT(period_end, '%Y-%m-%d') AS period_end_iso FROM bank_recon_sessions WHERE id = ?",
       [id]
     );
 
@@ -245,7 +209,46 @@ exports.updateSession = async (req, res) => {
       notes: notes !== undefined ? notes : existing.notes,
     };
 
-    await conn.beginTransaction();
+    // R8.4-A: a carried opening balance belongs to the previous finalized
+    // session's ending balance - it cannot be edited here.
+    if (
+      existing.opening_balance_source === "CARRIED" &&
+      statementBeginningBalance !== undefined &&
+      Math.abs(Number(statementBeginningBalance) - Number(existing.statement_beginning_balance)) > 0.005
+    ) {
+      return res.status(400).json({
+        message: `This session's opening balance is carried from reconciliation session #${existing.opening_balance_source_session_id} and cannot be edited.`,
+        code: "OPENING_BALANCE_CARRIED",
+      });
+    }
+    // Dates as MySQL stores them (a JS Date round-trip would shift the day).
+    const nextStart = periodStart ? String(periodStart) : existing.period_start_iso;
+    const nextEnd = periodEnd ? String(periodEnd) : existing.period_end_iso;
+    if (nextEnd < nextStart) {
+      return res.status(400).json({ message: "Period end cannot be before period start" });
+    }
+
+    await beginReadCommitted(conn);
+
+    // R8.4-A: a changed period (or a legacy session given a company) must
+    // not overlap another session of the same company + bank account.
+    const periodChanged = nextStart !== existing.period_start_iso || nextEnd !== existing.period_end_iso;
+    if (periodChanged || assignedCompanyId) {
+      try {
+        await SessionService.lockBankAccount(conn, existing.bank_account_id);
+        await SessionService.assertNoOverlap(conn, {
+          companyId: assignedCompanyId || existing.company_id,
+          bankAccountId: existing.bank_account_id,
+          periodStart: nextStart,
+          periodEnd: nextEnd,
+          excludeId: existing.id,
+        });
+      } catch (err) {
+        await conn.rollback();
+        if (sendHttpError(res, err)) return;
+        throw err;
+      }
+    }
 
     await conn.execute(
       `UPDATE bank_recon_sessions SET

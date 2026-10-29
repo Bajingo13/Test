@@ -109,7 +109,19 @@ async function createOr(who, company, o) {
   return res;
 }
 
+// R8.4-A: one company + bank account cannot have two sessions for
+// overlapping periods, so tests that work in the same month share that
+// month's session (under R8.3 they already shared its statement history).
+const sessionCache = new Map();
 async function newSession(who, o = {}) {
+  const key = [who, o.bank ?? bank.BK, o.start || "2098-07-01", o.end || "2098-07-31", o.companyId || ""].join("|");
+  if (sessionCache.has(key)) return sessionCache.get(key);
+  const id = await createSession(who, o);
+  sessionCache.set(key, id);
+  return id;
+}
+
+async function createSession(who, o = {}) {
   const res = await api(who, "post", "/api/bank-recon/sessions", {
     bankAccountId: o.bank ?? bank.BK, periodStart: o.start || "2098-07-01", periodEnd: o.end || "2098-07-31",
     statementBeginningBalance: 0, statementEndingBalance: 0, ...(o.companyId ? { companyId: o.companyId } : {}),
@@ -784,7 +796,7 @@ describe("R7-7 duplicate statement import", () => {
   });
 
   test("two identical imports at the same moment: only one lands", async () => {
-    const s = await newSession("acctA", { start: "2098-10-01", end: "2098-10-31" });
+    const s = await newSession("acctA", { start: "2098-11-01", end: "2098-11-30" });
     const raceRows = ["2098-10-05,Race one,,,10,", "2098-10-06,Race two,,,,20"];
     const results = await Promise.all([importRows("acctA", s, raceRows), importRows("acctA", s, raceRows)]);
     expect(results.map((r) => r.status).sort()).toEqual([200, 409]);
@@ -793,7 +805,7 @@ describe("R7-7 duplicate statement import", () => {
 
   // R8.2: duplicate protection is per company + bank account, across sessions.
   test("the same statement in a different session of the same bank account is refused", async () => {
-    const s = await newSession("acctA", { start: "2098-10-01", end: "2098-10-31" });
+    const s = await newSession("acctA", { start: "2098-12-01", end: "2098-12-31" });
     const res = await importRows("acctA", s, rows);
     expect(res.status).toBe(409);
     expect(res.body.code).toBe("DUPLICATE_STATEMENT_IMPORT");

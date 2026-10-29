@@ -38,7 +38,7 @@ function buildTools(touched, user) {
   const findOrCreateSession = betaZodTool({
     name: "findOrCreateSession",
     description:
-      "Find the existing reconciliation session for a bank account + period, or create one if none exists yet. Provide either periodStart+periodEnd (YYYY-MM-DD) or month+year.",
+      "Find the existing reconciliation session for a bank account + period, or create one if none exists yet. Provide either periodStart+periodEnd (YYYY-MM-DD) or month+year. A new session's opening balance is carried from the previous finalized reconciliation automatically; when there is none, pass statementBeginningBalance only if the user stated it - never estimate it. Overlapping periods are refused.",
     inputSchema: z.object({
       bankAccountId: z.number(),
       periodStart: z.string().optional(),
@@ -48,6 +48,7 @@ function buildTools(touched, user) {
       dateToleranceDays: z.number().optional(),
       amountVarianceType: z.enum(["FIXED", "PERCENT"]).optional(),
       amountVarianceValue: z.number().optional(),
+      statementBeginningBalance: z.number().optional(),
     }),
     run: async (input) => {
       const result = await actions.findOrCreateSession(input, user);

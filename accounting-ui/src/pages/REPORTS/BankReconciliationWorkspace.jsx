@@ -1144,6 +1144,20 @@ export default function BankReconciliationWorkspace() {
               {session.status === "IN_PROGRESS" ? "In Progress" : "Finalized"}
             </span>
           </p>
+          {/* R8.4-A: where this session's opening balance came from. */}
+          <p className="brc-session-context" data-testid="session-context">
+            {session.bankCode} - {session.bankName} &middot; Opening balance ₱ {formatMoney(session.statementBeginningBalance)} &middot;{" "}
+            {session.openingBalanceSource === "CARRIED"
+              ? `Carried from Bank Recon — ${session.openingSourcePeriodStart} to ${session.openingSourcePeriodEnd} (session #${session.openingBalanceSourceSessionId})`
+              : "Manually entered opening balance"}{" "}
+            &middot; Ending balance ₱ {formatMoney(session.statementEndingBalance)}
+            {session.openingBalanceSource === "CARRIED" &&
+              Number(session.openingSourceEndingBalance) !== Number(session.statementBeginningBalance) && (
+                <span className="brc-opening-warning">
+                  {" "}The source session's ending balance is now ₱ {formatMoney(session.openingSourceEndingBalance)} - it changed after this balance was carried.
+                </span>
+              )}
+          </p>
         </div>
 
         <div style={{ display: "flex", gap: 10 }}>
@@ -1209,12 +1223,12 @@ export default function BankReconciliationWorkspace() {
           </div>
 
           <div>
-            <label>Statement Beginning Balance</label>
+            <label>{session.openingBalanceSource === "CARRIED" ? "Opening Balance (carried)" : "Statement Beginning Balance"}</label>
             <input
               type="number"
               step="0.01"
               value={form.statementBeginningBalance}
-              disabled={isFinalized}
+              disabled={isFinalized || session.openingBalanceSource === "CARRIED"}
               onChange={(e) =>
                 setForm({ ...form, statementBeginningBalance: e.target.value })
               }

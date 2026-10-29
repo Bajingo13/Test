@@ -360,7 +360,8 @@ describe("duplicate protection (per company + bank account)", () => {
   });
 
   test("15c. the same statement in another session of the same bank account is refused", async () => {
-    const s3 = await newSession("acctA", "BK", { start: "2099-05-01", end: "2099-05-31" });
+    // R8.4-A: May already has its session; a June session importing May rows
+    const s3 = await newSession("acctA", "BK", { start: "2099-06-01", end: "2099-06-30" });
     expect((await importFile("acctA", s3, csv(rows))).status).toBe(409);
   });
 
@@ -459,7 +460,8 @@ describe("persisted provenance and the database duplicate guard", () => {
   });
 
   test("assigning a company to a legacy session assigns its statement rows; already-held fingerprints are released, not duplicated", async () => {
-    const legacy = (await q("INSERT INTO bank_recon_sessions (bank_account_id, period_start, period_end, status) VALUES (?, '2099-05-01', '2099-05-31', 'IN_PROGRESS')", [bank.BK])).insertId;
+    // July: May already belongs to Company A's session (R8.4-A overlap rule)
+    const legacy = (await q("INSERT INTO bank_recon_sessions (bank_account_id, period_start, period_end, status) VALUES (?, '2099-07-01', '2099-07-31', 'IN_PROGRESS')", [bank.BK])).insertId;
     sessions.push(legacy);
     const [b] = await pool.query("INSERT INTO bank_recon_import_batches (session_id, company_id, bank_account_id, file_name, file_type, row_count) VALUES (?, NULL, ?, 'legacy.csv', 'CSV', 2)", [legacy, bank.BK]);
     const held = await one("SELECT row_fingerprint fp, txn_date, debit, credit FROM bank_recon_statement_lines WHERE session_id = ? AND company_id = ? AND row_fingerprint IS NOT NULL LIMIT 1", [s.A, co.A]);
@@ -469,7 +471,7 @@ describe("persisted provenance and the database duplicate guard", () => {
       [b.insertId, legacy, bank.BK, held.txn_date, held.debit, held.credit, held.fp, b.insertId, legacy, bank.BK, "f".repeat(64)]
     );
     const res = await api("super", "patch", `/api/bank-recon/sessions/${legacy}`, { companyId: co.A });
-    expect(res.status).toBe(200);
+    expect([res.status, res.body.message]).toEqual([200, "Reconciliation session updated"]);
     expect(await one("SELECT company_id FROM bank_recon_import_batches WHERE id = ?", [b.insertId])).toEqual({ company_id: co.A });
     const rows = await q("SELECT company_id, row_fingerprint FROM bank_recon_statement_lines WHERE session_id = ? ORDER BY id", [legacy]);
     expect(rows).toEqual([{ company_id: co.A, row_fingerprint: null }, { company_id: co.A, row_fingerprint: "f".repeat(64) }]);

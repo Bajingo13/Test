@@ -194,11 +194,13 @@ describe("carry-forward: January to February", () => {
   });
 
   test("a carried row can be handled from the later session even after its own session is finalized", async () => {
-    s.jan2 = await newSession("acctA", "2096-01-01", "2096-01-31");
+    // R8.4-A: a second January session for the same bank account is refused
+    const dup = await api("acctA", "post", "/api/bank-recon/sessions", { bankAccountId: bank.BK, periodStart: "2096-01-01", periodEnd: "2096-01-31", statementBeginningBalance: 0 });
+    expect(dup.status).toBe(409);
+    expect(dup.body.code).toBe("SESSION_DUPLICATE");
     const before = await q("SELECT COUNT(*) n FROM bank_recon_statement_lines WHERE company_id = ? AND bank_account_id = ?", [co.A, bank.BK]);
-    // same history, no copies
-    expect((await statementLines("acctA", s.jan2)).map((l) => l.description).sort()).toEqual(["Check 1001", "Unknown deposit"]);
-    expect((await importRows("acctA", s.jan2, ["2096-01-15,Check 1001,,0001001,500.00,", "2096-01-31,Unknown deposit,,,,25.00"])).status).toBe(409);
+    // the same January statement imported again through February: no copies
+    expect((await importRows("acctA", s.feb, ["2096-01-15,Check 1001,,0001001,500.00,", "2096-01-31,Unknown deposit,,,,25.00"])).status).toBe(409);
     expect(await q("SELECT COUNT(*) n FROM bank_recon_statement_lines WHERE company_id = ? AND bank_account_id = ?", [co.A, bank.BK])).toEqual(before);
 
     expect((await api("acctA", "post", `/api/bank-recon/sessions/${s.jan}/finalize`, { overrideReason: "test" })).status).toBe(200);

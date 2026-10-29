@@ -414,7 +414,7 @@ describe("I. Bank Reconciliation audit rows", () => {
     const [bk] = await pool.execute("INSERT INTO bank_codes (bank_code, bank_name, status) VALUES (?, 'AUDT Bank', 'ACTIVE')", [`${P}BK`]);
     ids.bank = bk.insertId;
     const created = await request(app).post("/api/bank-recon/sessions").set(auth("adminA"))
-      .send({ bankAccountId: ids.bank, periodStart: "2026-02-01", periodEnd: "2026-02-28" });
+      .send({ bankAccountId: ids.bank, periodStart: "2026-02-01", periodEnd: "2026-02-28", statementBeginningBalance: 0 });
     expect(created.status).toBe(200);
     ids.reconSession = created.body.id;
     const q = { module: "BANK_RECON", entityType: "SESSION", entityId: ids.reconSession };
