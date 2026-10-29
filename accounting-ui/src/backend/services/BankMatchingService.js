@@ -70,9 +70,43 @@ function bankMovement(row) {
   };
 }
 
+// ---- Book-side "cleared" state (R8.3 carry-forward foundation) ----
+// A book document (JV: its bank line) is CLEARED once a CONFIRMED match
+// for it exists in a reconciliation session of the same company + bank
+// account. "Cleared as of X" counts only sessions whose period ended before
+// X, so a January check that is still unmatched in January stays
+// outstanding into February until a session actually confirms it - never
+// because of its date.
+function notClearedClause(type, idExpr, lineExpr, scope) {
+  if (!scope.excludeCleared) return { sql: "", params: [] };
+  return {
+    sql: ` AND NOT EXISTS (
+            SELECT 1 FROM bank_recon_matches cm JOIN bank_recon_sessions cs ON cs.id = cm.session_id
+            WHERE cm.book_source_type = '${type}' AND cm.book_source_id = ${idExpr} AND cm.book_line_id <=> ${lineExpr}
+              AND cm.status = 'CONFIRMED' AND cs.bank_account_id = ? AND cs.company_id <=> ?${scope.clearedBefore ? " AND cs.period_end < ?" : ""})`,
+    params: [scope.bankAccountId, scope.companyId ?? null, ...(scope.clearedBefore ? [scope.clearedBefore] : [])],
+  };
+}
+
+function dateRange(column, scope) {
+  const parts = [];
+  const params = [];
+  if (scope.fromDate) {
+    parts.push(` AND ${column} >= ?`);
+    params.push(scope.fromDate);
+  }
+  if (scope.toDate) {
+    parts.push(` AND ${column} <= ?`);
+    params.push(scope.toDate);
+  }
+  return { sql: parts.join(""), params };
+}
+
 // One query per voucher type. `id` narrows it to a single document (the
-// confirmation guard); otherwise it is the date-window load.
-async function queryVoucherMovements(conn, type, { bankAccountId, bankCoaAccountId, companyId, fromDate, toDate, id = null }) {
+// confirmation guard); otherwise posted documents on the bank account in
+// the scope's date range (either bound optional), optionally not cleared.
+async function queryVoucherMovements(conn, type, scope) {
+  const { bankCoaAccountId, companyId, id = null } = scope;
   const isCv = type === "CV";
   const header = isCv ? "cv_headers" : "or_headers";
   const lineTable = isCv ? "cv_lines" : "or_lines";
@@ -81,10 +115,17 @@ async function queryVoucherMovements(conn, type, { bankAccountId, bankCoaAccount
   const party = isCv ? "h.payee_name AS partyName" : "h.customer_name AS partyName";
   const receipt = isCv ? "'' AS receiptNo" : "h.receipt_no AS receiptNo";
   const coa = bankCoaAccountId ? Number(bankCoaAccountId) : null;
-  const where = id !== null
-    ? "h.id = ?"
-    : "h.bank_account_id = ? AND h.status = 'Posted' AND h.transaction_date BETWEEN ? AND ?";
-  const whereParams = id !== null ? [id] : [bankAccountId, fromDate, toDate];
+  let where;
+  let whereParams;
+  if (id !== null) {
+    where = "h.id = ?";
+    whereParams = [id];
+  } else {
+    const range = dateRange("h.transaction_date", scope);
+    const cleared = notClearedClause(type, "h.id", "NULL", scope);
+    where = `h.bank_account_id = ? AND h.status = 'Posted'${range.sql}${cleared.sql}`;
+    whereParams = [scope.bankAccountId, ...range.params, ...cleared.params];
+  }
   const co = companyClause("h.", companyId);
   const [rows] = await conn.execute(
     `SELECT h.id, h.voucher_no AS voucherNo, ${party},
@@ -158,44 +199,87 @@ const JV_LINE_SELECT = `SELECT jl.id AS lineId, jh.id AS jvId, jh.voucher_no AS 
          DATE_FORMAT(jh.transaction_date, '%Y-%m-%d') AS txnDate,
          jh.reference_no AS referenceNo, jh.description, jl.debit, jl.credit`;
 
-async function loadBookTransactions(
-  conn,
-  bankAccountId,
-  bankCoaAccountId,
-  periodStart,
-  periodEnd,
-  toleranceDays,
-  companyId = null
-) {
-  const widenDays = (Number(toleranceDays) || 0) * 2;
-  const fromDate = shiftDate(periodStart, -widenDays);
-  const toDate = shiftDate(periodEnd, widenDays);
-  const scope = { bankAccountId, bankCoaAccountId, companyId, fromDate, toDate };
-
+// Posted CV / OR / JV bank movements for a session's bank account and
+// company. scope: { fromDate?, toDate?, excludeCleared?, clearedBefore? }.
+async function loadBookItems(conn, session, range = {}) {
+  const scope = {
+    bankAccountId: session.bankAccountId,
+    bankCoaAccountId: session.bankCoaAccountId,
+    companyId: session.companyId,
+    ...range,
+  };
   const cvRows = await queryVoucherMovements(conn, "CV", scope);
   const orRows = await queryVoucherMovements(conn, "OR", scope);
 
   // Excludes JVs that themselves came from posting a bank-recon adjustment -
   // those already exist specifically to resolve one statement line and must
   // never be re-offered as an independent unmatched/outstanding book item.
-  const jvRows = bankCoaAccountId
-    ? (
-        await conn.execute(
-          `${JV_LINE_SELECT}
-           FROM jv_lines jl
-           JOIN jv_headers jh ON jh.id = jl.jv_id
-           WHERE jl.account_id = ? AND jh.status = 'Posted' AND jh.transaction_date BETWEEN ? AND ?
-             AND (jh.source_module IS NULL OR jh.source_module != 'BANK_RECON')${companyClause("jh.", companyId).sql}`,
-          [bankCoaAccountId, fromDate, toDate, ...companyClause("jh.", companyId).params]
-        )
-      )[0]
-    : [];
+  let jvRows = [];
+  if (session.bankCoaAccountId) {
+    const dates = dateRange("jh.transaction_date", scope);
+    const cleared = notClearedClause("JV", "jh.id", "jl.id", scope);
+    const co = companyClause("jh.", session.companyId);
+    [jvRows] = await conn.execute(
+      `${JV_LINE_SELECT}
+       FROM jv_lines jl
+       JOIN jv_headers jh ON jh.id = jl.jv_id
+       WHERE jl.account_id = ? AND jh.status = 'Posted'${dates.sql}
+         AND (jh.source_module IS NULL OR jh.source_module != 'BANK_RECON')${cleared.sql}${co.sql}`,
+      [session.bankCoaAccountId, ...dates.params, ...cleared.params, ...co.params]
+    );
+  }
 
   return [
     ...cvRows.map((r) => toBookTxn("CV", r)),
     ...orRows.map((r) => toBookTxn("OR", r)),
     ...jvRows.map(jvBookTxn),
   ].filter(Boolean);
+}
+
+// The date-window load (period widened by twice the date tolerance).
+async function loadBookTransactions(conn, bankAccountId, bankCoaAccountId, periodStart, periodEnd, toleranceDays, companyId = null) {
+  const widenDays = (Number(toleranceDays) || 0) * 2;
+  return loadBookItems(conn, { bankAccountId, bankCoaAccountId, companyId }, {
+    fromDate: shiftDate(periodStart, -widenDays),
+    toDate: shiftDate(periodEnd, widenDays),
+  });
+}
+
+// Book items a session may match: everything in its widened date window,
+// plus every OLDER document that has never been cleared (carry-forward - a
+// check written in January can clear in February).
+async function loadCandidatePool(conn, session) {
+  const widenDays = (Number(session.dateToleranceDays) || 0) * 2;
+  const windowStart = shiftDate(session.periodStart, -widenDays);
+  const inWindow = await loadBookItems(conn, session, { fromDate: windowStart, toDate: shiftDate(session.periodEnd, widenDays) });
+  const older = await loadBookItems(conn, session, { toDate: shiftDate(windowStart, -1), excludeCleared: true });
+  return [...older, ...inWindow];
+}
+
+// ---- Statement history (R8.3) ----
+// Imported statement rows are the bank account's history (company + bank
+// account + batch), not a session's private copy. A session works on:
+//   * every row of its company + bank account dated inside its period, and
+//   * every EARLIER row still unresolved (UNMATCHED / SUGGESTED) - carry-
+//     forward - plus earlier rows this session itself confirmed.
+// A legacy session with no company only sees its own rows.
+function statementSetWhere(session, alias = "sl") {
+  const owner = session.companyId
+    ? `${alias}.company_id = ?`
+    : `(${alias}.company_id IS NULL AND ${alias}.session_id = ?)`;
+  return {
+    sql: `${owner} AND ${alias}.bank_account_id = ?
+      AND (${alias}.txn_date BETWEEN ? AND ?
+           OR (${alias}.txn_date < ? AND (${alias}.match_status IN ('UNMATCHED', 'SUGGESTED')
+               OR EXISTS (SELECT 1 FROM bank_recon_matches sm WHERE sm.statement_line_id = ${alias}.id AND sm.session_id = ? AND sm.status = 'CONFIRMED'))))`,
+    params: [session.companyId ?? session.id, session.bankAccountId, session.periodStart, session.periodEnd, session.periodStart, session.id],
+  };
+}
+
+async function isInStatementSet(conn, session, statementLineId) {
+  const set = statementSetWhere(session);
+  const [rows] = await conn.execute(`SELECT sl.id FROM bank_recon_statement_lines sl WHERE sl.id = ? AND ${set.sql}`, [statementLineId, ...set.params]);
+  return rows.length > 0;
 }
 
 // One book document as reconciliation sees it, regardless of status / bank
@@ -230,59 +314,34 @@ async function loadBookItem(conn, session, { sourceType, sourceId, lineId = null
   return null;
 }
 
-// ---- Reconciliation summary (Phase 9) ----
-// Adjusted Bank = Statement Ending Balance + Deposits in Transit - Outstanding Checks.
-// Book Balance is derived from the session's own statement-beginning-balance
-// (assumed already reconciled as of period start, per standard practice)
-// plus posted CV/OR/JV activity on this bank account within the period -
-// approved adjustments already hit the ledger once posted as a JV in
-// Phase 8, so there is no separate "+ interest - charges" term here the
-// way a textbook formula has it: that would double-count once posted.
+// ---- Reconciliation summary (Phase 9, carry-forward in R8.3) ----
+// Adjusted Bank = Statement Ending Balance + Deposits in Transit - Outstanding Checks,
+// where outstanding means "not cleared by a session whose period ended on
+// or before this period's end" - so items carried from earlier months stay
+// listed until a session confirms them.
+// Book Balance = Statement Beginning Balance
+//              + book items already outstanding at the start of the period
+//                (in transit at the opening: deposits +, checks -)
+//              + posted CV/OR/JV activity on this bank account in the period.
+// (The beginning statement balance plus the items in transit at the start is
+// the book balance at the start.) Approved adjustments already hit the
+// ledger once posted as a JV, so there is no separate charges/interest term.
 async function computeSessionSummary(conn, session) {
-  const bookTxns = await loadBookTransactions(
-    conn,
-    session.bankAccountId,
-    session.bankCoaAccountId,
-    session.periodStart,
-    session.periodEnd,
-    session.dateToleranceDays,
-    session.companyId
-  );
+  const start = session.periodStart;
+  const end = session.periodEnd;
 
-  const [confirmedRows] = await conn.execute(
-    `SELECT book_source_type AS sourceType, book_source_id AS sourceId, book_line_id AS lineId
-     FROM bank_recon_matches WHERE session_id = ? AND status = 'CONFIRMED'`,
-    [session.id]
-  );
-  const confirmedKeys = new Set(
-    confirmedRows.map((r) => `${r.sourceType}:${r.sourceId}:${r.lineId ?? ""}`)
-  );
-
-  const unmatched = bookTxns.filter(
-    (t) =>
-      !confirmedKeys.has(`${t.sourceType}:${t.sourceId}:${t.lineId ?? ""}`) &&
-      t.date <= session.periodEnd
-  );
-  const outstandingChecks = unmatched.filter((t) => t.direction === "OUT");
-  const depositsInTransit = unmatched.filter((t) => t.direction === "IN");
+  const carried = await loadBookItems(conn, session, { toDate: shiftDate(start, -1), excludeCleared: true, clearedBefore: start });
+  const outstanding = await loadBookItems(conn, session, { toDate: end, excludeCleared: true, clearedBefore: shiftDate(end, 1) });
+  const outstandingChecks = outstanding.filter((t) => t.direction === "OUT");
+  const depositsInTransit = outstanding.filter((t) => t.direction === "IN");
   const outstandingChecksTotal = outstandingChecks.reduce((sum, t) => sum + t.amount, 0);
   const depositsInTransitTotal = depositsInTransit.reduce((sum, t) => sum + t.amount, 0);
+  const net = (items) => items.reduce((sum, t) => sum + (t.direction === "IN" ? t.amount : -t.amount), 0);
 
   // R7-2: the book side moves by what actually crossed the bank (see
-  // bankMovement above), not by the gross CV/OR voucher totals. Same
-  // per-document figure the matcher uses, over exactly the period.
-  const periodTxns = await loadBookTransactions(
-    conn,
-    session.bankAccountId,
-    session.bankCoaAccountId,
-    session.periodStart,
-    session.periodEnd,
-    0,
-    session.companyId
-  );
-  const voucherNet = periodTxns
-    .filter((t) => t.sourceType === "CV" || t.sourceType === "OR")
-    .reduce((sum, t) => sum + (t.direction === "IN" ? t.amount : -t.amount), 0);
+  // bankMovement above), not by the gross CV/OR voucher totals.
+  const periodTxns = await loadBookItems(conn, session, { fromDate: start, toDate: end });
+  const voucherNet = net(periodTxns.filter((t) => t.sourceType === "CV" || t.sourceType === "OR"));
 
   let jvNet = 0;
   if (session.bankCoaAccountId) {
@@ -290,13 +349,13 @@ async function computeSessionSummary(conn, session) {
       `SELECT COALESCE(SUM(jl.debit), 0) AS debitTotal, COALESCE(SUM(jl.credit), 0) AS creditTotal
        FROM jv_lines jl JOIN jv_headers jh ON jh.id = jl.jv_id
        WHERE jl.account_id = ? AND jh.status = 'Posted' AND jh.transaction_date BETWEEN ? AND ?${companyClause("jh.", session.companyId).sql}`,
-      [session.bankCoaAccountId, session.periodStart, session.periodEnd, ...companyClause("jh.", session.companyId).params]
+      [session.bankCoaAccountId, start, end, ...companyClause("jh.", session.companyId).params]
     );
     jvNet = Number(jvSum[0].debitTotal) - Number(jvSum[0].creditTotal);
   }
 
-  const bookBalance =
-    Number(session.statementBeginningBalance) + voucherNet + jvNet;
+  const carriedNet = net(carried);
+  const bookBalance = Number(session.statementBeginningBalance) + carriedNet + voucherNet + jvNet;
 
   const adjustedBank =
     Number(session.statementEndingBalance) + depositsInTransitTotal - outstandingChecksTotal;
@@ -306,9 +365,10 @@ async function computeSessionSummary(conn, session) {
     "SELECT COUNT(*) AS cnt FROM bank_recon_adjustments WHERE session_id = ? AND status IN ('PENDING', 'APPROVED')",
     [session.id]
   );
+  const set = statementSetWhere(session);
   const [unresolvedLinesRows] = await conn.execute(
-    "SELECT COUNT(*) AS cnt FROM bank_recon_statement_lines WHERE session_id = ? AND match_status IN ('UNMATCHED', 'SUGGESTED')",
-    [session.id]
+    `SELECT COUNT(*) AS cnt FROM bank_recon_statement_lines sl WHERE ${set.sql} AND sl.match_status IN ('UNMATCHED', 'SUGGESTED')`,
+    set.params
   );
 
   const pendingAdjustmentsCount = pendingAdjRows[0].cnt;
@@ -318,6 +378,10 @@ async function computeSessionSummary(conn, session) {
     statementBeginningBalance: Number(session.statementBeginningBalance),
     statementEndingBalance: Number(session.statementEndingBalance),
     bookBalance: round2(bookBalance),
+    carriedForward: {
+      count: carried.length,
+      net: round2(carriedNet),
+    },
     outstandingChecks,
     outstandingChecksTotal: round2(outstandingChecksTotal),
     depositsInTransit,
@@ -336,6 +400,10 @@ module.exports = {
   AMOUNT_SOURCE,
   bankMovement,
   loadBookTransactions,
+  loadBookItems,
+  loadCandidatePool,
   loadBookItem,
+  statementSetWhere,
+  isInStatementSet,
   computeSessionSummary,
 };

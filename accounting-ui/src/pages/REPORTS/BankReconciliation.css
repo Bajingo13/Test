@@ -290,6 +290,78 @@
 .brc-preview-row.invalid td { color: var(--danger-text); }
 .brc-preview-row.duplicate td { color: var(--text-secondary); }
 
+.brc-queue-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 10px;
+  margin: 12px 0 16px;
+}
+
+.brc-queue-tile {
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+
+.brc-queue-tile strong { font-size: 22px; }
+.brc-queue-tile span { font-size: 12px; color: var(--text-secondary); }
+.brc-queue-tile.good { background: var(--success-bg); }
+.brc-queue-tile.good strong { color: var(--success-text); }
+.brc-queue-tile.warning { background: var(--warning-bg); }
+.brc-queue-tile.warning strong { color: var(--warning-text); }
+.brc-queue-tile.error { background: var(--danger-bg); }
+.brc-queue-tile.error strong { color: var(--danger-text); }
+
+.brc-queue-section h3 {
+  margin: 14px 0 8px;
+  font-size: 15px;
+}
+
+.brc-queue-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border-color);
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.brc-queue-item > div { min-width: 0; overflow-wrap: anywhere; }
+.brc-queue-item p { margin: 4px 0 0; color: var(--text-secondary); }
+.brc-queue-item button { flex-shrink: 0; }
+
+.brc-carried {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--info-bg);
+  color: var(--info-text);
+}
+
+.brc-exception-tag {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  background: var(--danger-bg);
+  color: var(--danger-text);
+}
+
+@media (max-width: 640px) {
+  .brc-queue-item { flex-direction: column; }
+}
+
 .brc-mapping-box {
   background: var(--bg-surface-muted);
   border: 1px solid var(--border-color);

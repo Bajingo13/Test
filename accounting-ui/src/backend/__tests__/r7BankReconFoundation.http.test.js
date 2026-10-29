@@ -684,6 +684,11 @@ describe("R7-6 manual match amount", () => {
     doc.cv77 = await createCv("acctA", "A", { no: `${P}CV-77`, checkNo: "R7CHK-77", gross: 77, date: "2098-07-25", lines: [ln("EXP", 77, 0), ln("BANK", 0, 77)] });
     doc.cvDraft = await createCv("acctA", "A", { no: `${P}CV-DRAFT`, checkNo: "R7CHK-88", gross: 88, status: "Draft", date: "2098-07-25", lines: [ln("EXP", 88, 0), ln("BANK", 0, 88)] });
     doc.orNear = (await createOr("acctA", "A", { no: `${P}OR-NEAR`, gross: 600, date: "2098-07-26", lines: [ln("BANK", 600, 0), ln("AR", 0, 600)] })).body.id;
+    // Its own withholding CV: with shared statement history (R8.3) CV-WHT
+    // may already be reconciled by another July session.
+    doc.cvWht6 = await createCv("acctA", "A", {
+      no: `${P}CV-WHT6`, gross: 1000, date: "2098-07-25", lines: [ln("EXP", 1000, 0), ln("BANK", 0, 980), ln("WTP", 0, 20)],
+    });
     s = await newSession("acctA");
     await importRows("acctA", s, [
       "2098-07-25,Pay 77,,,77,",
@@ -716,7 +721,7 @@ describe("R7-6 manual match amount", () => {
   });
 
   test("statement 1,000 vs bank movement 980 exceeds the variance: refused", async () => {
-    const res = await match("Pay 1000", { bookSourceType: "CV", bookSourceId: doc.cvWht });
+    const res = await match("Pay 1000", { bookSourceType: "CV", bookSourceId: doc.cvWht6 });
     expect(res.status).toBe(400);
     expect(res.body.code).toBe("MATCH_AMOUNT_MISMATCH");
   });

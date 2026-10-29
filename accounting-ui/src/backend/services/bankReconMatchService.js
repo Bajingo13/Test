@@ -3,7 +3,7 @@ const { logAudit } = require("../lib/audit");
 const { HttpError } = require("../lib/httpError");
 const PermissionService = require("./permissionService");
 const { assertRecordAccess } = require("./bankReconAccessService");
-const { BANK_RECON_SESSION_SELECT, loadBookTransactions } = require("./BankMatchingService");
+const { BANK_RECON_SESSION_SELECT, loadCandidatePool, statementSetWhere, isInStatementSet } = require("./BankMatchingService");
 const {
   scoreCandidate,
   classifyAdjustmentSuggestion,
@@ -114,26 +114,23 @@ async function runMatching({ sessionId, user, channel = CHANNEL.WORKSPACE }) {
     const session = sessionRows[0];
     if (session.status === "FINALIZED") throw new HttpError(400, "Cannot run matching on a finalized session");
 
+    // R8.3: the session's slice of the bank account's statement history
+    // (its period, plus earlier rows still unresolved).
+    const set = statementSetWhere(session);
     const [stmtLines] = await conn.execute(
-      `SELECT id, DATE_FORMAT(txn_date, '%Y-%m-%d') AS txnDate, description,
-              reference_no AS referenceNo, check_no AS checkNo, debit, credit
-       FROM bank_recon_statement_lines
-       WHERE session_id = ? AND match_status IN ('UNMATCHED', 'SUGGESTED')`,
-      [session.id]
+      `SELECT sl.id, DATE_FORMAT(sl.txn_date, '%Y-%m-%d') AS txnDate, sl.description,
+              sl.reference_no AS referenceNo, sl.check_no AS checkNo, sl.debit, sl.credit
+       FROM bank_recon_statement_lines sl
+       WHERE ${set.sql} AND sl.match_status IN ('UNMATCHED', 'SUGGESTED')
+       ORDER BY sl.txn_date, sl.id`,
+      set.params
     );
     if (stmtLines.length === 0) {
       return { processed: 0, suggested: 0, message: "No unmatched statement lines to process" };
     }
 
-    const bookTxns = await loadBookTransactions(
-      conn,
-      session.bankAccountId,
-      session.bankCoaAccountId,
-      session.periodStart,
-      session.periodEnd,
-      session.dateToleranceDays,
-      session.companyId
-    );
+    // Window documents plus older never-cleared ones (carry-forward).
+    const bookTxns = await loadCandidatePool(conn, session);
 
     // A document already CONFIRMED in any session of this company and bank
     // account is reconciled - never offered as a candidate again.
@@ -233,17 +230,32 @@ function parseBreakdown(value) {
   }
 }
 
+const peso = (v) => `₱${Number(v || 0).toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
 // Plain-language reason for a suggestion, from the engine's own evidence -
 // what the workspace shows and what the assistant repeats. Never computed
-// by the assistant itself.
-function explainCandidate(matchType, breakdown) {
+// by the assistant itself. `ctx` (statement line + candidate) lets it name
+// the actual check / document and amounts.
+function explainCandidate(matchType, breakdown, ctx = null) {
   const level = breakdown?.matchLevel;
-  const base = {
+  let base = {
     [MATCH_LEVEL.CHECK_NO]: "The check number and the amount match exactly.",
     [MATCH_LEVEL.REFERENCE]: "The document / reference number and the amount match exactly.",
     [MATCH_LEVEL.AMOUNT_DATE]: "Same amount and a date within tolerance, but no check or document number confirms it.",
     [MATCH_LEVEL.FUZZY]: "A partial match on amount, date or description.",
   }[level] || "Scored before the current evidence rules - run matching again.";
+  if (ctx?.line && ctx?.candidate) {
+    const { line, candidate } = ctx;
+    const stmtAmount = Number(line.debit) > 0 ? line.debit : line.credit;
+    const doc = `${candidate.bookSourceType} ${candidate.detail?.voucherNo || `#${candidate.bookSourceId}`}`;
+    if (level === MATCH_LEVEL.CHECK_NO) {
+      base = `Bank statement check ${line.checkNo || line.referenceNo} for ${peso(stmtAmount)} matches ${doc} for ${peso(candidate.amount)}: the check number and amount match exactly, and the ${candidate.bookSourceType} is posted to this company and bank account.`;
+    } else if (level === MATCH_LEVEL.REFERENCE) {
+      base = `Bank statement reference ${line.referenceNo || line.checkNo} for ${peso(stmtAmount)} matches ${doc} for ${peso(candidate.amount)}: the document / reference number and amount match exactly, and the ${candidate.bookSourceType} is posted to this company and bank account.`;
+    } else if (level === MATCH_LEVEL.AMOUNT_DATE) {
+      base = `${doc} has the same amount (${peso(candidate.amount)}) and a date within tolerance, but no check or document number confirms it.`;
+    }
+  }
   if (matchType === "AMBIGUOUS") {
     return `${base} Ambiguous: ${breakdown?.ambiguous || "more than one pairing fits"} - the accountant must choose in the workspace.`;
   }
@@ -298,7 +310,7 @@ async function listCandidates({ statementLineId, user }) {
       detail,
       matchLevel: breakdown?.matchLevel || null,
       ambiguousReason: breakdown?.ambiguous || null,
-      explanation: explainCandidate(row.matchType, breakdown),
+      explanation: explainCandidate(row.matchType, breakdown, { line: statementLine, candidate: { ...row, detail } }),
       strictExact: isStrictExactRow(row.matchType, breakdown),
     });
   }
@@ -432,7 +444,12 @@ async function bulkConfirmExact({ sessionId, user, channel = CHANNEL.WORKSPACE }
 // The matched amount is the selected document's own bank movement, derived
 // on the server. A client "amount" is only checked against it, and the
 // statement amount must agree with it within the session variance.
-async function createManualMatch({ statementLineId, bookSourceType, bookSourceId, bookLineId, amount, user, channel = CHANNEL.WORKSPACE }) {
+// R8.3: `sessionId` is the session the accountant is working in (a carried
+// row from January is matched in February's session); without it, the
+// session the row was imported through. Either way the row must belong to
+// that session's statement set (same company + bank account, not dated
+// after the period).
+async function createManualMatch({ statementLineId, bookSourceType, bookSourceId, bookLineId, amount, sessionId = null, user, channel = CHANNEL.WORKSPACE }) {
   if (!statementLineId || !bookSourceType || !bookSourceId) {
     throw new HttpError(400, "statementLineId, bookSourceType, and bookSourceId are required");
   }
@@ -441,9 +458,13 @@ async function createManualMatch({ statementLineId, bookSourceType, bookSourceId
     throw new HttpError(400, "Select the journal voucher line that moved through the bank.");
   }
 
-  const access = await authorize(user, "line", statementLineId, "CREATE");
+  const lineAccess = await authorize(user, "line", statementLineId, "CREATE");
+  const access = sessionId ? await authorize(user, "session", sessionId, "CREATE") : lineAccess;
   return withTransaction(async (conn) => {
     const session = await lockSession(conn, access.id);
+    if (!(await isInStatementSet(conn, session, statementLineId))) {
+      throw new HttpError(404, "Statement line not found");
+    }
     const line = await lockStatementLine(conn, statementLineId);
     const txn = await lockEligibleBookItem(conn, session, line, {
       sourceType: bookSourceType,
@@ -484,6 +505,7 @@ async function createManualMatch({ statementLineId, bookSourceType, bookSourceId
 
 module.exports = {
   CHANNEL,
+  authorize,
   beginReadCommitted,
   lockSession,
   runMatching,

@@ -12,6 +12,7 @@ const { logAudit } = require("../lib/audit");
 const { HttpError } = require("../lib/httpError");
 const { BANK_RECON_SESSION_SELECT, computeSessionSummary } = require("./BankMatchingService");
 const MatchService = require("./bankReconMatchService");
+const QueueService = require("./bankReconQueueService");
 const { resolveDateRange } = require("./PromptParser");
 const { AsyncLocalStorage } = require("async_hooks");
 const PermissionService = require("./permissionService");
@@ -188,7 +189,7 @@ async function getLowConfidenceLines(sessionId, thresholdPercent) {
             DATE_FORMAT(sl.txn_date, '%Y-%m-%d') AS txnDate, sl.description
      FROM bank_recon_matches m
      JOIN bank_recon_statement_lines sl ON sl.id = m.statement_line_id
-     WHERE sl.session_id = ? AND m.status = 'PENDING' AND m.confidence_score < ?
+     WHERE m.session_id = ? AND m.status = 'PENDING' AND m.confidence_score < ?
      ORDER BY m.confidence_score ASC`,
     [sessionId, thresholdPercent]
   );
@@ -207,6 +208,13 @@ async function runMatchingForSession(sessionId, user) {
 // explanation - for the assistant to relay, never to re-score.
 async function getMatchCandidates(statementLineId, user) {
   return MatchService.listCandidates({ statementLineId, user });
+}
+
+// Advisory (R8.3): the session's reconciliation queue - exactly what the
+// workspace shows: high-confidence matches, items to review, unmatched bank
+// and book items, and exceptions, each with the engine's own explanation.
+async function getReconciliationQueue(sessionId, user) {
+  return QueueService.buildQueue({ sessionId, user });
 }
 
 // Deliberately narrower than the REST PATCH /sessions/:id endpoint - only
@@ -318,6 +326,7 @@ module.exports = {
   listAdjustments: guarded(listAdjustments, { kind: "session" }),
   getLowConfidenceLines: guarded(getLowConfidenceLines, { kind: "session" }),
   getMatchCandidates: guarded(getMatchCandidates, { kind: "line", passUser: true }),
+  getReconciliationQueue: guarded(getReconciliationQueue, { kind: "session", passUser: true }),
   runMatchingForSession: guarded(runMatchingForSession, { kind: "session", permission: "CREATE", passUser: true }),
   updateSessionTolerance: guarded(updateSessionTolerance, { kind: "session", permission: "CREATE", passUser: true }),
   confirmMatch: guarded(confirmMatch, { kind: "match", permission: "CREATE", passUser: true }),

@@ -100,20 +100,6 @@ function scoreCandidate(stmtLine, bookTxn, session) {
     return null;
   }
 
-  const tolerance = Number(session.dateToleranceDays) || 0;
-  const dateDiffDays = daysBetween(stmtLine.txnDate, bookTxn.date);
-
-  let dateScore = 0;
-  if (dateDiffDays === 0) {
-    dateScore = 20;
-  } else if (tolerance > 0 && dateDiffDays <= tolerance) {
-    dateScore = 20 * (1 - dateDiffDays / tolerance);
-  } else if (tolerance > 0 && dateDiffDays <= tolerance * 2) {
-    dateScore = 0;
-  } else {
-    return null;
-  }
-
   // Banks put the check number in either column, so both statement
   // identifiers are compared with both kinds of book identifier.
   const stmtIdentifiers = strongIdentifiers([stmtLine.referenceNo, stmtLine.checkNo]);
@@ -123,6 +109,32 @@ function scoreCandidate(stmtLine, bookTxn, session) {
 
   const checkNoExact = stmtIdentifiers.some((s) => bookCheckIds.includes(s));
   const documentExact = stmtIdentifiers.some((s) => bookDocumentIds.includes(s));
+
+  const tolerance = Number(session.dateToleranceDays) || 0;
+  const dateDiffDays = daysBetween(stmtLine.txnDate, bookTxn.date);
+
+  // R8.3 check-number-first: a check can clear weeks after it is written
+  // (January's check on February's statement). An exact check number with
+  // an identical amount stays a candidate beyond the date window - but only
+  // when the check is not dated after the statement line (beyond tolerance)
+  // - with no date score. Everything else keeps the window.
+  const lateClearingCheck =
+    checkNoExact && amountDiff === 0 && bookTxn.date <= shiftDate(stmtLine.txnDate, tolerance);
+
+  let dateScore = 0;
+  let dateOutsideWindow = false;
+  if (dateDiffDays === 0) {
+    dateScore = 20;
+  } else if (tolerance > 0 && dateDiffDays <= tolerance) {
+    dateScore = 20 * (1 - dateDiffDays / tolerance);
+  } else if (tolerance > 0 && dateDiffDays <= tolerance * 2) {
+    dateScore = 0;
+  } else if (lateClearingCheck) {
+    dateScore = 0;
+    dateOutsideWindow = true;
+  } else {
+    return null;
+  }
 
   let identifierScore = 0;
 
@@ -182,6 +194,7 @@ function scoreCandidate(stmtLine, bookTxn, session) {
       payeeScore,
       descScore: round2(descScore),
       matchLevel,
+      ...(dateOutsideWindow ? { dateOutsideWindow: true } : {}),
     },
   };
 }

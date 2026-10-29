@@ -3,7 +3,9 @@ const { logAudit } = require("../lib/audit");
 const { HttpError } = require("../lib/httpError");
 const {
   BANK_RECON_SESSION_SELECT,
-  loadBookTransactions,
+  loadCandidatePool,
+  statementSetWhere,
+  isInStatementSet,
   computeSessionSummary,
 } = require("../services/BankMatchingService");
 const StatementParser = require("../services/bankStatementParser");
@@ -13,7 +15,9 @@ const { postAdjustmentAsJV } = require("../services/JournalSuggestionService");
 const {
   sessionListFilter,
   resolveCompanyForNewSession,
+  assertSessionAccess,
 } = require("../services/bankReconAccessService");
+const QueueService = require("../services/bankReconQueueService");
 
 // Routes guard every session / child id (bankReconAccessService.requireAccess)
 // and leave the owning session on req.reconSession; its company is stamped
@@ -610,14 +614,25 @@ exports.listImportBatches = async (req, res) => {
   }
 };
 
+async function loadSessionRow(id) {
+  const [rows] = await pool.execute(`${BANK_RECON_SESSION_SELECT} WHERE s.id = ?`, [id]);
+  if (!rows[0]) throw new HttpError(404, "Reconciliation session not found");
+  return rows[0];
+}
+
+// R8.3: the session's slice of the bank account's statement history - its
+// period plus earlier rows still unresolved (carriedForward) - wherever
+// they were imported.
 exports.listStatementLines = async (req, res) => {
   try {
-    const { id } = req.params;
+    const session = await loadSessionRow(req.params.id);
+    const set = statementSetWhere(session);
 
     const [rows] = await pool.execute(
       `SELECT
         sl.id,
         sl.batch_id AS batchId,
+        sl.session_id AS importedInSessionId,
         DATE_FORMAT(sl.txn_date, '%Y-%m-%d') AS txnDate,
         sl.description,
         sl.reference_no AS referenceNo,
@@ -626,13 +641,14 @@ exports.listStatementLines = async (req, res) => {
         sl.credit,
         sl.running_balance AS runningBalance,
         sl.match_status AS matchStatus,
+        (sl.txn_date < ?) AS carriedForward,
         m.id AS confirmedMatchId
       FROM bank_recon_statement_lines sl
       LEFT JOIN bank_recon_matches m
         ON m.statement_line_id = sl.id AND m.status = 'CONFIRMED'
-      WHERE sl.session_id = ?
+      WHERE ${set.sql}
       ORDER BY sl.txn_date ASC, sl.id ASC`,
-      [id]
+      [session.periodStart, ...set.params]
     );
 
     res.json(rows);
@@ -712,6 +728,12 @@ exports.runMatching = (req, res) =>
     ...(await MatchService.runMatching({ sessionId: req.params.id, user: req.user })),
   }));
 
+// R8.3: "what needs my attention" for this session (read-only).
+exports.getQueue = (req, res) =>
+  respond(res, "GET RECON QUEUE ERROR:", "Failed to load the reconciliation queue", () =>
+    QueueService.buildQueue({ sessionId: req.params.id, user: req.user })
+  );
+
 exports.getMatchCandidates = (req, res) =>
   respond(res, "GET MATCH CANDIDATES ERROR:", "Failed to load match candidates", async () =>
     (await MatchService.listCandidates({ statementLineId: req.params.id, user: req.user })).candidates
@@ -731,29 +753,23 @@ exports.listBookItems = async (req, res) => {
 
     const session = sessionRows[0];
 
-    const bookTxns = await loadBookTransactions(
-      conn,
-      session.bankAccountId,
-      session.bankCoaAccountId,
-      session.periodStart,
-      session.periodEnd,
-      session.dateToleranceDays,
-      session.companyId
-    );
-
+    // R8.3: the session's window plus older never-cleared documents (carry-
+    // forward), minus anything reconciled in any session of this company +
+    // bank account - the same pool the matching engine scores.
+    const bookTxns = await loadCandidatePool(conn, session);
     const [confirmedRows] = await conn.execute(
-      `SELECT book_source_type AS sourceType, book_source_id AS sourceId, book_line_id AS lineId
-       FROM bank_recon_matches
-       WHERE session_id = ? AND status = 'CONFIRMED'`,
-      [id]
+      `SELECT m.book_source_type AS sourceType, m.book_source_id AS sourceId, m.book_line_id AS lineId
+       FROM bank_recon_matches m JOIN bank_recon_sessions s ON s.id = m.session_id
+       WHERE m.status = 'CONFIRMED' AND s.bank_account_id = ? AND s.company_id <=> ?`,
+      [session.bankAccountId, session.companyId ?? null]
     );
     const confirmedKeys = new Set(
       confirmedRows.map((r) => `${r.sourceType}:${r.sourceId}:${r.lineId ?? ""}`)
     );
 
-    const unmatched = bookTxns.filter(
-      (t) => !confirmedKeys.has(`${t.sourceType}:${t.sourceId}:${t.lineId ?? ""}`)
-    );
+    const unmatched = bookTxns
+      .filter((t) => !confirmedKeys.has(`${t.sourceType}:${t.sourceId}:${t.lineId ?? ""}`))
+      .map((t) => ({ ...t, carriedForward: t.date < session.periodStart }));
 
     res.json(unmatched);
   } catch (err) {
@@ -780,9 +796,9 @@ exports.bulkConfirmMatches = (req, res) => {
 
 exports.createManualMatch = (req, res) =>
   respond(res, "CREATE MANUAL MATCH ERROR:", "Failed to create match", async () => {
-    const { statementLineId, bookSourceType, bookSourceId, bookLineId, amount } = req.body;
+    const { statementLineId, bookSourceType, bookSourceId, bookLineId, amount, sessionId } = req.body;
     const result = await MatchService.createManualMatch({
-      statementLineId, bookSourceType, bookSourceId, bookLineId, amount, user: req.user,
+      statementLineId, bookSourceType, bookSourceId, bookLineId, amount, sessionId, user: req.user,
     });
     return { success: true, ...result, message: "Match created" };
   });
@@ -872,6 +888,21 @@ exports.ignoreStatementLine = async (req, res) => {
 
     const line = rows[0];
 
+    // R8.3: a row carried into a later session is handled from that session
+    // (sessionId) - its own import session may already be finalized.
+    if (req.body?.sessionId) {
+      try {
+        const working = await assertSessionAccess(req.body.sessionId, req.user);
+        const session = await loadSessionRow(working.id);
+        if (!(await isInStatementSet(conn, session, id))) throw new HttpError(404, "Statement line not found");
+        line.sessionStatus = session.status;
+        req.reconSession = working;
+      } catch (err) {
+        if (sendHttpError(res, err)) return;
+        throw err;
+      }
+    }
+
     if (line.sessionStatus === "FINALIZED") {
       return res.status(400).json({ message: "Cannot modify a finalized session" });
     }
@@ -920,51 +951,22 @@ exports.ignoreStatementLine = async (req, res) => {
   }
 };
 
+// R8.3: outstanding = not cleared by any session whose period ended on or
+// before this one's end - including items carried from earlier periods.
 exports.getOutstandingItems = async (req, res) => {
   const conn = await pool.getConnection();
 
   try {
-    const { id } = req.params;
-
-    const [sessionRows] = await conn.execute(`${BANK_RECON_SESSION_SELECT} WHERE s.id = ?`, [id]);
-
-    if (sessionRows.length === 0) {
-      return res.status(404).json({ message: "Reconciliation session not found" });
-    }
-
-    const session = sessionRows[0];
-
-    const bookTxns = await loadBookTransactions(
-      conn,
-      session.bankAccountId,
-      session.bankCoaAccountId,
-      session.periodStart,
-      session.periodEnd,
-      session.dateToleranceDays,
-      session.companyId
-    );
-
-    const [confirmedRows] = await conn.execute(
-      `SELECT book_source_type AS sourceType, book_source_id AS sourceId, book_line_id AS lineId
-       FROM bank_recon_matches
-       WHERE session_id = ? AND status = 'CONFIRMED'`,
-      [id]
-    );
-    const confirmedKeys = new Set(
-      confirmedRows.map((r) => `${r.sourceType}:${r.sourceId}:${r.lineId ?? ""}`)
-    );
-
-    const unmatched = bookTxns.filter(
-      (t) =>
-        !confirmedKeys.has(`${t.sourceType}:${t.sourceId}:${t.lineId ?? ""}`) &&
-        t.date <= session.periodEnd
-    );
+    const session = await loadSessionRow(req.params.id);
+    const summary = await computeSessionSummary(conn, session);
+    const mark = (t) => ({ ...t, carriedForward: t.date < session.periodStart });
 
     res.json({
-      outstandingChecks: unmatched.filter((t) => t.direction === "OUT"),
-      depositsInTransit: unmatched.filter((t) => t.direction === "IN"),
+      outstandingChecks: summary.outstandingChecks.map(mark),
+      depositsInTransit: summary.depositsInTransit.map(mark),
     });
   } catch (err) {
+    if (sendHttpError(res, err)) return;
     console.error("GET OUTSTANDING ITEMS ERROR:", err);
     res.status(500).json({ message: "Failed to load outstanding items" });
   } finally {
@@ -1031,9 +1033,12 @@ exports.createAdjustment = async (req, res) => {
       return res.status(400).json({ message: "Cannot modify a finalized session" });
     }
 
+    // R8.3: any row of this session's statement set (history), not only
+    // rows imported through it.
+    const adjustmentSet = statementSetWhere(await loadSessionRow(id));
     const [lineRows] = await conn.execute(
-      "SELECT id FROM bank_recon_statement_lines WHERE id = ? AND session_id = ?",
-      [statementLineId, id]
+      `SELECT sl.id FROM bank_recon_statement_lines sl WHERE sl.id = ? AND ${adjustmentSet.sql}`,
+      [statementLineId, ...adjustmentSet.params]
     );
     if (lineRows.length === 0) {
       return res.status(404).json({ message: "Statement line not found" });

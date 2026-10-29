@@ -3,6 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import BankReconMatchModal from "../../components/BankReconMatchModal.jsx";
 import BankStatementPreview from "../../components/BankStatementPreview.jsx";
+import BankReconQueuePanel from "../../components/BankReconQueuePanel.jsx";
 import BankReconAuditLogPanel from "../../components/BankReconAuditLogPanel.jsx";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
 import "./BankReconciliation.css";
@@ -54,6 +55,10 @@ export default function BankReconciliationWorkspace() {
   // R8.2: Upload -> (map) -> Preview -> Import. Nothing is imported until
   // the accountant has seen the server's preview and clicks Import.
   const [statementPreview, setStatementPreview] = useState(null);
+  // R8.3: the session's reconciliation queue (server-built).
+  const [queue, setQueue] = useState(null);
+  const [queueLoading, setQueueLoading] = useState(false);
+  const [queueBusyMatchId, setQueueBusyMatchId] = useState(null);
 
   const [runningMatching, setRunningMatching] = useState(false);
   const [bulkConfirming, setBulkConfirming] = useState(false);
@@ -88,6 +93,7 @@ export default function BankReconciliationWorkspace() {
     loadCoaAccounts();
     loadSummary();
     loadAuditLog();
+    loadQueue();
   }, [id]);
 
   async function loadSummary() {
@@ -356,8 +362,73 @@ export default function BankReconciliationWorkspace() {
     URL.revokeObjectURL(url);
   }
 
+  async function loadQueue() {
+    setQueueLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/bank-recon/sessions/${id}/queue`, {
+        credentials: "include",
+        headers: authHeaders(),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        handleAuthError(res.status);
+        setQueue(null);
+        return;
+      }
+      setQueue(data);
+    } catch (err) {
+      console.error("LOAD RECON QUEUE ERROR:", err);
+    } finally {
+      setQueueLoading(false);
+    }
+  }
+
+  // One-click confirm of a high-confidence match: the normal confirmation
+  // route, which re-checks everything on the server.
+  async function confirmFromQueue(matchId) {
+    setQueueBusyMatchId(matchId);
+    try {
+      const res = await fetch(`${API_BASE}/api/bank-recon/matches/${matchId}/confirm`, {
+        method: "POST",
+        credentials: "include",
+        headers: authHeaders(),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        if (handleAuthError(res.status)) return;
+        alert(data.message || "Failed to confirm match.");
+      }
+      await refreshBoard();
+    } catch (err) {
+      console.error("CONFIRM FROM QUEUE ERROR:", err);
+      alert("Unable to connect to server.");
+    } finally {
+      setQueueBusyMatchId(null);
+    }
+  }
+
+  function reviewLine(lineId) {
+    const line = statementLines.find((l) => l.id === lineId);
+    if (line) openModal(line);
+  }
+
+  // Import -> automatically analyze: run the matching engine once so the
+  // queue shows what needs attention straight away.
+  async function analyzeAfterImport() {
+    try {
+      await fetch(`${API_BASE}/api/bank-recon/sessions/${id}/run-matching`, {
+        method: "POST",
+        credentials: "include",
+        headers: authHeaders(),
+      });
+    } catch (err) {
+      console.error("AUTO MATCHING ERROR:", err);
+    }
+  }
+
   async function refreshBoard() {
     await Promise.all([
+      loadQueue(),
       loadStatementLines(),
       loadBookItems(),
       loadOutstandingItems(),
@@ -691,6 +762,8 @@ export default function BankReconciliationWorkspace() {
           bookSourceType: bookItem.sourceType,
           bookSourceId: bookItem.sourceId,
           bookLineId: bookItem.lineId || null,
+          // R8.3: carried rows are matched from the session being worked in.
+          sessionId: Number(id),
         }),
       });
 
@@ -723,7 +796,8 @@ export default function BankReconciliationWorkspace() {
         {
           method: "POST",
           credentials: "include",
-          headers: authHeaders(),
+          headers: { "Content-Type": "application/json", ...authHeaders() },
+          body: JSON.stringify({ sessionId: Number(id) }),
         }
       );
 
@@ -909,7 +983,8 @@ export default function BankReconciliationWorkspace() {
       setStatementPreview(null);
       setFileInputKey((k) => k + 1);
       await loadImportBatches();
-      await loadStatementLines();
+      await analyzeAfterImport();
+      await refreshBoard();
     } catch (err) {
       console.error("IMPORT BANK STATEMENT ERROR:", err);
       alert("Unable to connect to server.");
@@ -1341,6 +1416,15 @@ export default function BankReconciliationWorkspace() {
         </div>
       )}
 
+      <BankReconQueuePanel
+        queue={queue}
+        loading={queueLoading}
+        isFinalized={isFinalized}
+        busyMatchId={queueBusyMatchId}
+        onConfirm={confirmFromQueue}
+        onReview={reviewLine}
+      />
+
       <div className="brc-card">
         <div className="brc-import-row" style={{ justifyContent: "space-between" }}>
           <h2 style={{ margin: 0 }}>Statement Lines ({statementLines.length})</h2>
@@ -1380,7 +1464,10 @@ export default function BankReconciliationWorkspace() {
               ) : (
                 statementLines.map((line) => (
                   <tr key={line.id}>
-                    <td>{line.txnDate}</td>
+                    <td>
+                      {line.txnDate}
+                      {Number(line.carriedForward) ? <span className="brc-carried">carried forward</span> : null}
+                    </td>
                     <td>{line.description}</td>
                     <td>{line.referenceNo}</td>
                     <td>{line.checkNo}</td>

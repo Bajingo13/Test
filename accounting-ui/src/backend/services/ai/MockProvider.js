@@ -271,6 +271,21 @@ async function handleConfirmAllExact(params, user) {
   };
 }
 
+// Advisory (R8.3): the reconciliation queue, as the workspace shows it.
+async function handleQueue(params, user) {
+  if (!params.sessionId) return needSessionReply();
+  const q = await actions.getReconciliationQueue(params.sessionId, user);
+  const c = q.counts;
+  const lines = [
+    `Session #${params.sessionId} needs your attention on: ${c.highConfidence} high-confidence match(es), ${c.needsReview} to review, ${c.unmatchedBank} unmatched bank row(s), ${c.unmatchedBook} outstanding book item(s) (${c.carriedForwardBook} carried from earlier periods), ${c.exceptions} exception(s).`,
+  ];
+  for (const h of q.highConfidence.slice(0, 5)) lines.push(`- Ready to confirm: ${h.candidate.explanation}`);
+  for (const r of q.needsReview.slice(0, 5)) lines.push(`- Review line #${r.line.id} (${r.line.txnDate}, ₱ ${formatMoney(r.line.amount)}): ${r.candidates[0].explanation}`);
+  for (const e of q.exceptions.slice(0, 5)) lines.push(`- Exception: ${e.message}`);
+  lines.push("Nothing is confirmed until you confirm it in the workspace (or tell me to confirm all exact matches).");
+  return { replyText: lines.join("\n"), sessionId: params.sessionId };
+}
+
 // Advisory: relays the matching engine's own candidates and explanations
 // for one statement line - never re-scores, never confirms.
 async function handleExplainLine(params, user) {
@@ -299,6 +314,7 @@ function handleUnknown() {
       '- "Generate adjusting journal entries"',
       '- "Explain why reconciliation is not balanced"',
       '- "Match transactions within 3 days and allow a ₱1.00 variance"',
+      '- "What needs my attention?"',
       '- "Explain the candidates for line 123"',
       '- "Confirm all exact matches"',
     ].join("\n"),
@@ -341,6 +357,9 @@ async function processTurn({ messages, sessionId, user }) {
       break;
     case INTENTS.EXPLAIN_LINE:
       result = await handleExplainLine(params, user);
+      break;
+    case INTENTS.QUEUE:
+      result = await handleQueue(params, user);
       break;
     default:
       result = handleUnknown();

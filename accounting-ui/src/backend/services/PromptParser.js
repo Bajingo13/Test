@@ -187,6 +187,7 @@ const INTENTS = {
   RERUN_TOLERANCE: "RERUN_TOLERANCE",
   CONFIRM_ALL_EXACT: "CONFIRM_ALL_EXACT",
   EXPLAIN_LINE: "EXPLAIN_LINE",
+  QUEUE: "QUEUE",
   UNKNOWN: "UNKNOWN",
 };
 
@@ -224,6 +225,8 @@ function parsePrompt(text, context = {}) {
 
   if (/confirm\s+all\s+exact/i.test(raw)) {
     intent = INTENTS.CONFIRM_ALL_EXACT;
+  } else if (/needs?\s+(my\s+)?(attention|review)|review\s+queue|reconciliation\s+queue|what\s+(should|do)\s+i\s+(review|check)/i.test(raw)) {
+    intent = INTENTS.QUEUE;
   } else if (lineRef && /explain|why|candidate|match/i.test(raw)) {
     intent = INTENTS.EXPLAIN_LINE;
     params.statementLineId = Number(lineRef[1]);

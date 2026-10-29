@@ -300,3 +300,21 @@ describe("ambiguity (R7-4)", () => {
     expect(isStrictExactRow("EXACT", "not json")).toBe(false);
   });
 });
+
+describe("late-clearing checks (R8.3)", () => {
+  const session = { dateToleranceDays: 3, amountVarianceType: "FIXED", amountVarianceValue: 1 };
+  const stmt = (o) => ({ txnDate: "2096-02-03", debit: 300, credit: 0, referenceNo: null, checkNo: "1002", description: "Check", ...o });
+  const book = (o) => ({ date: "2096-01-20", amount: 300, checkNo: "1002", referenceNo: null, receiptNo: null, voucherNo: "CV-9", payeeOrCustomer: "X", description: "", ...o });
+
+  test("an exact check number + amount written weeks earlier is still an EXACT candidate, flagged outside the window", () => {
+    const r = scoreCandidate(stmt(), book(), session);
+    expect(r).toMatchObject({ matchType: "EXACT", matchLevel: "CHECK_NO" });
+    expect(r.breakdown).toMatchObject({ dateScore: 0, dateOutsideWindow: true });
+  });
+
+  test("not for a different amount, a document-number match, or a check dated after the statement", () => {
+    expect(scoreCandidate(stmt(), book({ amount: 299 }), session)).toBeNull();
+    expect(scoreCandidate(stmt({ checkNo: null, referenceNo: "CV-9" }), book({ checkNo: null }), session)).toBeNull();
+    expect(scoreCandidate(stmt({ txnDate: "2096-01-01" }), book({ date: "2096-01-20" }), session)).toBeNull();
+  });
+});

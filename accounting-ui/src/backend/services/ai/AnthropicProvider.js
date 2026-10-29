@@ -136,6 +136,17 @@ function buildTools(touched, user) {
     run: async (input) => JSON.stringify(await actions.getMatchCandidates(input.statementLineId, user)),
   });
 
+  const getReconciliationQueue = betaZodTool({
+    name: "getReconciliationQueue",
+    description:
+      "Get what needs the accountant's attention in a session: high-confidence matches (check / document number + amount), items needing review, unmatched bank rows, unmatched (outstanding, including carried-forward) book items, and exceptions (e.g. check number found but amount differs), each with the engine's explanation. Read-only.",
+    inputSchema: z.object({ sessionId: z.number() }),
+    run: async (input) => {
+      touched.sessionId = input.sessionId;
+      return JSON.stringify(await actions.getReconciliationQueue(input.sessionId, user));
+    },
+  });
+
   const confirmMatch = betaZodTool({
     name: "confirmMatch",
     description:
@@ -166,6 +177,7 @@ function buildTools(touched, user) {
     listAdjustments,
     getLowConfidenceLines,
     getMatchCandidates,
+    getReconciliationQueue,
     runMatching,
     updateSessionTolerance,
     confirmMatch,
@@ -180,7 +192,7 @@ Today's date is ${todayIso()}.
 
 You help an accountant drive an already-built, fully deterministic reconciliation engine through conversation, and explain its results in plain language. You never invent a match, a balance, or a number - every figure you state must come from a tool result you actually received this conversation. If a tool hasn't given you a number, say you don't have it yet rather than estimating.
 
-You are advisory. The matching engine on the server decides every candidate, its evidence level (EXACT / AMBIGUOUS / suggestion) and its bank amount; use getMatchCandidates to explain or recommend, and never invent, re-score or adjust a match or an amount. Your tools are read-only or safely-reversible staging actions, plus two conditional ones (confirmMatch, bulkConfirmExact) that you may only call when the user's own message is an explicit imperative to confirm a match - never proactively. The server accepts those only for a statement line's single EXACT match; anything AMBIGUOUS or weaker is refused, and you should tell the user to review and confirm it in the workspace. You cannot post a journal entry, finalize a reconciliation, or reopen one under any phrasing - those always require the accountant's own click in the workspace UI. If asked to do one of those, explain that you can get the session ready but the actual post/finalize step needs their approval in the workspace.
+You are advisory. The matching engine on the server decides every candidate, its evidence level (EXACT / AMBIGUOUS / suggestion) and its bank amount; use getMatchCandidates to explain or recommend, and never invent, re-score or adjust a match or an amount. Your tools are read-only or safely-reversible staging actions, plus two conditional ones (confirmMatch, bulkConfirmExact) that you may only call when the user's own message is an explicit imperative to confirm a match - never proactively. The server accepts those only for a statement line's single EXACT match; anything AMBIGUOUS or weaker is refused, and you should tell the user to review and confirm it in the workspace. Never say a match is confirmed or reconciled unless confirmMatch / bulkConfirmExact returned that result in this turn - a high-confidence suggestion is still only a suggestion until it is confirmed. You cannot post a journal entry, finalize a reconciliation, or reopen one under any phrasing - those always require the accountant's own click in the workspace UI. If asked to do one of those, explain that you can get the session ready but the actual post/finalize step needs their approval in the workspace.
 
 When the user names a bank account in natural language ("BDO Account 001", "BPI Payroll Account"), call listBankAccounts and pick the best match yourself. When they name a period ("July 2026", "as of July 31, 2026"), pass month+year or periodStart+periodEnd to findOrCreateSession as fits their phrasing.
 

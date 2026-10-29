@@ -99,6 +99,24 @@ const sessionTag = new Map();
 const statementFor = (tag) => ["Date,Description,Reference,Check No,Debit,Credit",
   ...STATEMENT_ROWS.map(([d, desc, ...rest]) => [d, `${desc} ${tag}`, ...rest].join(","))].join("\n");
 
+// A session with its own small statement (rows: "date,desc,ref,check,debit,credit").
+async function bareSession(who, start, end, rows, tag) {
+  const res = await api(who, "post", "/api/bank-recon/sessions", {
+    bankAccountId: bank.BK, periodStart: start, periodEnd: end, statementBeginningBalance: 0, statementEndingBalance: 0,
+  });
+  if (res.status !== 200) throw new Error(`session ${res.status} ${res.body.message}`);
+  sessions.push(res.body.id);
+  const imp = await request(app).post(`/api/bank-recon/sessions/${res.body.id}/import`).set({ Authorization: `Bearer ${tok[who]}` })
+    .attach("file", Buffer.from(["Date,Description,Reference,Check No,Debit,Credit", ...rows.map((r) => {
+      const c = r.split(",");
+      c[1] = `${c[1]} ${tag}`;
+      return c.join(",");
+    })].join("\n")), `${tag}.csv`);
+  if (imp.status !== 200) throw new Error(`import ${imp.status} ${imp.body.message}`);
+  sessionTag.set(res.body.id, tag);
+  return res.body.id;
+}
+
 async function sessionWithStatement(who, companyKey) {
   const res = await api(who, "post", "/api/bank-recon/sessions", {
     bankAccountId: bank.BK, periodStart: "2099-03-01", periodEnd: "2099-03-31", statementBeginningBalance: 0, statementEndingBalance: 0,
@@ -145,8 +163,13 @@ const norm = (rows) => rows.map((r) => ({
   level: (typeof r.breakdown === "string" ? JSON.parse(r.breakdown) : r.breakdown).matchLevel,
 }));
 
+// R8.3: one Company A statement imported once; the workspace and the
+// assistant both work on that same session. snap.UI / snap.AI hold the
+// suggestions each channel's matching run wrote.
 let sUI;
 let sAI;
+const snap = { UI: new Map(), AI: new Map() };
+const DESCRIPTIONS = ["Check WHT", "By reference", "Deposit 250", "Tie", "Deposit 600", "Draft pay", "Other bank", "B check"];
 let sB;
 
 beforeAll(async () => {
@@ -181,11 +204,13 @@ beforeAll(async () => {
 
   // Two Company A sessions with the same statement on the same bank: one
   // matched through the workspace API, one through the assistant.
-  sUI = await sessionWithStatement("acctA", "ui");
-  sAI = await sessionWithStatement("acctA", "ai");
+  sUI = await sessionWithStatement("acctA", "m");
+  sAI = sUI;
   sB = await sessionWithStatement("acctB", "b");
   expect((await api("acctA", "post", `/api/bank-recon/sessions/${sUI}/run-matching`)).status).toBe(200);
+  for (const d of DESCRIPTIONS) snap.UI.set(d, norm(await pending(await lineOf(sUI, d))));
   expect((await ai("acctA", "runMatchingForSession", sAI)).status).toBe(200);
+  for (const d of DESCRIPTIONS) snap.AI.set(d, norm(await pending(await lineOf(sAI, d))));
   expect((await api("acctB", "post", `/api/bank-recon/sessions/${sB}/run-matching`)).status).toBe(200);
 });
 
@@ -226,9 +251,8 @@ afterAll(async () => {
 // ---------------------------------------------------------------------------
 describe("one engine: the assistant and the workspace get identical suggestions", () => {
   test("15. matching run through the assistant writes exactly the workspace's suggestions", async () => {
-    for (const d of ["Check WHT", "By reference", "Deposit 250", "Tie", "Deposit 600", "Draft pay", "Other bank", "B check"]) {
-      expect(norm(await pending(await lineOf(sAI, d)))).toEqual(norm(await pending(await lineOf(sUI, d))));
-    }
+    for (const d of DESCRIPTIONS) expect(snap.AI.get(d)).toEqual(snap.UI.get(d));
+    expect(snap.UI.get("Check WHT").length).toBeGreaterThan(0);
   });
 
   test("15. the assistant's candidate list is the workspace's candidate list", async () => {
@@ -238,7 +262,7 @@ describe("one engine: the assistant and the workspace get identical suggestions"
     expect(rest.status).toBe(200);
     expect(viaAi.status).toBe(200);
     expect(JSON.parse(JSON.stringify(viaAi.body.candidates))).toEqual(rest.body);
-    expect(viaAi.body.statementLine).toMatchObject({ id: line, description: "Tie ui" });
+    expect(viaAi.body.statementLine).toMatchObject({ id: line, description: "Tie m" });
   });
 
   test("no second implementation: controller and agent hold no matching, scoring or confirming code", () => {
@@ -256,33 +280,33 @@ describe("one engine: the assistant and the workspace get identical suggestions"
 
 // ---------------------------------------------------------------------------
 describe("matching rules (both channels)", () => {
-  test.each([["UI", () => sUI], ["AI", () => sAI]])("1/11. %s: check number + bank amount 980 (withholding CV) is EXACT CHECK_NO", async (_c, s) => {
-    const [m] = norm(await pending(await lineOf(s(), "Check WHT")));
+  test.each([["UI"], ["AI"]])("1/11. %s: check number + bank amount 980 (withholding CV) is EXACT CHECK_NO", async (c) => {
+    const [m] = snap[c].get("Check WHT");
     expect(m).toMatchObject({ type: "CV", docId: doc.cvWht, matchType: "EXACT", level: "CHECK_NO", amount: "980.00" });
   });
 
-  test.each([["UI", () => sUI], ["AI", () => sAI]])("2. %s: document number in the reference is EXACT REFERENCE", async (_c, s) => {
-    const [m] = norm(await pending(await lineOf(s(), "By reference")));
+  test.each([["UI"], ["AI"]])("2. %s: document number in the reference is EXACT REFERENCE", async (c) => {
+    const [m] = snap[c].get("By reference");
     expect(m).toMatchObject({ docId: doc.cvRef, matchType: "EXACT", level: "REFERENCE" });
   });
 
-  test.each([["UI", () => sUI], ["AI", () => sAI]])("3. %s: amount + date only is a suggestion", async (_c, s) => {
-    const [m] = norm(await pending(await lineOf(s(), "Deposit 250")));
+  test.each([["UI"], ["AI"]])("3. %s: amount + date only is a suggestion", async (c) => {
+    const [m] = snap[c].get("Deposit 250");
     expect(m).toMatchObject({ docId: doc.or250, matchType: "SUGGESTED", level: "AMOUNT_DATE" });
   });
 
-  test.each([["UI", () => sUI], ["AI", () => sAI]])("4. %s: one check number on two documents is AMBIGUOUS", async (_c, s) => {
-    const ms = norm(await pending(await lineOf(s(), "Tie")));
+  test.each([["UI"], ["AI"]])("4. %s: one check number on two documents is AMBIGUOUS", async (c) => {
+    const ms = snap[c].get("Tie");
     expect(ms.map((m) => m.matchType)).toEqual(["AMBIGUOUS", "AMBIGUOUS"]);
   });
 
-  test.each([["UI", () => sUI], ["AI", () => sAI]])("12. %s: OR bank movement amount 600 by reference", async (_c, s) => {
-    const [m] = norm(await pending(await lineOf(s(), "Deposit 600")));
+  test.each([["UI"], ["AI"]])("12. %s: OR bank movement amount 600 by reference", async (c) => {
+    const [m] = snap[c].get("Deposit 600");
     expect(m).toMatchObject({ type: "OR", docId: doc.or600, matchType: "EXACT", amount: "600.00" });
   });
 
-  test.each([["UI", () => sUI], ["AI", () => sAI]])("7/8/6. %s: Draft, other-bank and other-company documents are never suggested", async (_c, s) => {
-    for (const d of ["Draft pay", "Other bank", "B check"]) expect(await pending(await lineOf(s(), d))).toEqual([]);
+  test.each([["UI"], ["AI"]])("7/8/6. %s: Draft, other-bank and other-company documents are never suggested", async (c) => {
+    for (const d of ["Draft pay", "Other bank", "B check"]) expect(snap[c].get(d)).toEqual([]);
   });
 });
 
@@ -335,13 +359,14 @@ describe("confirmation: the assistant goes through the same guard, strictly", ()
   });
 
   test("18/9. the assistant cannot bypass already-confirmed protection", async () => {
+    const m = await tamperedSuggestion(sAI, await lineOf(sAI, "Other bank"), "CV", doc.cvWht, 980);
     const before = await reconSnapshot();
-    const [m] = await pending(await lineOf(sAI, "Check WHT"));
-    const res = await ai("acctA", "confirmMatch", m.id);
+    const res = await ai("acctA", "confirmMatch", m);
     expect(res.status).toBe(409);
     expect(res.body.code).toBe("BOOK_DOCUMENT_ALREADY_MATCHED");
     expect(await confirmedFor("CV", doc.cvWht)).toHaveLength(1);
     expect(await reconSnapshot()).toEqual(before);
+    await pool.query("DELETE FROM bank_recon_matches WHERE id = ?", [m]);
   });
 
   test("10. an already-matched statement line cannot take another match (both channels)", async () => {
@@ -360,7 +385,7 @@ describe("confirmation: the assistant goes through the same guard, strictly", ()
     ["19/6. another company's document", "B check", "CV", () => doc.cvB, 333, 404, undefined],
     ["5. wrong direction", "Deposit 250", "CV", () => doc.cvRef, 250, 400, "MATCH_DIRECTION_MISMATCH"],
   ])("%s: refused through the assistant and the workspace, nothing changes", async (_n, desc, type, id, amount, status, code) => {
-    for (const s of [sAI, sUI]) {
+    for (const s of [sUI]) {
       const line = await lineOf(s, desc);
       const m = await tamperedSuggestion(s, line, type, id(), amount);
       const before = await reconSnapshot();
@@ -393,10 +418,9 @@ describe("confirmation: the assistant goes through the same guard, strictly", ()
 
   test("14. concurrent workspace + assistant confirmations of one document: one succeeds", async () => {
     const or = await voucher("or", "acctA", "A", { no: `${P}OR-RACE`, gross: 777, date: "2099-03-20", lines: [ln("BANK", 777, 0), ln("AR", 0, 777)] });
-    const s = await sessionWithStatement("acctA", "r1");
-    const lineA = await lineOf(s, "Deposit 250");
-    const lineB = await lineOf(s, "Deposit 600");
-    await pool.query("UPDATE bank_recon_statement_lines SET credit = 777 WHERE id IN (?)", [[lineA, lineB]]);
+    const s = await bareSession("acctA", "2099-04-01", "2099-04-30", ["2099-04-02,Race A,,,,777", "2099-04-03,Race B,,,,777"], "r1");
+    const lineA = await lineOf(s, "Race A");
+    const lineB = await lineOf(s, "Race B");
     const m1 = await tamperedSuggestion(s, lineA, "OR", or, 777);
     const m2 = await tamperedSuggestion(s, lineB, "OR", or, 777);
     const results = await Promise.all([
@@ -408,17 +432,15 @@ describe("confirmation: the assistant goes through the same guard, strictly", ()
   });
 
   test("assistant bulk confirmation confirms only strict single EXACT matches", async () => {
-    const s = await sessionWithStatement("acctA", "b1");
+    const s = sAI;
     await ai("acctA", "runMatchingForSession", s);
+    const before = await q("SELECT id FROM bank_recon_matches WHERE session_id = ? AND status = 'CONFIRMED' ORDER BY id", [s]);
     const res = await ai("acctA", "bulkConfirmExact", s);
     expect(res.status).toBe(200);
-    // Check WHT / By reference / Deposit 600 are already reconciled in other
-    // sessions. CV-TIE-A was chosen by the accountant, so "Tie" now has one
-    // unique check-number match (CV-TIE-B) - the only strict EXACT left.
-    // Deposit 250 (amount/date only) must stay unconfirmed.
-    expect(res.body.confirmedCount).toBe(1);
-    const confirmed = await q("SELECT book_source_type AS type, book_source_id AS docId FROM bank_recon_matches WHERE session_id = ? AND status = 'CONFIRMED'", [s]);
-    expect(confirmed).toEqual([{ type: "CV", docId: doc.cvTieB }]);
+    // Every strict match here is already confirmed; what is left - Deposit
+    // 250 (amount/date only) and the unmatchable rows - must stay unconfirmed.
+    expect(res.body.confirmedCount).toBe(0);
+    expect(await q("SELECT id FROM bank_recon_matches WHERE session_id = ? AND status = 'CONFIRMED' ORDER BY id", [s])).toEqual(before);
     expect((await one("SELECT match_status FROM bank_recon_statement_lines WHERE id = ?", [await lineOf(s, "Deposit 250")])).match_status).not.toBe("MATCHED");
   });
 });
@@ -480,16 +502,15 @@ describe("assistant conversation (deterministic provider) end to end", () => {
   test("explains a statement line from the engine's own candidates", async () => {
     const conv = await api("acctA", "post", "/api/ai/bank-recon/conversations", {});
     convs.push(conv.body.id);
-    const line = await lineOf(sAI, "Tie");
+    const line = await lineOf(sAI, "Deposit 250");
     const res = await say("acctA", conv.body.id, `Explain the candidates for line ${line}`);
     expect(res.status).toBe(200);
-    expect(res.body.reply).toMatch(/AMBIGUOUS CV/);
-    expect(res.body.reply).toMatch(/the accountant must choose in the workspace/);
+    expect(res.body.reply).toMatch(/SUGGESTED OR/);
+    expect(res.body.reply).toMatch(/no check or document number confirms it/);
   });
 
   test("'confirm all exact' confirms nothing that is not strict, and says so", async () => {
-    const s = await sessionWithStatement("acctA", "c1");
-    await ai("acctA", "runMatchingForSession", s);
+    const s = sAI;
     const conv = await api("acctA", "post", "/api/ai/bank-recon/conversations", {});
     convs.push(conv.body.id);
     await pool.query("UPDATE ai_recon_conversations SET session_id = ? WHERE id = ?", [s, conv.body.id]);

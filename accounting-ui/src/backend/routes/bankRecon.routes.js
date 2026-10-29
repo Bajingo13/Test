@@ -39,6 +39,7 @@ router.get("/sessions/:id/import-batches", authenticateToken, authorizePermissio
 router.get("/sessions/:id/statement-lines", authenticateToken, authorizePermission("REPORTS.BANK_RECONCILIATION", "VIEW"), session, ctrl.listStatementLines);
 router.delete("/import-batches/:id", authenticateToken, authorizePermission("REPORTS.BANK_RECONCILIATION", "CREATE"), batch, ctrl.deleteImportBatch);
 router.post("/sessions/:id/run-matching", authenticateToken, authorizePermission("REPORTS.BANK_RECONCILIATION", "CREATE"), session, ctrl.runMatching);
+router.get("/sessions/:id/queue", authenticateToken, authorizePermission("REPORTS.BANK_RECONCILIATION", "VIEW"), session, ctrl.getQueue);
 router.get("/statement-lines/:id/candidates", authenticateToken, authorizePermission("REPORTS.BANK_RECONCILIATION", "VIEW"), line, ctrl.getMatchCandidates);
 router.get("/sessions/:id/book-items", authenticateToken, authorizePermission("REPORTS.BANK_RECONCILIATION", "VIEW"), session, ctrl.listBookItems);
 router.post("/matches/:id/confirm", authenticateToken, authorizePermission("REPORTS.BANK_RECONCILIATION", "CREATE"), match, ctrl.confirmMatch);

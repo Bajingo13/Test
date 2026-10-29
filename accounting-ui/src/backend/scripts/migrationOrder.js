@@ -202,6 +202,9 @@ const MIGRATION_ORDER = [
   // Must run after bank_reconciliation_migration.sql and
   // bank_recon_company_scope_migration.sql.
   "r82_bank_statement_import_migration.sql",
+  // R8.3: idx_stmt_owner_date for session statement-history queries
+  // (company + bank account + date range). Must run after the R8.2 migration.
+  "r83_bank_statement_history_index_migration.sql",
 ];
 
 module.exports = { MIGRATION_ORDER };
