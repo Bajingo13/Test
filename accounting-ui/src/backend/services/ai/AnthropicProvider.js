@@ -128,10 +128,18 @@ function buildTools(touched, user) {
     },
   });
 
+  const getMatchCandidates = betaZodTool({
+    name: "getMatchCandidates",
+    description:
+      "Get the matching engine's candidates for one statement line (by statement line ID): match type (EXACT / AMBIGUOUS / SUGGESTED), evidence level, confidence, bank amount, the book document, and the engine's own explanation. Use it to explain or recommend a candidate - never re-score it yourself.",
+    inputSchema: z.object({ statementLineId: z.number() }),
+    run: async (input) => JSON.stringify(await actions.getMatchCandidates(input.statementLineId, user)),
+  });
+
   const confirmMatch = betaZodTool({
     name: "confirmMatch",
     description:
-      "Confirm one specific PENDING match by its match ID. Only call this when the user explicitly told you to confirm a match (an imperative instruction), never on your own initiative.",
+      "Confirm one specific PENDING match by its match ID. Only call this when the user explicitly told you to confirm a match (an imperative instruction), never on your own initiative. The server only accepts a statement line's single EXACT match (check or document number + identical amount); AMBIGUOUS and other suggestions are refused and must be confirmed by the accountant in the workspace.",
     inputSchema: z.object({ matchId: z.number() }),
     run: async (input) => {
       const result = await actions.confirmMatch(input.matchId, user);
@@ -142,7 +150,7 @@ function buildTools(touched, user) {
   const bulkConfirmExact = betaZodTool({
     name: "bulkConfirmExact",
     description:
-      "Confirm every PENDING EXACT-type match in a session at once. Only call this when the user explicitly said something like 'confirm all exact matches' - never on your own initiative.",
+      "Confirm every PENDING EXACT-type match in a session at once. Only call this when the user explicitly said something like 'confirm all exact matches' - never on your own initiative. The server confirms only strict single EXACT matches and reports the rest as skipped for the accountant's review.",
     inputSchema: z.object({ sessionId: z.number() }),
     run: async (input) => {
       touched.sessionId = input.sessionId;
@@ -157,6 +165,7 @@ function buildTools(touched, user) {
     getOutstandingItems,
     listAdjustments,
     getLowConfidenceLines,
+    getMatchCandidates,
     runMatching,
     updateSessionTolerance,
     confirmMatch,
@@ -171,7 +180,7 @@ Today's date is ${todayIso()}.
 
 You help an accountant drive an already-built, fully deterministic reconciliation engine through conversation, and explain its results in plain language. You never invent a match, a balance, or a number - every figure you state must come from a tool result you actually received this conversation. If a tool hasn't given you a number, say you don't have it yet rather than estimating.
 
-Your tools are read-only or safely-reversible staging actions, plus two conditional ones (confirmMatch, bulkConfirmExact) that you may only call when the user's own message is an explicit imperative to confirm a match - never proactively. You cannot post a journal entry, finalize a reconciliation, or reopen one under any phrasing - those always require the accountant's own click in the workspace UI. If asked to do one of those, explain that you can get the session ready but the actual post/finalize step needs their approval in the workspace.
+You are advisory. The matching engine on the server decides every candidate, its evidence level (EXACT / AMBIGUOUS / suggestion) and its bank amount; use getMatchCandidates to explain or recommend, and never invent, re-score or adjust a match or an amount. Your tools are read-only or safely-reversible staging actions, plus two conditional ones (confirmMatch, bulkConfirmExact) that you may only call when the user's own message is an explicit imperative to confirm a match - never proactively. The server accepts those only for a statement line's single EXACT match; anything AMBIGUOUS or weaker is refused, and you should tell the user to review and confirm it in the workspace. You cannot post a journal entry, finalize a reconciliation, or reopen one under any phrasing - those always require the accountant's own click in the workspace UI. If asked to do one of those, explain that you can get the session ready but the actual post/finalize step needs their approval in the workspace.
 
 When the user names a bank account in natural language ("BDO Account 001", "BPI Payroll Account"), call listBankAccounts and pick the best match yourself. When they name a period ("July 2026", "as of July 31, 2026"), pass month+year or periodStart+periodEnd to findOrCreateSession as fits their phrasing.
 

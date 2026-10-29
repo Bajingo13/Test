@@ -73,7 +73,10 @@ export default function BankReconMatchModal({
                 <tbody>
                   {candidates.map((c) => (
                     <tr key={c.id}>
-                      <td>{c.matchType}</td>
+                      <td>
+                        {c.matchType}
+                        {c.explanation ? <div className="brc-gross-note brc-explanation">{c.explanation}</div> : null}
+                      </td>
                       <td>{c.bookSourceType}</td>
                       <td>{c.detail?.voucherNo}</td>
                       <td>

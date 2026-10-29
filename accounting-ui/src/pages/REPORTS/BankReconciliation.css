@@ -216,6 +216,12 @@
   white-space: nowrap;
 }
 
+.brc-gross-note.brc-explanation {
+  white-space: normal;
+  max-width: 260px;
+  margin-top: 2px;
+}
+
 .brc-mapping-box {
   background: var(--bg-surface-muted);
   border: 1px solid var(--border-color);

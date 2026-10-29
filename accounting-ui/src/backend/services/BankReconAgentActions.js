@@ -1,20 +1,17 @@
 // Actions both AI providers (Anthropic and the deterministic mock) call
 // into. This is the entire "AI can touch the system" surface - see the
-// Tier 1 / Tier 2 split below. Nothing here decides a match or computes a
-// score; that logic lives in BankMatchingService/ConfidenceScoringService
-// and is identical to what the manual UI uses (BankReconController).
+// Tier 1 / Tier 2 split below. Nothing here decides, scores or confirms a
+// match: running the matcher, listing candidates and every confirmation go
+// through bankReconMatchService, the same service the workspace REST
+// controller uses (R8.1), on the AI_ASSISTANT channel.
 // Requirement: the matching engine itself never depends on AI - these
 // functions are plain, provider-agnostic backend code that a deterministic
 // parser can call exactly as well as an LLM tool-call can.
 const pool = require("../db");
 const { logAudit } = require("../lib/audit");
 const { HttpError } = require("../lib/httpError");
-const {
-  BANK_RECON_SESSION_SELECT,
-  loadBookTransactions,
-  computeSessionSummary,
-} = require("./BankMatchingService");
-const { scoreCandidate, classifyAdjustmentSuggestion } = require("./ConfidenceScoringService");
+const { BANK_RECON_SESSION_SELECT, computeSessionSummary } = require("./BankMatchingService");
+const MatchService = require("./bankReconMatchService");
 const { resolveDateRange } = require("./PromptParser");
 const { AsyncLocalStorage } = require("async_hooks");
 const PermissionService = require("./permissionService");
@@ -198,136 +195,18 @@ async function getLowConfidenceLines(sessionId, thresholdPercent) {
   return rows;
 }
 
+// Same engine, same suggestions, same audit event as the workspace's
+// "Run Matching" (it only ever writes PENDING suggestions).
 async function runMatchingForSession(sessionId, user) {
-  const conn = await pool.getConnection();
+  const { processed, suggested } = await MatchService.runMatching({ sessionId, user, channel: MatchService.CHANNEL.AI_ASSISTANT });
+  return { processed, suggested };
+}
 
-  try {
-    const [sessionRows] = await conn.execute(`${BANK_RECON_SESSION_SELECT} WHERE s.id = ?`, [
-      sessionId,
-    ]);
-    if (sessionRows.length === 0) throw new HttpError(404, "Reconciliation session not found");
-
-    const session = sessionRows[0];
-    if (session.status === "FINALIZED") {
-      throw new HttpError(400, "Cannot run matching on a finalized session");
-    }
-
-    const [stmtLines] = await conn.execute(
-      `SELECT id, DATE_FORMAT(txn_date, '%Y-%m-%d') AS txnDate, description,
-              reference_no AS referenceNo, check_no AS checkNo, debit, credit
-       FROM bank_recon_statement_lines
-       WHERE session_id = ? AND match_status IN ('UNMATCHED', 'SUGGESTED')`,
-      [sessionId]
-    );
-
-    if (stmtLines.length === 0) {
-      return { processed: 0, suggested: 0 };
-    }
-
-    const bookTxns = await loadBookTransactions(
-      conn,
-      session.bankAccountId,
-      session.bankCoaAccountId,
-      session.periodStart,
-      session.periodEnd,
-      session.dateToleranceDays,
-      session.companyId
-    );
-
-    const [confirmedRows] = await conn.execute(
-      `SELECT book_source_type AS sourceType, book_source_id AS sourceId, book_line_id AS lineId
-       FROM bank_recon_matches WHERE session_id = ? AND status = 'CONFIRMED'`,
-      [sessionId]
-    );
-    const confirmedKeys = new Set(
-      confirmedRows.map((r) => `${r.sourceType}:${r.sourceId}:${r.lineId ?? ""}`)
-    );
-
-    await conn.beginTransaction();
-
-    let suggestedCount = 0;
-
-    for (const line of stmtLines) {
-      await conn.execute(
-        "DELETE FROM bank_recon_matches WHERE statement_line_id = ? AND status = 'PENDING'",
-        [line.id]
-      );
-
-      const wantDirection = Number(line.debit) > 0 ? "OUT" : "IN";
-
-      const candidates = bookTxns
-        .filter((t) => t.direction === wantDirection)
-        .filter((t) => !confirmedKeys.has(`${t.sourceType}:${t.sourceId}:${t.lineId ?? ""}`))
-        .map((t) => scoreCandidate(line, t, session))
-        .filter((c) => c && c.totalScore >= 30)
-        .sort((a, b) => b.totalScore - a.totalScore)
-        .slice(0, 3);
-
-      for (const c of candidates) {
-        await conn.execute(
-          `INSERT INTO bank_recon_matches(
-            session_id, statement_line_id, book_source_type, book_source_id, book_line_id,
-            match_type, confidence_score, score_breakdown, status, amount, created_by
-          ) VALUES (?,?,?,?,?,?,?,?,'PENDING',?,?)`,
-          [
-            sessionId,
-            line.id,
-            c.sourceType,
-            c.sourceId,
-            c.lineId,
-            c.matchType,
-            c.totalScore,
-            JSON.stringify(c.breakdown),
-            c.amount,
-            user?.id || null,
-          ]
-        );
-      }
-
-      const newStatus = candidates.length > 0 ? "SUGGESTED" : "UNMATCHED";
-      await conn.execute("UPDATE bank_recon_statement_lines SET match_status = ? WHERE id = ?", [
-        newStatus,
-        line.id,
-      ]);
-      if (newStatus === "SUGGESTED") suggestedCount++;
-
-      if (newStatus === "UNMATCHED") {
-        const [existingAdj] = await conn.execute(
-          "SELECT id FROM bank_recon_adjustments WHERE statement_line_id = ?",
-          [line.id]
-        );
-        if (existingAdj.length === 0) {
-          const { adjustmentType, amount } = classifyAdjustmentSuggestion(line);
-          await conn.execute(
-            `INSERT INTO bank_recon_adjustments(
-              session_id, statement_line_id, adjustment_type, amount, description, status
-            ) VALUES (?,?,?,?,?, 'PENDING')`,
-            [sessionId, line.id, adjustmentType, amount, line.description || ""]
-          );
-        }
-      }
-    }
-
-    await logAudit(conn, {
-      module: "BANK_RECON",
-      entityType: "SESSION",
-      entityId: Number(sessionId),
-      action: "MATCH",
-      description: `[AI Agent] Matching engine run on session #${sessionId}: ${stmtLines.length} line(s) processed, ${suggestedCount} with suggestions`,
-      afterData: { processed: stmtLines.length, suggested: suggestedCount },
-      user,
-      companyId: agentCompany(),
-    });
-
-    await conn.commit();
-
-    return { processed: stmtLines.length, suggested: suggestedCount };
-  } catch (err) {
-    await conn.rollback();
-    throw err;
-  } finally {
-    conn.release();
-  }
+// Advisory: exactly the candidate list the workspace shows for a statement
+// line - the engine's evidence level, AMBIGUOUS reason and plain
+// explanation - for the assistant to relay, never to re-score.
+async function getMatchCandidates(statementLineId, user) {
+  return MatchService.listCandidates({ statementLineId, user });
 }
 
 // Deliberately narrower than the REST PATCH /sessions/:id endpoint - only
@@ -395,110 +274,22 @@ async function updateSessionTolerance(sessionId, input, user) {
 // ---- Tier 2: only on an explicit imperative in the user's own message ----
 // (the caller - MockProvider/AnthropicProvider - enforces that gating
 // before calling these; these functions themselves don't re-check phrasing)
+//
+// Both go through bankReconMatchService with strict rules: only a statement
+// line's single EXACT suggestion (check or document number + identical
+// amount) can be confirmed from the assistant. AMBIGUOUS and amount/date
+// suggestions are refused (409 MATCH_NOT_STRICT_EXACT) and left for the
+// accountant's own choice in the workspace. The matched amount, company,
+// bank account, Posted status and already-reconciled checks are the same
+// locked server-side checks as every other confirmation; there is no
+// assistant parameter for any of them.
 
 async function confirmMatch(matchId, user) {
-  const conn = await pool.getConnection();
-  try {
-    const [rows] = await conn.execute(
-      `SELECT m.*, s.status AS sessionStatus
-       FROM bank_recon_matches m JOIN bank_recon_sessions s ON s.id = m.session_id
-       WHERE m.id = ?`,
-      [matchId]
-    );
-    if (rows.length === 0) throw new HttpError(404, "Match not found");
-    const match = rows[0];
-    if (match.sessionStatus === "FINALIZED") throw new HttpError(400, "Cannot modify a finalized session");
-    if (match.status !== "PENDING") throw new HttpError(400, `Match is already ${match.status}`);
-
-    const userId = user?.id || null;
-    await conn.beginTransaction();
-
-    await conn.execute(
-      "UPDATE bank_recon_matches SET status = 'CONFIRMED', matched_by = ?, matched_at = NOW() WHERE id = ?",
-      [userId, matchId]
-    );
-    await conn.execute(
-      `UPDATE bank_recon_matches SET status = 'REJECTED', unmatched_by = ?, unmatched_at = NOW()
-       WHERE statement_line_id = ? AND status = 'PENDING' AND id != ?`,
-      [userId, match.statement_line_id, matchId]
-    );
-    await conn.execute("UPDATE bank_recon_statement_lines SET match_status = 'MATCHED' WHERE id = ?", [
-      match.statement_line_id,
-    ]);
-
-    await logAudit(conn, {
-      module: "BANK_RECON",
-      entityType: "MATCH",
-      entityId: Number(matchId),
-      action: "MATCH",
-      description: `[AI Agent] Confirmed ${match.match_type} match: statement line #${match.statement_line_id} <-> ${match.book_source_type} #${match.book_source_id}`,
-      beforeData: { status: match.status },
-      afterData: { status: "CONFIRMED" },
-      user,
-      companyId: agentCompany(),
-    });
-
-    await conn.commit();
-    return { matchId, status: "CONFIRMED" };
-  } catch (err) {
-    await conn.rollback();
-    throw err;
-  } finally {
-    conn.release();
-  }
+  return MatchService.confirmMatch({ matchId, user, channel: MatchService.CHANNEL.AI_ASSISTANT, strict: true });
 }
 
 async function bulkConfirmExact(sessionId, user) {
-  const conn = await pool.getConnection();
-  try {
-    const [sessionRows] = await conn.execute("SELECT status FROM bank_recon_sessions WHERE id = ?", [
-      sessionId,
-    ]);
-    if (sessionRows.length === 0) throw new HttpError(404, "Reconciliation session not found");
-    if (sessionRows[0].status === "FINALIZED") throw new HttpError(400, "Cannot modify a finalized session");
-
-    const [exactMatches] = await conn.execute(
-      "SELECT id, statement_line_id AS statementLineId FROM bank_recon_matches WHERE session_id = ? AND status = 'PENDING' AND match_type = 'EXACT'",
-      [sessionId]
-    );
-
-    const userId = user?.id || null;
-    await conn.beginTransaction();
-
-    for (const m of exactMatches) {
-      await conn.execute(
-        "UPDATE bank_recon_matches SET status = 'CONFIRMED', matched_by = ?, matched_at = NOW() WHERE id = ?",
-        [userId, m.id]
-      );
-      await conn.execute(
-        `UPDATE bank_recon_matches SET status = 'REJECTED', unmatched_by = ?, unmatched_at = NOW()
-         WHERE statement_line_id = ? AND status = 'PENDING' AND id != ?`,
-        [userId, m.statementLineId, m.id]
-      );
-      await conn.execute("UPDATE bank_recon_statement_lines SET match_status = 'MATCHED' WHERE id = ?", [
-        m.statementLineId,
-      ]);
-    }
-
-    await logAudit(conn, {
-      module: "BANK_RECON",
-      entityType: "SESSION",
-      entityId: Number(sessionId),
-      action: "MATCH",
-      description: `[AI Agent] Bulk-confirmed ${exactMatches.length} exact match(es) in session #${sessionId}`,
-      afterData: { confirmedCount: exactMatches.length },
-      user,
-      companyId: agentCompany(),
-    });
-
-    await conn.commit();
-    return { confirmedCount: exactMatches.length };
-  } catch (err) {
-    await conn.rollback();
-    throw err;
-  } finally {
-    conn.release();
-  }
+  return MatchService.bulkConfirmExact({ sessionId, user, channel: MatchService.CHANNEL.AI_ASSISTANT });
 }
 
 // Guard wrappers. `kind` names how the first argument maps to a session;
@@ -526,6 +317,7 @@ module.exports = {
   getOutstandingItems: guarded(getOutstandingItems, { kind: "session" }),
   listAdjustments: guarded(listAdjustments, { kind: "session" }),
   getLowConfidenceLines: guarded(getLowConfidenceLines, { kind: "session" }),
+  getMatchCandidates: guarded(getMatchCandidates, { kind: "line", passUser: true }),
   runMatchingForSession: guarded(runMatchingForSession, { kind: "session", permission: "CREATE", passUser: true }),
   updateSessionTolerance: guarded(updateSessionTolerance, { kind: "session", permission: "CREATE", passUser: true }),
   confirmMatch: guarded(confirmMatch, { kind: "match", permission: "CREATE", passUser: true }),

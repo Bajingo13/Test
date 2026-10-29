@@ -261,12 +261,32 @@ async function handleRerunTolerance(params, user) {
 async function handleConfirmAllExact(params, user) {
   if (!params.sessionId) return needSessionReply();
 
-  const { confirmedCount } = await actions.bulkConfirmExact(params.sessionId, user);
+  const { confirmedCount, skippedCount } = await actions.bulkConfirmExact(params.sessionId, user);
 
   return {
-    replyText: `Confirmed ${confirmedCount} exact match(es) in session #${params.sessionId}.`,
+    replyText: `Confirmed ${confirmedCount} exact match(es) in session #${params.sessionId}.${
+      skippedCount ? ` ${skippedCount} other suggestion(s) need your review in the workspace (ambiguous, or not backed by a check / document number).` : ""
+    }`,
     sessionId: params.sessionId,
   };
+}
+
+// Advisory: relays the matching engine's own candidates and explanations
+// for one statement line - never re-scores, never confirms.
+async function handleExplainLine(params, user) {
+  const { statementLine, candidates } = await actions.getMatchCandidates(params.statementLineId, user);
+  const amount = Number(statementLine.debit) > 0 ? statementLine.debit : statementLine.credit;
+  const head = `Statement line #${statementLine.id} (${statementLine.txnDate}, ${statementLine.description || "no description"}, ₱ ${formatMoney(amount)}):`;
+  if (candidates.length === 0) {
+    return {
+      replyText: `${head}\nNo pending candidates. Run matching again, or find a match manually in the workspace.`,
+      sessionId: statementLine.sessionId,
+    };
+  }
+  const lines = candidates.map(
+    (c) => `- ${c.matchType} ${c.bookSourceType} ${c.detail?.voucherNo || "#" + c.bookSourceId}, bank amount ₱ ${formatMoney(c.amount)}, ${c.confidenceScore}% - ${c.explanation}`
+  );
+  return { replyText: `${head}\n${lines.join("\n")}`, sessionId: statementLine.sessionId };
 }
 
 function handleUnknown() {
@@ -279,6 +299,7 @@ function handleUnknown() {
       '- "Generate adjusting journal entries"',
       '- "Explain why reconciliation is not balanced"',
       '- "Match transactions within 3 days and allow a ₱1.00 variance"',
+      '- "Explain the candidates for line 123"',
       '- "Confirm all exact matches"',
     ].join("\n"),
     sessionId: null,
@@ -317,6 +338,9 @@ async function processTurn({ messages, sessionId, user }) {
       break;
     case INTENTS.CONFIRM_ALL_EXACT:
       result = await handleConfirmAllExact(params, user);
+      break;
+    case INTENTS.EXPLAIN_LINE:
+      result = await handleExplainLine(params, user);
       break;
     default:
       result = handleUnknown();

@@ -208,3 +208,21 @@ describe("parsePrompt", () => {
     expect(intent).toBe(INTENTS.UNKNOWN);
   });
 });
+
+describe("EXPLAIN_LINE (R8.1)", () => {
+  test.each([
+    ["Explain the candidates for line 42", 42],
+    ["why is line #7 not matched?", 7],
+    ["show matches for line 1234", 1234],
+  ])("%s -> EXPLAIN_LINE %i", (text, id) => {
+    const { intent, params } = parsePrompt(text, { sessionId: 5 });
+    expect(intent).toBe(INTENTS.EXPLAIN_LINE);
+    expect(params.statementLineId).toBe(id);
+  });
+
+  test("existing intents are unaffected", () => {
+    expect(parsePrompt("Confirm all exact matches", {}).intent).toBe(INTENTS.CONFIRM_ALL_EXACT);
+    expect(parsePrompt("Explain why reconciliation is not balanced", {}).intent).toBe(INTENTS.EXPLAIN_UNBALANCED);
+    expect(parsePrompt("Explain why reconciliation is not balanced", {}).params.statementLineId).toBeNull();
+  });
+});

@@ -186,6 +186,7 @@ const INTENTS = {
   EXPLAIN_UNBALANCED: "EXPLAIN_UNBALANCED",
   RERUN_TOLERANCE: "RERUN_TOLERANCE",
   CONFIRM_ALL_EXACT: "CONFIRM_ALL_EXACT",
+  EXPLAIN_LINE: "EXPLAIN_LINE",
   UNKNOWN: "UNKNOWN",
 };
 
@@ -215,12 +216,17 @@ function parsePrompt(text, context = {}) {
     confidenceThreshold,
     amountThreshold,
     sessionId: context.sessionId || null,
+    statementLineId: null,
   };
+  const lineRef = raw.match(/\bline\s*#?\s*(\d+)\b/i);
 
   let intent = INTENTS.UNKNOWN;
 
   if (/confirm\s+all\s+exact/i.test(raw)) {
     intent = INTENTS.CONFIRM_ALL_EXACT;
+  } else if (lineRef && /explain|why|candidate|match/i.test(raw)) {
+    intent = INTENTS.EXPLAIN_LINE;
+    params.statementLineId = Number(lineRef[1]);
   } else if (/outstanding\s+check|unmatched\s+check/i.test(raw)) {
     intent = INTENTS.OUTSTANDING_CHECKS;
   } else if (/deposit(s)?\s+in\s+transit/i.test(raw)) {
