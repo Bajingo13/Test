@@ -171,16 +171,16 @@ beforeAll(async () => {
   bankSessionId = sessionResult.insertId;
 
   const [batchResult] = await pool.execute(
-    `INSERT INTO bank_recon_import_batches (session_id, file_name, file_type, row_count, status, imported_by)
-     VALUES (?, 'test5-fixture.csv', 'csv', 2, 'COMPLETED', ?)`,
-    [bankSessionId, adminAId]
+    `INSERT INTO bank_recon_import_batches (session_id, company_id, bank_account_id, file_name, file_type, row_count, status, imported_by)
+     VALUES (?, ?, ?, 'test5-fixture.csv', 'csv', 2, 'COMPLETED', ?)`,
+    [bankSessionId, companyAId, bankCodeId, adminAId]
   );
   bankBatchId = batchResult.insertId;
 
   const [julyLineResult] = await pool.execute(
-    `INSERT INTO bank_recon_statement_lines (batch_id, session_id, txn_date, description, debit, credit, match_status)
-     VALUES (?, ?, '2026-07-25', 'Bank charge (July, fixture)', 50, 0, 'UNMATCHED')`,
-    [bankBatchId, bankSessionId]
+    `INSERT INTO bank_recon_statement_lines (batch_id, session_id, company_id, bank_account_id, txn_date, description, debit, credit, match_status)
+     VALUES (?, ?, ?, ?, '2026-07-25', 'Bank charge (July, fixture)', 50, 0, 'UNMATCHED')`,
+    [bankBatchId, bankSessionId, companyAId, bankCodeId]
   );
   julyStatementLineId = julyLineResult.insertId;
   const [julyAdjResult] = await pool.execute(
@@ -191,9 +191,9 @@ beforeAll(async () => {
   julyAdjustmentId = julyAdjResult.insertId;
 
   const [augLineResult] = await pool.execute(
-    `INSERT INTO bank_recon_statement_lines (batch_id, session_id, txn_date, description, debit, credit, match_status)
-     VALUES (?, ?, '2026-08-25', 'Bank charge (August, fixture)', 60, 0, 'UNMATCHED')`,
-    [bankBatchId, bankSessionId]
+    `INSERT INTO bank_recon_statement_lines (batch_id, session_id, company_id, bank_account_id, txn_date, description, debit, credit, match_status)
+     VALUES (?, ?, ?, ?, '2026-08-25', 'Bank charge (August, fixture)', 60, 0, 'UNMATCHED')`,
+    [bankBatchId, bankSessionId, companyAId, bankCodeId]
   );
   augStatementLineId = augLineResult.insertId;
   const [augAdjResult] = await pool.execute(

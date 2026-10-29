@@ -5,16 +5,21 @@ const { parse: parseCsv } = require("csv-parse/sync");
 const { HttpError } = require("../lib/httpError");
 
 // Bank statement uploads: kept in memory (never written to disk) and capped
-// at 10MB; only CSV/XLS/XLSX are accepted for the bank reconciliation import.
+// at 10MB. Only .csv and .xlsx are read (bankStatementParser); a legacy
+// .xls gets its own explanation.
 const bankStatementUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     const ext = path.extname(file.originalname || "").toLowerCase();
-    if ([".csv", ".xls", ".xlsx"].includes(ext)) {
+    if ([".csv", ".xlsx"].includes(ext)) {
       cb(null, true);
     } else {
-      cb(new Error("Only .csv, .xls, or .xlsx files are supported"));
+      const err = new Error(ext === ".xls"
+        ? "Legacy Excel 97-2003 (.xls) statements are not supported yet. Save the statement as .xlsx or .csv."
+        : "Only .csv and .xlsx bank statements are supported.");
+      err.code = "UNSUPPORTED_STATEMENT_FILE";
+      cb(err);
     }
   },
 });
@@ -25,7 +30,10 @@ function handleUpload(uploadMiddleware) {
   return (req, res, next) => {
     uploadMiddleware(req, res, (err) => {
       if (err) {
-        return res.status(400).json({ message: err.message || "File upload failed" });
+        return res.status(400).json({
+          message: err.message || "File upload failed",
+          ...(err.code === "UNSUPPORTED_STATEMENT_FILE" ? { code: err.code } : {}),
+        });
       }
       next();
     });
@@ -279,48 +287,6 @@ function resolveBankDateFormat(dateValues, requested = "AUTO") {
   return "YYYY-MM-DD";
 }
 
-// ---- Duplicate statement import (R7-7) ----
-// Uses only what the existing tables already hold: an earlier batch in the
-// same session with the same row count whose stored lines, in import order,
-// are identical to the lines about to be imported. Catches the same file
-// (or an identical re-export) imported twice into one session. Not caught -
-// left for the statement-import phase, which needs a stored file hash /
-// per-line fingerprint: overlapping statements (same rows, different
-// extent) and the same file imported into two different sessions.
-function lineFingerprint(l) {
-  const money = (v) => (v === null || v === undefined || v === "" ? "" : Number(v).toFixed(2));
-  return [
-    l.txnDate,
-    String(l.description || "").trim(),
-    String(l.referenceNo || "").trim(),
-    String(l.checkNo || "").trim(),
-    money(l.debit),
-    money(l.credit),
-    money(l.runningBalance),
-  ].join("\u0001");
-}
-
-async function findDuplicateBatch(conn, sessionId, parsedLines) {
-  const [batches] = await conn.execute(
-    "SELECT id, file_name AS fileName FROM bank_recon_import_batches WHERE session_id = ? AND row_count = ? ORDER BY id",
-    [sessionId, parsedLines.length]
-  );
-  if (!batches.length) return null;
-  const incoming = parsedLines.map(lineFingerprint);
-  for (const batch of batches) {
-    const [rows] = await conn.execute(
-      `SELECT DATE_FORMAT(txn_date, '%Y-%m-%d') AS txnDate, description, reference_no AS referenceNo,
-              check_no AS checkNo, debit, credit, running_balance AS runningBalance
-       FROM bank_recon_statement_lines WHERE batch_id = ? ORDER BY id`,
-      [batch.id]
-    );
-    if (rows.length === incoming.length && rows.every((r, i) => lineFingerprint(r) === incoming[i])) {
-      return batch;
-    }
-  }
-  return null;
-}
-
 // options.dateFormat (bank statements) switches the date column to the
 // strict parser above; the result then carries dateBlank / dateInvalid.
 function buildStatementLine(rowValues, mapping, options = {}) {
@@ -424,5 +390,4 @@ module.exports = {
   BANK_DATE_FORMATS,
   parseBankStatementDate,
   resolveBankDateFormat,
-  findDuplicateBatch,
 };

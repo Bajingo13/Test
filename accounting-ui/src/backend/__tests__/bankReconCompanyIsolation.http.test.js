@@ -399,8 +399,8 @@ describe("existing Bank Reconciliation behaviour (own company)", () => {
   });
 
   test("a legacy NULL session cannot post a JV until a Super Admin assigns its company", async () => {
-    const [b] = await pool.execute("INSERT INTO bank_recon_import_batches (session_id, file_name, file_type, row_count) VALUES (?, 'legacy.csv', 'CSV', 1)", [ids.sNull]);
-    const [l] = await pool.execute("INSERT INTO bank_recon_statement_lines (batch_id, session_id, txn_date, description, debit, credit) VALUES (?, ?, '2026-07-31', 'Legacy charge', 7, 0)", [b.insertId, ids.sNull]);
+    const [b] = await pool.execute("INSERT INTO bank_recon_import_batches (session_id, bank_account_id, file_name, file_type, row_count) VALUES (?, ?, 'legacy.csv', 'CSV', 1)", [ids.sNull, ids.bank]);
+    const [l] = await pool.execute("INSERT INTO bank_recon_statement_lines (batch_id, session_id, bank_account_id, txn_date, description, debit, credit) VALUES (?, ?, ?, '2026-07-31', 'Legacy charge', 7, 0)", [b.insertId, ids.sNull, ids.bank]);
     const [a] = await pool.execute("INSERT INTO bank_recon_adjustments (session_id, statement_line_id, adjustment_type, suggested_account_id, amount, status) VALUES (?, ?, 'BANK_CHARGE', ?, 7, 'APPROVED')", [ids.sNull, l.insertId, ids.chargeGL]);
     const blocked = await api("sa", "post", `/api/bank-recon/adjustments/${a.insertId}/post`);
     expect(blocked.status).toBe(409);
@@ -517,8 +517,8 @@ describe("migration backfill (several companies)", () => {
       "INSERT INTO bank_recon_sessions (bank_account_id, period_start, period_end) VALUES (?, '2026-06-01', '2026-06-30')", [ids.bank]
     ))[0].insertId;
     const line = async (sid) => {
-      const [b] = await pool.execute("INSERT INTO bank_recon_import_batches (session_id, file_name, file_type, row_count) VALUES (?, 'b.csv', 'CSV', 1)", [sid]);
-      return (await pool.execute("INSERT INTO bank_recon_statement_lines (batch_id, session_id, txn_date, debit, credit) VALUES (?, ?, '2026-06-05', 1, 0)", [b.insertId, sid]))[0].insertId;
+      const [b] = await pool.execute("INSERT INTO bank_recon_import_batches (session_id, bank_account_id, file_name, file_type, row_count) VALUES (?, ?, 'b.csv', 'CSV', 1)", [sid, ids.bank]);
+      return (await pool.execute("INSERT INTO bank_recon_statement_lines (batch_id, session_id, bank_account_id, txn_date, debit, credit) VALUES (?, ?, ?, '2026-06-05', 1, 0)", [b.insertId, sid, ids.bank]))[0].insertId;
     };
     const matchTo = async (sid, type, docId) => {
       const l = await line(sid);

@@ -623,10 +623,17 @@ describe("R7-5 statement dates", () => {
     expect(res.body.code).toBe("DATE_FORMAT_MIXED");
   });
 
-  test("blank-date rows are skipped and reported; dated rows import", async () => {
-    const res = await importRows("acctA", s, [",blank row,,,10,", "2098-09-02,dated,,,11,"]);
+  // R8.2: an undated row that carries an amount is a blocking error (it
+  // used to be skipped); undated rows with no amount are still ignored.
+  test("an undated row with an amount blocks the import; an undated row without one is ignored", async () => {
+    const before = await count();
+    const blocked = await importRows("acctA", s, [",blank row,,,10,", "2098-09-02,dated,,,11,"]);
+    expect(blocked.status).toBe(400);
+    expect(blocked.body.code).toBe("INVALID_STATEMENT_DATES");
+    expect(await count()).toBe(before);
+    const res = await importRows("acctA", s, [",heading only,,,,", "2098-09-02,dated,,,11,"]);
     expect(res.status).toBe(200);
-    expect(res.body.skippedRows).toEqual([{ row: 2, reason: "Missing date" }]);
+    expect(res.body.skippedRows).toEqual([{ row: 2, reason: "Ignored - not a transaction row (no date and no amount)." }]);
     expect(await lineDate("dated")).toBe("2098-09-02");
   });
 
@@ -659,7 +666,7 @@ describe("R7-5 statement dates", () => {
     const res = await request(app).post(`/api/bank-recon/sessions/${s}/import`).set({ Authorization: `Bearer ${tok.acctA}` })
       .attach("file", Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, 0, 0]), "legacy.xls");
     expect(res.status).toBe(400);
-    expect(res.body.code).toBe("STATEMENT_FILE_UNREADABLE");
+    expect(res.body.code).toBe("UNSUPPORTED_STATEMENT_FILE");
     expect(res.body.message).not.toMatch(/zip|central directory/i);
   });
 
@@ -773,14 +780,19 @@ describe("R7-7 duplicate statement import", () => {
 
   test("two identical imports at the same moment: only one lands", async () => {
     const s = await newSession("acctA", { start: "2098-10-01", end: "2098-10-31" });
-    const results = await Promise.all([importRows("acctA", s, rows), importRows("acctA", s, rows)]);
+    const raceRows = ["2098-10-05,Race one,,,10,", "2098-10-06,Race two,,,,20"];
+    const results = await Promise.all([importRows("acctA", s, raceRows), importRows("acctA", s, raceRows)]);
     expect(results.map((r) => r.status).sort()).toEqual([200, 409]);
     expect((await one("SELECT COUNT(*) n FROM bank_recon_statement_lines WHERE session_id = ?", [s])).n).toBe(2);
   });
 
-  test("known limit: the same statement in a different session is not detected (needs the import phase)", async () => {
+  // R8.2: duplicate protection is per company + bank account, across sessions.
+  test("the same statement in a different session of the same bank account is refused", async () => {
     const s = await newSession("acctA", { start: "2098-10-01", end: "2098-10-31" });
-    expect((await importRows("acctA", s, rows)).status).toBe(200);
+    const res = await importRows("acctA", s, rows);
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("DUPLICATE_STATEMENT_IMPORT");
+    expect((await one("SELECT COUNT(*) n FROM bank_recon_statement_lines WHERE session_id = ?", [s])).n).toBe(0);
   });
 });
 

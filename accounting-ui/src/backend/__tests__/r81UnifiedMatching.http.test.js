@@ -85,17 +85,19 @@ async function voucher(kind, who, company, o) {
   return res.body.id;
 }
 
-const STATEMENT = [
-  "Date,Description,Reference,Check No,Debit,Credit",
-  "2099-03-10,Check WHT,,R81-CHK-1,980,",
-  `2099-03-10,By reference,${P}CV-REF,,450,`,
-  "2099-03-11,Deposit 250,,,,250",
-  "2099-03-12,Tie,,R81-TIE,300,",
-  `2099-03-13,Deposit 600,${P}OR-600,,,600`,
-  "2099-03-14,Draft pay,,R81-DRAFT,70,",
-  "2099-03-15,Other bank,,R81-BK2,90,",
-  "2099-03-16,B check,,R81-CHK-B,333,",
-].join("\n");
+const STATEMENT_ROWS = [
+  ["2099-03-10", "Check WHT", "", "R81-CHK-1", "980", ""],
+  ["2099-03-10", "By reference", `${P}CV-REF`, "", "450", ""],
+  ["2099-03-11", "Deposit 250", "", "", "", "250"],
+  ["2099-03-12", "Tie", "", "R81-TIE", "300", ""],
+  ["2099-03-13", "Deposit 600", `${P}OR-600`, "", "", "600"],
+  ["2099-03-14", "Draft pay", "", "R81-DRAFT", "70", ""],
+  ["2099-03-15", "Other bank", "", "R81-BK2", "90", ""],
+  ["2099-03-16", "B check", "", "R81-CHK-B", "333", ""],
+];
+const sessionTag = new Map();
+const statementFor = (tag) => ["Date,Description,Reference,Check No,Debit,Credit",
+  ...STATEMENT_ROWS.map(([d, desc, ...rest]) => [d, `${desc} ${tag}`, ...rest].join(","))].join("\n");
 
 async function sessionWithStatement(who, companyKey) {
   const res = await api(who, "post", "/api/bank-recon/sessions", {
@@ -104,13 +106,14 @@ async function sessionWithStatement(who, companyKey) {
   if (res.status !== 200) throw new Error(`session ${res.status} ${res.body.message}`);
   sessions.push(res.body.id);
   const imp = await request(app).post(`/api/bank-recon/sessions/${res.body.id}/import`).set({ Authorization: `Bearer ${tok[who]}` })
-    .attach("file", Buffer.from(STATEMENT), `${companyKey}.csv`);
+    .attach("file", Buffer.from(statementFor(companyKey)), `${companyKey}.csv`);
   if (imp.status !== 200) throw new Error(`import ${imp.status} ${imp.body.message}`);
+  sessionTag.set(res.body.id, companyKey);
   return res.body.id;
 }
 
 const lineOf = (sessionId, description) =>
-  one("SELECT id FROM bank_recon_statement_lines WHERE session_id = ? AND description = ?", [sessionId, description]).then((r) => r.id);
+  one("SELECT id FROM bank_recon_statement_lines WHERE session_id = ? AND description = ?", [sessionId, `${description} ${sessionTag.get(sessionId)}`]).then((r) => r.id);
 const pending = (lineId) =>
   q(`SELECT id, book_source_type AS type, book_source_id AS docId, match_type AS matchType, confidence_score AS score,
             score_breakdown AS breakdown, amount
@@ -235,7 +238,7 @@ describe("one engine: the assistant and the workspace get identical suggestions"
     expect(rest.status).toBe(200);
     expect(viaAi.status).toBe(200);
     expect(JSON.parse(JSON.stringify(viaAi.body.candidates))).toEqual(rest.body);
-    expect(viaAi.body.statementLine).toMatchObject({ id: line, description: "Tie" });
+    expect(viaAi.body.statementLine).toMatchObject({ id: line, description: "Tie ui" });
   });
 
   test("no second implementation: controller and agent hold no matching, scoring or confirming code", () => {
@@ -390,7 +393,7 @@ describe("confirmation: the assistant goes through the same guard, strictly", ()
 
   test("14. concurrent workspace + assistant confirmations of one document: one succeeds", async () => {
     const or = await voucher("or", "acctA", "A", { no: `${P}OR-RACE`, gross: 777, date: "2099-03-20", lines: [ln("BANK", 777, 0), ln("AR", 0, 777)] });
-    const s = await sessionWithStatement("acctA", "race");
+    const s = await sessionWithStatement("acctA", "r1");
     const lineA = await lineOf(s, "Deposit 250");
     const lineB = await lineOf(s, "Deposit 600");
     await pool.query("UPDATE bank_recon_statement_lines SET credit = 777 WHERE id IN (?)", [[lineA, lineB]]);
@@ -405,7 +408,7 @@ describe("confirmation: the assistant goes through the same guard, strictly", ()
   });
 
   test("assistant bulk confirmation confirms only strict single EXACT matches", async () => {
-    const s = await sessionWithStatement("acctA", "bulk");
+    const s = await sessionWithStatement("acctA", "b1");
     await ai("acctA", "runMatchingForSession", s);
     const res = await ai("acctA", "bulkConfirmExact", s);
     expect(res.status).toBe(200);
@@ -485,7 +488,7 @@ describe("assistant conversation (deterministic provider) end to end", () => {
   });
 
   test("'confirm all exact' confirms nothing that is not strict, and says so", async () => {
-    const s = await sessionWithStatement("acctA", "chat");
+    const s = await sessionWithStatement("acctA", "c1");
     await ai("acctA", "runMatchingForSession", s);
     const conv = await api("acctA", "post", "/api/ai/bank-recon/conversations", {});
     convs.push(conv.body.id);

@@ -2,22 +2,31 @@ import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import BankReconMatchModal from "../../components/BankReconMatchModal.jsx";
+import BankStatementPreview from "../../components/BankStatementPreview.jsx";
 import BankReconAuditLogPanel from "../../components/BankReconAuditLogPanel.jsx";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
 import "./BankReconciliation.css";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
 
+// R8.2 canonical statement fields (bankStatementParser.CANONICAL_FIELDS).
 const MAPPING_FIELDS = [
-  { key: "date", label: "Date", required: true },
+  { key: "txnDate", label: "Transaction Date", required: true },
+  { key: "valueDate", label: "Value Date" },
   { key: "description", label: "Description" },
   { key: "referenceNo", label: "Reference No." },
   { key: "checkNo", label: "Check No." },
-  { key: "debit", label: "Debit" },
-  { key: "credit", label: "Credit" },
+  { key: "bankReference", label: "Bank Reference" },
+  { key: "debit", label: "Debit (money out)" },
+  { key: "credit", label: "Credit (money in)" },
   { key: "amount", label: "Amount (single signed column)" },
-  { key: "runningBalance", label: "Running Balance" },
+  { key: "balance", label: "Balance" },
 ];
+
+const nonEmptyMapping = (m) => {
+  const entries = Object.entries(m || {}).filter(([, v]) => v);
+  return entries.length ? Object.fromEntries(entries) : null;
+};
 
 export default function BankReconciliationWorkspace() {
   const { id } = useParams();
@@ -32,6 +41,9 @@ export default function BankReconciliationWorkspace() {
   const [importBatches, setImportBatches] = useState([]);
   const [statementLines, setStatementLines] = useState([]);
   const [pendingFile, setPendingFile] = useState(null);
+  // Re-mounts the file input after an import so the same file can be
+  // chosen again (an unchanged <input type=file> fires no change event).
+  const [fileInputKey, setFileInputKey] = useState(0);
   // R7-5: how slash dates in the statement are read. Auto-detect only
   // decides when the file itself proves the order (a day above 12);
   // otherwise the server asks for an explicit choice.
@@ -39,6 +51,9 @@ export default function BankReconciliationWorkspace() {
   const [uploading, setUploading] = useState(false);
   const [mappingHeaders, setMappingHeaders] = useState(null);
   const [mappingSelections, setMappingSelections] = useState({});
+  // R8.2: Upload -> (map) -> Preview -> Import. Nothing is imported until
+  // the accountant has seen the server's preview and clicks Import.
+  const [statementPreview, setStatementPreview] = useState(null);
 
   const [runningMatching, setRunningMatching] = useState(false);
   const [bulkConfirming, setBulkConfirming] = useState(false);
@@ -801,6 +816,50 @@ export default function BankReconciliationWorkspace() {
     setPendingFile(file);
     setMappingHeaders(null);
     setMappingSelections({});
+    setStatementPreview(null);
+  }
+
+  async function runPreview(file, columnMapping) {
+    setUploading(true);
+    setStatementPreview(null);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("dateFormat", dateFormat);
+      if (columnMapping) formData.append("columnMapping", JSON.stringify(columnMapping));
+
+      const res = await fetch(`${API_BASE}/api/bank-recon/sessions/${id}/import/preview`, {
+        method: "POST",
+        headers: authHeaders(),
+        credentials: "include",
+        body: formData,
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        if (handleAuthError(res.status)) return;
+        alert(data.message || "Failed to read the statement.");
+        return;
+      }
+
+      setStatementPreview(data);
+      if (data.missingRequired?.length) {
+        // Start the mapping from what the server already detected; the
+        // accountant only has to fill in what is missing.
+        setMappingSelections((prev) => ({
+          ...Object.fromEntries((data.fields || []).filter((f) => f.column).map((f) => [f.key, f.column])),
+          ...nonEmptyMapping(prev),
+        }));
+        setMappingHeaders(data.detectedColumns);
+      } else {
+        setMappingHeaders(null);
+      }
+    } catch (err) {
+      console.error("PREVIEW BANK STATEMENT ERROR:", err);
+      alert("Unable to connect to server.");
+    } finally {
+      setUploading(false);
+    }
   }
 
   async function performImport(file, columnMapping) {
@@ -847,6 +906,8 @@ export default function BankReconciliationWorkspace() {
       setPendingFile(null);
       setMappingHeaders(null);
       setMappingSelections({});
+      setStatementPreview(null);
+      setFileInputKey((k) => k + 1);
       await loadImportBatches();
       await loadStatementLines();
     } catch (err) {
@@ -859,18 +920,13 @@ export default function BankReconciliationWorkspace() {
 
   function handleUploadClick() {
     if (!pendingFile) return alert("Choose a CSV or Excel file first.");
-    performImport(pendingFile, null);
+    runPreview(pendingFile, nonEmptyMapping(mappingSelections));
   }
 
+  // The server decides what is still missing (the preview lists it); the
+  // mapping box only collects the accountant's choices.
   function handleMappingSubmit() {
-    if (!mappingSelections.date) {
-      return alert("Date column is required.");
-    }
-    if (!mappingSelections.debit && !mappingSelections.credit && !mappingSelections.amount) {
-      return alert("Map at least a Debit/Credit pair or a single Amount column.");
-    }
-
-    performImport(pendingFile, mappingSelections);
+    runPreview(pendingFile, nonEmptyMapping(mappingSelections));
   }
 
   async function deleteBatch(batchId) {
@@ -1155,8 +1211,9 @@ export default function BankReconciliationWorkspace() {
 
           <div className="brc-import-row">
             <input
+              key={fileInputKey}
               type="file"
-              accept=".csv,.xls,.xlsx"
+              accept=".csv,.xlsx"
               onChange={handleFileChange}
               disabled={uploading}
             />
@@ -1164,7 +1221,10 @@ export default function BankReconciliationWorkspace() {
               Date format
               <select
                 value={dateFormat}
-                onChange={(e) => setDateFormat(e.target.value)}
+                onChange={(e) => {
+                  setDateFormat(e.target.value);
+                  setStatementPreview(null);
+                }}
                 disabled={uploading}
               >
                 <option value="AUTO">Auto-detect (only when unambiguous)</option>
@@ -1178,7 +1238,7 @@ export default function BankReconciliationWorkspace() {
               className="brc-btn primary"
               disabled={uploading || !pendingFile}
             >
-              {uploading ? "Uploading..." : "Upload"}
+              {uploading ? "Reading..." : "Preview"}
             </button>
           </div>
 
@@ -1224,10 +1284,19 @@ export default function BankReconciliationWorkspace() {
                   className="brc-btn primary"
                   disabled={uploading}
                 >
-                  {uploading ? "Importing..." : "Import with This Mapping"}
+                  {uploading ? "Reading..." : "Preview with This Mapping"}
                 </button>
               </div>
             </div>
+          )}
+
+          {statementPreview && !statementPreview.missingRequired?.length && (
+            <BankStatementPreview
+              preview={statementPreview}
+              busy={uploading}
+              onImport={() => performImport(pendingFile, nonEmptyMapping(mappingSelections))}
+              onCancel={() => setStatementPreview(null)}
+            />
           )}
 
           <h3>Import Batches</h3>

@@ -196,6 +196,12 @@ const MIGRATION_ORDER = [
   // IGNORE) so the OR/CV and Bank Reconciliation bank-account selectors
   // load. Must run after user_access_control_migration.sql.
   "r7_accountant_bank_codes_view_migration.sql",
+  // R8.2: statement-row ownership (company / bank account from each row's
+  // own session), import provenance, fingerprint v2 and the
+  // UNIQUE(company_id, bank_account_id, row_fingerprint) duplicate guard.
+  // Must run after bank_reconciliation_migration.sql and
+  // bank_recon_company_scope_migration.sql.
+  "r82_bank_statement_import_migration.sql",
 ];
 
 module.exports = { MIGRATION_ORDER };

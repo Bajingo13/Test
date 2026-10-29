@@ -1,5 +1,4 @@
 const pool = require("../db");
-const path = require("path");
 const { logAudit } = require("../lib/audit");
 const { HttpError } = require("../lib/httpError");
 const {
@@ -7,14 +6,7 @@ const {
   loadBookTransactions,
   computeSessionSummary,
 } = require("../services/BankMatchingService");
-const {
-  resolveColumnMapping,
-  buildStatementLine,
-  extractRowsFromXlsx,
-  parseCsvRows,
-  resolveBankDateFormat,
-  findDuplicateBatch,
-} = require("../services/StatementImportService");
+const StatementParser = require("../services/bankStatementParser");
 const MatchService = require("../services/bankReconMatchService");
 const { beginReadCommitted, lockSession } = MatchService;
 const { postAdjustmentAsJV } = require("../services/JournalSuggestionService");
@@ -277,6 +269,30 @@ exports.updateSession = async (req, res) => {
       ]
     );
 
+    // R8.2: a legacy session's imported statement rows take the company the
+    // session is assigned. A row whose fingerprint that company + bank
+    // account already holds (the same bank line imported elsewhere before
+    // R8.2) is kept but loses its fingerprint - the same rule the R8.2
+    // migration applied to historical duplicates.
+    if (assignedCompanyId) {
+      await conn.execute(
+        "UPDATE bank_recon_import_batches SET company_id = ? WHERE session_id = ? AND company_id IS NULL",
+        [assignedCompanyId, id]
+      );
+      await conn.execute(
+        `UPDATE bank_recon_statement_lines l
+         JOIN (SELECT DISTINCT row_fingerprint AS fp FROM bank_recon_statement_lines
+               WHERE company_id = ? AND bank_account_id = ? AND row_fingerprint IS NOT NULL) taken ON taken.fp = l.row_fingerprint
+         SET l.row_fingerprint = NULL
+         WHERE l.session_id = ? AND l.company_id IS NULL`,
+        [assignedCompanyId, existing.bank_account_id, id]
+      );
+      await conn.execute(
+        "UPDATE bank_recon_statement_lines SET company_id = ? WHERE session_id = ? AND company_id IS NULL",
+        [assignedCompanyId, id]
+      );
+    }
+
     await logAudit(conn, {
       module: "BANK_RECON",
       entityType: "SESSION",
@@ -301,226 +317,270 @@ exports.updateSession = async (req, res) => {
   }
 };
 
-exports.importStatement = async (req, res) => {
-    const conn = await pool.getConnection();
-
-    try {
-      const { id } = req.params;
-
-      if (!req.file) {
-        return res.status(400).json({ message: "No file uploaded" });
-      }
-
-      const [sessionRows] = await conn.execute(
-        "SELECT id, status FROM bank_recon_sessions WHERE id = ?",
-        [id]
-      );
-
-      if (sessionRows.length === 0) {
-        return res.status(404).json({ message: "Reconciliation session not found" });
-      }
-      if (sessionRows[0].status === "FINALIZED") {
-        return res.status(400).json({ message: "Cannot import into a finalized session" });
-      }
-
-      const ext = path.extname(req.file.originalname || "").toLowerCase();
-      const fileType = ext === ".csv" ? "CSV" : "XLSX";
-
-      let headers = [];
-      let dataRows = [];
-
-      // An unreadable file is the user's input problem (400), not a server
-      // fault - and never echoes a parser's internal message.
-      try {
-        if (fileType === "CSV") {
-          const records = parseCsvRows(req.file.buffer);
-          headers = records[0] || [];
-          dataRows = records.slice(1);
-        } else {
-          const extracted = await extractRowsFromXlsx(req.file.buffer);
-          headers = extracted.headers;
-          dataRows = extracted.dataRows;
-        }
-      } catch {
-        return res.status(400).json({
-          message: ext === ".xls"
-            ? "Legacy Excel 97-2003 (.xls) statements cannot be read yet. Save the statement as .xlsx or .csv and import it again."
-            : `The file could not be read as a ${fileType === "CSV" ? "CSV file" : ".xlsx workbook"}.`,
-          code: "STATEMENT_FILE_UNREADABLE",
-        });
-      }
-
-      if (headers.length === 0) {
-        return res.status(400).json({ message: "The file appears to be empty" });
-      }
-
-      let explicitMapping = null;
-      if (req.body.columnMapping) {
-        try {
-          explicitMapping = JSON.parse(req.body.columnMapping);
-        } catch {
-          explicitMapping = null;
-        }
-      }
-
-      const mapping = resolveColumnMapping(headers, explicitMapping);
-
-      if (mapping.date === undefined) {
-        return res.status(400).json({
-          message: "Could not detect a date column. Please provide columnMapping.",
-          headers,
-        });
-      }
-      if (mapping.debit === undefined && mapping.credit === undefined && mapping.amount === undefined) {
-        return res.status(400).json({
-          message: "Could not detect debit/credit or amount columns. Please provide columnMapping.",
-          headers,
-        });
-      }
-
-      // R7-5: one date format for the whole file - the user's choice, or
-      // proven from the file itself; ambiguous / mixed files are refused.
-      let dateFormat;
-      try {
-        dateFormat = resolveBankDateFormat(
-          dataRows.map((row) => row[mapping.date]),
-          req.body.dateFormat || "AUTO"
-        );
-      } catch (err) {
-        if (sendHttpError(res, err)) return;
-        throw err;
-      }
-
-      const parsedLines = [];
-      const skippedRows = [];
-      const invalidDateRows = [];
-
-      dataRows.forEach((row, idx) => {
-        const line = buildStatementLine(row, mapping, { dateFormat });
-        const hasAmount = Boolean(line.debit || line.credit);
-
-        // A row carrying money with a date that is not a real date is
-        // never guessed or skipped silently - the import is refused.
-        if (line.dateInvalid && hasAmount) {
-          invalidDateRows.push({ row: idx + 2, value: String(line.rawDate ?? "").slice(0, 40) });
-          return;
-        }
-        if (!line.txnDate) {
-          skippedRows.push({ row: idx + 2, reason: line.dateBlank ? "Missing date" : "Not a transaction row (no date)" });
-          return;
-        }
-        if (!hasAmount) {
-          skippedRows.push({ row: idx + 2, reason: "No debit/credit/amount value" });
-          return;
-        }
-
-        const { dateBlank, dateInvalid, rawDate, ...stored } = line;
-        parsedLines.push(stored);
-      });
-
-      if (invalidDateRows.length) {
-        return res.status(400).json({
-          message: `${invalidDateRows.length} row(s) have a date that is not a valid ${dateFormat} date (e.g. row ${invalidDateRows[0].row}: "${invalidDateRows[0].value}"). Nothing was imported.`,
-          code: "INVALID_STATEMENT_DATES",
-          dateFormat,
-          invalidRows: invalidDateRows.slice(0, 20),
-        });
-      }
-
-      if (parsedLines.length === 0) {
-        return res.status(400).json({
-          message: "No valid statement lines could be parsed from the file",
-          skippedRows,
-        });
-      }
-
-      // R7-7: the session row lock serializes two imports into one session,
-      // so an identical statement cannot slip in twice.
-      await beginReadCommitted(conn);
-      await lockSession(conn, id);
-      const duplicate = await findDuplicateBatch(conn, id, parsedLines);
-      if (duplicate) {
-        await conn.rollback();
-        return res.status(409).json({
-          message: `This statement was already imported into this session (import batch #${duplicate.id}${duplicate.fileName ? `, ${duplicate.fileName}` : ""}). Delete that batch first if you need to import it again.`,
-          code: "DUPLICATE_STATEMENT_IMPORT",
-          batchId: duplicate.id,
-        });
-      }
-
-      const [batchResult] = await conn.execute(
-        `INSERT INTO bank_recon_import_batches(session_id, file_name, file_type, row_count, column_mapping, status, imported_by)
-         VALUES(?,?,?,?,?,?,?)`,
-        [
-          id,
-          req.file.originalname || "",
-          fileType,
-          parsedLines.length,
-          JSON.stringify({ headers, mapping, dateFormat }),
-          "IMPORTED",
-          req.user?.id || null,
-        ]
-      );
-
-      const batchId = batchResult.insertId;
-
-      for (const line of parsedLines) {
-        await conn.execute(
-          `INSERT INTO bank_recon_statement_lines(
-            batch_id, session_id, txn_date, description, reference_no, check_no, debit, credit, running_balance, match_status
-          ) VALUES(?,?,?,?,?,?,?,?,?, 'UNMATCHED')`,
-          [
-            batchId,
-            id,
-            line.txnDate,
-            line.description || "",
-            line.referenceNo || "",
-            line.checkNo || "",
-            line.debit || 0,
-            line.credit || 0,
-            line.runningBalance,
-          ]
-        );
-      }
-
-      await logAudit(conn, {
-        module: "BANK_RECON",
-        entityType: "IMPORT_BATCH",
-        entityId: batchId,
-        action: "IMPORT",
-        description: `Imported ${parsedLines.length} statement line(s) from ${req.file.originalname} into session #${id}`,
-        afterData: {
-          fileName: req.file.originalname,
-          fileType,
-          rowCount: parsedLines.length,
-          skippedCount: skippedRows.length,
-        },
-        user: req.user,
-        companyId: auditCompany(req),
-      });
-
-      await conn.commit();
-
-      res.json({
-        success: true,
-        batchId,
-        rowCount: parsedLines.length,
-        skippedRows,
-        message: `Imported ${parsedLines.length} statement line(s)${
-          skippedRows.length ? `, ${skippedRows.length} row(s) skipped` : ""
-        }`,
-      });
-    } catch (err) {
-      await conn.rollback();
-      if (sendHttpError(res, err)) return;
-      console.error("IMPORT BANK STATEMENT ERROR:", err);
-      // Never the raw database / parser message.
-      res.status(500).json({ message: "Failed to import bank statement" });
-    } finally {
-      conn.release();
+// ---- Statement import (R8.2): Upload -> Detect -> Map -> Preview -> Import ----
+// Preview and import run the same deterministic parser
+// (bankStatementParser); import re-parses the uploaded file itself and never
+// trusts a preview the client sends back. Company and bank account always
+// come from the reconciliation session - a request may only repeat them,
+// never choose different ones.
+async function statementContext(req) {
+  const [rows] = await pool.execute(
+    `SELECT id, company_id AS companyId, bank_account_id AS bankAccountId, status,
+            DATE_FORMAT(period_start, '%Y-%m-%d') AS periodStart, DATE_FORMAT(period_end, '%Y-%m-%d') AS periodEnd
+     FROM bank_recon_sessions WHERE id = ?`,
+    [req.params.id]
+  );
+  const session = rows[0];
+  if (!session) throw new HttpError(404, "Reconciliation session not found");
+  if (session.status === "FINALIZED") throw new HttpError(400, "Cannot import into a finalized session");
+  if (!session.companyId) {
+    throw new HttpError(400, "This reconciliation session has no company. A Super Admin must assign its company before a statement can be imported.", "STATEMENT_COMPANY_REQUIRED");
+  }
+  for (const [field, expected] of [["companyId", session.companyId], ["bankAccountId", session.bankAccountId]]) {
+    const raw = req.body?.[field];
+    if (raw === undefined || raw === null || raw === "") continue;
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n <= 0) throw new HttpError(400, `Invalid ${field}.`, "STATEMENT_CONTEXT_INVALID");
+    if (n !== Number(expected)) {
+      throw new HttpError(400, "A statement can only be imported into this session's own company and bank account.", "STATEMENT_CONTEXT_MISMATCH");
     }
   }
-;
+  return session;
+}
+
+function statementOptions(req) {
+  let columnMapping = null;
+  if (req.body?.columnMapping) {
+    try {
+      columnMapping = JSON.parse(req.body.columnMapping);
+    } catch {
+      throw new HttpError(400, "The column mapping is not valid.", "STATEMENT_MAPPING_INVALID");
+    }
+  }
+  return { columnMapping, dateFormat: req.body?.dateFormat || "AUTO" };
+}
+
+async function parseUpload(req, session) {
+  if (!req.file) throw new HttpError(400, "No file uploaded");
+  return StatementParser.parseStatement({
+    buffer: req.file.buffer,
+    originalName: req.file.originalname || "",
+    ctx: session,
+    ...statementOptions(req),
+  });
+}
+
+function classifyRows(parsed, existing) {
+  return parsed.rows.map((r) => {
+    if (!r.valid) return { ...r, status: "INVALID" };
+    const prior = existing.get(r.fingerprint);
+    return prior ? { ...r, status: "DUPLICATE", duplicateOf: prior } : { ...r, status: "NEW" };
+  });
+}
+
+function blockingResponse(res, parsed) {
+  if (parsed.missingRequired.length) {
+    res.status(400).json({
+      message: `Map the required column(s): ${parsed.missingRequired.join(", ")}.`,
+      code: "STATEMENT_MAPPING_REQUIRED",
+      headers: parsed.headers,
+      missingRequired: parsed.missingRequired,
+    });
+    return true;
+  }
+  if (parsed.blocking.length) {
+    const dateOnly = parsed.blocking.every((e) => e.field === "txnDate");
+    res.status(400).json({
+      message: `${parsed.blocking.length} problem(s) must be fixed before this statement can be imported (first: row ${parsed.blocking[0].row}: ${parsed.blocking[0].message}). Nothing was imported.`,
+      code: dateOnly ? "INVALID_STATEMENT_DATES" : "STATEMENT_HAS_BLOCKING_ERRORS",
+      dateFormat: parsed.dateFormat,
+      blocking: parsed.blocking.slice(0, 50),
+      invalidRows: parsed.blocking.slice(0, 20).map((e) => ({ row: e.row, field: e.field, message: e.message })),
+    });
+    return true;
+  }
+  return false;
+}
+
+const sampleRow = (r) => ({
+  row: r.sourceRow,
+  status: r.status,
+  txnDate: r.txnDate || null,
+  valueDate: r.valueDate ?? null,
+  description: r.description,
+  referenceNo: r.referenceNo,
+  checkNo: r.checkNo,
+  checkNoNormalized: r.checkNoNormalized,
+  bankReference: r.bankReference,
+  direction: r.direction || null,
+  amount: r.amount || null,
+  debit: r.debit || null,
+  credit: r.credit || null,
+  balance: r.balance ?? null,
+  errors: r.errors.map((e) => e.message),
+  warnings: r.warnings.map((w) => w.message),
+});
+
+// Writes nothing.
+exports.previewStatement = async (req, res) => {
+  try {
+    const session = await statementContext(req);
+    const parsed = await parseUpload(req, session);
+    const existing = parsed.rows.length ? await StatementParser.existingFingerprints(pool, session) : new Map();
+    const rows = classifyRows(parsed, existing);
+    const count = (st) => rows.filter((r) => r.status === st).length;
+    res.json({
+      file: parsed.file,
+      session: { id: session.id, companyId: session.companyId, bankAccountId: session.bankAccountId, periodStart: session.periodStart, periodEnd: session.periodEnd },
+      dateFormat: parsed.dateFormat,
+      detectedColumns: parsed.headers,
+      fields: parsed.fields,
+      missingRequired: parsed.missingRequired,
+      summary: {
+        rowsDetected: rows.length,
+        valid: rows.length - count("INVALID"),
+        invalid: count("INVALID"),
+        duplicates: count("DUPLICATE"),
+        toImport: count("NEW"),
+        blockingErrors: parsed.blocking.length,
+        warnings: parsed.warnings.length,
+      },
+      blockingErrors: parsed.blocking.slice(0, 100),
+      warnings: parsed.warnings.slice(0, 100),
+      sample: rows.slice(0, 25).map(sampleRow),
+      canImport: parsed.missingRequired.length === 0 && parsed.blocking.length === 0 && count("NEW") > 0,
+      parserVersion: StatementParser.PARSER_VERSION,
+    });
+  } catch (err) {
+    if (sendHttpError(res, err)) return;
+    console.error("PREVIEW BANK STATEMENT ERROR:", err);
+    res.status(500).json({ message: "Failed to preview bank statement" });
+  }
+};
+
+exports.importStatement = async (req, res) => {
+  const conn = await pool.getConnection();
+  try {
+    const session = await statementContext(req);
+    const parsed = await parseUpload(req, session);
+    if (blockingResponse(res, parsed)) return;
+
+    // Session lock + bank-account lock: two imports for the same bank account
+    // (in any session) are serialized, so the duplicate check below cannot race.
+    await beginReadCommitted(conn);
+    await lockSession(conn, session.id);
+    await conn.execute("SELECT id FROM bank_codes WHERE id = ? FOR UPDATE", [session.bankAccountId]);
+
+    const existing = await StatementParser.existingFingerprints(conn, session);
+    const rows = classifyRows(parsed, existing);
+    const fresh = rows.filter((r) => r.status === "NEW");
+    const duplicates = rows.filter((r) => r.status === "DUPLICATE");
+
+    if (fresh.length === 0) {
+      await conn.rollback();
+      const first = duplicates[0]?.duplicateOf;
+      return res.status(409).json({
+        message: `Every transaction in this statement was already imported for this bank account${first ? ` (reconciliation session #${first.sessionId}, import batch #${first.batchId})` : ""}. Nothing was imported.`,
+        code: "DUPLICATE_STATEMENT_IMPORT",
+        batchId: first?.batchId ?? null,
+        duplicates: duplicates.length,
+      });
+    }
+
+    const ignored = parsed.warnings.filter((w) => w.row !== null && /^Ignored/.test(w.message));
+    const [batchResult] = await conn.execute(
+      `INSERT INTO bank_recon_import_batches(
+        session_id, company_id, bank_account_id, file_name, file_type, file_sha256,
+        row_count, duplicate_count, ignored_count, parser_version, column_mapping, status, imported_by
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [
+        session.id,
+        session.companyId,
+        session.bankAccountId,
+        parsed.file.name,
+        parsed.file.type,
+        parsed.file.sha256,
+        fresh.length,
+        duplicates.length,
+        ignored.length,
+        StatementParser.PARSER_VERSION,
+        JSON.stringify({ headers: parsed.headers, mapping: parsed.mapping, dateFormat: parsed.dateFormat }),
+        "IMPORTED",
+        req.user?.id || null,
+      ]
+    );
+    const batchId = batchResult.insertId;
+
+    // UNIQUE(company_id, bank_account_id, row_fingerprint) is the final
+    // duplicate guard: a row that slipped past the check above (concurrent
+    // import) fails the whole transaction instead of being stored twice.
+    for (const r of fresh) {
+      await conn.execute(
+        `INSERT INTO bank_recon_statement_lines(
+          batch_id, session_id, company_id, bank_account_id, source_row,
+          txn_date, value_date, description, reference_no, reference_no_normalized, bank_reference,
+          check_no, check_no_normalized, debit, credit, running_balance, row_fingerprint, match_status
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'UNMATCHED')`,
+        [
+          batchId, session.id, session.companyId, session.bankAccountId, r.sourceRow,
+          r.txnDate, r.valueDate ?? null, r.description, r.referenceNo, r.referenceNoNormalized, r.bankReference || null,
+          r.checkNo, r.checkNoNormalized, r.debit, r.credit, r.balance, r.fingerprint,
+        ]
+      );
+    }
+
+    await logAudit(conn, {
+      module: "BANK_RECON",
+      entityType: "IMPORT_BATCH",
+      entityId: batchId,
+      action: "IMPORT",
+      description: `Imported ${fresh.length} statement line(s) from ${parsed.file.name} into session #${session.id}`,
+      afterData: {
+        fileName: parsed.file.name,
+        fileType: parsed.file.type,
+        fileSha256: parsed.file.sha256,
+        dateFormat: parsed.dateFormat,
+        rowCount: fresh.length,
+        duplicatesSkipped: duplicates.length,
+        ignoredRows: ignored.length,
+        warnings: parsed.warnings.length,
+        parserVersion: StatementParser.PARSER_VERSION,
+      },
+      user: req.user,
+      companyId: session.companyId,
+    });
+
+    await conn.commit();
+
+    res.json({
+      success: true,
+      batchId,
+      rowCount: fresh.length,
+      duplicatesSkipped: duplicates.length,
+      skippedRows: ignored.map((w) => ({ row: w.row, reason: w.message })),
+      message: `Imported ${fresh.length} statement line(s)${duplicates.length ? `, ${duplicates.length} already-imported transaction(s) skipped` : ""}${ignored.length ? `, ${ignored.length} non-transaction row(s) ignored` : ""}`,
+    });
+  } catch (err) {
+    await conn.rollback();
+    const e = asImportConflict(err);
+    if (sendHttpError(res, e)) return;
+    console.error("IMPORT BANK STATEMENT ERROR:", err);
+    // Never the raw database / parser message.
+    res.status(500).json({ message: "Failed to import bank statement" });
+  } finally {
+    conn.release();
+  }
+};
+
+function asImportConflict(err) {
+  if (err && err.code === "ER_DUP_ENTRY" && /uq_stmt_fingerprint/.test(err.sqlMessage || err.message || "")) {
+    return new HttpError(409, "Some of these bank transactions were already imported for this bank account. Nothing was imported - preview the statement again.", "DUPLICATE_STATEMENT_IMPORT");
+  }
+  if (err && (err.code === "ER_LOCK_DEADLOCK" || err.code === "ER_LOCK_WAIT_TIMEOUT")) {
+    return new HttpError(409, "Another statement import for this bank account was in progress. Try again.", "RECON_CONCURRENT_CHANGE");
+  }
+  return err;
+}
 
 exports.listImportBatches = async (req, res) => {
   try {
