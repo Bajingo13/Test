@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
+import usePermissions from "../../hooks/usePermissions";
 import "./FileSetupPages.css";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
@@ -21,10 +22,19 @@ export default function BankCodes() {
   const [mode, setMode] = useState("add");
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  // R7-1: Accountants hold VIEW only (they need the list for the OR/CV and
+  // Bank Reconciliation bank-account selectors). Sync / add / edit are
+  // CONFIGURE actions, so a VIEW-only user just gets the read-only list -
+  // no silent sync attempt the backend would refuse with 403.
+  const { can, loading: permsLoading } = usePermissions();
+  const canConfigure = can("FILESETUP.BANK_CODES", "CONFIGURE");
 
   useEffect(() => {
-    syncThenLoad();
-  }, []);
+    if (permsLoading) return;
+    if (canConfigure) syncThenLoad();
+    else loadBankCodes();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [permsLoading, canConfigure]);
 
   async function loadBankCodes() {
     try {
@@ -180,6 +190,7 @@ export default function BankCodes() {
             "BANK / CASH" is added here automatically &mdash; used for Bank Reconciliation.
           </p>
         </div>
+        {canConfigure ? (
         <div style={{ display: "flex", gap: "10px" }}>
           <button className="fs-btn" onClick={() => syncFromCoa(false)} disabled={syncing}>
             {syncing ? "Syncing..." : "Sync from Chart of Accounts"}
@@ -188,6 +199,7 @@ export default function BankCodes() {
             + Add Bank
           </button>
         </div>
+        ) : null}
       </div>
 
       <div className="fs-card">
@@ -200,14 +212,14 @@ export default function BankCodes() {
               <th>Account Name</th>
               <th>Source</th>
               <th>Status</th>
-              <th>Action</th>
+              {canConfigure ? <th>Action</th> : null}
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan="7" className="fs-empty">Loading bank codes...</td></tr>
+              <tr><td colSpan={canConfigure ? 7 : 6} className="fs-empty">Loading bank codes...</td></tr>
             ) : sortedRecords.length === 0 ? (
-              <tr><td colSpan="7" className="fs-empty">No bank codes yet.</td></tr>
+              <tr><td colSpan={canConfigure ? 7 : 6} className="fs-empty">No bank codes yet.</td></tr>
             ) : (
               sortedRecords.map((item) => (
                 <tr key={item.id}>
@@ -217,9 +229,11 @@ export default function BankCodes() {
                   <td>{item.accountName}</td>
                   <td>{item.coaCode ? `COA (${item.coaCode})` : "Manual"}</td>
                   <td>{item.status}</td>
-                  <td>
-                    <button className="fs-btn" onClick={() => handleEdit(item)}>Edit</button>
-                  </td>
+                  {canConfigure ? (
+                    <td>
+                      <button className="fs-btn" onClick={() => handleEdit(item)}>Edit</button>
+                    </td>
+                  ) : null}
                 </tr>
               ))
             )}
@@ -227,6 +241,7 @@ export default function BankCodes() {
         </table>
       </div>
 
+      {canConfigure ? (
       <div className="fs-card">
         <h2>{mode === "add" ? "Add Bank" : "Edit Bank"}</h2>
         <div className="fs-grid">
@@ -282,6 +297,7 @@ export default function BankCodes() {
           </button>
         </div>
       </div>
+      ) : null}
     </div>
   );
 }

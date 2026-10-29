@@ -52,12 +52,37 @@ function round2(n) {
   return Math.round(n * 100) / 100;
 }
 
+// ---- Match evidence levels (R7-4) ----
+// EXACT needs deterministic evidence, never amount + date alone:
+//   CHECK_NO  - a statement identifier equals the book check number, and
+//               the amount is identical;
+//   REFERENCE - a statement identifier equals the book document number
+//               (OR/CV/JV voucher no., OR receipt no., reference no.), and
+//               the amount is identical.
+// Everything else is a suggestion: AMOUNT_DATE (identical amount, date
+// within tolerance) or FUZZY. Identifiers shorter than
+// MIN_IDENTIFIER_LENGTH after normalization ("1", "07") are too weak to be
+// evidence. classifyLineCandidates / markCrossLineAmbiguity turn EXACT into
+// AMBIGUOUS whenever the evidence does not single out one pairing.
+const MATCH_LEVEL = {
+  CHECK_NO: "CHECK_NO",
+  REFERENCE: "REFERENCE",
+  AMOUNT_DATE: "AMOUNT_DATE",
+  FUZZY: "FUZZY",
+};
+const STRICT_EXACT_LEVELS = [MATCH_LEVEL.CHECK_NO, MATCH_LEVEL.REFERENCE];
+const MIN_IDENTIFIER_LENGTH = 3;
+
+function strongIdentifiers(values) {
+  return values.map(normalizeIdentifier).filter((v) => v.length >= MIN_IDENTIFIER_LENGTH);
+}
+
 // Returns null when the candidate falls outside 2x the amount variance or
 // 2x the date tolerance (excluded entirely), otherwise a scored candidate.
 function scoreCandidate(stmtLine, bookTxn, session) {
   const stmtAmount = Number(stmtLine.debit) > 0 ? Number(stmtLine.debit) : Number(stmtLine.credit);
   const bookAmount = bookTxn.amount;
-  const amountDiff = Math.abs(stmtAmount - bookAmount);
+  const amountDiff = round2(Math.abs(stmtAmount - bookAmount));
 
   const varianceEdge =
     session.amountVarianceType === "PERCENT"
@@ -89,20 +114,21 @@ function scoreCandidate(stmtLine, bookTxn, session) {
     return null;
   }
 
-  const stmtIdentifiers = [stmtLine.referenceNo, stmtLine.checkNo]
-    .map(normalizeIdentifier)
-    .filter(Boolean);
-  const bookIdentifiers = [bookTxn.referenceNo, bookTxn.checkNo, bookTxn.receiptNo]
-    .map(normalizeIdentifier)
-    .filter(Boolean);
+  // Banks put the check number in either column, so both statement
+  // identifiers are compared with both kinds of book identifier.
+  const stmtIdentifiers = strongIdentifiers([stmtLine.referenceNo, stmtLine.checkNo]);
+  const bookCheckIds = strongIdentifiers([bookTxn.checkNo]);
+  const bookDocumentIds = strongIdentifiers([bookTxn.voucherNo, bookTxn.receiptNo, bookTxn.referenceNo]);
+  const bookIdentifiers = [...bookCheckIds, ...bookDocumentIds];
+
+  const checkNoExact = stmtIdentifiers.some((s) => bookCheckIds.includes(s));
+  const documentExact = stmtIdentifiers.some((s) => bookDocumentIds.includes(s));
 
   let identifierScore = 0;
-  let identifierExact = false;
 
   if (stmtIdentifiers.length && bookIdentifiers.length) {
-    if (stmtIdentifiers.some((s) => bookIdentifiers.includes(s))) {
+    if (checkNoExact || documentExact) {
       identifierScore = 25;
-      identifierExact = true;
     } else if (
       stmtIdentifiers.some((s) =>
         bookIdentifiers.some(
@@ -133,28 +159,90 @@ function scoreCandidate(stmtLine, bookTxn, session) {
     amountScore + dateScore + identifierScore + payeeScore + descScore
   );
 
-  // Amount(40) + date(20) + identifier(25) only sum to 85 of the 100
-  // possible points, so requiring totalScore >= 95 on top of these three
-  // being individually perfect would demand bonus payee/description
-  // similarity too - something free-text bank statement wording routinely
-  // lacks even on a genuinely exact match. EXACT is defined by the three
-  // conditions themselves, not an unreachable extra score floor.
-  const hasStmtIdentifier = stmtIdentifiers.length > 0;
-  const isExact =
-    amountDiff === 0 && dateDiffDays === 0 && (identifierExact || !hasStmtIdentifier);
+  // EXACT is defined by the evidence itself (identical amount + an exact
+  // check / document identifier), not by a score floor - the score only
+  // orders suggestions. The date only has to fall inside the candidate
+  // window above: a check can clear days after it was issued.
+  let matchLevel = MATCH_LEVEL.FUZZY;
+  if (amountDiff === 0 && checkNoExact) matchLevel = MATCH_LEVEL.CHECK_NO;
+  else if (amountDiff === 0 && documentExact) matchLevel = MATCH_LEVEL.REFERENCE;
+  else if (amountDiff === 0 && dateDiffDays <= tolerance) matchLevel = MATCH_LEVEL.AMOUNT_DATE;
+
+  const isExact = STRICT_EXACT_LEVELS.includes(matchLevel);
 
   return {
     ...bookTxn,
     totalScore: round2(totalScore),
     matchType: isExact ? "EXACT" : "SUGGESTED",
+    matchLevel,
     breakdown: {
       amountScore: round2(amountScore),
       dateScore: round2(dateScore),
       identifierScore,
       payeeScore,
       descScore: round2(descScore),
+      matchLevel,
     },
   };
+}
+
+function bookKey(t) {
+  return `${t.sourceType}:${t.sourceId}:${t.lineId ?? ""}`;
+}
+
+// Per statement line: best first, at most `limit` kept. More than one
+// EXACT candidate means the evidence points at several documents, so none
+// of them is EXACT - they become AMBIGUOUS and need a human choice.
+function classifyLineCandidates(scored, limit = 3) {
+  const ranked = scored.filter(Boolean).sort((a, b) => b.totalScore - a.totalScore);
+  const exactCount = ranked.filter((c) => c.matchType === "EXACT").length;
+  const classified = exactCount > 1
+    ? ranked.map((c) => (c.matchType === "EXACT" ? markAmbiguous(c, "several documents match this statement line") : c))
+    : ranked;
+  return classified.slice(0, limit);
+}
+
+// Across statement lines: one book document EXACT for two lines (e.g. the
+// same deposit listed twice) cannot be EXACT for either. Mutates the
+// per-line arrays produced by classifyLineCandidates.
+function markCrossLineAmbiguity(candidatesByLine) {
+  const exactLines = new Map();
+  for (const [lineId, cands] of candidatesByLine) {
+    for (const c of cands) {
+      if (c.matchType !== "EXACT") continue;
+      const k = bookKey(c);
+      exactLines.set(k, [...(exactLines.get(k) || []), lineId]);
+    }
+  }
+  for (const [lineId, cands] of candidatesByLine) {
+    candidatesByLine.set(
+      lineId,
+      cands.map((c) => (c.matchType === "EXACT" && exactLines.get(bookKey(c)).length > 1
+        ? markAmbiguous(c, "this document matches several statement lines")
+        : c))
+    );
+  }
+  return candidatesByLine;
+}
+
+function markAmbiguous(c, reason) {
+  return { ...c, matchType: "AMBIGUOUS", breakdown: { ...c.breakdown, ambiguous: reason } };
+}
+
+// Bulk confirmation only trusts a stored EXACT row whose own breakdown
+// records strict evidence - rows written before R7 (amount + date EXACT)
+// carry no matchLevel and are never bulk-confirmed.
+function isStrictExactRow(matchType, scoreBreakdown) {
+  if (matchType !== "EXACT") return false;
+  let breakdown = scoreBreakdown;
+  if (typeof breakdown === "string") {
+    try {
+      breakdown = JSON.parse(breakdown);
+    } catch {
+      return false;
+    }
+  }
+  return Boolean(breakdown) && STRICT_EXACT_LEVELS.includes(breakdown.matchLevel) && !breakdown.ambiguous;
 }
 
 // ---- Outstanding items + adjustment suggestions (Phase 7) ----
@@ -194,6 +282,12 @@ module.exports = {
   shiftDate,
   round2,
   scoreCandidate,
+  MATCH_LEVEL,
+  STRICT_EXACT_LEVELS,
+  bookKey,
+  classifyLineCandidates,
+  markCrossLineAmbiguity,
+  isStrictExactRow,
   BANK_CHARGE_KEYWORDS,
   INTEREST_INCOME_KEYWORDS,
   classifyAdjustmentSuggestion,

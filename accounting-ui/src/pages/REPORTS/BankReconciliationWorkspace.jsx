@@ -32,6 +32,10 @@ export default function BankReconciliationWorkspace() {
   const [importBatches, setImportBatches] = useState([]);
   const [statementLines, setStatementLines] = useState([]);
   const [pendingFile, setPendingFile] = useState(null);
+  // R7-5: how slash dates in the statement are read. Auto-detect only
+  // decides when the file itself proves the order (a day above 12);
+  // otherwise the server asks for an explicit choice.
+  const [dateFormat, setDateFormat] = useState("AUTO");
   const [uploading, setUploading] = useState(false);
   const [mappingHeaders, setMappingHeaders] = useState(null);
   const [mappingSelections, setMappingSelections] = useState({});
@@ -653,9 +657,6 @@ export default function BankReconciliationWorkspace() {
   async function manualMatch(bookItem) {
     if (!modalLine) return;
 
-    const amount =
-      Number(modalLine.debit) > 0 ? Number(modalLine.debit) : Number(modalLine.credit);
-
     if (!confirm(`Match this statement line to ${bookItem.sourceType} ${bookItem.voucherNo}?`)) {
       return;
     }
@@ -675,7 +676,6 @@ export default function BankReconciliationWorkspace() {
           bookSourceType: bookItem.sourceType,
           bookSourceId: bookItem.sourceId,
           bookLineId: bookItem.lineId || null,
-          amount,
         }),
       });
 
@@ -809,6 +809,7 @@ export default function BankReconciliationWorkspace() {
     try {
       const formData = new FormData();
       formData.append("file", file);
+      formData.append("dateFormat", dateFormat);
       if (columnMapping) {
         formData.append("columnMapping", JSON.stringify(columnMapping));
       }
@@ -1159,6 +1160,19 @@ export default function BankReconciliationWorkspace() {
               onChange={handleFileChange}
               disabled={uploading}
             />
+            <label className="brc-date-format">
+              Date format
+              <select
+                value={dateFormat}
+                onChange={(e) => setDateFormat(e.target.value)}
+                disabled={uploading}
+              >
+                <option value="AUTO">Auto-detect (only when unambiguous)</option>
+                <option value="DD/MM/YYYY">DD/MM/YYYY</option>
+                <option value="MM/DD/YYYY">MM/DD/YYYY</option>
+                <option value="YYYY-MM-DD">YYYY-MM-DD</option>
+              </select>
+            </label>
             <button
               onClick={handleUploadClick}
               className="brc-btn primary"
@@ -1379,7 +1393,15 @@ export default function BankReconciliationWorkspace() {
                     <td>{item.voucherNo}</td>
                     <td>{item.payeeOrCustomer}</td>
                     <td>{item.date}</td>
-                    <td className="amount">₱ {formatMoney(item.amount)}</td>
+                    <td className="amount">
+                      ₱ {formatMoney(item.amount)}
+                      {item.amountSource && Number(item.grossAmount) !== Number(item.amount) ? (
+                        <div className="brc-gross-note">
+                          gross ₱ {formatMoney(item.grossAmount)}
+                          {Number(item.withholdingAmount) > 0 ? `, ₱ ${formatMoney(item.withholdingAmount)} withheld` : ""}
+                        </div>
+                      ) : null}
+                    </td>
                   </tr>
                 ))
               )}
@@ -1420,7 +1442,15 @@ export default function BankReconciliationWorkspace() {
                     <td>{item.voucherNo}</td>
                     <td>{item.payeeOrCustomer}</td>
                     <td>{item.date}</td>
-                    <td className="amount">₱ {formatMoney(item.amount)}</td>
+                    <td className="amount">
+                      ₱ {formatMoney(item.amount)}
+                      {item.amountSource && Number(item.grossAmount) !== Number(item.amount) ? (
+                        <div className="brc-gross-note">
+                          gross ₱ {formatMoney(item.grossAmount)}
+                          {Number(item.withholdingAmount) > 0 ? `, ₱ ${formatMoney(item.withholdingAmount)} withheld` : ""}
+                        </div>
+                      ) : null}
+                    </td>
                   </tr>
                 ))
               )}

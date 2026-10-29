@@ -10,18 +10,30 @@ const {
 const {
   scoreCandidate,
   classifyAdjustmentSuggestion,
+  bookKey,
+  classifyLineCandidates,
+  markCrossLineAmbiguity,
+  isStrictExactRow,
 } = require("../services/ConfidenceScoringService");
 const {
   resolveColumnMapping,
   buildStatementLine,
   extractRowsFromXlsx,
   parseCsvRows,
+  resolveBankDateFormat,
+  findDuplicateBatch,
 } = require("../services/StatementImportService");
+const {
+  lockStatementLine,
+  lockEligibleBookItem,
+  assertMatchAmount,
+  statementAmount,
+  asConflict,
+} = require("../services/bankReconMatchGuard");
 const { postAdjustmentAsJV } = require("../services/JournalSuggestionService");
 const {
   sessionListFilter,
   resolveCompanyForNewSession,
-  assertBookDocumentInCompany,
 } = require("../services/bankReconAccessService");
 
 // Routes guard every session / child id (bankReconAccessService.requireAccess)
@@ -31,7 +43,7 @@ const auditCompany = (req) => req.reconSession?.companyId ?? null;
 
 function sendHttpError(res, err) {
   if (err instanceof HttpError) {
-    res.status(err.statusCode).json({ message: err.message });
+    res.status(err.statusCode).json({ message: err.message, ...(err.code ? { code: err.code } : {}) });
     return true;
   }
   return false;
@@ -330,14 +342,25 @@ exports.importStatement = async (req, res) => {
       let headers = [];
       let dataRows = [];
 
-      if (fileType === "CSV") {
-        const records = parseCsvRows(req.file.buffer);
-        headers = records[0] || [];
-        dataRows = records.slice(1);
-      } else {
-        const extracted = await extractRowsFromXlsx(req.file.buffer);
-        headers = extracted.headers;
-        dataRows = extracted.dataRows;
+      // An unreadable file is the user's input problem (400), not a server
+      // fault - and never echoes a parser's internal message.
+      try {
+        if (fileType === "CSV") {
+          const records = parseCsvRows(req.file.buffer);
+          headers = records[0] || [];
+          dataRows = records.slice(1);
+        } else {
+          const extracted = await extractRowsFromXlsx(req.file.buffer);
+          headers = extracted.headers;
+          dataRows = extracted.dataRows;
+        }
+      } catch {
+        return res.status(400).json({
+          message: ext === ".xls"
+            ? "Legacy Excel 97-2003 (.xls) statements cannot be read yet. Save the statement as .xlsx or .csv and import it again."
+            : `The file could not be read as a ${fileType === "CSV" ? "CSV file" : ".xlsx workbook"}.`,
+          code: "STATEMENT_FILE_UNREADABLE",
+        });
       }
 
       if (headers.length === 0) {
@@ -368,23 +391,54 @@ exports.importStatement = async (req, res) => {
         });
       }
 
+      // R7-5: one date format for the whole file - the user's choice, or
+      // proven from the file itself; ambiguous / mixed files are refused.
+      let dateFormat;
+      try {
+        dateFormat = resolveBankDateFormat(
+          dataRows.map((row) => row[mapping.date]),
+          req.body.dateFormat || "AUTO"
+        );
+      } catch (err) {
+        if (sendHttpError(res, err)) return;
+        throw err;
+      }
+
       const parsedLines = [];
       const skippedRows = [];
+      const invalidDateRows = [];
 
       dataRows.forEach((row, idx) => {
-        const line = buildStatementLine(row, mapping);
+        const line = buildStatementLine(row, mapping, { dateFormat });
+        const hasAmount = Boolean(line.debit || line.credit);
 
-        if (!line.txnDate) {
-          skippedRows.push({ row: idx + 2, reason: "Unrecognized or missing date" });
+        // A row carrying money with a date that is not a real date is
+        // never guessed or skipped silently - the import is refused.
+        if (line.dateInvalid && hasAmount) {
+          invalidDateRows.push({ row: idx + 2, value: String(line.rawDate ?? "").slice(0, 40) });
           return;
         }
-        if (!line.debit && !line.credit) {
+        if (!line.txnDate) {
+          skippedRows.push({ row: idx + 2, reason: line.dateBlank ? "Missing date" : "Not a transaction row (no date)" });
+          return;
+        }
+        if (!hasAmount) {
           skippedRows.push({ row: idx + 2, reason: "No debit/credit/amount value" });
           return;
         }
 
-        parsedLines.push(line);
+        const { dateBlank, dateInvalid, rawDate, ...stored } = line;
+        parsedLines.push(stored);
       });
+
+      if (invalidDateRows.length) {
+        return res.status(400).json({
+          message: `${invalidDateRows.length} row(s) have a date that is not a valid ${dateFormat} date (e.g. row ${invalidDateRows[0].row}: "${invalidDateRows[0].value}"). Nothing was imported.`,
+          code: "INVALID_STATEMENT_DATES",
+          dateFormat,
+          invalidRows: invalidDateRows.slice(0, 20),
+        });
+      }
 
       if (parsedLines.length === 0) {
         return res.status(400).json({
@@ -393,7 +447,19 @@ exports.importStatement = async (req, res) => {
         });
       }
 
-      await conn.beginTransaction();
+      // R7-7: the session row lock serializes two imports into one session,
+      // so an identical statement cannot slip in twice.
+      await beginReadCommitted(conn);
+      await lockSession(conn, id);
+      const duplicate = await findDuplicateBatch(conn, id, parsedLines);
+      if (duplicate) {
+        await conn.rollback();
+        return res.status(409).json({
+          message: `This statement was already imported into this session (import batch #${duplicate.id}${duplicate.fileName ? `, ${duplicate.fileName}` : ""}). Delete that batch first if you need to import it again.`,
+          code: "DUPLICATE_STATEMENT_IMPORT",
+          batchId: duplicate.id,
+        });
+      }
 
       const [batchResult] = await conn.execute(
         `INSERT INTO bank_recon_import_batches(session_id, file_name, file_type, row_count, column_mapping, status, imported_by)
@@ -403,7 +469,7 @@ exports.importStatement = async (req, res) => {
           req.file.originalname || "",
           fileType,
           parsedLines.length,
-          JSON.stringify({ headers, mapping }),
+          JSON.stringify({ headers, mapping, dateFormat }),
           "IMPORTED",
           req.user?.id || null,
         ]
@@ -459,8 +525,10 @@ exports.importStatement = async (req, res) => {
       });
     } catch (err) {
       await conn.rollback();
+      if (sendHttpError(res, err)) return;
       console.error("IMPORT BANK STATEMENT ERROR:", err);
-      res.status(500).json({ message: err.message || "Failed to import bank statement" });
+      // Never the raw database / parser message.
+      res.status(500).json({ message: "Failed to import bank statement" });
     } finally {
       conn.release();
     }
@@ -623,15 +691,31 @@ exports.runMatching = async (req, res) => {
       session.companyId
     );
 
+    // R7-3: a document already CONFIRMED in any session of this company and
+    // bank account is reconciled - never offered as a candidate again.
     const [confirmedRows] = await conn.execute(
-      `SELECT book_source_type AS sourceType, book_source_id AS sourceId, book_line_id AS lineId
-       FROM bank_recon_matches
-       WHERE session_id = ? AND status = 'CONFIRMED'`,
-      [id]
+      `SELECT m.book_source_type AS sourceType, m.book_source_id AS sourceId, m.book_line_id AS lineId
+       FROM bank_recon_matches m
+       JOIN bank_recon_sessions s ON s.id = m.session_id
+       WHERE m.status = 'CONFIRMED' AND s.bank_account_id = ? AND s.company_id <=> ?`,
+      [session.bankAccountId, session.companyId ?? null]
     );
-    const confirmedKeys = new Set(
-      confirmedRows.map((r) => `${r.sourceType}:${r.sourceId}:${r.lineId ?? ""}`)
-    );
+    const confirmedKeys = new Set(confirmedRows.map(bookKey));
+
+    // R7-4: score every line first, then decide EXACT vs AMBIGUOUS with the
+    // whole statement in view (one document EXACT for two lines is
+    // ambiguous for both).
+    const candidatesByLine = new Map();
+    for (const line of stmtLines) {
+      const wantDirection = Number(line.debit) > 0 ? "OUT" : "IN";
+      const scored = bookTxns
+        .filter((t) => t.direction === wantDirection)
+        .filter((t) => !confirmedKeys.has(bookKey(t)))
+        .map((t) => scoreCandidate(line, t, session))
+        .filter((c) => c && c.totalScore >= 30);
+      candidatesByLine.set(line.id, classifyLineCandidates(scored, 3));
+    }
+    markCrossLineAmbiguity(candidatesByLine);
 
     await conn.beginTransaction();
 
@@ -643,15 +727,7 @@ exports.runMatching = async (req, res) => {
         [line.id]
       );
 
-      const wantDirection = Number(line.debit) > 0 ? "OUT" : "IN";
-
-      const candidates = bookTxns
-        .filter((t) => t.direction === wantDirection)
-        .filter((t) => !confirmedKeys.has(`${t.sourceType}:${t.sourceId}:${t.lineId ?? ""}`))
-        .map((t) => scoreCandidate(line, t, session))
-        .filter((c) => c && c.totalScore >= 30)
-        .sort((a, b) => b.totalScore - a.totalScore)
-        .slice(0, 3);
+      const candidates = candidatesByLine.get(line.id);
 
       for (const c of candidates) {
         await conn.execute(
@@ -854,53 +930,64 @@ exports.listBookItems = async (req, res) => {
   }
 };
 
+// ---- Match confirmation (R7-3 / R7-4 / R7-6) ----
+// Every path that turns a statement line MATCHED runs in one transaction
+// under READ COMMITTED (each read after a lock wait sees what the other
+// request committed) and takes its locks in one fixed order - session,
+// statement line, book document - via bankReconMatchGuard.
+async function beginReadCommitted(conn) {
+  await conn.query("SET TRANSACTION ISOLATION LEVEL READ COMMITTED");
+  await conn.beginTransaction();
+}
+
+async function lockSession(conn, sessionId) {
+  await conn.execute("SELECT id FROM bank_recon_sessions WHERE id = ? FOR UPDATE", [sessionId]);
+  const [rows] = await conn.execute(`${BANK_RECON_SESSION_SELECT} WHERE s.id = ?`, [sessionId]);
+  if (!rows[0]) throw new HttpError(404, "Reconciliation session not found");
+  if (rows[0].status === "FINALIZED") throw new HttpError(400, "Cannot modify a finalized session");
+  return rows[0];
+}
+
+async function markConfirmed(conn, { matchId, statementLineId, amount, userId }) {
+  await conn.execute(
+    "UPDATE bank_recon_matches SET status = 'CONFIRMED', matched_by = ?, matched_at = NOW(), amount = ? WHERE id = ?",
+    [userId, amount, matchId]
+  );
+  await conn.execute(
+    `UPDATE bank_recon_matches
+     SET status = 'REJECTED', unmatched_by = ?, unmatched_at = NOW()
+     WHERE statement_line_id = ? AND status = 'PENDING' AND id != ?`,
+    [userId, statementLineId, matchId]
+  );
+  await conn.execute("UPDATE bank_recon_statement_lines SET match_status = 'MATCHED' WHERE id = ?", [statementLineId]);
+}
+
 exports.confirmMatch = async (req, res) => {
   const conn = await pool.getConnection();
 
   try {
     const { id } = req.params;
-
-    const [rows] = await conn.execute(
-      `SELECT m.*, s.status AS sessionStatus
-       FROM bank_recon_matches m
-       JOIN bank_recon_sessions s ON s.id = m.session_id
-       WHERE m.id = ?`,
-      [id]
-    );
-
-    if (rows.length === 0) {
-      return res.status(404).json({ message: "Match not found" });
-    }
-
-    const match = rows[0];
-
-    if (match.sessionStatus === "FINALIZED") {
-      return res.status(400).json({ message: "Cannot modify a finalized session" });
-    }
-    if (match.status !== "PENDING") {
-      return res.status(400).json({ message: `Match is already ${match.status}` });
-    }
-
     const userId = req.user?.id || null;
 
-    await conn.beginTransaction();
+    await beginReadCommitted(conn);
 
-    await conn.execute(
-      "UPDATE bank_recon_matches SET status = 'CONFIRMED', matched_by = ?, matched_at = NOW() WHERE id = ?",
-      [userId, id]
-    );
+    const [rows] = await conn.execute("SELECT session_id AS sessionId FROM bank_recon_matches WHERE id = ?", [id]);
+    if (rows.length === 0) throw new HttpError(404, "Match not found");
 
-    await conn.execute(
-      `UPDATE bank_recon_matches
-       SET status = 'REJECTED', unmatched_by = ?, unmatched_at = NOW()
-       WHERE statement_line_id = ? AND status = 'PENDING' AND id != ?`,
-      [userId, match.statement_line_id, id]
-    );
+    const session = await lockSession(conn, rows[0].sessionId);
+    const [[match]] = await conn.execute("SELECT * FROM bank_recon_matches WHERE id = ? FOR UPDATE", [id]);
+    if (match.status !== "PENDING") {
+      throw new HttpError(409, `Match is already ${match.status}`, "MATCH_NOT_PENDING");
+    }
 
-    await conn.execute(
-      "UPDATE bank_recon_statement_lines SET match_status = 'MATCHED' WHERE id = ?",
-      [match.statement_line_id]
-    );
+    const line = await lockStatementLine(conn, match.statement_line_id);
+    const txn = await lockEligibleBookItem(conn, session, line, {
+      sourceType: match.book_source_type,
+      sourceId: match.book_source_id,
+      lineId: match.book_line_id,
+    });
+
+    await markConfirmed(conn, { matchId: match.id, statementLineId: line.id, amount: txn.amount, userId });
 
     await logAudit(conn, {
       module: "BANK_RECON",
@@ -909,7 +996,7 @@ exports.confirmMatch = async (req, res) => {
       action: "MATCH",
       description: `Confirmed ${match.match_type} match: statement line #${match.statement_line_id} <-> ${match.book_source_type} #${match.book_source_id}`,
       beforeData: { status: match.status },
-      afterData: { status: "CONFIRMED" },
+      afterData: { status: "CONFIRMED", amount: txn.amount },
       user: req.user,
       companyId: auditCompany(req),
     });
@@ -919,6 +1006,8 @@ exports.confirmMatch = async (req, res) => {
     res.json({ success: true, message: "Match confirmed" });
   } catch (err) {
     await conn.rollback();
+    const e = asConflict(err);
+    if (sendHttpError(res, e)) return;
     console.error("CONFIRM MATCH ERROR:", err);
     res.status(500).json({ message: "Failed to confirm match" });
   } finally {
@@ -926,6 +1015,11 @@ exports.confirmMatch = async (req, res) => {
   }
 };
 
+// Bulk confirmation only accepts suggestions with strict EXACT evidence
+// (check number or document number + identical amount) that are the single
+// EXACT candidate of their statement line, and each one still goes through
+// the same guard as a single confirmation. Anything else is skipped and
+// reported, never confirmed.
 exports.bulkConfirmMatches = async (req, res) => {
   const conn = await pool.getConnection();
 
@@ -936,42 +1030,52 @@ exports.bulkConfirmMatches = async (req, res) => {
       return res.status(400).json({ message: "sessionId is required" });
     }
 
-    const [sessionRows] = await conn.execute(
-      "SELECT status FROM bank_recon_sessions WHERE id = ?",
-      [sessionId]
-    );
-
-    if (sessionRows.length === 0) {
-      return res.status(404).json({ message: "Reconciliation session not found" });
-    }
-    if (sessionRows[0].status === "FINALIZED") {
-      return res.status(400).json({ message: "Cannot modify a finalized session" });
-    }
-
-    const [exactMatches] = await conn.execute(
-      "SELECT id, statement_line_id AS statementLineId FROM bank_recon_matches WHERE session_id = ? AND status = 'PENDING' AND match_type = 'EXACT'",
-      [sessionId]
-    );
-
     const userId = req.user?.id || null;
 
-    await conn.beginTransaction();
+    await beginReadCommitted(conn);
+    const session = await lockSession(conn, sessionId);
 
-    for (const m of exactMatches) {
-      await conn.execute(
-        "UPDATE bank_recon_matches SET status = 'CONFIRMED', matched_by = ?, matched_at = NOW() WHERE id = ?",
-        [userId, m.id]
-      );
-      await conn.execute(
-        `UPDATE bank_recon_matches
-         SET status = 'REJECTED', unmatched_by = ?, unmatched_at = NOW()
-         WHERE statement_line_id = ? AND status = 'PENDING' AND id != ?`,
-        [userId, m.statementLineId, m.id]
-      );
-      await conn.execute(
-        "UPDATE bank_recon_statement_lines SET match_status = 'MATCHED' WHERE id = ?",
-        [m.statementLineId]
-      );
+    const [exactRows] = await conn.execute(
+      `SELECT id, statement_line_id AS statementLineId, book_source_type AS sourceType,
+              book_source_id AS sourceId, book_line_id AS lineId, match_type AS matchType,
+              score_breakdown AS scoreBreakdown
+       FROM bank_recon_matches
+       WHERE session_id = ? AND status = 'PENDING' AND match_type = 'EXACT'
+       ORDER BY id`,
+      [sessionId]
+    );
+    const strictPerLine = new Map();
+    for (const m of exactRows) {
+      if (isStrictExactRow(m.matchType, m.scoreBreakdown)) {
+        strictPerLine.set(m.statementLineId, (strictPerLine.get(m.statementLineId) || 0) + 1);
+      }
+    }
+
+    let confirmedCount = 0;
+    const skipped = [];
+
+    for (const m of exactRows) {
+      if (!isStrictExactRow(m.matchType, m.scoreBreakdown)) {
+        skipped.push({ matchId: m.id, reason: "Not backed by a check or document number - run matching again and review it." });
+        continue;
+      }
+      if (strictPerLine.get(m.statementLineId) !== 1) {
+        skipped.push({ matchId: m.id, reason: "More than one exact candidate for this statement line." });
+        continue;
+      }
+      try {
+        const line = await lockStatementLine(conn, m.statementLineId);
+        const txn = await lockEligibleBookItem(conn, session, line, m);
+        if (Math.round(statementAmount(line) * 100) !== Math.round(txn.amount * 100)) {
+          skipped.push({ matchId: m.id, reason: "The amounts are no longer identical." });
+          continue;
+        }
+        await markConfirmed(conn, { matchId: m.id, statementLineId: line.id, amount: txn.amount, userId });
+        confirmedCount++;
+      } catch (err) {
+        if (!(err instanceof HttpError)) throw err;
+        skipped.push({ matchId: m.id, reason: err.message });
+      }
     }
 
     await logAudit(conn, {
@@ -979,8 +1083,8 @@ exports.bulkConfirmMatches = async (req, res) => {
       entityType: "SESSION",
       entityId: Number(sessionId),
       action: "MATCH",
-      description: `Bulk-confirmed ${exactMatches.length} exact match(es) in session #${sessionId}`,
-      afterData: { confirmedCount: exactMatches.length },
+      description: `Bulk-confirmed ${confirmedCount} exact match(es) in session #${sessionId}${skipped.length ? `, ${skipped.length} skipped` : ""}`,
+      afterData: { confirmedCount, skippedCount: skipped.length },
       user: req.user,
       companyId: auditCompany(req),
     });
@@ -989,11 +1093,17 @@ exports.bulkConfirmMatches = async (req, res) => {
 
     res.json({
       success: true,
-      confirmedCount: exactMatches.length,
-      message: `Confirmed ${exactMatches.length} exact match(es)`,
+      confirmedCount,
+      skippedCount: skipped.length,
+      skipped: skipped.slice(0, 50),
+      message: skipped.length
+        ? `Confirmed ${confirmedCount} exact match(es). ${skipped.length} left for review.`
+        : `Confirmed ${confirmedCount} exact match(es)`,
     });
   } catch (err) {
     await conn.rollback();
+    const e = asConflict(err);
+    if (sendHttpError(res, e)) return;
     console.error("BULK CONFIRM MATCHES ERROR:", err);
     res.status(500).json({ message: "Failed to bulk-confirm matches" });
   } finally {
@@ -1001,6 +1111,9 @@ exports.bulkConfirmMatches = async (req, res) => {
   }
 };
 
+// R7-6: the matched amount is the selected document's own bank movement,
+// derived on the server. A client "amount" is only checked against it,
+// and the statement amount must agree with it within the session variance.
 exports.createManualMatch = async (req, res) => {
   const conn = await pool.getConnection();
 
@@ -1015,38 +1128,28 @@ exports.createManualMatch = async (req, res) => {
     if (!["CV", "OR", "JV"].includes(bookSourceType)) {
       return res.status(400).json({ message: "Invalid bookSourceType" });
     }
-
-    const [lineRows] = await conn.execute(
-      `SELECT sl.id, sl.session_id AS sessionId, sl.match_status AS matchStatus, s.status AS sessionStatus
-       FROM bank_recon_statement_lines sl
-       JOIN bank_recon_sessions s ON s.id = sl.session_id
-       WHERE sl.id = ?`,
-      [statementLineId]
-    );
-
-    if (lineRows.length === 0) {
-      return res.status(404).json({ message: "Statement line not found" });
-    }
-
-    const line = lineRows[0];
-
-    if (line.sessionStatus === "FINALIZED") {
-      return res.status(400).json({ message: "Cannot modify a finalized session" });
-    }
-    if (line.matchStatus === "MATCHED") {
-      return res.status(400).json({ message: "Statement line is already matched" });
-    }
-
-    try {
-      await assertBookDocumentInCompany(bookSourceType, bookSourceId, auditCompany(req));
-    } catch (err) {
-      if (sendHttpError(res, err)) return;
-      throw err;
+    if (bookSourceType === "JV" && !bookLineId) {
+      return res.status(400).json({ message: "Select the journal voucher line that moved through the bank." });
     }
 
     const userId = req.user?.id || null;
 
-    await conn.beginTransaction();
+    await beginReadCommitted(conn);
+
+    const [lineRows] = await conn.execute(
+      "SELECT session_id AS sessionId FROM bank_recon_statement_lines WHERE id = ?",
+      [statementLineId]
+    );
+    if (lineRows.length === 0) throw new HttpError(404, "Statement line not found");
+
+    const session = await lockSession(conn, lineRows[0].sessionId);
+    const line = await lockStatementLine(conn, statementLineId);
+    const txn = await lockEligibleBookItem(conn, session, line, {
+      sourceType: bookSourceType,
+      sourceId: bookSourceId,
+      lineId: bookSourceType === "JV" ? bookLineId : null,
+    });
+    const matchAmount = assertMatchAmount(session, line, txn, amount);
 
     await conn.execute(
       `UPDATE bank_recon_matches
@@ -1061,12 +1164,12 @@ exports.createManualMatch = async (req, res) => {
         match_type, confidence_score, status, amount, created_by, matched_by, matched_at
       ) VALUES (?,?,?,?,?, 'MANUAL', NULL, 'CONFIRMED', ?, ?, ?, NOW())`,
       [
-        line.sessionId,
+        session.id,
         statementLineId,
         bookSourceType,
-        bookSourceId,
-        bookLineId || null,
-        Number(amount) || 0,
+        Number(bookSourceId),
+        bookSourceType === "JV" ? Number(bookLineId) : null,
+        matchAmount,
         userId,
         userId,
       ]
@@ -1083,16 +1186,18 @@ exports.createManualMatch = async (req, res) => {
       entityId: result.insertId,
       action: "MATCH",
       description: `Manually matched statement line #${statementLineId} to ${bookSourceType} #${bookSourceId}`,
-      afterData: { bookSourceType, bookSourceId, bookLineId, amount },
+      afterData: { bookSourceType, bookSourceId, bookLineId, amount: matchAmount },
       user: req.user,
       companyId: auditCompany(req),
     });
 
     await conn.commit();
 
-    res.json({ success: true, id: result.insertId, message: "Match created" });
+    res.json({ success: true, id: result.insertId, amount: matchAmount, message: "Match created" });
   } catch (err) {
     await conn.rollback();
+    const e = asConflict(err);
+    if (sendHttpError(res, e)) return;
     console.error("CREATE MANUAL MATCH ERROR:", err);
     res.status(500).json({ message: "Failed to create match" });
   } finally {

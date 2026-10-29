@@ -6,6 +6,9 @@ const {
   round2,
   scoreCandidate,
   classifyAdjustmentSuggestion,
+  classifyLineCandidates,
+  markCrossLineAmbiguity,
+  isStrictExactRow,
 } = require("../ConfidenceScoringService");
 
 const baseSession = {
@@ -118,10 +121,13 @@ describe("scoreCandidate", () => {
     expect(result.breakdown.amountScore).toBeLessThan(40);
   });
 
+  // R7-4: identifiers removed - with an identical reference and amount
+  // this pairing is now EXACT (REFERENCE) whatever the date; the date-score
+  // behaviour this test is about is unchanged.
   test("date within tolerance but not exact reduces the date score without excluding the candidate", () => {
     const result = scoreCandidate(
-      stmtLine({ txnDate: "2026-07-17" }),
-      bookTxn({ date: "2026-07-15" }),
+      stmtLine({ txnDate: "2026-07-17", referenceNo: null }),
+      bookTxn({ date: "2026-07-15", referenceNo: null }),
       baseSession
     );
     expect(result).not.toBeNull();
@@ -168,13 +174,47 @@ describe("scoreCandidate", () => {
     expect(result.matchType).toBe("SUGGESTED");
   });
 
-  test("exact amount and date with no identifier present on the statement line is still EXACT", () => {
+  // R7-4: reversed on purpose. Amount + date alone used to be EXACT and
+  // was bulk-confirmable; it is now only an AMOUNT_DATE suggestion.
+  test("exact amount and date with no identifier on the statement line is only a suggestion (R7-4)", () => {
     const result = scoreCandidate(
       stmtLine({ referenceNo: null, checkNo: null }),
       bookTxn(),
       baseSession
     );
+    expect(result.matchType).toBe("SUGGESTED");
+    expect(result.matchLevel).toBe("AMOUNT_DATE");
+  });
+
+  test("check number + identical amount is EXACT even when the check clears days later (R7-4)", () => {
+    const result = scoreCandidate(
+      stmtLine({ referenceNo: null, checkNo: "000123456", txnDate: "2026-07-18" }),
+      bookTxn({ referenceNo: null, checkNo: "123456" }),
+      baseSession
+    );
     expect(result.matchType).toBe("EXACT");
+    expect(result.matchLevel).toBe("CHECK_NO");
+    expect(result.breakdown.matchLevel).toBe("CHECK_NO");
+  });
+
+  test("voucher number in the statement reference is REFERENCE evidence (R7-4)", () => {
+    const result = scoreCandidate(
+      stmtLine({ referenceNo: "CV-000881" }),
+      bookTxn({ referenceNo: null, voucherNo: "CV-000881" }),
+      baseSession
+    );
+    expect(result.matchType).toBe("EXACT");
+    expect(result.matchLevel).toBe("REFERENCE");
+  });
+
+  test("identifier match with a different amount is never EXACT (R7-4)", () => {
+    const result = scoreCandidate(stmtLine({ credit: 5000.5 }), bookTxn(), baseSession);
+    expect(result.matchType).toBe("SUGGESTED");
+  });
+
+  test("identifiers shorter than three characters are not evidence (R7-4)", () => {
+    const result = scoreCandidate(stmtLine({ referenceNo: "7" }), bookTxn({ referenceNo: "7" }), baseSession);
+    expect(result.matchType).toBe("SUGGESTED");
   });
 
   test("percent-based variance is computed relative to the statement amount", () => {
@@ -227,5 +267,36 @@ describe("classifyAdjustmentSuggestion", () => {
       credit: 0,
     });
     expect(result.adjustmentType).toBe("OTHER");
+  });
+});
+
+describe("ambiguity (R7-4)", () => {
+  const exact = (sourceId) => ({ sourceType: "CV", sourceId, lineId: null, matchType: "EXACT", totalScore: 85, breakdown: { matchLevel: "CHECK_NO" } });
+
+  test("two EXACT candidates on one line become AMBIGUOUS", () => {
+    const out = classifyLineCandidates([exact(1), exact(2), { ...exact(3), matchType: "SUGGESTED", totalScore: 40 }]);
+    expect(out.map((c) => c.matchType)).toEqual(["AMBIGUOUS", "AMBIGUOUS", "SUGGESTED"]);
+  });
+
+  test("a single EXACT candidate stays EXACT; at most three are kept", () => {
+    const out = classifyLineCandidates([exact(1), ...[2, 3, 4].map((id) => ({ ...exact(id), matchType: "SUGGESTED", totalScore: 40 - id }))]);
+    expect(out).toHaveLength(3);
+    expect(out[0].matchType).toBe("EXACT");
+  });
+
+  test("one document EXACT on two lines becomes AMBIGUOUS on both", () => {
+    const m = markCrossLineAmbiguity(new Map([[10, [exact(1)]], [11, [exact(1)]], [12, [exact(2)]]]));
+    expect(m.get(10)[0].matchType).toBe("AMBIGUOUS");
+    expect(m.get(11)[0].matchType).toBe("AMBIGUOUS");
+    expect(m.get(12)[0].matchType).toBe("EXACT");
+  });
+
+  test("only stored rows with strict evidence are bulk-confirmable", () => {
+    expect(isStrictExactRow("EXACT", JSON.stringify({ matchLevel: "CHECK_NO" }))).toBe(true);
+    expect(isStrictExactRow("EXACT", { matchLevel: "REFERENCE" })).toBe(true);
+    expect(isStrictExactRow("EXACT", { amountScore: 40, dateScore: 20 })).toBe(false);
+    expect(isStrictExactRow("EXACT", { matchLevel: "CHECK_NO", ambiguous: "x" })).toBe(false);
+    expect(isStrictExactRow("AMBIGUOUS", { matchLevel: "CHECK_NO" })).toBe(false);
+    expect(isStrictExactRow("EXACT", "not json")).toBe(false);
   });
 });

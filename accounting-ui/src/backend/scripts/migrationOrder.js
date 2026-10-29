@@ -192,6 +192,10 @@ const MIGRATION_ORDER = [
   // keeps its TRANSACTIONS.% catch-all from granting it on a chain re-run)
   // and the currencies migration.
   "rfp_schema_permissions_migration.sql",
+  // R7-1: FILESETUP.BANK_CODES / VIEW for ACCOUNTANT (data only, INSERT
+  // IGNORE) so the OR/CV and Bank Reconciliation bank-account selectors
+  // load. Must run after user_access_control_migration.sql.
+  "r7_accountant_bank_codes_view_migration.sql",
 ];
 
 module.exports = { MIGRATION_ORDER };

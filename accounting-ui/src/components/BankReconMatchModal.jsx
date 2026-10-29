@@ -65,7 +65,7 @@ export default function BankReconMatchModal({
                     <th>Voucher No.</th>
                     <th>Payee/Customer</th>
                     <th>Date</th>
-                    <th>Amount</th>
+                    <th>Bank Amount</th>
                     <th>Score</th>
                     <th></th>
                   </tr>
@@ -118,7 +118,7 @@ export default function BankReconMatchModal({
                   <th>Voucher No.</th>
                   <th>Payee/Customer</th>
                   <th>Date</th>
-                  <th>Amount</th>
+                  <th>Bank Amount</th>
                   <th></th>
                 </tr>
               </thead>
@@ -136,7 +136,15 @@ export default function BankReconMatchModal({
                       <td>{item.voucherNo}</td>
                       <td>{item.payeeOrCustomer}</td>
                       <td>{item.date}</td>
-                      <td className="amount">₱ {formatMoney(item.amount)}</td>
+                      <td className="amount">
+                        ₱ {formatMoney(item.amount)}
+                        {item.amountSource && Number(item.grossAmount) !== Number(item.amount) ? (
+                        <div className="brc-gross-note">
+                          gross ₱ {formatMoney(item.grossAmount)}
+                          {Number(item.withholdingAmount) > 0 ? `, ₱ ${formatMoney(item.withholdingAmount)} withheld` : ""}
+                        </div>
+                      ) : null}
+                      </td>
                       <td>
                         <button disabled={busy} onClick={() => onManualMatch(item)}>
                           Match

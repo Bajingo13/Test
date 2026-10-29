@@ -37,6 +37,127 @@ function companyClause(alias, companyId) {
   return companyId ? { sql: ` AND ${alias}company_id = ?`, params: [Number(companyId)] } : { sql: "", params: [] };
 }
 
+// ---- Bank movement (R7-2) ----
+// A CV/OR header carries the GROSS voucher amount (total_debit). The cash
+// that actually crossed the bank is smaller whenever tax was withheld
+// (CV: Dr AP 1,000 / Cr Bank 980 / Cr EWT payable 20; OR: Dr Bank 980 /
+// Dr CWT 20 / Cr AR 1,000). Reconciliation must compare the statement to
+// that bank movement, never to the gross amount - and must not recompute
+// any tax itself. So the movement is read straight from the voucher's own
+// posted journal lines on the session bank account's GL account
+// (bank_codes.coa_account_id):
+//   CV: SUM(credit - debit) of its cv_lines on that account (money OUT)
+//   OR: SUM(debit - credit) of its or_lines on that account (money IN)
+// Only when the voucher has no line on that GL account at all (bank code
+// without a GL link, or a voucher booked to another cash account) does it
+// fall back to the stored header values: gross - tax_withheld_amount.
+// The accounting document is never changed; amountSource says which rule
+// produced the figure.
+const AMOUNT_SOURCE = { BANK_LINE: "BANK_LINE", GROSS_LESS_WITHHOLDING: "GROSS_LESS_WITHHOLDING" };
+
+function bankMovement(row) {
+  const grossAmount = round2(Number(row.grossAmount) || 0);
+  const withholdingAmount = round2(Number(row.withholdingAmount) || 0);
+  const fromBankLine = Number(row.bankLineCount) > 0;
+  const bankMovementAmount = fromBankLine
+    ? round2(Number(row.bankLineNet) || 0)
+    : round2(grossAmount - withholdingAmount);
+  return {
+    grossAmount,
+    withholdingAmount,
+    bankMovementAmount,
+    amountSource: fromBankLine ? AMOUNT_SOURCE.BANK_LINE : AMOUNT_SOURCE.GROSS_LESS_WITHHOLDING,
+  };
+}
+
+// One query per voucher type. `id` narrows it to a single document (the
+// confirmation guard); otherwise it is the date-window load.
+async function queryVoucherMovements(conn, type, { bankAccountId, bankCoaAccountId, companyId, fromDate, toDate, id = null }) {
+  const isCv = type === "CV";
+  const header = isCv ? "cv_headers" : "or_headers";
+  const lineTable = isCv ? "cv_lines" : "or_lines";
+  const lineFk = isCv ? "cv_id" : "or_id";
+  const net = isCv ? "l.credit - l.debit" : "l.debit - l.credit";
+  const party = isCv ? "h.payee_name AS partyName" : "h.customer_name AS partyName";
+  const receipt = isCv ? "'' AS receiptNo" : "h.receipt_no AS receiptNo";
+  const coa = bankCoaAccountId ? Number(bankCoaAccountId) : null;
+  const where = id !== null
+    ? "h.id = ?"
+    : "h.bank_account_id = ? AND h.status = 'Posted' AND h.transaction_date BETWEEN ? AND ?";
+  const whereParams = id !== null ? [id] : [bankAccountId, fromDate, toDate];
+  const co = companyClause("h.", companyId);
+  const [rows] = await conn.execute(
+    `SELECT h.id, h.voucher_no AS voucherNo, ${party},
+            DATE_FORMAT(h.transaction_date, '%Y-%m-%d') AS txnDate,
+            h.reference_no AS referenceNo, ${receipt}, h.check_no AS checkNo, h.description,
+            h.status, h.bank_account_id AS bankAccountId, h.company_id AS companyId,
+            h.total_debit AS grossAmount, h.tax_withheld_amount AS withholdingAmount,
+            (SELECT COUNT(*) FROM ${lineTable} l WHERE l.${lineFk} = h.id AND l.account_id = ?) AS bankLineCount,
+            (SELECT COALESCE(SUM(${net}), 0) FROM ${lineTable} l WHERE l.${lineFk} = h.id AND l.account_id = ?) AS bankLineNet
+     FROM ${header} h
+     WHERE ${where}${co.sql}`,
+    [coa, coa, ...whereParams, ...co.params]
+  );
+  return rows;
+}
+
+function toBookTxn(type, row) {
+  const m = bankMovement(row);
+  // A voucher whose bank line nets the other way (rare - e.g. a CV that
+  // ends up depositing) is shown in the direction the money really moved;
+  // one that nets to zero never touched the bank and is not a book item.
+  const naturalDirection = type === "CV" ? "OUT" : "IN";
+  if (m.bankMovementAmount === 0) return null;
+  const direction = m.bankMovementAmount > 0 ? naturalDirection : naturalDirection === "OUT" ? "IN" : "OUT";
+  return {
+    sourceType: type,
+    sourceId: row.id,
+    lineId: null,
+    amount: Math.abs(m.bankMovementAmount),
+    grossAmount: m.grossAmount,
+    withholdingAmount: m.withholdingAmount,
+    bankMovementAmount: Math.abs(m.bankMovementAmount),
+    amountSource: m.amountSource,
+    direction,
+    date: row.txnDate,
+    referenceNo: row.referenceNo,
+    checkNo: row.checkNo,
+    receiptNo: row.receiptNo || "",
+    payeeOrCustomer: row.partyName,
+    description: row.description,
+    voucherNo: row.voucherNo,
+  };
+}
+
+function jvBookTxn(jl) {
+  const debit = Number(jl.debit);
+  const credit = Number(jl.credit);
+  if (debit <= 0 && credit <= 0) return null;
+  const amount = debit > 0 ? debit : credit;
+  return {
+    sourceType: "JV",
+    sourceId: jl.jvId,
+    lineId: jl.lineId,
+    amount,
+    grossAmount: amount,
+    withholdingAmount: 0,
+    bankMovementAmount: amount,
+    amountSource: AMOUNT_SOURCE.BANK_LINE,
+    direction: debit > 0 ? "IN" : "OUT",
+    date: jl.txnDate,
+    referenceNo: jl.referenceNo,
+    checkNo: "",
+    receiptNo: "",
+    payeeOrCustomer: jl.preparedFor,
+    description: jl.description,
+    voucherNo: jl.voucherNo,
+  };
+}
+
+const JV_LINE_SELECT = `SELECT jl.id AS lineId, jh.id AS jvId, jh.voucher_no AS voucherNo, jh.prepared_for AS preparedFor,
+         DATE_FORMAT(jh.transaction_date, '%Y-%m-%d') AS txnDate,
+         jh.reference_no AS referenceNo, jh.description, jl.debit, jl.credit`;
+
 async function loadBookTransactions(
   conn,
   bankAccountId,
@@ -49,25 +170,10 @@ async function loadBookTransactions(
   const widenDays = (Number(toleranceDays) || 0) * 2;
   const fromDate = shiftDate(periodStart, -widenDays);
   const toDate = shiftDate(periodEnd, widenDays);
+  const scope = { bankAccountId, bankCoaAccountId, companyId, fromDate, toDate };
 
-  const [cvRows] = await conn.execute(
-    `SELECT id, voucher_no AS voucherNo, payee_name AS payeeName,
-            DATE_FORMAT(transaction_date, '%Y-%m-%d') AS txnDate,
-            reference_no AS referenceNo, check_no AS checkNo, total_debit AS totalDebit, description
-     FROM cv_headers
-     WHERE bank_account_id = ? AND status = 'Posted' AND transaction_date BETWEEN ? AND ?${companyClause("", companyId).sql}`,
-    [bankAccountId, fromDate, toDate, ...companyClause("", companyId).params]
-  );
-
-  const [orRows] = await conn.execute(
-    `SELECT id, voucher_no AS voucherNo, customer_name AS customerName,
-            DATE_FORMAT(transaction_date, '%Y-%m-%d') AS txnDate,
-            reference_no AS referenceNo, receipt_no AS receiptNo, check_no AS checkNo,
-            total_debit AS totalDebit, description
-     FROM or_headers
-     WHERE bank_account_id = ? AND status = 'Posted' AND transaction_date BETWEEN ? AND ?${companyClause("", companyId).sql}`,
-    [bankAccountId, fromDate, toDate, ...companyClause("", companyId).params]
-  );
+  const cvRows = await queryVoucherMovements(conn, "CV", scope);
+  const orRows = await queryVoucherMovements(conn, "OR", scope);
 
   // Excludes JVs that themselves came from posting a bank-recon adjustment -
   // those already exist specifically to resolve one statement line and must
@@ -75,9 +181,7 @@ async function loadBookTransactions(
   const jvRows = bankCoaAccountId
     ? (
         await conn.execute(
-          `SELECT jl.id AS lineId, jh.id AS jvId, jh.voucher_no AS voucherNo, jh.prepared_for AS preparedFor,
-                  DATE_FORMAT(jh.transaction_date, '%Y-%m-%d') AS txnDate,
-                  jh.reference_no AS referenceNo, jh.description, jl.debit, jl.credit
+          `${JV_LINE_SELECT}
            FROM jv_lines jl
            JOIN jv_headers jh ON jh.id = jl.jv_id
            WHERE jl.account_id = ? AND jh.status = 'Posted' AND jh.transaction_date BETWEEN ? AND ?
@@ -87,64 +191,43 @@ async function loadBookTransactions(
       )[0]
     : [];
 
-  const txns = [];
+  return [
+    ...cvRows.map((r) => toBookTxn("CV", r)),
+    ...orRows.map((r) => toBookTxn("OR", r)),
+    ...jvRows.map(jvBookTxn),
+  ].filter(Boolean);
+}
 
-  for (const cv of cvRows) {
-    txns.push({
-      sourceType: "CV",
-      sourceId: cv.id,
-      lineId: null,
-      amount: Number(cv.totalDebit),
-      direction: "OUT",
-      date: cv.txnDate,
-      referenceNo: cv.referenceNo,
-      checkNo: cv.checkNo,
-      receiptNo: "",
-      payeeOrCustomer: cv.payeeName,
-      description: cv.description,
-      voucherNo: cv.voucherNo,
-    });
+// One book document as reconciliation sees it, regardless of status / bank
+// account / date (the confirmation guard checks those itself and needs the
+// raw values to say WHY a document is not eligible). Returns
+// { header, txn } or null when the document does not exist in the company.
+async function loadBookItem(conn, session, { sourceType, sourceId, lineId = null }) {
+  const scope = {
+    bankAccountId: session.bankAccountId,
+    bankCoaAccountId: session.bankCoaAccountId,
+    companyId: session.companyId,
+    id: Number(sourceId),
+  };
+  if (sourceType === "CV" || sourceType === "OR") {
+    const [row] = await queryVoucherMovements(conn, sourceType, scope);
+    if (!row) return null;
+    return { header: row, txn: toBookTxn(sourceType, row) };
   }
-
-  for (const or of orRows) {
-    txns.push({
-      sourceType: "OR",
-      sourceId: or.id,
-      lineId: null,
-      amount: Number(or.totalDebit),
-      direction: "IN",
-      date: or.txnDate,
-      referenceNo: or.referenceNo,
-      checkNo: or.checkNo,
-      receiptNo: or.receiptNo,
-      payeeOrCustomer: or.customerName,
-      description: or.description,
-      voucherNo: or.voucherNo,
-    });
+  if (sourceType === "JV") {
+    const co = companyClause("jh.", session.companyId);
+    const [rows] = await conn.execute(
+      `${JV_LINE_SELECT}, jl.account_id AS accountId, jh.status, jh.source_module AS sourceModule, jh.company_id AS companyId
+       FROM jv_headers jh
+       LEFT JOIN jv_lines jl ON jl.jv_id = jh.id AND jl.id = ?
+       WHERE jh.id = ?${co.sql}`,
+      [lineId === null || lineId === undefined ? null : Number(lineId), Number(sourceId), ...co.params]
+    );
+    const row = rows[0];
+    if (!row) return null;
+    return { header: row, txn: row.lineId ? jvBookTxn(row) : null };
   }
-
-  for (const jl of jvRows) {
-    const debit = Number(jl.debit);
-    const credit = Number(jl.credit);
-    if (debit <= 0 && credit <= 0) continue;
-
-    txns.push({
-      sourceType: "JV",
-      sourceId: jl.jvId,
-      lineId: jl.lineId,
-      amount: debit > 0 ? debit : credit,
-      direction: debit > 0 ? "IN" : "OUT",
-      date: jl.txnDate,
-      referenceNo: jl.referenceNo,
-      checkNo: "",
-      receiptNo: "",
-      payeeOrCustomer: jl.preparedFor,
-      description: jl.description,
-      voucherNo: jl.voucherNo,
-    });
-  }
-
-  return txns;
+  return null;
 }
 
 // ---- Reconciliation summary (Phase 9) ----
@@ -185,16 +268,21 @@ async function computeSessionSummary(conn, session) {
   const outstandingChecksTotal = outstandingChecks.reduce((sum, t) => sum + t.amount, 0);
   const depositsInTransitTotal = depositsInTransit.reduce((sum, t) => sum + t.amount, 0);
 
-  const [cvSum] = await conn.execute(
-    `SELECT COALESCE(SUM(total_debit), 0) AS total FROM cv_headers
-     WHERE bank_account_id = ? AND status = 'Posted' AND transaction_date BETWEEN ? AND ?${companyClause("", session.companyId).sql}`,
-    [session.bankAccountId, session.periodStart, session.periodEnd, ...companyClause("", session.companyId).params]
+  // R7-2: the book side moves by what actually crossed the bank (see
+  // bankMovement above), not by the gross CV/OR voucher totals. Same
+  // per-document figure the matcher uses, over exactly the period.
+  const periodTxns = await loadBookTransactions(
+    conn,
+    session.bankAccountId,
+    session.bankCoaAccountId,
+    session.periodStart,
+    session.periodEnd,
+    0,
+    session.companyId
   );
-  const [orSum] = await conn.execute(
-    `SELECT COALESCE(SUM(total_debit), 0) AS total FROM or_headers
-     WHERE bank_account_id = ? AND status = 'Posted' AND transaction_date BETWEEN ? AND ?${companyClause("", session.companyId).sql}`,
-    [session.bankAccountId, session.periodStart, session.periodEnd, ...companyClause("", session.companyId).params]
-  );
+  const voucherNet = periodTxns
+    .filter((t) => t.sourceType === "CV" || t.sourceType === "OR")
+    .reduce((sum, t) => sum + (t.direction === "IN" ? t.amount : -t.amount), 0);
 
   let jvNet = 0;
   if (session.bankCoaAccountId) {
@@ -208,7 +296,7 @@ async function computeSessionSummary(conn, session) {
   }
 
   const bookBalance =
-    Number(session.statementBeginningBalance) - Number(cvSum[0].total) + Number(orSum[0].total) + jvNet;
+    Number(session.statementBeginningBalance) + voucherNet + jvNet;
 
   const adjustedBank =
     Number(session.statementEndingBalance) + depositsInTransitTotal - outstandingChecksTotal;
@@ -243,4 +331,11 @@ async function computeSessionSummary(conn, session) {
   };
 }
 
-module.exports = { BANK_RECON_SESSION_SELECT, loadBookTransactions, computeSessionSummary };
+module.exports = {
+  BANK_RECON_SESSION_SELECT,
+  AMOUNT_SOURCE,
+  bankMovement,
+  loadBookTransactions,
+  loadBookItem,
+  computeSessionSummary,
+};
