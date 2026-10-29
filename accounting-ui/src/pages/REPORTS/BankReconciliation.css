@@ -528,3 +528,32 @@ button.danger {
   border-top: 1px solid var(--border-color);
   padding-top: 16px;
 }
+
+/* R8.4-B: one deposit proposed as a combination of official receipts */
+.brc-queue-item.brc-queue-group > div { flex: 1; }
+.brc-group-candidate {
+  margin-top: 8px;
+  padding: 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-surface-muted);
+}
+.brc-group-title { margin: 0 0 6px; font-size: 13px; }
+.brc-group-table { min-width: 0 !important; width: 100%; }
+.brc-group-table tfoot td { font-weight: 600; }
+.brc-group-balanced td { color: var(--success-text); }
+.brc-group-off td { color: var(--danger-text); }
+.brc-group-candidate .brc-explanation { margin: 6px 0; font-size: 13px; color: var(--text-secondary); }
+.brc-inline-error {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin: 8px 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--danger-bg);
+  color: var(--danger-text);
+  overflow-wrap: anywhere;
+}
+.brc-inline-error button { flex-shrink: 0; }

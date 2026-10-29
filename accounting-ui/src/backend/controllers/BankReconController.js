@@ -645,10 +645,9 @@ exports.listStatementLines = async (req, res) => {
         sl.running_balance AS runningBalance,
         sl.match_status AS matchStatus,
         (sl.txn_date < ?) AS carriedForward,
-        m.id AS confirmedMatchId
+        (SELECT MIN(m.id) FROM bank_recon_matches m WHERE m.statement_line_id = sl.id AND m.status = 'CONFIRMED') AS confirmedMatchId,
+        (SELECT COUNT(*) FROM bank_recon_matches m WHERE m.statement_line_id = sl.id AND m.status = 'CONFIRMED') AS confirmedMatchCount
       FROM bank_recon_statement_lines sl
-      LEFT JOIN bank_recon_matches m
-        ON m.statement_line_id = sl.id AND m.status = 'CONFIRMED'
       WHERE ${set.sql}
       ORDER BY sl.txn_date ASC, sl.id ASC`,
       [session.periodStart, ...set.params]
@@ -785,7 +784,11 @@ exports.listBookItems = async (req, res) => {
 
 exports.confirmMatch = (req, res) =>
   respond(res, "CONFIRM MATCH ERROR:", "Failed to confirm match", async () => {
-    await MatchService.confirmMatch({ matchId: req.params.id, user: req.user });
+    const expected = req.body?.expectedMatchIds;
+    if (expected !== undefined && (!Array.isArray(expected) || !expected.length || expected.some((v) => !/^[1-9][0-9]{0,9}$/.test(String(v))))) {
+      throw new HttpError(400, "expectedMatchIds must be a list of match ids");
+    }
+    await MatchService.confirmMatch({ matchId: req.params.id, user: req.user, expectedMatchIds: expected || null });
     return { success: true, message: "Match confirmed" };
   });
 
@@ -837,9 +840,17 @@ exports.unmatch = async (req, res) => {
 
     await conn.beginTransaction();
 
-    await conn.execute(
-      "UPDATE bank_recon_matches SET status = 'REJECTED', unmatched_by = ?, unmatched_at = NOW() WHERE id = ?",
-      [userId, id]
+    // R8.4-B: a one-to-many match is unmatched as a whole - every OR of the
+    // deposit's group goes back to outstanding together.
+    const [released] = match.match_group
+      ? await conn.execute(
+          "SELECT id, book_source_type AS bookSourceType, book_source_id AS bookSourceId FROM bank_recon_matches WHERE match_group = ? AND status = 'CONFIRMED' FOR UPDATE",
+          [match.match_group]
+        )
+      : [[{ id: Number(id), bookSourceType: match.book_source_type, bookSourceId: match.book_source_id }]];
+    await conn.query(
+      "UPDATE bank_recon_matches SET status = 'REJECTED', unmatched_by = ?, unmatched_at = NOW() WHERE id IN (?)",
+      [userId, released.map((r) => r.id)]
     );
 
     await conn.execute(
@@ -852,8 +863,8 @@ exports.unmatch = async (req, res) => {
       entityType: "MATCH",
       entityId: Number(id),
       action: "UNMATCH",
-      description: `Unmatched statement line #${match.statement_line_id} from ${match.book_source_type} #${match.book_source_id}`,
-      beforeData: { status: match.status },
+      description: `Unmatched statement line #${match.statement_line_id} from ${released.map((r) => `${r.bookSourceType} #${r.bookSourceId}`).join(", ")}`,
+      beforeData: { status: match.status, ...(match.match_group ? { matchGroup: match.match_group, matchIds: released.map((r) => r.id) } : {}) },
       afterData: { status: "REJECTED" },
       user: req.user,
       companyId: auditCompany(req),

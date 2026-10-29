@@ -291,7 +291,7 @@ async function handleQueue(params, user) {
     `Session #${params.sessionId} needs your attention on: ${c.highConfidence} high-confidence match(es), ${c.needsReview} to review, ${c.unmatchedBank} unmatched bank row(s), ${c.unmatchedBook} outstanding book item(s) (${c.carriedForwardBook} carried from earlier periods), ${c.exceptions} exception(s).`,
   ];
   for (const h of q.highConfidence.slice(0, 5)) lines.push(`- Ready to confirm: ${h.candidate.explanation}`);
-  for (const r of q.needsReview.slice(0, 5)) lines.push(`- Review line #${r.line.id} (${r.line.txnDate}, ₱ ${formatMoney(r.line.amount)}): ${r.candidates[0].explanation}`);
+  for (const r of q.needsReview.slice(0, 5)) lines.push(`- Review line #${r.line.id} (${r.line.txnDate}, ₱ ${formatMoney(r.line.amount)}): ${r.candidates[0]?.explanation || r.reason}`);
   for (const e of q.exceptions.slice(0, 5)) lines.push(`- Exception: ${e.message}`);
   lines.push("Nothing is confirmed until you confirm it in the workspace (or tell me to confirm all exact matches).");
   return { replyText: lines.join("\n"), sessionId: params.sessionId };

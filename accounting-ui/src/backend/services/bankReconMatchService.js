@@ -1,3 +1,4 @@
+const crypto = require("crypto");
 const pool = require("../db");
 const { logAudit } = require("../lib/audit");
 const { HttpError } = require("../lib/httpError");
@@ -20,6 +21,7 @@ const {
   statementAmount,
   asConflict,
 } = require("./bankReconMatchGuard");
+const { depositPool, findDepositCombinations, classifyCombinations, GROUP_LEVEL } = require("./depositCombinationService");
 
 // The one authoritative Bank Reconciliation matching service (R8.1).
 //
@@ -53,6 +55,12 @@ const {
 // check or document number with an identical amount. AMBIGUOUS and
 // amount/date suggestions always need the accountant's own choice in the
 // workspace.
+//
+// R8.4-B one-to-many deposits: a deposit no single document matches may be
+// proposed as a COMBINATION of ORs that adds up exactly (see
+// depositCombinationService). Its rows share one match_group and are only
+// ever confirmed / unmatched together, by the accountant, never in strict
+// mode (assistant or bulk).
 
 const CHANNEL = { WORKSPACE: "WORKSPACE", AI_ASSISTANT: "AI_ASSISTANT" };
 
@@ -156,6 +164,7 @@ async function runMatching({ sessionId, user, channel = CHANNEL.WORKSPACE }) {
       candidatesByLine.set(line.id, classifyLineCandidates(scored, 3));
     }
     markCrossLineAmbiguity(candidatesByLine);
+    const groupsByLine = proposeDepositGroups(stmtLines, candidatesByLine, depositPool(bookTxns, confirmedKeys), session);
 
     await conn.beginTransaction();
 
@@ -173,8 +182,27 @@ async function runMatching({ sessionId, user, channel = CHANNEL.WORKSPACE }) {
           [session.id, line.id, c.sourceType, c.sourceId, c.lineId, c.matchType, c.totalScore, JSON.stringify(c.breakdown), c.amount, user.id]
         );
       }
+      const groups = groupsByLine.get(line.id) || [];
+      for (const [i, g] of groups.entries()) {
+        const groupId = crypto.randomUUID();
+        const breakdown = {
+          ...g.breakdown,
+          matchLevel: g.level,
+          ...(g.ambiguous ? { ambiguous: g.ambiguous } : {}),
+          group: { option: i + 1, options: groups.length, size: g.members.length, totalCents: g.totalCents, namedCount: g.namedCount },
+        };
+        for (const m of g.members) {
+          await conn.execute(
+            `INSERT INTO bank_recon_matches(
+              session_id, statement_line_id, book_source_type, book_source_id, book_line_id, match_group,
+              match_type, confidence_score, score_breakdown, status, amount, created_by
+            ) VALUES (?,?,?,?,?,?,?,?,?,'PENDING',?,?)`,
+            [session.id, line.id, m.sourceType, m.sourceId, m.lineId, groupId, g.matchType, g.score, JSON.stringify(breakdown), m.amount, user.id]
+          );
+        }
+      }
 
-      const newStatus = candidates.length > 0 ? "SUGGESTED" : "UNMATCHED";
+      const newStatus = candidates.length > 0 || groups.length > 0 ? "SUGGESTED" : "UNMATCHED";
       await conn.execute("UPDATE bank_recon_statement_lines SET match_status = ? WHERE id = ?", [newStatus, line.id]);
       if (newStatus === "SUGGESTED") suggestedCount++;
 
@@ -220,6 +248,36 @@ async function runMatching({ sessionId, user, channel = CHANNEL.WORKSPACE }) {
   }
 }
 
+// One-to-many proposals for deposit lines that no single document matches
+// to the centavo (a one-to-one exact amount always wins). An OR that fits
+// the combinations of two different deposits makes both ambiguous.
+function proposeDepositGroups(stmtLines, candidatesByLine, orPool, session) {
+  const groupsByLine = new Map();
+  for (const line of stmtLines) {
+    if (!(Number(line.credit) > 0)) continue;
+    const target = Math.round(Number(line.credit) * 100);
+    const singles = candidatesByLine.get(line.id) || [];
+    if (singles.some((c) => Math.round(Number(c.amount) * 100) === target)) continue;
+    const groups = classifyCombinations(findDepositCombinations(line, orPool, session));
+    if (groups.length) groupsByLine.set(line.id, groups);
+  }
+  const linesByMember = new Map();
+  for (const [lineId, groups] of groupsByLine) {
+    for (const g of groups) {
+      for (const m of g.members) {
+        const k = bookKey(m);
+        linesByMember.set(k, new Set([...(linesByMember.get(k) || []), lineId]));
+      }
+    }
+  }
+  for (const [lineId, groups] of groupsByLine) {
+    groupsByLine.set(lineId, groups.map((g) => (g.matchType !== "AMBIGUOUS" && g.members.some((m) => linesByMember.get(bookKey(m)).size > 1)
+      ? { ...g, matchType: "AMBIGUOUS", ambiguous: "a receipt in this combination also fits another deposit" }
+      : g)));
+  }
+  return groupsByLine;
+}
+
 function parseBreakdown(value) {
   if (!value) return null;
   if (typeof value !== "string") return value;
@@ -263,6 +321,84 @@ function explainCandidate(matchType, breakdown, ctx = null) {
   return `${base} Review before confirming.`;
 }
 
+const listNames = (names) => (names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`);
+
+// Plain-language reason for a one-to-many proposal - the engine's own
+// evidence, repeated verbatim by the workspace and the assistant.
+function explainGroup(matchType, breakdown, line, members) {
+  const deposit = Number(line?.credit) || 0;
+  const total = members.reduce((s, m) => s + Number(m.amount), 0);
+  const names = members.map((m) => m.voucherNo || `${m.bookSourceType} #${m.bookSourceId}`);
+  let text = `Bank deposit ${peso(deposit)} has a deterministic candidate consisting of ${listNames(names)} totaling ${peso(total)}.`;
+  text += breakdown?.matchLevel === GROUP_LEVEL.GROUP_REFERENCE
+    ? " The bank statement names every one of these receipts."
+    : " Only the amounts add up - nothing on the bank statement names these receipts.";
+  if (matchType === "AMBIGUOUS") {
+    return `${text} Ambiguous: ${breakdown?.ambiguous || "multiple possible combinations found"} - the accountant must choose in the workspace.`;
+  }
+  return `${text} Review and confirm the proposed match.`;
+}
+
+// Collapses the PENDING rows of one statement line into candidates: single
+// documents stay as they are; rows sharing a match_group become ONE
+// candidate listing its member ORs, their total and the difference.
+// Rows carry: id, matchGroup, bookSourceType, bookSourceId, amount,
+// matchType, confidenceScore, scoreBreakdown, voucherNo, txnDate, partyName.
+function collapseGroupRows(rows, line) {
+  const out = [];
+  const groups = new Map();
+  for (const r of rows) {
+    if (!r.matchGroup) {
+      out.push(r);
+      continue;
+    }
+    if (!groups.has(r.matchGroup)) {
+      const g = { matchGroup: r.matchGroup, rows: [] };
+      groups.set(r.matchGroup, g);
+      out.push(g);
+    }
+    groups.get(r.matchGroup).rows.push(r);
+  }
+  return out.map((c) => {
+    if (!c.rows) return c;
+    const first = c.rows[0];
+    const breakdown = parseBreakdown(first.scoreBreakdown);
+    const members = [...c.rows]
+      .sort((a, b) => String(a.txnDate).localeCompare(String(b.txnDate)) || a.bookSourceId - b.bookSourceId)
+      .map((r) => ({
+        matchId: r.id,
+        bookSourceType: r.bookSourceType,
+        bookSourceId: r.bookSourceId,
+        voucherNo: r.voucherNo,
+        txnDate: r.txnDate,
+        partyName: r.partyName,
+        amount: Number(r.amount),
+      }));
+    const totalCents = members.reduce((s, m) => s + Math.round(m.amount * 100), 0);
+    const depositCents = Math.round((Number(line?.credit) || 0) * 100);
+    return {
+      group: true,
+      id: Math.min(...c.rows.map((r) => r.id)),
+      matchGroup: c.matchGroup,
+      matchIds: c.rows.map((r) => r.id).sort((a, b) => a - b),
+      bookSourceType: "OR",
+      matchType: first.matchType,
+      confidenceScore: Number(first.confidenceScore),
+      matchLevel: breakdown?.matchLevel || null,
+      ambiguousReason: breakdown?.ambiguous || null,
+      option: breakdown?.group?.option || null,
+      options: breakdown?.group?.options || null,
+      members,
+      total: totalCents / 100,
+      depositAmount: depositCents / 100,
+      difference: (depositCents - totalCents) / 100,
+      amount: totalCents / 100,
+      strictExact: false,
+      explanation: explainGroup(first.matchType, breakdown, line, members),
+    };
+  });
+}
+
 async function listCandidates({ statementLineId, user }) {
   const access = await authorize(user, "line", statementLineId, "VIEW");
   const companyId = access.companyId ?? null;
@@ -277,11 +413,13 @@ async function listCandidates({ statementLineId, user }) {
 
   const [rows] = await pool.execute(
     `SELECT m.id, m.book_source_type AS bookSourceType, m.book_source_id AS bookSourceId,
-            m.book_line_id AS bookLineId, m.match_type AS matchType, m.confidence_score AS confidenceScore,
-            m.score_breakdown AS scoreBreakdown, m.status, m.amount
+            m.book_line_id AS bookLineId, m.match_group AS matchGroup, m.match_type AS matchType, m.confidence_score AS confidenceScore,
+            m.score_breakdown AS scoreBreakdown, m.status, m.amount,
+            o.voucher_no AS voucherNo, o.customer_name AS partyName, DATE_FORMAT(o.transaction_date, '%Y-%m-%d') AS txnDate
      FROM bank_recon_matches m
+     LEFT JOIN or_headers o ON m.match_group IS NOT NULL AND m.book_source_type = 'OR' AND o.id = m.book_source_id
      WHERE m.statement_line_id = ? AND m.status = 'PENDING'
-     ORDER BY m.confidence_score DESC`,
+     ORDER BY m.confidence_score DESC, m.id`,
     [statementLineId]
   );
 
@@ -298,7 +436,11 @@ async function listCandidates({ statementLineId, user }) {
   };
 
   const candidates = [];
-  for (const row of rows) {
+  for (const row of collapseGroupRows(rows, statementLine)) {
+    if (row.group) {
+      candidates.push(row);
+      continue;
+    }
     let detail = null;
     if (DETAIL[row.bookSourceType]) {
       const [d] = await pool.execute(DETAIL[row.bookSourceType], [row.bookSourceId, companyId, companyId]);
@@ -359,14 +501,87 @@ async function assertStrictExact(conn, match, line, txn) {
   }
 }
 
+// R8.4-B: confirms a one-to-many proposal - every row of the group or none.
+// Re-checks everything under lock: every row still PENDING and unchanged
+// (and, when the client says which rows it reviewed, exactly those), every
+// OR still posted, on this company + bank account, money in, base currency
+// and not reconciled anywhere, and the ORs' bank movements still adding up
+// to the deposit to the centavo. Any change is a 409; the caller's
+// transaction rolls back, so nothing is ever partially confirmed.
+async function confirmGroupLocked(conn, session, match, { user, strict, expectedMatchIds = null }) {
+  if (strict) {
+    throw new HttpError(
+      409,
+      "A deposit matched to several official receipts is never confirmed automatically. The accountant must review and confirm it in the workspace.",
+      "MATCH_NOT_STRICT_EXACT"
+    );
+  }
+  const [rows] = await conn.execute(
+    "SELECT * FROM bank_recon_matches WHERE match_group = ? ORDER BY id FOR UPDATE",
+    [match.match_group]
+  );
+  const stale = (message) => new HttpError(409, message, "GROUP_PROPOSAL_CHANGED");
+  if (rows.some((r) => r.status !== "PENDING")) throw stale("This combination is no longer pending - refresh the reconciliation queue.");
+  if (rows.some((r) => Number(r.session_id) !== Number(session.id) || Number(r.statement_line_id) !== Number(match.statement_line_id))) {
+    throw stale("This combination changed - refresh the reconciliation queue.");
+  }
+  if (expectedMatchIds) {
+    const want = [...new Set(expectedMatchIds.map(Number))].sort((a, b) => a - b).join(",");
+    if (want !== rows.map((r) => Number(r.id)).join(",")) {
+      throw stale("The proposed receipts changed since you reviewed them - refresh the reconciliation queue.");
+    }
+  }
+  const line = await lockStatementLine(conn, match.statement_line_id);
+  if (!(Number(line.credit) > 0)) throw stale("This statement line is no longer a deposit.");
+
+  const ordered = [...rows].sort((a, b) => a.book_source_type.localeCompare(b.book_source_type) || a.book_source_id - b.book_source_id);
+  const confirmed = [];
+  let totalCents = 0;
+  for (const r of ordered) {
+    if (r.book_source_type !== "OR") throw stale("Only official receipts can be combined into one deposit.");
+    const txn = await lockEligibleBookItem(conn, session, line, { sourceType: "OR", sourceId: r.book_source_id, lineId: null });
+    if (txn.foreignCurrency) {
+      throw new HttpError(409, `OR ${txn.voucherNo || r.book_source_id} is not in the company's base currency.`, "GROUP_CURRENCY_MISMATCH");
+    }
+    if (Math.round(txn.amount * 100) !== Math.round(Number(r.amount) * 100)) {
+      throw stale(`OR ${txn.voucherNo || r.book_source_id} now moves ${peso(txn.amount)} through the bank, not ${peso(r.amount)} - refresh the reconciliation queue.`);
+    }
+    totalCents += Math.round(txn.amount * 100);
+    confirmed.push({ id: r.id, sourceId: r.book_source_id, voucherNo: txn.voucherNo, amount: txn.amount });
+  }
+  if (totalCents !== Math.round(statementAmount(line) * 100)) {
+    throw new HttpError(
+      409,
+      `The receipts total ${peso(totalCents / 100)}, but the deposit is ${peso(statementAmount(line))} - the combination no longer reconciles.`,
+      "GROUP_AMOUNT_CHANGED"
+    );
+  }
+
+  for (const c of confirmed) {
+    await conn.execute(
+      "UPDATE bank_recon_matches SET status = 'CONFIRMED', matched_by = ?, matched_at = NOW(), amount = ? WHERE id = ?",
+      [user.id, c.amount, c.id]
+    );
+  }
+  await conn.execute(
+    `UPDATE bank_recon_matches
+     SET status = 'REJECTED', unmatched_by = ?, unmatched_at = NOW()
+     WHERE statement_line_id = ? AND status = 'PENDING' AND NOT (match_group <=> ?)`,
+    [user.id, line.id, match.match_group]
+  );
+  await conn.execute("UPDATE bank_recon_statement_lines SET match_status = 'MATCHED' WHERE id = ?", [line.id]);
+  return { match, amount: totalCents / 100, members: confirmed };
+}
+
 // One locked confirmation of a PENDING suggestion inside the caller's
 // transaction (session already locked). Returns the confirmed amount.
-async function confirmLocked(conn, session, matchId, { user, strict }) {
+async function confirmLocked(conn, session, matchId, { user, strict, expectedMatchIds = null }) {
   const [[match]] = await conn.execute("SELECT * FROM bank_recon_matches WHERE id = ? FOR UPDATE", [matchId]);
   if (!match || Number(match.session_id) !== Number(session.id)) throw new HttpError(404, "Match not found");
   if (match.status !== "PENDING") {
     throw new HttpError(409, `Match is already ${match.status}`, "MATCH_NOT_PENDING");
   }
+  if (match.match_group) return confirmGroupLocked(conn, session, match, { user, strict, expectedMatchIds });
   const line = await lockStatementLine(conn, match.statement_line_id);
   const txn = await lockEligibleBookItem(conn, session, line, {
     sourceType: match.book_source_type,
@@ -378,11 +593,32 @@ async function confirmLocked(conn, session, matchId, { user, strict }) {
   return { match, amount: txn.amount };
 }
 
-async function confirmMatch({ matchId, user, channel = CHANNEL.WORKSPACE, strict = false }) {
+async function confirmMatch({ matchId, user, channel = CHANNEL.WORKSPACE, strict = false, expectedMatchIds = null }) {
   const access = await authorize(user, "match", matchId, "CREATE");
   return withTransaction(async (conn) => {
     const session = await lockSession(conn, access.id);
-    const { match, amount } = await confirmLocked(conn, session, matchId, { user, strict });
+    const { match, amount, members } = await confirmLocked(conn, session, matchId, { user, strict, expectedMatchIds });
+    if (members) {
+      const names = members.map((m) => `OR ${m.voucherNo || `#${m.sourceId}`}`).join(", ");
+      await logAudit(conn, {
+        module: "BANK_RECON",
+        entityType: "MATCH",
+        entityId: Number(matchId),
+        action: "MATCH",
+        description: `Confirmed one-to-many match: deposit statement line #${match.statement_line_id} <-> ${names} (${peso(amount)})`,
+        beforeData: { status: "PENDING", matchGroup: match.match_group },
+        afterData: {
+          status: "CONFIRMED",
+          matchGroup: match.match_group,
+          amount,
+          members: members.map((m) => ({ matchId: m.id, bookSourceType: "OR", bookSourceId: m.sourceId, voucherNo: m.voucherNo, amount: m.amount })),
+          ...channelData(channel),
+        },
+        user,
+        companyId: access.companyId,
+      });
+      return { matchId: Number(matchId), status: "CONFIRMED", amount, matchGroup: match.match_group, memberCount: members.length };
+    }
     await logAudit(conn, {
       module: "BANK_RECON",
       entityType: "MATCH",
@@ -403,7 +639,7 @@ async function bulkConfirmExact({ sessionId, user, channel = CHANNEL.WORKSPACE }
   return withTransaction(async (conn) => {
     const session = await lockSession(conn, access.id);
     const [exactRows] = await conn.execute(
-      "SELECT id FROM bank_recon_matches WHERE session_id = ? AND status = 'PENDING' AND match_type = 'EXACT' ORDER BY id",
+      "SELECT id FROM bank_recon_matches WHERE session_id = ? AND status = 'PENDING' AND match_type = 'EXACT' AND match_group IS NULL ORDER BY id",
       [session.id]
     );
 
@@ -511,6 +747,8 @@ module.exports = {
   runMatching,
   listCandidates,
   explainCandidate,
+  explainGroup,
+  collapseGroupRows,
   confirmMatch,
   bulkConfirmExact,
   createManualMatch,

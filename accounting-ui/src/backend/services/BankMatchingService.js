@@ -140,6 +140,8 @@ async function queryVoucherMovements(conn, type, scope) {
             h.reference_no AS referenceNo, ${receipt}, h.check_no AS checkNo, h.description,
             h.status, h.bank_account_id AS bankAccountId, h.company_id AS companyId,
             h.total_debit AS grossAmount, h.tax_withheld_amount AS withholdingAmount,
+            h.currency_id AS currencyId,
+            (SELECT cur.is_base_currency FROM currencies cur WHERE cur.id = h.currency_id) AS currencyIsBase,
             (SELECT COUNT(*) FROM ${lineTable} l WHERE l.${lineFk} = h.id AND l.account_id = ?) AS bankLineCount,
             (SELECT COALESCE(SUM(${net}), 0) FROM ${lineTable} l WHERE l.${lineFk} = h.id AND l.account_id = ?) AS bankLineNet
      FROM ${header} h
@@ -174,6 +176,10 @@ function toBookTxn(type, row) {
     payeeOrCustomer: row.partyName,
     description: row.description,
     voucherNo: row.voucherNo,
+    currencyId: row.currencyId ?? null,
+    // R8.4-B: a document in a currency other than the company's base
+    // currency is never combined into a multi-OR deposit match.
+    foreignCurrency: row.currencyId != null && Number(row.currencyIsBase) !== 1,
   };
 }
 

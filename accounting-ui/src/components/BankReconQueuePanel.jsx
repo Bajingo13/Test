@@ -3,6 +3,7 @@
 // GET /api/bank-recon/sessions/:id/queue (the deterministic engine). A
 // one-click confirm calls the normal confirmation route, which re-checks
 // everything on the server.
+import DepositGroupCandidate from "./DepositGroupCandidate.jsx";
 
 function formatMoney(value) {
   return Number(value || 0).toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -16,7 +17,21 @@ const EXCEPTION_LABEL = {
   ALREADY_RECONCILED: "Already reconciled",
   OUTSIDE_DATE_WINDOW: "Outside date tolerance",
   POSSIBLE_DUPLICATE_IMPORT: "Possible duplicate",
+  GROUP_AMOUNT_MISMATCH: "Receipts do not add up",
+  OLD_OUTSTANDING_ITEM: "Long outstanding",
 };
+
+const OPTION = (i) => `Option ${String.fromCharCode(65 + i)}`;
+
+function DepositDetails({ line }) {
+  return (
+    <p className="brc-preview-meta">
+      Bank deposit: {line.txnDate} · ₱ {formatMoney(line.amount)}
+      {line.referenceNo ? ` · Ref ${line.referenceNo}` : ""}
+      {line.description ? ` · ${line.description}` : ""}
+    </p>
+  );
+}
 
 function LineLabel({ line }) {
   return (
@@ -28,7 +43,7 @@ function LineLabel({ line }) {
   );
 }
 
-export default function BankReconQueuePanel({ queue, loading, isFinalized, busyMatchId, onConfirm, onReview }) {
+export default function BankReconQueuePanel({ queue, loading, isFinalized, busyMatchId, onConfirm, onReview, error, onDismissError }) {
   if (!queue) {
     return (
       <div className="brc-card" data-testid="recon-queue">
@@ -57,6 +72,13 @@ export default function BankReconQueuePanel({ queue, loading, isFinalized, busyM
         </span>
       </div>
 
+      {error && (
+        <div className="brc-inline-error" role="alert" data-testid="queue-error">
+          <span>{error}</span>
+          {onDismissError && <button type="button" onClick={onDismissError}>Dismiss</button>}
+        </div>
+      )}
+
       <div className="brc-queue-tiles">
         {tiles.map(([label, n, tone]) => (
           <div key={label} className={`brc-queue-tile ${tone}`}>
@@ -69,7 +91,19 @@ export default function BankReconQueuePanel({ queue, loading, isFinalized, busyM
       {highConfidence.length > 0 && (
         <section className="brc-queue-section">
           <h3>High-confidence matches</h3>
-          {highConfidence.map((h) => (
+          {highConfidence.map((h) => (h.candidate.group ? (
+            <div key={h.line.id} className="brc-queue-item brc-queue-group">
+              <div>
+                <LineLabel line={h.line} />
+                <DepositDetails line={h.line} />
+                <DepositGroupCandidate
+                  candidate={h.candidate}
+                  busy={busyMatchId === h.candidate.matchId}
+                  onConfirm={isFinalized ? null : onConfirm}
+                />
+              </div>
+            </div>
+          ) : (
             <div key={h.line.id} className="brc-queue-item">
               <div>
                 <LineLabel line={h.line} />
@@ -81,22 +115,47 @@ export default function BankReconQueuePanel({ queue, loading, isFinalized, busyM
                 </button>
               )}
             </div>
-          ))}
+          )))}
         </section>
       )}
 
       {needsReview.length > 0 && (
         <section className="brc-queue-section">
           <h3>Needs review</h3>
-          {needsReview.map((r) => (
-            <div key={r.line.id} className="brc-queue-item">
-              <div>
-                <LineLabel line={r.line} />
-                <p>{r.reason} {r.candidates[0]?.explanation}</p>
+          {needsReview.map((r) => {
+            const groups = r.candidates.filter((c) => c.group);
+            if (!groups.length) {
+              return (
+                <div key={r.line.id} className="brc-queue-item">
+                  <div>
+                    <LineLabel line={r.line} />
+                    <p>{r.reason} {r.candidates[0]?.explanation}</p>
+                  </div>
+                  {!isFinalized && <button onClick={() => onReview(r.line.id)}>{r.manualReview ? "Match Manually" : "Review"}</button>}
+                </div>
+              );
+            }
+            return (
+              <div key={r.line.id} className="brc-queue-item brc-queue-group">
+                <div>
+                  <LineLabel line={r.line} />
+                  <DepositDetails line={r.line} />
+                  <p>{r.reason}</p>
+                  {groups.map((g, i) => (
+                    <DepositGroupCandidate
+                      key={g.matchGroup}
+                      candidate={g}
+                      title={groups.length > 1 ? OPTION(i) : null}
+                      confirmLabel={groups.length > 1 ? `Confirm ${OPTION(i)}` : "Confirm Match"}
+                      busy={busyMatchId === g.matchId}
+                      onConfirm={isFinalized ? null : onConfirm}
+                    />
+                  ))}
+                </div>
+                {!isFinalized && <button onClick={() => onReview(r.line.id)}>Review</button>}
               </div>
-              {!isFinalized && <button onClick={() => onReview(r.line.id)}>Review</button>}
-            </div>
-          ))}
+            );
+          })}
         </section>
       )}
 
@@ -104,12 +163,19 @@ export default function BankReconQueuePanel({ queue, loading, isFinalized, busyM
         <section className="brc-queue-section">
           <h3>Exceptions</h3>
           {exceptions.map((e, i) => (
-            <div key={`${e.type}-${e.line.id}-${i}`} className="brc-queue-item">
+            <div key={`${e.type}-${e.line?.id ?? `${e.document?.type}${e.document?.id}`}-${i}`} className="brc-queue-item">
               <div>
-                <span className="brc-exception-tag">{EXCEPTION_LABEL[e.type] || e.type}</span> <LineLabel line={e.line} />
+                <span className="brc-exception-tag">{EXCEPTION_LABEL[e.type] || e.type}</span>{" "}
+                {e.line ? (
+                  <LineLabel line={e.line} />
+                ) : (
+                  <span>
+                    {e.document.txnDate} · {e.document.type} {e.document.voucherNo} · ₱ {formatMoney(e.document.amount)}
+                  </span>
+                )}
                 <p>{e.message}</p>
               </div>
-              {!isFinalized && e.line.matchStatus !== "MATCHED" && <button onClick={() => onReview(e.line.id)}>Open</button>}
+              {!isFinalized && e.line && e.line.matchStatus !== "MATCHED" && <button onClick={() => onReview(e.line.id)}>Open</button>}
             </div>
           ))}
         </section>

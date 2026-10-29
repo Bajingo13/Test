@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import DepositGroupCandidate from "./DepositGroupCandidate.jsx";
 
 function formatMoney(value) {
   return Number(value || 0).toLocaleString("en-PH", {
@@ -16,6 +17,7 @@ export default function BankReconMatchModal({
   onConfirmCandidate,
   onManualMatch,
   onIgnore,
+  error,
 }) {
   const [search, setSearch] = useState("");
 
@@ -53,7 +55,28 @@ export default function BankReconMatchModal({
           </button>
         </div>
 
-        {candidates.length > 0 && (
+        {error && (
+          <div className="brc-inline-error" role="alert" data-testid="modal-error">
+            <span>{error}</span>
+          </div>
+        )}
+
+        {candidates.some((c) => c.group) && (
+          <div className="brc-modal-section">
+            <h3>Proposed Receipt Combinations</h3>
+            {candidates.filter((c) => c.group).map((g, i, all) => (
+              <DepositGroupCandidate
+                key={g.matchGroup}
+                candidate={g}
+                title={all.length > 1 ? `Option ${String.fromCharCode(65 + i)}` : null}
+                busy={busy}
+                onConfirm={onConfirmCandidate}
+              />
+            ))}
+          </div>
+        )}
+
+        {candidates.some((c) => !c.group) && (
           <div className="brc-modal-section">
             <h3>Suggested Candidates</h3>
             <div className="brc-table-wrap">
@@ -71,7 +94,7 @@ export default function BankReconMatchModal({
                   </tr>
                 </thead>
                 <tbody>
-                  {candidates.map((c) => (
+                  {candidates.filter((c) => !c.group).map((c) => (
                     <tr key={c.id}>
                       <td>
                         {c.matchType}

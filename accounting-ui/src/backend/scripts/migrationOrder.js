@@ -209,6 +209,10 @@ const MIGRATION_ORDER = [
   // CARRIED + source session). Existing sessions become MANUAL. Must run after
   // bank_recon_company_scope_migration.sql.
   "r84_bank_recon_opening_balance_migration.sql",
+  // R8.4-B: bank_recon_matches.match_group links the rows of one one-to-many
+  // deposit proposal (NULL for one-to-one). Must run after
+  // bank_reconciliation_migration.sql.
+  "r84b_bank_recon_match_group_migration.sql",
 ];
 
 module.exports = { MIGRATION_ORDER };

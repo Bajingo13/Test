@@ -59,6 +59,8 @@ export default function BankReconciliationWorkspace() {
   const [queue, setQueue] = useState(null);
   const [queueLoading, setQueueLoading] = useState(false);
   const [queueBusyMatchId, setQueueBusyMatchId] = useState(null);
+  const [queueError, setQueueError] = useState("");
+  const [modalError, setModalError] = useState("");
 
   const [runningMatching, setRunningMatching] = useState(false);
   const [bulkConfirming, setBulkConfirming] = useState(false);
@@ -384,24 +386,28 @@ export default function BankReconciliationWorkspace() {
   }
 
   // One-click confirm of a high-confidence match: the normal confirmation
-  // route, which re-checks everything on the server.
-  async function confirmFromQueue(matchId) {
+  // route, which re-checks everything on the server. For a deposit matched
+  // to several receipts, the match rows the accountant saw are sent too, so
+  // a proposal that changed meanwhile is refused (409) instead of confirmed.
+  async function confirmFromQueue(matchId, expectedMatchIds) {
     setQueueBusyMatchId(matchId);
+    setQueueError("");
     try {
       const res = await fetch(`${API_BASE}/api/bank-recon/matches/${matchId}/confirm`, {
         method: "POST",
         credentials: "include",
-        headers: authHeaders(),
+        headers: { ...authHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify(expectedMatchIds ? { expectedMatchIds } : {}),
       });
       const data = await res.json();
       if (!res.ok) {
         if (handleAuthError(res.status)) return;
-        alert(data.message || "Failed to confirm match.");
+        setQueueError(data.message || "Failed to confirm match.");
       }
       await refreshBoard();
     } catch (err) {
       console.error("CONFIRM FROM QUEUE ERROR:", err);
-      alert("Unable to connect to server.");
+      setQueueError("Unable to connect to server.");
     } finally {
       setQueueBusyMatchId(null);
     }
@@ -684,6 +690,7 @@ export default function BankReconciliationWorkspace() {
 
   async function openModal(line) {
     setModalLine(line);
+    setModalError("");
     setModalCandidates([]);
 
     if (line.matchStatus !== "SUGGESTED") return;
@@ -709,24 +716,27 @@ export default function BankReconciliationWorkspace() {
 
   function closeModal() {
     setModalLine(null);
+    setModalError("");
     setModalCandidates([]);
   }
 
-  async function confirmCandidate(matchId) {
+  async function confirmCandidate(matchId, expectedMatchIds) {
     setModalBusy(true);
+    setModalError("");
 
     try {
       const res = await fetch(`${API_BASE}/api/bank-recon/matches/${matchId}/confirm`, {
         method: "POST",
         credentials: "include",
-        headers: authHeaders(),
+        headers: { ...authHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify(expectedMatchIds ? { expectedMatchIds } : {}),
       });
 
       const data = await res.json();
 
       if (!res.ok) {
         if (handleAuthError(res.status)) return;
-        alert(data.message || "Failed to confirm match.");
+        setModalError(data.message || "Failed to confirm match.");
         return;
       }
 
@@ -734,7 +744,7 @@ export default function BankReconciliationWorkspace() {
       await refreshBoard();
     } catch (err) {
       console.error("CONFIRM MATCH ERROR:", err);
-      alert("Unable to connect to server.");
+      setModalError("Unable to connect to server.");
     } finally {
       setModalBusy(false);
     }
@@ -821,7 +831,11 @@ export default function BankReconciliationWorkspace() {
 
   async function unmatchLine(line) {
     if (!line.confirmedMatchId) return;
-    if (!confirm("Unmatch this statement line? It will return to Unmatched status.")) return;
+    const count = Number(line.confirmedMatchCount) || 1;
+    const prompt = count > 1
+      ? `Unmatch this deposit? All ${count} official receipts in its combination return to outstanding.`
+      : "Unmatch this statement line? It will return to Unmatched status.";
+    if (!confirm(prompt)) return;
 
     try {
       const res = await fetch(`${API_BASE}/api/bank-recon/matches/${line.confirmedMatchId}`, {
@@ -1437,6 +1451,8 @@ export default function BankReconciliationWorkspace() {
         busyMatchId={queueBusyMatchId}
         onConfirm={confirmFromQueue}
         onReview={reviewLine}
+        error={queueError}
+        onDismissError={() => setQueueError("")}
       />
 
       <div className="brc-card">
@@ -1528,6 +1544,7 @@ export default function BankReconciliationWorkspace() {
           onConfirmCandidate={confirmCandidate}
           onManualMatch={manualMatch}
           onIgnore={ignoreLine}
+          error={modalError}
         />
       )}
 
