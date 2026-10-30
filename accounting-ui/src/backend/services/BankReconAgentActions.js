@@ -14,6 +14,7 @@ const { BANK_RECON_SESSION_SELECT, computeSessionSummary } = require("./BankMatc
 const MatchService = require("./bankReconMatchService");
 const QueueService = require("./bankReconQueueService");
 const SessionService = require("./bankReconSessionService");
+const HistoryService = require("./bankStatementHistoryService");
 const { resolveDateRange } = require("./PromptParser");
 const { AsyncLocalStorage } = require("async_hooks");
 const PermissionService = require("./permissionService");
@@ -197,6 +198,25 @@ async function getReconciliationQueue(sessionId, user) {
   return QueueService.buildQueue({ sessionId, user });
 }
 
+// Advisory (R8.4-C): the statement history of the session's company + bank
+// account - exactly the rows, statuses and filters the Statement History
+// page shows (server-side filters, one bounded page). Read-only.
+async function getBankHistory(sessionId, filters, user) {
+  const [[s]] = await pool.execute("SELECT company_id AS companyId, bank_account_id AS bankAccountId FROM bank_recon_sessions WHERE id = ?", [sessionId]);
+  if (!s || !s.companyId) throw new HttpError(404, "Reconciliation session not found");
+  const allowed = ["status", "from", "to", "type", "q", "amountMin", "amountMax", "page"];
+  const query = { companyId: s.companyId, bankAccountId: s.bankAccountId, pageSize: 20 };
+  for (const k of allowed) if (filters && filters[k] !== undefined && filters[k] !== null) query[k] = filters[k];
+  return HistoryService.listHistory({ user, query });
+}
+
+// Advisory (R8.4-C): everything recorded about one statement row - its
+// confirmed match (one-to-one or a combination of ORs) with the engine's
+// explanation, or its pending candidates. Never decides anything.
+async function getBankLineDetail(statementLineId, user) {
+  return HistoryService.lineDetail({ lineId: Number(statementLineId), user });
+}
+
 // Deliberately narrower than the REST PATCH /sessions/:id endpoint - only
 // the matching-engine knobs, never statementBeginningBalance/EndingBalance.
 // Those are facts from the real bank statement; an AI (or a keyword parser)
@@ -307,6 +327,8 @@ module.exports = {
   getLowConfidenceLines: guarded(getLowConfidenceLines, { kind: "session" }),
   getMatchCandidates: guarded(getMatchCandidates, { kind: "line", passUser: true }),
   getReconciliationQueue: guarded(getReconciliationQueue, { kind: "session", passUser: true }),
+  getBankHistory: guarded(getBankHistory, { kind: "session", passUser: true }),
+  getBankLineDetail: guarded(getBankLineDetail, { kind: "line", passUser: true }),
   runMatchingForSession: guarded(runMatchingForSession, { kind: "session", permission: "CREATE", passUser: true }),
   updateSessionTolerance: guarded(updateSessionTolerance, { kind: "session", permission: "CREATE", passUser: true }),
   confirmMatch: guarded(confirmMatch, { kind: "match", permission: "CREATE", passUser: true }),

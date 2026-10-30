@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
 import "./BankReconciliation.css";
+import { useBankReconDialogs } from "../../components/BankReconDialogs.jsx";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
 
@@ -26,6 +27,8 @@ function emptySessionForm() {
 
 export default function BankReconciliation() {
   const navigate = useNavigate();
+  // R8.4-C: in-app messages instead of notify().
+  const { notify, element: dialogElement } = useBankReconDialogs();
 
   const [sessions, setSessions] = useState([]);
   const [bankAccounts, setBankAccounts] = useState([]);
@@ -72,7 +75,7 @@ export default function BankReconciliation() {
 
       if (!res.ok) {
         if (handleAuthError(res.status)) return;
-        alert(data.message || "Failed to load reconciliation sessions");
+        notify(data.message || "Failed to load reconciliation sessions");
         return;
       }
 
@@ -168,17 +171,17 @@ export default function BankReconciliation() {
 
   async function createSession() {
     if (companies.length > 1 && !form.companyId) {
-      return alert("Select the company this reconciliation belongs to.");
+      return notify("Select the company this reconciliation belongs to.");
     }
-    if (!form.bankAccountId) return alert("Bank account is required.");
+    if (!form.bankAccountId) return notify("Bank account is required.");
     if (!form.periodStart || !form.periodEnd) {
-      return alert("Period start and end are required.");
+      return notify("Period start and end are required.");
     }
     if (new Date(form.periodEnd) < new Date(form.periodStart)) {
-      return alert("Period end cannot be before period start.");
+      return notify("Period end cannot be before period start.");
     }
     if (!openingCarried && String(form.statementBeginningBalance).trim() === "") {
-      return alert("Enter the opening balance for this first reconciliation of the bank account.");
+      return notify("Enter the opening balance for this first reconciliation of the bank account.");
     }
 
     setSaving(true);
@@ -198,7 +201,7 @@ export default function BankReconciliation() {
 
       if (!res.ok) {
         if (handleAuthError(res.status)) return;
-        alert(data.message || "Failed to create reconciliation session.");
+        notify(data.message || "Failed to create reconciliation session.");
         return;
       }
 
@@ -206,7 +209,7 @@ export default function BankReconciliation() {
       navigate(`/reports/bank-reconciliation/${data.id}`);
     } catch (err) {
       console.error("CREATE BANK RECON SESSION ERROR:", err);
-      alert("Unable to connect to server.");
+      notify("Unable to connect to server.");
     } finally {
       setSaving(false);
     }
@@ -214,15 +217,21 @@ export default function BankReconciliation() {
 
   return (
     <div className="brc-page">
+      {dialogElement}
       <div className="brc-header-card">
         <div>
           <h1>Bank Reconciliation</h1>
           <p>Reconcile bank statements against CV, OR, Invoice, and JV records.</p>
         </div>
 
-        <button onClick={openNewForm} className="brc-btn primary">
-          + New Session
-        </button>
+        <div className="brc-header-actions">
+          <button onClick={() => navigate("/reports/bank-reconciliation/history")} className="brc-btn">
+            Statement History
+          </button>
+          <button onClick={openNewForm} className="brc-btn primary">
+            + New Session
+          </button>
+        </div>
       </div>
 
       {showNewForm && (

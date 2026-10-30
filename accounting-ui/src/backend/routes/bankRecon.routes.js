@@ -37,6 +37,9 @@ router.post(
   handleUpload(bankStatementUpload.single("file")),
   ctrl.previewStatement
 );
+router.get("/statement-history", authenticateToken, authorizePermission("REPORTS.BANK_RECONCILIATION", "VIEW"), ctrl.getStatementHistory);
+router.get("/statement-history/imports", authenticateToken, authorizePermission("REPORTS.BANK_RECONCILIATION", "VIEW"), ctrl.getStatementImports);
+router.get("/statement-history/lines/:id", authenticateToken, authorizePermission("REPORTS.BANK_RECONCILIATION", "VIEW"), line, ctrl.getStatementLineDetail);
 router.get("/sessions/:id/import-batches", authenticateToken, authorizePermission("REPORTS.BANK_RECONCILIATION", "VIEW"), session, ctrl.listImportBatches);
 router.get("/sessions/:id/statement-lines", authenticateToken, authorizePermission("REPORTS.BANK_RECONCILIATION", "VIEW"), session, ctrl.listStatementLines);
 router.delete("/import-batches/:id", authenticateToken, authorizePermission("REPORTS.BANK_RECONCILIATION", "CREATE"), batch, ctrl.deleteImportBatch);

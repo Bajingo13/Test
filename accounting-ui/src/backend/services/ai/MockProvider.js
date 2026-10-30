@@ -297,22 +297,53 @@ async function handleQueue(params, user) {
   return { replyText: lines.join("\n"), sessionId: params.sessionId };
 }
 
-// Advisory: relays the matching engine's own candidates and explanations
-// for one statement line - never re-scores, never confirms.
+// Advisory (R8.4-C): rows of the statement history in one status, as the
+// Statement History page lists them - never computed here.
+async function handleHistory(params, user, status, title) {
+  if (!params.sessionId) return needSessionReply();
+  const h = await actions.getBankHistory(params.sessionId, { status }, user);
+  if (h.total === 0) {
+    return { replyText: `No ${title} for ${h.scope.bankCode} - ${h.scope.bankName} (${h.scope.companyName}).`, sessionId: params.sessionId };
+  }
+  const lines = [`${h.total} ${title} for ${h.scope.bankCode} - ${h.scope.bankName} (${h.scope.companyName})${h.total > h.rows.length ? `, showing the latest ${h.rows.length}` : ""}:`];
+  for (const r of h.rows) {
+    const flags = [r.carriedForward ? "carried forward" : null, r.possibleDuplicate ? "possible duplicate" : null].filter(Boolean);
+    lines.push(`- Line #${r.id} ${r.txnDate} ${r.description || r.referenceNo || r.checkNo || ""} ₱ ${formatMoney(r.amount)} (${r.direction === "OUT" ? "out" : "in"}) - ${r.status.replace("_", " ").toLowerCase()}${flags.length ? ` [${flags.join(", ")}]` : ""}, imported in session #${r.session.id} (${r.session.periodStart} to ${r.session.periodEnd})`);
+  }
+  lines.push("Open Statement History in Bank Reconciliation for the full list and details.");
+  return { replyText: lines.join("\n"), sessionId: params.sessionId };
+}
+
+// Advisory: relays what the reconciliation records say about one statement
+// line - its confirmed match with the engine's explanation, or the engine's
+// pending candidates. Never re-scores, never confirms; says so when nothing
+// supports an answer.
 async function handleExplainLine(params, user) {
-  const { statementLine, candidates } = await actions.getMatchCandidates(params.statementLineId, user);
-  const amount = Number(statementLine.debit) > 0 ? statementLine.debit : statementLine.credit;
-  const head = `Statement line #${statementLine.id} (${statementLine.txnDate}, ${statementLine.description || "no description"}, ₱ ${formatMoney(amount)}):`;
-  if (candidates.length === 0) {
+  const detail = await actions.getBankLineDetail(params.statementLineId, user);
+  const statementLine = { ...detail.line, sessionId: detail.workingSession?.id ?? null };
+  const head = `Statement line #${statementLine.id} (${statementLine.txnDate}, ${statementLine.description || "no description"}, ₱ ${formatMoney(statementLine.amount)}):`;
+  const m = detail.confirmedMatch;
+  if (m) {
+    const docs = m.documents.map((d) => `${d.bookSourceType} ${d.voucherNo || "#" + d.bookSourceId} ₱ ${formatMoney(d.amount)}`).join(", ");
     return {
-      replyText: `${head}\nNo pending candidates. Run matching again, or find a match manually in the workspace.`,
+      replyText: `${head}\nReconciled - confirmed by ${m.confirmedBy || "an accountant"} on ${m.confirmedAt} in session #${m.session.id}. Matched to ${docs} (total ₱ ${formatMoney(m.total)}, difference ₱ ${formatMoney(m.difference)}).\n${m.explanation}`,
       sessionId: statementLine.sessionId,
     };
   }
-  const lines = candidates.map(
-    (c) => `- ${c.matchType} ${c.bookSourceType} ${c.detail?.voucherNo || "#" + c.bookSourceId}, bank amount ₱ ${formatMoney(c.amount)}, ${c.confidenceScore}% - ${c.explanation}`
-  );
-  return { replyText: `${head}\n${lines.join("\n")}`, sessionId: statementLine.sessionId };
+  if (detail.status === "IGNORED") {
+    return { replyText: `${head}\nThis line was ignored${detail.ignored?.by ? ` by ${detail.ignored.by} on ${detail.ignored.at}` : ""}. It is not reconciled to any document.`, sessionId: statementLine.sessionId };
+  }
+  const candidates = detail.candidates;
+  if (candidates.length === 0) {
+    return {
+      replyText: `${head}\nNot reconciled, and I cannot determine a match: the matching engine has no candidate for it. ${detail.reasonOutstanding || ""} Run matching again, or find a match manually in the workspace.`,
+      sessionId: statementLine.sessionId,
+    };
+  }
+  const lines = candidates.map((c) => (c.group
+    ? `- ${c.matchType} combination of ${c.members.map((x) => x.voucherNo || "OR #" + x.bookSourceId).join(", ")}, total ₱ ${formatMoney(c.total)}, ${c.confidenceScore}% - ${c.explanation}`
+    : `- ${c.matchType} ${c.bookSourceType} ${c.detail?.voucherNo || "#" + c.bookSourceId}, bank amount ₱ ${formatMoney(c.amount)}, ${c.confidenceScore}% - ${c.explanation}`));
+  return { replyText: `${head}\nNot reconciled yet - these are suggestions only, confirm one in the workspace:\n${lines.join("\n")}`, sessionId: statementLine.sessionId };
 }
 
 function handleUnknown() {
@@ -326,6 +357,9 @@ function handleUnknown() {
       '- "Explain why reconciliation is not balanced"',
       '- "Match transactions within 3 days and allow a ₱1.00 variance"',
       '- "What needs my attention?"',
+      '- "Show me the unmatched bank transactions"',
+      '- "Show me the carried-forward items"',
+      '- "Why was line 123 matched?"',
       '- "Explain the candidates for line 123"',
       '- "Confirm all exact matches"',
     ].join("\n"),
@@ -371,6 +405,12 @@ async function processTurn({ messages, sessionId, user }) {
       break;
     case INTENTS.QUEUE:
       result = await handleQueue(params, user);
+      break;
+    case INTENTS.UNMATCHED_BANK:
+      result = await handleHistory(params, user, "UNMATCHED", "unmatched bank transaction(s)");
+      break;
+    case INTENTS.CARRIED_FORWARD:
+      result = await handleHistory(params, user, "CARRIED_FORWARD", "carried-forward bank transaction(s)");
       break;
     default:
       result = handleUnknown();

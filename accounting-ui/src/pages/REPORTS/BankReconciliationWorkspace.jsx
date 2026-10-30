@@ -4,6 +4,7 @@ import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import BankReconMatchModal from "../../components/BankReconMatchModal.jsx";
 import BankStatementPreview from "../../components/BankStatementPreview.jsx";
 import BankReconQueuePanel from "../../components/BankReconQueuePanel.jsx";
+import { useBankReconDialogs } from "../../components/BankReconDialogs.jsx";
 import BankReconAuditLogPanel from "../../components/BankReconAuditLogPanel.jsx";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
 import "./BankReconciliation.css";
@@ -30,6 +31,8 @@ const nonEmptyMapping = (m) => {
 };
 
 export default function BankReconciliationWorkspace() {
+  // R8.4-C: in-app confirmation / messages instead of alert / confirm / prompt.
+  const { confirmAction, askText, notify, element: dialogElement } = useBankReconDialogs();
   const { id } = useParams();
   const navigate = useNavigate();
 
@@ -145,18 +148,26 @@ export default function BankReconciliationWorkspace() {
       let overrideReason;
 
       if (summary && !summary.canFinalizeCleanly) {
-        overrideReason = prompt(
-          `This session isn't fully reconciled (difference: ₱ ${formatMoney(
+        overrideReason = await askText({
+          title: "Finalize with differences",
+          inputLabel: "Reason for finalizing anyway",
+          confirmLabel: "Finalize anyway",
+          danger: true,
+          body: `This session isn't fully reconciled (difference: ₱ ${formatMoney(
             summary.difference
           )}, ${summary.pendingAdjustmentsCount} pending adjustment(s), ${
             summary.unresolvedStatementLinesCount
-          } unresolved line(s)). Enter a reason to finalize anyway, or cancel.`
-        );
+          } unresolved line(s)). Enter a reason to finalize anyway, or cancel.`,
+        });
         if (!overrideReason || !overrideReason.trim()) {
           setFinalizing(false);
           return;
         }
-      } else if (!confirm("Finalize this reconciliation session?")) {
+      } else if (!(await confirmAction({
+        title: "Finalize session",
+        body: "Finalize this reconciliation session? It becomes read-only until an approver reopens it.",
+        confirmLabel: "Finalize",
+      }))) {
         setFinalizing(false);
         return;
       }
@@ -175,7 +186,7 @@ export default function BankReconciliationWorkspace() {
 
       if (!res.ok) {
         if (handleAuthError(res.status)) return;
-        alert(data.message || "Failed to finalize session.");
+        notify(data.message || "Failed to finalize session.");
         return;
       }
 
@@ -184,14 +195,20 @@ export default function BankReconciliationWorkspace() {
       await loadAuditLog();
     } catch (err) {
       console.error("FINALIZE SESSION ERROR:", err);
-      alert("Unable to connect to server.");
+      notify("Unable to connect to server.");
     } finally {
       setFinalizing(false);
     }
   }
 
   async function reopenSession() {
-    const reason = prompt("Enter a reason for reopening this finalized session:");
+    const reason = await askText({
+      title: "Reopen session",
+      body: "Reopening makes this finalized reconciliation editable again.",
+      inputLabel: "Reason for reopening",
+      confirmLabel: "Reopen",
+      danger: true,
+    });
     if (!reason || !reason.trim()) return;
 
     setReopening(true);
@@ -211,7 +228,7 @@ export default function BankReconciliationWorkspace() {
 
       if (!res.ok) {
         if (handleAuthError(res.status)) return;
-        alert(data.message || "Failed to reopen session.");
+        notify(data.message || "Failed to reopen session.");
         return;
       }
 
@@ -220,7 +237,7 @@ export default function BankReconciliationWorkspace() {
       await loadAuditLog();
     } catch (err) {
       console.error("REOPEN SESSION ERROR:", err);
-      alert("Unable to connect to server.");
+      notify("Unable to connect to server.");
     } finally {
       setReopening(false);
     }
@@ -239,14 +256,14 @@ export default function BankReconciliationWorkspace() {
 
       if (!res.ok) {
         if (handleAuthError(res.status)) return;
-        alert(data.message || "Failed to load report.");
+        notify(data.message || "Failed to load report.");
         return;
       }
 
       await renderReportPDF(data);
     } catch (err) {
       console.error("DOWNLOAD REPORT ERROR:", err);
-      alert("Unable to connect to server.");
+      notify("Unable to connect to server.");
     } finally {
       setDownloadingReport(false);
     }
@@ -528,7 +545,7 @@ export default function BankReconciliationWorkspace() {
     const accountId = adjustmentAccountPicks[adj.id] || adj.suggestedAccountId;
 
     if (!accountId) {
-      alert("Select an account before approving.");
+      notify("Select an account before approving.");
       return;
     }
 
@@ -549,7 +566,7 @@ export default function BankReconciliationWorkspace() {
 
       if (!res.ok) {
         if (handleAuthError(res.status)) return;
-        alert(data.message || "Failed to approve adjustment.");
+        notify(data.message || "Failed to approve adjustment.");
         return;
       }
 
@@ -558,14 +575,14 @@ export default function BankReconciliationWorkspace() {
       await loadAuditLog();
     } catch (err) {
       console.error("APPROVE ADJUSTMENT ERROR:", err);
-      alert("Unable to connect to server.");
+      notify("Unable to connect to server.");
     } finally {
       setAdjustmentBusyId(null);
     }
   }
 
   async function rejectAdjustment(adjId) {
-    if (!confirm("Reject this adjustment suggestion?")) return;
+    if (!(await confirmAction({ title: "Reject adjustment", body: "Reject this adjustment suggestion?", confirmLabel: "Reject", danger: true }))) return;
 
     setAdjustmentBusyId(adjId);
 
@@ -580,7 +597,7 @@ export default function BankReconciliationWorkspace() {
 
       if (!res.ok) {
         if (handleAuthError(res.status)) return;
-        alert(data.message || "Failed to reject adjustment.");
+        notify(data.message || "Failed to reject adjustment.");
         return;
       }
 
@@ -589,14 +606,14 @@ export default function BankReconciliationWorkspace() {
       await loadAuditLog();
     } catch (err) {
       console.error("REJECT ADJUSTMENT ERROR:", err);
-      alert("Unable to connect to server.");
+      notify("Unable to connect to server.");
     } finally {
       setAdjustmentBusyId(null);
     }
   }
 
   async function postAdjustment(adjId) {
-    if (!confirm("Post this adjustment as a Journal Voucher? This cannot be undone.")) return;
+    if (!(await confirmAction({ title: "Post adjustment", body: "Post this adjustment as a Journal Voucher? This cannot be undone.", confirmLabel: "Post Journal Voucher", danger: true }))) return;
 
     setAdjustmentBusyId(adjId);
 
@@ -611,17 +628,17 @@ export default function BankReconciliationWorkspace() {
 
       if (!res.ok) {
         if (handleAuthError(res.status)) return;
-        alert(data.message || "Failed to post adjustment.");
+        notify(data.message || "Failed to post adjustment.");
         return;
       }
 
-      alert(`Posted as JV ${data.voucherNo}.`);
+      notify(`Posted as JV ${data.voucherNo}.`, "success");
       await loadAdjustments();
       await loadSummary();
       await loadAuditLog();
     } catch (err) {
       console.error("POST ADJUSTMENT ERROR:", err);
-      alert("Unable to connect to server.");
+      notify("Unable to connect to server.");
     } finally {
       setAdjustmentBusyId(null);
     }
@@ -641,16 +658,16 @@ export default function BankReconciliationWorkspace() {
 
       if (!res.ok) {
         if (handleAuthError(res.status)) return;
-        alert(data.message || "Failed to run matching.");
+        notify(data.message || "Failed to run matching.");
         return;
       }
 
-      alert(data.message);
+      notify(data.message, "success");
       closeModal();
       await refreshBoard();
     } catch (err) {
       console.error("RUN MATCHING ERROR:", err);
-      alert("Unable to connect to server.");
+      notify("Unable to connect to server.");
     } finally {
       setRunningMatching(false);
     }
@@ -674,15 +691,15 @@ export default function BankReconciliationWorkspace() {
 
       if (!res.ok) {
         if (handleAuthError(res.status)) return;
-        alert(data.message || "Failed to bulk-confirm matches.");
+        notify(data.message || "Failed to bulk-confirm matches.");
         return;
       }
 
-      alert(data.message);
+      notify(data.message, "success");
       await refreshBoard();
     } catch (err) {
       console.error("BULK CONFIRM ERROR:", err);
-      alert("Unable to connect to server.");
+      notify("Unable to connect to server.");
     } finally {
       setBulkConfirming(false);
     }
@@ -753,7 +770,11 @@ export default function BankReconciliationWorkspace() {
   async function manualMatch(bookItem) {
     if (!modalLine) return;
 
-    if (!confirm(`Match this statement line to ${bookItem.sourceType} ${bookItem.voucherNo}?`)) {
+    if (!(await confirmAction({
+      title: "Match statement line",
+      body: `Match this statement line to ${bookItem.sourceType} ${bookItem.voucherNo}?`,
+      confirmLabel: "Match",
+    }))) {
       return;
     }
 
@@ -781,7 +802,7 @@ export default function BankReconciliationWorkspace() {
 
       if (!res.ok) {
         if (handleAuthError(res.status)) return;
-        alert(data.message || "Failed to create match.");
+        notify(data.message || "Failed to create match.");
         return;
       }
 
@@ -789,7 +810,7 @@ export default function BankReconciliationWorkspace() {
       await refreshBoard();
     } catch (err) {
       console.error("MANUAL MATCH ERROR:", err);
-      alert("Unable to connect to server.");
+      notify("Unable to connect to server.");
     } finally {
       setModalBusy(false);
     }
@@ -815,7 +836,7 @@ export default function BankReconciliationWorkspace() {
 
       if (!res.ok) {
         if (handleAuthError(res.status)) return;
-        alert(data.message || "Failed to update statement line.");
+        notify(data.message || "Failed to update statement line.");
         return;
       }
 
@@ -823,7 +844,7 @@ export default function BankReconciliationWorkspace() {
       await refreshBoard();
     } catch (err) {
       console.error("IGNORE LINE ERROR:", err);
-      alert("Unable to connect to server.");
+      notify("Unable to connect to server.");
     } finally {
       setModalBusy(false);
     }
@@ -835,7 +856,7 @@ export default function BankReconciliationWorkspace() {
     const prompt = count > 1
       ? `Unmatch this deposit? All ${count} official receipts in its combination return to outstanding.`
       : "Unmatch this statement line? It will return to Unmatched status.";
-    if (!confirm(prompt)) return;
+    if (!(await confirmAction({ title: count > 1 ? "Unmatch deposit" : "Unmatch statement line", body: prompt, confirmLabel: "Unmatch", danger: true }))) return;
 
     try {
       const res = await fetch(`${API_BASE}/api/bank-recon/matches/${line.confirmedMatchId}`, {
@@ -848,14 +869,14 @@ export default function BankReconciliationWorkspace() {
 
       if (!res.ok) {
         if (handleAuthError(res.status)) return;
-        alert(data.message || "Failed to unmatch.");
+        notify(data.message || "Failed to unmatch.");
         return;
       }
 
       await refreshBoard();
     } catch (err) {
       console.error("UNMATCH ERROR:", err);
-      alert("Unable to connect to server.");
+      notify("Unable to connect to server.");
     }
   }
 
@@ -926,7 +947,7 @@ export default function BankReconciliationWorkspace() {
 
       if (!res.ok) {
         if (handleAuthError(res.status)) return;
-        alert(data.message || "Failed to read the statement.");
+        notify(data.message || "Failed to read the statement.");
         return;
       }
 
@@ -944,7 +965,7 @@ export default function BankReconciliationWorkspace() {
       }
     } catch (err) {
       console.error("PREVIEW BANK STATEMENT ERROR:", err);
-      alert("Unable to connect to server.");
+      notify("Unable to connect to server.");
     } finally {
       setUploading(false);
     }
@@ -975,11 +996,11 @@ export default function BankReconciliationWorkspace() {
 
         if (data.headers) {
           setMappingHeaders(data.headers);
-          alert(data.message || "Please map the statement columns below and try again.");
+          notify(data.message || "Please map the statement columns below and try again.");
           return;
         }
 
-        alert(data.message || "Failed to import statement.");
+        notify(data.message || "Failed to import statement.");
         return;
       }
 
@@ -989,7 +1010,7 @@ export default function BankReconciliationWorkspace() {
           .map((r) => `Row ${r.row}: ${r.reason}`)
           .join("\n")}`;
       }
-      alert(message);
+      notify(message, data.skippedRows?.length ? "info" : "success");
 
       setPendingFile(null);
       setMappingHeaders(null);
@@ -1001,14 +1022,14 @@ export default function BankReconciliationWorkspace() {
       await refreshBoard();
     } catch (err) {
       console.error("IMPORT BANK STATEMENT ERROR:", err);
-      alert("Unable to connect to server.");
+      notify("Unable to connect to server.");
     } finally {
       setUploading(false);
     }
   }
 
   function handleUploadClick() {
-    if (!pendingFile) return alert("Choose a CSV or Excel file first.");
+    if (!pendingFile) return notify("Choose a CSV or Excel file first.");
     runPreview(pendingFile, nonEmptyMapping(mappingSelections));
   }
 
@@ -1019,7 +1040,7 @@ export default function BankReconciliationWorkspace() {
   }
 
   async function deleteBatch(batchId) {
-    if (!confirm("Delete this import batch and all its statement lines?")) return;
+    if (!(await confirmAction({ title: "Delete import batch", body: "Delete this import batch and all its statement lines?", confirmLabel: "Delete", danger: true }))) return;
 
     try {
       const res = await fetch(`${API_BASE}/api/bank-recon/import-batches/${batchId}`, {
@@ -1032,7 +1053,7 @@ export default function BankReconciliationWorkspace() {
 
       if (!res.ok) {
         if (handleAuthError(res.status)) return;
-        alert(data.message || "Failed to delete import batch.");
+        notify(data.message || "Failed to delete import batch.");
         return;
       }
 
@@ -1040,7 +1061,7 @@ export default function BankReconciliationWorkspace() {
       await loadStatementLines();
     } catch (err) {
       console.error("DELETE IMPORT BATCH ERROR:", err);
-      alert("Unable to connect to server.");
+      notify("Unable to connect to server.");
     }
   }
 
@@ -1059,7 +1080,7 @@ export default function BankReconciliationWorkspace() {
           setNotFound(true);
           return;
         }
-        alert(data.message || "Failed to load reconciliation session");
+        notify(data.message || "Failed to load reconciliation session");
         navigate("/reports/bank-reconciliation");
         return;
       }
@@ -1106,15 +1127,15 @@ export default function BankReconciliationWorkspace() {
 
       if (!res.ok) {
         if (handleAuthError(res.status)) return;
-        alert(data.message || "Failed to update reconciliation session.");
+        notify(data.message || "Failed to update reconciliation session.");
         return;
       }
 
       await loadSession();
-      alert("Session settings updated.");
+      notify("Session settings updated.", "success");
     } catch (err) {
       console.error("UPDATE BANK RECON SESSION ERROR:", err);
-      alert("Unable to connect to server.");
+      notify("Unable to connect to server.");
     } finally {
       setSaving(false);
     }
@@ -1123,6 +1144,7 @@ export default function BankReconciliationWorkspace() {
   if (notFound) {
     return (
       <div className="brc-page">
+      {dialogElement}
         <div className="brc-card" role="alert">
           <h2>Reconciliation not found</h2>
           <p>This reconciliation session doesn't exist or isn't available to you.</p>
@@ -1137,6 +1159,7 @@ export default function BankReconciliationWorkspace() {
   if (!session || !form) {
     return (
       <div className="brc-page">
+      {dialogElement}
         <div className="brc-card">Loading...</div>
       </div>
     );
@@ -1146,6 +1169,7 @@ export default function BankReconciliationWorkspace() {
 
   return (
     <div className="brc-page">
+      {dialogElement}
       <div className="brc-header-card">
         <div>
           <h1>
@@ -1171,6 +1195,19 @@ export default function BankReconciliationWorkspace() {
                   {" "}The source session's ending balance is now ₱ {formatMoney(session.openingSourceEndingBalance)} - it changed after this balance was carried.
                 </span>
               )}
+          </p>
+          {/* R8.4-C: this bank account's full statement history (read-only). */}
+          <p className="brc-session-context">
+            <a
+              href={`/reports/bank-reconciliation/history?${new URLSearchParams({ companyId: session.companyId || "", bankAccountId: session.bankAccountId })}`}
+              onClick={(e) => {
+                e.preventDefault();
+                navigate(`/reports/bank-reconciliation/history?${new URLSearchParams({ companyId: session.companyId || "", bankAccountId: session.bankAccountId })}`);
+              }}
+              data-testid="history-link"
+            >
+              View statement history for this bank account
+            </a>
           </p>
         </div>
 

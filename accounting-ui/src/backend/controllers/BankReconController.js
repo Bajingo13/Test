@@ -19,6 +19,7 @@ const {
 } = require("../services/bankReconAccessService");
 const QueueService = require("../services/bankReconQueueService");
 const SessionService = require("../services/bankReconSessionService");
+const HistoryService = require("../services/bankStatementHistoryService");
 
 // Routes guard every session / child id (bankReconAccessService.requireAccess)
 // and leave the owning session on req.reconSession; its company is stamped
@@ -723,6 +724,21 @@ async function respond(res, label, failMessage, fn) {
     res.status(500).json({ message: failMessage });
   }
 }
+
+// R8.4-C statement history (read-only). Company + bank account come from
+// the query and are resolved/authorized by the service; a line's access is
+// checked by the route's requireAccess("line").
+exports.getStatementHistory = (req, res) =>
+  respond(res, "STATEMENT HISTORY ERROR:", "Failed to load the statement history", () =>
+    HistoryService.listHistory({ user: req.user, query: req.query }));
+
+exports.getStatementImports = (req, res) =>
+  respond(res, "STATEMENT IMPORTS ERROR:", "Failed to load the import history", () =>
+    HistoryService.listImports({ user: req.user, query: req.query }));
+
+exports.getStatementLineDetail = (req, res) =>
+  respond(res, "STATEMENT LINE DETAIL ERROR:", "Failed to load the statement transaction", () =>
+    HistoryService.lineDetail({ lineId: Number(req.params.id), user: req.user }));
 
 exports.runMatching = (req, res) =>
   respond(res, "RUN MATCHING ERROR:", "Failed to run matching", async () => ({

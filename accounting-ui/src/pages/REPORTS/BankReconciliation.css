@@ -557,3 +557,181 @@ button.danger {
   overflow-wrap: anywhere;
 }
 .brc-inline-error button { flex-shrink: 0; }
+
+/* R8.4-C: in-app confirmation dialog + messages (replace alert / confirm / prompt) */
+.brc-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(var(--shadow-rgb), 0.5);
+}
+.brc-confirm {
+  width: min(460px, 100%);
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  box-sizing: border-box;
+  padding: 20px;
+  border-radius: 14px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  box-shadow: 0 20px 60px rgba(var(--shadow-rgb), 0.3);
+}
+.brc-confirm h3 { margin: 0 0 8px; }
+.brc-confirm p { margin: 0 0 12px; color: var(--text-secondary); white-space: pre-line; overflow-wrap: anywhere; }
+.brc-confirm-input { display: grid; gap: 6px; margin-bottom: 12px; font-size: 13px; color: var(--text-secondary); }
+.brc-confirm-input textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px;
+  border: 1px solid var(--border-color-strong);
+  border-radius: 8px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font: inherit;
+}
+.brc-confirm-actions { display: flex; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
+.brc-btn.danger-solid { background: var(--danger); border-color: var(--danger); color: #fff; }
+.brc-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.brc-toasts {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 1200;
+  display: grid;
+  gap: 8px;
+  width: min(420px, calc(100vw - 32px));
+}
+.brc-toast {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border-color);
+  box-shadow: 0 8px 24px rgba(var(--shadow-rgb), 0.18);
+  font-size: 14px;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+.brc-toast.error { background: var(--danger-bg); color: var(--danger-text); }
+.brc-toast.success { background: var(--success-bg); color: var(--success-text); }
+.brc-toast.info { background: var(--info-bg); color: var(--info-text); }
+.brc-toast button { flex-shrink: 0; border: 0; background: transparent; color: inherit; font-size: 18px; line-height: 1; cursor: pointer; }
+.brc-header-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+
+/* R8.4-C: Bank Statement History */
+.brc-history-page { max-width: 100%; box-sizing: border-box; overflow-x: hidden; }
+.brc-history-page .brc-card, .brc-history-page .brc-header-card { min-width: 0; }
+.brc-link-btn { display: inline-flex; align-items: center; text-decoration: none; box-sizing: border-box; }
+.brc-history-scope, .brc-history-filters, .brc-history-more {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 12px;
+  align-items: end;
+}
+.brc-history-scope label, .brc-history-filters label {
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  min-width: 0;
+}
+.brc-history-scope select, .brc-history-filters input, .brc-history-filters select {
+  height: 38px;
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0 10px;
+  border: 1px solid var(--border-color-strong);
+  border-radius: 8px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+.brc-history-search { grid-column: span 2; }
+.brc-history-more { grid-column: 1 / -1; }
+.brc-history-filter-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.brc-history-tabs { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+.brc-history-tabs button {
+  height: 36px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color-strong);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-weight: 700;
+  cursor: pointer;
+}
+.brc-history-tabs button.active { background: var(--dark-btn-bg); border-color: var(--dark-btn-bg); color: var(--dark-btn-text); }
+.brc-history-table { min-width: 1150px; }
+.brc-history-table td, .brc-history-table th { color: var(--text-primary); }
+.brc-history-row { cursor: pointer; }
+.brc-history-row:hover { background: var(--bg-hover); }
+.brc-history-row:focus-visible, .brc-history-page button:focus-visible, .brc-history-page a:focus-visible,
+.brc-history-page select:focus-visible, .brc-history-page input:focus-visible, .brc-drawer button:focus-visible, .brc-drawer a:focus-visible,
+.brc-confirm button:focus-visible, .brc-confirm textarea:focus-visible {
+  outline: 3px solid var(--accent-blue);
+  outline-offset: 2px;
+}
+.brc-history-flags { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-left: 4px; }
+.brc-history-flag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color-strong);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+.brc-history-flag.readonly { color: var(--warning-text); background: var(--warning-bg); }
+.brc-match-badge.exception { background: var(--danger-bg); color: var(--danger-text); border: 1px dashed var(--danger-text); }
+.brc-history-pager { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 14px; flex-wrap: wrap; color: var(--text-primary); }
+.brc-sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.brc-drawer-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  justify-content: flex-end;
+  background: rgba(var(--shadow-rgb), 0.45);
+}
+.brc-drawer {
+  width: min(720px, 100vw);
+  height: 100%;
+  overflow-y: auto;
+  box-sizing: border-box;
+  padding: 20px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  box-shadow: -12px 0 40px rgba(var(--shadow-rgb), 0.25);
+}
+.brc-drawer-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.brc-drawer-header h2 { margin: 0; }
+.brc-drawer .brc-table { min-width: 520px; }
+.brc-detail-status { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.brc-detail-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px 16px; margin: 12px 0; }
+.brc-detail-field { min-width: 0; }
+.brc-detail-field dt { font-size: 12px; color: var(--text-secondary); }
+.brc-detail-field dd { margin: 2px 0 0; overflow-wrap: anywhere; }
+.brc-detail-section { border-top: 1px solid var(--border-color); padding-top: 12px; margin-top: 12px; }
+.brc-detail-section h3 { margin: 0 0 8px; font-size: 16px; }
+.brc-detail-section p { overflow-wrap: anywhere; }
+.brc-detail-candidate { border: 1px solid var(--border-color); border-radius: 10px; padding: 10px; margin-bottom: 10px; background: var(--bg-surface-muted); }
+.brc-detail-list { padding-left: 18px; overflow-wrap: anywhere; }
+.brc-history-page .brc-explanation, .brc-drawer .brc-explanation { color: var(--text-secondary); font-size: 13px; }
+@media (max-width: 700px) {
+  .brc-history-page { padding: 16px; }
+  .brc-history-search { grid-column: 1 / -1; }
+  .brc-header-card .brc-header-actions, .brc-history-page .brc-header-card .brc-link-btn { width: 100%; }
+  .brc-history-scope, .brc-history-filters, .brc-history-more { grid-template-columns: 1fr 1fr; }
+  .brc-history-filter-actions, .brc-history-filters > button { grid-column: 1 / -1; }
+  .brc-drawer { padding: 16px; }
+}
+/* The app shell's <main> grows to its content's minimum width; the history
+   tables must not push it - they scroll inside their own box instead. */
+.brc-history-page .brc-table-wrap,
+.brc-drawer .brc-table-wrap { contain: inline-size; width: 100%; }

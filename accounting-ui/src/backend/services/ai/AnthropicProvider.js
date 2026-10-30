@@ -148,6 +148,36 @@ function buildTools(touched, user) {
     },
   });
 
+  const getBankHistory = betaZodTool({
+    name: "getBankHistory",
+    description:
+      "Read-only: the imported bank statement history of a session's company + bank account, as the Statement History page shows it - one page (up to 20 rows, newest first) with each row's status (MATCHED / UNMATCHED / NEEDS_REVIEW / EXCEPTION / IGNORED), carried-forward and possible-duplicate flags, and its confirmed match. Filter by status (MATCHED, UNMATCHED, NEEDS_REVIEW, EXCEPTION, CARRIED_FORWARD, IGNORED, POSSIBLE_DUPLICATE), date range, Debit/Credit, search text or amount range. Use it for questions like 'show me the unmatched bank transactions' or 'show me the carried-forward items'.",
+    inputSchema: z.object({
+      sessionId: z.number(),
+      status: z.string().optional(),
+      from: z.string().optional(),
+      to: z.string().optional(),
+      type: z.string().optional(),
+      q: z.string().optional(),
+      amountMin: z.number().optional(),
+      amountMax: z.number().optional(),
+      page: z.number().optional(),
+    }),
+    run: async (input) => {
+      touched.sessionId = input.sessionId;
+      const { sessionId, ...filters } = input;
+      return JSON.stringify(await actions.getBankHistory(sessionId, filters, user));
+    },
+  });
+
+  const getBankLineDetail = betaZodTool({
+    name: "getBankLineDetail",
+    description:
+      "Read-only: everything recorded about one statement line (by statement line ID) - its status, the CONFIRMED match if any (one document or a combination of ORs, with total, difference, the engine's explanation, who confirmed it and when), otherwise the engine's pending candidates, plus carried-forward / ignored / possible-duplicate details. Use it to answer 'why was this deposit matched to these ORs?'. Only call a line reconciled when confirmedMatch is present.",
+    inputSchema: z.object({ statementLineId: z.number() }),
+    run: async (input) => JSON.stringify(await actions.getBankLineDetail(input.statementLineId, user)),
+  });
+
   const confirmMatch = betaZodTool({
     name: "confirmMatch",
     description:
@@ -179,6 +209,8 @@ function buildTools(touched, user) {
     getLowConfidenceLines,
     getMatchCandidates,
     getReconciliationQueue,
+    getBankHistory,
+    getBankLineDetail,
     runMatching,
     updateSessionTolerance,
     confirmMatch,
@@ -193,7 +225,7 @@ Today's date is ${todayIso()}.
 
 You help an accountant drive an already-built, fully deterministic reconciliation engine through conversation, and explain its results in plain language. You never invent a match, a balance, or a number - every figure you state must come from a tool result you actually received this conversation. If a tool hasn't given you a number, say you don't have it yet rather than estimating.
 
-You are advisory. The matching engine on the server decides every candidate, its evidence level (EXACT / AMBIGUOUS / suggestion) and its bank amount; use getMatchCandidates to explain or recommend, and never invent, re-score or adjust a match or an amount. Your tools are read-only or safely-reversible staging actions, plus two conditional ones (confirmMatch, bulkConfirmExact) that you may only call when the user's own message is an explicit imperative to confirm a match - never proactively. The server accepts those only for a statement line's single EXACT match; anything AMBIGUOUS or weaker is refused, and you should tell the user to review and confirm it in the workspace. Never say a match is confirmed or reconciled unless confirmMatch / bulkConfirmExact returned that result in this turn - a high-confidence suggestion is still only a suggestion until it is confirmed. You cannot post a journal entry, finalize a reconciliation, or reopen one under any phrasing - those always require the accountant's own click in the workspace UI. If asked to do one of those, explain that you can get the session ready but the actual post/finalize step needs their approval in the workspace.
+You are advisory. The matching engine on the server decides every candidate, its evidence level (EXACT / AMBIGUOUS / suggestion) and its bank amount; use getMatchCandidates to explain or recommend, and never invent, re-score or adjust a match or an amount. Your tools are read-only or safely-reversible staging actions, plus two conditional ones (confirmMatch, bulkConfirmExact) that you may only call when the user's own message is an explicit imperative to confirm a match - never proactively. The server accepts those only for a statement line's single EXACT match; anything AMBIGUOUS or weaker is refused, and you should tell the user to review and confirm it in the workspace. Never say a match is confirmed or reconciled unless confirmMatch / bulkConfirmExact returned that result in this turn, or getBankLineDetail / getBankHistory reports it as MATCHED with a confirmed match; never say documents match unless the matching engine's own candidates or confirmed match say so. If no tool result supports an answer, say you cannot determine it - a high-confidence suggestion is still only a suggestion until it is confirmed. You cannot post a journal entry, finalize a reconciliation, or reopen one under any phrasing - those always require the accountant's own click in the workspace UI. If asked to do one of those, explain that you can get the session ready but the actual post/finalize step needs their approval in the workspace.
 
 When the user names a bank account in natural language ("BDO Account 001", "BPI Payroll Account"), call listBankAccounts and pick the best match yourself. When they name a period ("July 2026", "as of July 31, 2026"), pass month+year or periodStart+periodEnd to findOrCreateSession as fits their phrasing.
 
