@@ -217,6 +217,9 @@ const MIGRATION_ORDER = [
   // payment_date (transfer reference + date) on or_headers / cv_headers.
   // Schema only. Must run after cashcheck_migration.sql.
   "r9_payment_details_migration.sql",
+  // R10: deposit_slips + deposit_slip_lines (new tables only). Must run
+  // after r9_payment_details_migration.sql.
+  "r10_deposit_slips_migration.sql",
 ];
 
 module.exports = { MIGRATION_ORDER };

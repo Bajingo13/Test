@@ -314,6 +314,38 @@ async function handleHistory(params, user, status, title) {
   return { replyText: lines.join("\n"), sessionId: params.sessionId };
 }
 
+// Advisory (R10): deposit slips as the Deposit Slips page lists them.
+async function handleDepositSlips(params, user) {
+  if (!params.sessionId) return needSessionReply();
+  const today = new Date().toISOString().slice(0, 10);
+  const filters = params.depositFilter === "UNRECONCILED" || params.depositFilter === "MISSING"
+    ? { status: "UNRECONCILED" }
+    : params.depositFilter === "TODAY" ? { from: today, to: today } : {};
+  const list = await actions.getDepositSlips(params.sessionId, filters, user);
+  const rows = params.depositFilter === "MISSING" ? list.rows.filter((r) => r.missingFromStatement) : list.rows;
+  const title = { MISSING: "deposited slip(s) not found on the imported bank statement", UNRECONCILED: "deposited slip(s) not yet reconciled", TODAY: "deposit slip(s) dated today", ALL: "deposit slip(s)" }[params.depositFilter || "ALL"];
+  if (!rows.length) return { replyText: `No ${title} for this bank account.`, sessionId: params.sessionId };
+  const lines = [`${rows.length} ${title}:`];
+  for (const r of rows.slice(0, 20)) {
+    lines.push(`- ${r.depositNo} ${r.depositDate} ₱ ${formatMoney(r.totalAmount)} (${r.lineCount} document(s)) - ${r.status.toLowerCase()}${r.missingFromStatement ? " - not found on the imported statement yet" : ""}`);
+  }
+  return { replyText: lines.join("\n"), sessionId: params.sessionId };
+}
+
+async function handleDepositSlipDetail(params, user) {
+  if (!params.sessionId) return needSessionReply();
+  const d = await actions.getDepositSlipDetail(params.sessionId, `DS-${String(params.depositNo).padStart(5, "0")}`, user);
+  const docs = d.lines.map((l) => `${l.sourceType} ${l.voucherNo} ₱ ${formatMoney(l.amount)} (${l.paymentMethod})`).join(", ");
+  const lines = [`Deposit slip ${d.depositNo} (${d.bankCode} - ${d.bankName}, ${d.depositDate}) - ${d.status.toLowerCase()}, total ₱ ${formatMoney(d.totalAmount)}: ${docs || "no documents"}.`];
+  if (d.bankRecon.match) {
+    const m = d.bankRecon.match;
+    lines.push(`Reconciled to the bank statement deposit of ${m.statementDate} for ₱ ${formatMoney(m.bankAmount)}, confirmed by ${m.confirmedBy || "an accountant"} on ${m.matchedAt}. ${m.explanation}`);
+  } else {
+    lines.push("It is not reconciled to any bank statement deposit.");
+  }
+  return { replyText: lines.join("\n"), sessionId: params.sessionId };
+}
+
 // Advisory: relays what the reconciliation records say about one statement
 // line - its confirmed match with the engine's explanation, or the engine's
 // pending candidates. Never re-scores, never confirms; says so when nothing
@@ -360,6 +392,7 @@ function handleUnknown() {
       '- "Show me the unmatched bank transactions"',
       '- "Show me the carried-forward items"',
       '- "Why was line 123 matched?"',
+      '- "Which deposits are not yet reconciled?" / "What receipts are in DS-00125?"',
       '- "Explain the candidates for line 123"',
       '- "Confirm all exact matches"',
     ].join("\n"),
@@ -405,6 +438,12 @@ async function processTurn({ messages, sessionId, user }) {
       break;
     case INTENTS.QUEUE:
       result = await handleQueue(params, user);
+      break;
+    case INTENTS.DEPOSIT_SLIPS:
+      result = await handleDepositSlips(params, user);
+      break;
+    case INTENTS.DEPOSIT_SLIP_DETAIL:
+      result = await handleDepositSlipDetail(params, user);
       break;
     case INTENTS.UNMATCHED_BANK:
       result = await handleHistory(params, user, "UNMATCHED", "unmatched bank transaction(s)");

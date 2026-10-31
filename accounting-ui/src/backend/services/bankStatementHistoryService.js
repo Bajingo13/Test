@@ -371,6 +371,8 @@ function presentConfirmed(rows, line) {
   return {
     oneToMany: Boolean(first.matchGroup),
     matchGroup: first.matchGroup || null,
+    // R10: the deposit slip this deposit was reconciled through, if any.
+    depositSlip: breakdown?.depositSlipId ? { id: breakdown.depositSlipId, depositNo: breakdown.depositNo, evidence: breakdown.evidence || null } : null,
     matchType: first.matchType,
     matchLevel: breakdown?.matchLevel || null,
     confidenceScore: first.confidenceScore === null ? null : Number(first.confidenceScore),

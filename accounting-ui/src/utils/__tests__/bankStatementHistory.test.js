@@ -45,6 +45,7 @@ describe("Bank Reconciliation source checks", () => {
     ["pages", "REPORTS", "BankReconciliation.jsx"],
     ["pages", "REPORTS", "BankReconciliationWorkspace.jsx"],
     ["pages", "REPORTS", "BankStatementHistory.jsx"],
+    ["pages", "REPORTS", "DepositSlips.jsx"],
     ["components", "BankReconQueuePanel.jsx"],
     ["components", "BankReconMatchModal.jsx"],
     ["components", "DepositGroupCandidate.jsx"],
@@ -80,6 +81,8 @@ describe("Bank Reconciliation source checks", () => {
 
   test("the route is registered before the session route", () => {
     const app = read("App.jsx");
+    expect(app.indexOf('"/reports/bank-reconciliation/deposits"')).toBeGreaterThan(0);
+    expect(app.indexOf('"/reports/bank-reconciliation/deposits"')).toBeLessThan(app.indexOf('"/reports/bank-reconciliation/:id"'));
     expect(app.indexOf('"/reports/bank-reconciliation/history"')).toBeGreaterThan(0);
     expect(app.indexOf('"/reports/bank-reconciliation/history"')).toBeLessThan(app.indexOf('"/reports/bank-reconciliation/:id"'));
   });

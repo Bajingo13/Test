@@ -15,6 +15,7 @@ const MatchService = require("./bankReconMatchService");
 const QueueService = require("./bankReconQueueService");
 const SessionService = require("./bankReconSessionService");
 const HistoryService = require("./bankStatementHistoryService");
+const DepositSlipService = require("./depositSlipService");
 const { resolveDateRange } = require("./PromptParser");
 const { AsyncLocalStorage } = require("async_hooks");
 const PermissionService = require("./permissionService");
@@ -217,6 +218,31 @@ async function getBankLineDetail(statementLineId, user) {
   return HistoryService.lineDetail({ lineId: Number(statementLineId), user });
 }
 
+// Advisory (R10): deposit slips of the session's company + bank account -
+// the same list the Deposit Slips page shows (status UNRECONCILED = deposited
+// but not yet matched; missingFromStatement = deposited on or before the
+// last imported statement row and still unmatched). Read-only.
+async function getDepositSlips(sessionId, filters, user) {
+  const [[s]] = await pool.execute("SELECT company_id AS companyId, bank_account_id AS bankAccountId FROM bank_recon_sessions WHERE id = ?", [sessionId]);
+  if (!s || !s.companyId) throw new HttpError(404, "Reconciliation session not found");
+  const query = { companyId: s.companyId, bankAccountId: s.bankAccountId };
+  for (const k of ["status", "from", "to", "q", "page"]) if (filters && filters[k] !== undefined && filters[k] !== null) query[k] = filters[k];
+  return DepositSlipService.listSlips({ user, query });
+}
+
+// Advisory (R10): one deposit slip of the session's company by its number
+// (e.g. DS-00125) - its documents, total, status and, when reconciled, the
+// statement deposit it was matched to with the engine's explanation.
+async function getDepositSlipDetail(sessionId, depositNo, user) {
+  const [[row]] = await pool.execute(
+    `SELECT d.id FROM deposit_slips d JOIN bank_recon_sessions s ON s.company_id = d.company_id
+     WHERE s.id = ? AND d.deposit_no = ?`,
+    [sessionId, String(depositNo || "").trim().toUpperCase()]
+  );
+  if (!row) throw new HttpError(404, "Deposit slip not found");
+  return DepositSlipService.slipDetail({ user, slipId: row.id });
+}
+
 // Deliberately narrower than the REST PATCH /sessions/:id endpoint - only
 // the matching-engine knobs, never statementBeginningBalance/EndingBalance.
 // Those are facts from the real bank statement; an AI (or a keyword parser)
@@ -329,6 +355,8 @@ module.exports = {
   getReconciliationQueue: guarded(getReconciliationQueue, { kind: "session", passUser: true }),
   getBankHistory: guarded(getBankHistory, { kind: "session", passUser: true }),
   getBankLineDetail: guarded(getBankLineDetail, { kind: "line", passUser: true }),
+  getDepositSlips: guarded(getDepositSlips, { kind: "session", passUser: true }),
+  getDepositSlipDetail: guarded(getDepositSlipDetail, { kind: "session", passUser: true }),
   runMatchingForSession: guarded(runMatchingForSession, { kind: "session", permission: "CREATE", passUser: true }),
   updateSessionTolerance: guarded(updateSessionTolerance, { kind: "session", permission: "CREATE", passUser: true }),
   confirmMatch: guarded(confirmMatch, { kind: "match", permission: "CREATE", passUser: true }),

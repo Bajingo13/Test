@@ -124,4 +124,5 @@ module.exports = {
   sessionListFilter,
   resolveCompanyForNewSession,
   assertBookDocumentInCompany,
+  canSeeCompany,
 };

@@ -153,7 +153,8 @@ async function buildQueue({ sessionId, user }) {
       const [pending] = await conn.query(
         `SELECT m.id, m.statement_line_id AS lineId, m.book_source_type AS bookSourceType, m.book_source_id AS bookSourceId,
                 m.match_type AS matchType, m.confidence_score AS confidenceScore, m.score_breakdown AS scoreBreakdown, m.amount,
-                m.match_group AS matchGroup, o.customer_name AS partyName, DATE_FORMAT(o.transaction_date, '%Y-%m-%d') AS txnDate,
+                m.match_group AS matchGroup, COALESCE(o.customer_name, cv.payee_name) AS partyName,
+                DATE_FORMAT(COALESCE(o.transaction_date, cv.transaction_date), '%Y-%m-%d') AS txnDate,
                 COALESCE(cv.voucher_no, o.voucher_no, j.voucher_no) AS voucherNo
          FROM bank_recon_matches m
          LEFT JOIN cv_headers cv ON m.book_source_type = 'CV' AND cv.id = m.book_source_id
@@ -211,7 +212,9 @@ async function buildQueue({ sessionId, user }) {
         highConfidence.push({ line: presentLine(l), candidate: groups[0] });
       } else if (cands.length) {
         let reason;
-        if (groups.length > 1 || groups.some((g) => g.matchType === "AMBIGUOUS")) {
+        if (groups.some((g) => g.depositSlip)) {
+          reason = "Several deposit slips (or one slip for several deposits) fit - choose the right one.";
+        } else if (groups.length > 1 || groups.some((g) => g.matchType === "AMBIGUOUS")) {
           reason = groups.some((g) => /limit/.test(g.ambiguousReason || ""))
             ? "Manual review required - the search limit was reached, so other combinations may exist. Options found so far are shown."
             : "Multiple possible combinations found - choose the right one.";

@@ -69,6 +69,7 @@ import BalanceSheet from "./pages/REPORTS/BalanceSheet.jsx";
 import BankReconciliation from "./pages/REPORTS/BankReconciliation.jsx";
 import BankReconciliationWorkspace from "./pages/REPORTS/BankReconciliationWorkspace.jsx";
 import BankStatementHistory from "./pages/REPORTS/BankStatementHistory.jsx";
+import DepositSlips from "./pages/REPORTS/DepositSlips.jsx";
 import BankReconDashboard from "./pages/REPORTS/BankReconDashboard.jsx";
 import ARAgingReport from "./pages/REPORTS/ARAging.jsx";
 import APAgingReport from "./pages/REPORTS/APAging.jsx";
@@ -218,6 +219,7 @@ function AppLayout() {
           <Route path="/reports/account-analysis" element={<AccountAnalysis />} />
           <Route path="/reports/bank-reconciliation" element={<BankReconciliation />} />
           <Route path="/reports/bank-reconciliation/history" element={<BankStatementHistory />} />
+          <Route path="/reports/bank-reconciliation/deposits" element={<DepositSlips />} />
           <Route path="/reports/bank-reconciliation/:id" element={<BankReconciliationWorkspace />} />
           <Route path="/reports/ai-reconciliation" element={<BankReconDashboard />} />
           <Route path="/reports/balance-sheet" element={<BalanceSheet />} />

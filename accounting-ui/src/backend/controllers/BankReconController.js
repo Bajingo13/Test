@@ -20,6 +20,7 @@ const {
 const QueueService = require("../services/bankReconQueueService");
 const SessionService = require("../services/bankReconSessionService");
 const HistoryService = require("../services/bankStatementHistoryService");
+const DepositSlipService = require("../services/depositSlipService");
 
 // Routes guard every session / child id (bankReconAccessService.requireAccess)
 // and leave the owning session on req.reconSession; its company is stamped
@@ -740,6 +741,24 @@ exports.getStatementLineDetail = (req, res) =>
   respond(res, "STATEMENT LINE DETAIL ERROR:", "Failed to load the statement transaction", () =>
     HistoryService.lineDetail({ lineId: Number(req.params.id), user: req.user }));
 
+// R10 deposit slips. Company + bank account are resolved / authorized by
+// the service (same company resolver as sessions); a slip id answers 404
+// unless the user may see its company.
+exports.listDepositSlips = (req, res) =>
+  respond(res, "LIST DEPOSIT SLIPS ERROR:", "Failed to load deposit slips", () => DepositSlipService.listSlips({ user: req.user, query: req.query }));
+exports.listDepositEligible = (req, res) =>
+  respond(res, "DEPOSIT ELIGIBLE ERROR:", "Failed to load eligible receipts", () => DepositSlipService.listEligible({ user: req.user, query: req.query }));
+exports.getDepositSlip = (req, res) =>
+  respond(res, "GET DEPOSIT SLIP ERROR:", "Failed to load the deposit slip", () => DepositSlipService.slipDetail({ user: req.user, slipId: req.params.id }));
+exports.createDepositSlip = (req, res) =>
+  respond(res, "CREATE DEPOSIT SLIP ERROR:", "Failed to create the deposit slip", () => DepositSlipService.createSlip({ user: req.user, body: req.body || {} }));
+exports.updateDepositSlip = (req, res) =>
+  respond(res, "UPDATE DEPOSIT SLIP ERROR:", "Failed to update the deposit slip", () => DepositSlipService.updateSlip({ user: req.user, slipId: req.params.id, body: req.body || {} }));
+exports.depositDepositSlip = (req, res) =>
+  respond(res, "MARK DEPOSITED ERROR:", "Failed to mark the deposit slip deposited", () => DepositSlipService.markDeposited({ user: req.user, slipId: req.params.id }));
+exports.cancelDepositSlip = (req, res) =>
+  respond(res, "CANCEL DEPOSIT SLIP ERROR:", "Failed to cancel the deposit slip", () => DepositSlipService.cancelSlip({ user: req.user, slipId: req.params.id, reason: req.body?.reason }));
+
 exports.runMatching = (req, res) =>
   respond(res, "RUN MATCHING ERROR:", "Failed to run matching", async () => ({
     success: true,
@@ -873,6 +892,22 @@ exports.unmatch = async (req, res) => {
       "UPDATE bank_recon_statement_lines SET match_status = 'UNMATCHED' WHERE id = ?",
       [match.statement_line_id]
     );
+
+    // R10: a deposit slip reconciled by this match is DEPOSITED again.
+    if (match.match_group) {
+      const [slips] = await conn.execute(
+        "SELECT id, deposit_no AS depositNo, company_id AS companyId FROM deposit_slips WHERE reconciled_match_group = ? AND status = 'RECONCILED' FOR UPDATE",
+        [match.match_group]
+      );
+      for (const slip of slips) {
+        await conn.execute("UPDATE deposit_slips SET status = 'DEPOSITED', reconciled_match_group = NULL WHERE id = ?", [slip.id]);
+        await logAudit(conn, {
+          module: "BANK_RECON", entityType: "DEPOSIT_SLIP", entityId: Number(slip.id), companyId: slip.companyId, action: "UNRECONCILE",
+          description: `Deposit slip ${slip.depositNo} unmatched from statement line #${match.statement_line_id}`,
+          beforeData: { status: "RECONCILED" }, afterData: { status: "DEPOSITED" }, user: req.user,
+        });
+      }
+    }
 
     await logAudit(conn, {
       module: "BANK_RECON",

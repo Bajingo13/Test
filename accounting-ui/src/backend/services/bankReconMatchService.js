@@ -22,6 +22,7 @@ const {
   asConflict,
 } = require("./bankReconMatchGuard");
 const { depositPool, findDepositCombinations, classifyCombinations, GROUP_LEVEL } = require("./depositCombinationService");
+const { loadDepositedSlips, proposeSlipMatches, DEPOSIT_SLIP_LEVEL } = require("./depositSlipMatching");
 
 // The one authoritative Bank Reconciliation matching service (R8.1).
 //
@@ -55,6 +56,14 @@ const { depositPool, findDepositCombinations, classifyCombinations, GROUP_LEVEL 
 // check or document number with an identical amount. AMBIGUOUS and
 // amount/date suggestions always need the accountant's own choice in the
 // workspace.
+//
+// R10 deposit slips: a statement deposit is first matched to a DEPOSITED
+// deposit slip of the same company + bank account (deposit number named on
+// the statement, or the exact slip total on a compatible date). The slip's
+// documents are proposed as one group (match_group) and confirmed through
+// the same all-or-nothing group confirmation; their documents are not
+// offered one by one or in inferred combinations. The R8.4-B combinations
+// below remain the fallback for deposits without a slip.
 //
 // R8.4-B one-to-many deposits: a deposit no single document matches may be
 // proposed as a COMBINATION of ORs that adds up exactly (see
@@ -151,6 +160,12 @@ async function runMatching({ sessionId, user, channel = CHANNEL.WORKSPACE }) {
     );
     const confirmedKeys = new Set(confirmedRows.map(bookKey));
 
+    // R10: deposited slips of this company + bank account; their documents
+    // are matched through their slip only.
+    const slips = await loadDepositedSlips(conn, session, bookTxns, confirmedKeys);
+    const slipMemberKeys = new Set(slips.flatMap((s) => s.members.map(bookKey)));
+    const slipsByLine = proposeSlipMatches(stmtLines, slips, session);
+
     // Score every line first, then decide EXACT vs AMBIGUOUS with the whole
     // statement in view (one document EXACT for two lines is ambiguous for both).
     const candidatesByLine = new Map();
@@ -158,13 +173,15 @@ async function runMatching({ sessionId, user, channel = CHANNEL.WORKSPACE }) {
       const wantDirection = Number(line.debit) > 0 ? "OUT" : "IN";
       const scored = bookTxns
         .filter((t) => t.direction === wantDirection)
-        .filter((t) => !confirmedKeys.has(bookKey(t)))
+        .filter((t) => !confirmedKeys.has(bookKey(t)) && !slipMemberKeys.has(bookKey(t)))
         .map((t) => scoreCandidate(line, t, session))
         .filter((c) => c && c.totalScore >= 30);
       candidatesByLine.set(line.id, classifyLineCandidates(scored, 3));
     }
     markCrossLineAmbiguity(candidatesByLine);
-    const groupsByLine = proposeDepositGroups(stmtLines, candidatesByLine, depositPool(bookTxns, confirmedKeys), session);
+    const comboPool = depositPool(bookTxns, confirmedKeys).filter((t) => !slipMemberKeys.has(bookKey(t)));
+    const groupsByLine = proposeDepositGroups(stmtLines.filter((l) => !slipsByLine.has(l.id)), candidatesByLine, comboPool, session);
+    for (const [lineId, slipGroups] of slipsByLine) groupsByLine.set(lineId, slipGroups);
 
     await conn.beginTransaction();
 
@@ -327,7 +344,23 @@ const listNames = (names) => (names.length <= 1 ? names.join("") : `${names.slic
 
 // Plain-language reason for a one-to-many proposal - the engine's own
 // evidence, repeated verbatim by the workspace and the assistant.
+// R10: plain-language reason for a deposit-slip proposal.
+function explainDepositSlip(matchType, breakdown, line) {
+  const deposit = peso(Number(line?.credit) || 0);
+  const slip = breakdown?.depositNo || `#${breakdown?.depositSlipId}`;
+  const total = peso((Number(breakdown?.group?.totalCents) || 0) / 100);
+  let text = `Bank statement deposit ${deposit} matches Deposit Slip ${slip} for ${total}.`;
+  text += breakdown?.evidence === "DEPOSIT_REFERENCE"
+    ? " The bank account, amount and deposit reference match."
+    : " The bank account and amount match and the deposit date is within tolerance; the statement does not name the slip.";
+  if (matchType === "AMBIGUOUS") {
+    return `${text} Ambiguous: ${breakdown?.ambiguous || "more than one deposit slip fits"} - the accountant must choose in the workspace.`;
+  }
+  return `${text} Review and confirm the match.`;
+}
+
 function explainGroup(matchType, breakdown, line, members) {
+  if (breakdown?.matchLevel === DEPOSIT_SLIP_LEVEL) return explainDepositSlip(matchType, breakdown, line);
   const deposit = Number(line?.credit) || 0;
   const total = members.reduce((s, m) => s + Number(m.amount), 0);
   const names = members.map((m) => m.voucherNo || `${m.bookSourceType} #${m.bookSourceId}`);
@@ -383,13 +416,14 @@ function collapseGroupRows(rows, line) {
       id: Math.min(...c.rows.map((r) => r.id)),
       matchGroup: c.matchGroup,
       matchIds: c.rows.map((r) => r.id).sort((a, b) => a - b),
-      bookSourceType: "OR",
+      bookSourceType: breakdown?.depositSlipId ? "DEPOSIT_SLIP" : "OR",
       matchType: first.matchType,
       confidenceScore: Number(first.confidenceScore),
       matchLevel: breakdown?.matchLevel || null,
       ambiguousReason: breakdown?.ambiguous || null,
       option: breakdown?.group?.option || null,
       options: breakdown?.group?.options || null,
+      depositSlip: breakdown?.depositSlipId ? { id: breakdown.depositSlipId, depositNo: breakdown.depositNo, evidence: breakdown.evidence } : null,
       members,
       total: totalCents / 100,
       depositAmount: depositCents / 100,
@@ -417,9 +451,11 @@ async function listCandidates({ statementLineId, user }) {
     `SELECT m.id, m.book_source_type AS bookSourceType, m.book_source_id AS bookSourceId,
             m.book_line_id AS bookLineId, m.match_group AS matchGroup, m.match_type AS matchType, m.confidence_score AS confidenceScore,
             m.score_breakdown AS scoreBreakdown, m.status, m.amount,
-            o.voucher_no AS voucherNo, o.customer_name AS partyName, DATE_FORMAT(o.transaction_date, '%Y-%m-%d') AS txnDate
+            COALESCE(o.voucher_no, c.voucher_no) AS voucherNo, COALESCE(o.customer_name, c.payee_name) AS partyName,
+            DATE_FORMAT(COALESCE(o.transaction_date, c.transaction_date), '%Y-%m-%d') AS txnDate
      FROM bank_recon_matches m
      LEFT JOIN or_headers o ON m.match_group IS NOT NULL AND m.book_source_type = 'OR' AND o.id = m.book_source_id
+     LEFT JOIN cv_headers c ON m.match_group IS NOT NULL AND m.book_source_type = 'CV' AND c.id = m.book_source_id
      WHERE m.statement_line_id = ? AND m.status = 'PENDING'
      ORDER BY m.confidence_score DESC, m.id`,
     [statementLineId]
@@ -533,6 +569,28 @@ async function confirmGroupLocked(conn, session, match, { user, strict, expected
       throw stale("The proposed receipts changed since you reviewed them - refresh the reconciliation queue.");
     }
   }
+  // R10: a deposit-slip proposal - the slip must still be DEPOSITED in this
+  // company + bank account and hold exactly these documents.
+  const groupBreakdown = typeof rows[0].score_breakdown === "string" ? JSON.parse(rows[0].score_breakdown) : rows[0].score_breakdown;
+  const slipId = groupBreakdown?.depositSlipId || null;
+  let slip = null;
+  if (slipId) {
+    [[slip]] = await conn.execute(
+      "SELECT id, company_id AS companyId, bank_account_id AS bankAccountId, deposit_no AS depositNo, status, total_amount AS total FROM deposit_slips WHERE id = ? FOR UPDATE",
+      [slipId]
+    );
+    if (!slip || slip.status !== "DEPOSITED" || Number(slip.companyId) !== Number(session.companyId) || Number(slip.bankAccountId) !== Number(session.bankAccountId)) {
+      throw stale(`Deposit slip ${groupBreakdown.depositNo || slipId} is no longer deposited on this bank account - refresh the reconciliation queue.`);
+    }
+    const [slipLineRows] = await conn.execute(
+      "SELECT source_type AS t, COALESCE(or_id, cv_id) AS id FROM deposit_slip_lines WHERE deposit_slip_id = ? AND released_at IS NULL",
+      [slipId]
+    );
+    const want = slipLineRows.map((l) => `${l.t}:${l.id}`).sort().join(",");
+    const have = rows.map((r) => `${r.book_source_type}:${r.book_source_id}`).sort().join(",");
+    if (want !== have) throw stale(`Deposit slip ${slip.depositNo} changed - refresh the reconciliation queue.`);
+  }
+
   const line = await lockStatementLine(conn, match.statement_line_id);
   if (!(Number(line.credit) > 0)) throw stale("This statement line is no longer a deposit.");
 
@@ -540,16 +598,16 @@ async function confirmGroupLocked(conn, session, match, { user, strict, expected
   const confirmed = [];
   let totalCents = 0;
   for (const r of ordered) {
-    if (r.book_source_type !== "OR") throw stale("Only official receipts can be combined into one deposit.");
-    const txn = await lockEligibleBookItem(conn, session, line, { sourceType: "OR", sourceId: r.book_source_id, lineId: null });
+    if (r.book_source_type !== "OR" && !(slip && r.book_source_type === "CV")) throw stale("Only official receipts can be combined into one deposit.");
+    const txn = await lockEligibleBookItem(conn, session, line, { sourceType: r.book_source_type, sourceId: r.book_source_id, lineId: null, depositSlipId: slipId });
     if (txn.foreignCurrency) {
-      throw new HttpError(409, `OR ${txn.voucherNo || r.book_source_id} is not in the company's base currency.`, "GROUP_CURRENCY_MISMATCH");
+      throw new HttpError(409, `${r.book_source_type} ${txn.voucherNo || r.book_source_id} is not in the company's base currency.`, "GROUP_CURRENCY_MISMATCH");
     }
     if (Math.round(txn.amount * 100) !== Math.round(Number(r.amount) * 100)) {
-      throw stale(`OR ${txn.voucherNo || r.book_source_id} now moves ${peso(txn.amount)} through the bank, not ${peso(r.amount)} - refresh the reconciliation queue.`);
+      throw stale(`${r.book_source_type} ${txn.voucherNo || r.book_source_id} now moves ${peso(txn.amount)} through the bank, not ${peso(r.amount)} - refresh the reconciliation queue.`);
     }
     totalCents += Math.round(txn.amount * 100);
-    confirmed.push({ id: r.id, sourceId: r.book_source_id, voucherNo: txn.voucherNo, amount: txn.amount });
+    confirmed.push({ id: r.id, sourceType: r.book_source_type, sourceId: r.book_source_id, voucherNo: txn.voucherNo, amount: txn.amount });
   }
   if (totalCents !== Math.round(statementAmount(line) * 100)) {
     throw new HttpError(
@@ -572,7 +630,17 @@ async function confirmGroupLocked(conn, session, match, { user, strict, expected
     [user.id, line.id, match.match_group]
   );
   await conn.execute("UPDATE bank_recon_statement_lines SET match_status = 'MATCHED' WHERE id = ?", [line.id]);
-  return { match, amount: totalCents / 100, members: confirmed };
+  if (slip) {
+    await conn.execute("UPDATE deposit_slips SET status = 'RECONCILED', reconciled_match_group = ? WHERE id = ?", [match.match_group, slip.id]);
+    await logAudit(conn, {
+      module: "BANK_RECON", entityType: "DEPOSIT_SLIP", entityId: Number(slip.id), companyId: session.companyId, action: "RECONCILE",
+      description: `Deposit slip ${slip.depositNo} reconciled to statement line #${line.id}`,
+      beforeData: { status: "DEPOSITED" },
+      afterData: { status: "RECONCILED", statementLineId: Number(line.id), sessionId: Number(session.id), total: totalCents / 100 },
+      user,
+    });
+  }
+  return { match, amount: totalCents / 100, members: confirmed, depositSlip: slip ? { id: slip.id, depositNo: slip.depositNo } : null };
 }
 
 // One locked confirmation of a PENDING suggestion inside the caller's
@@ -599,9 +667,9 @@ async function confirmMatch({ matchId, user, channel = CHANNEL.WORKSPACE, strict
   const access = await authorize(user, "match", matchId, "CREATE");
   return withTransaction(async (conn) => {
     const session = await lockSession(conn, access.id);
-    const { match, amount, members } = await confirmLocked(conn, session, matchId, { user, strict, expectedMatchIds });
+    const { match, amount, members, depositSlip } = await confirmLocked(conn, session, matchId, { user, strict, expectedMatchIds });
     if (members) {
-      const names = members.map((m) => `OR ${m.voucherNo || `#${m.sourceId}`}`).join(", ");
+      const names = `${depositSlip ? `deposit slip ${depositSlip.depositNo}: ` : ""}${members.map((m) => `${m.sourceType || "OR"} ${m.voucherNo || `#${m.sourceId}`}`).join(", ")}`;
       await logAudit(conn, {
         module: "BANK_RECON",
         entityType: "MATCH",
@@ -613,7 +681,8 @@ async function confirmMatch({ matchId, user, channel = CHANNEL.WORKSPACE, strict
           status: "CONFIRMED",
           matchGroup: match.match_group,
           amount,
-          members: members.map((m) => ({ matchId: m.id, bookSourceType: "OR", bookSourceId: m.sourceId, voucherNo: m.voucherNo, amount: m.amount })),
+          members: members.map((m) => ({ matchId: m.id, bookSourceType: m.sourceType || "OR", bookSourceId: m.sourceId, voucherNo: m.voucherNo, amount: m.amount })),
+          ...(depositSlip ? { depositSlip } : {}),
           ...channelData(channel),
         },
         user,
@@ -750,6 +819,7 @@ module.exports = {
   listCandidates,
   explainCandidate,
   explainGroup,
+  explainDepositSlip,
   collapseGroupRows,
   confirmMatch,
   bulkConfirmExact,

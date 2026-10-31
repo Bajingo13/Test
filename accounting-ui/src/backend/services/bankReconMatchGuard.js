@@ -55,7 +55,7 @@ async function lockStatementLine(conn, statementLineId) {
 // Locks + re-reads the book document and verifies it may be matched to this
 // statement line in this session. Returns the server-side book item (its
 // amount is the bank movement, never a client value).
-async function lockEligibleBookItem(conn, session, line, { sourceType, sourceId, lineId = null }) {
+async function lockEligibleBookItem(conn, session, line, { sourceType, sourceId, lineId = null, depositSlipId = null }) {
   const table = DOCUMENT_TABLES[sourceType];
   const id = Number(sourceId);
   if (!table || !Number.isInteger(id) || id <= 0) throw new HttpError(404, "Book document not found");
@@ -109,6 +109,23 @@ async function lockEligibleBookItem(conn, session, line, { sourceType, sourceId,
      FOR UPDATE`,
     [sourceType, id, sourceType === "JV" ? Number(lineId) : null, session.bankAccountId, session.companyId ?? null]
   );
+  // R10: a document on an active (deposited) deposit slip is reconciled
+  // through its slip, never on its own or inside another combination.
+  if (sourceType !== "JV") {
+    const [onSlip] = await conn.execute(
+      `SELECT s.id, s.deposit_no AS depositNo FROM deposit_slip_lines l JOIN deposit_slips s ON s.id = l.deposit_slip_id
+       WHERE l.released_at IS NULL AND l.${sourceType === "OR" ? "or_id" : "cv_id"} = ? AND s.status IN ('DEPOSITED', 'RECONCILED')`,
+      [id]
+    );
+    if (onSlip[0] && Number(onSlip[0].id) !== Number(depositSlipId)) {
+      throw new HttpError(
+        409,
+        `${sourceType} ${header.voucherNo || id} is on deposit slip ${onSlip[0].depositNo} - match the deposit slip instead.`,
+        "BOOK_DOCUMENT_ON_DEPOSIT_SLIP"
+      );
+    }
+  }
+
   if (existing[0]) {
     const where = Number(existing[0].sessionId) === Number(session.id)
       ? `statement line #${existing[0].statementLineId} in this session`

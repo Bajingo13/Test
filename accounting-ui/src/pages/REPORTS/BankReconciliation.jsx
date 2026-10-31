@@ -228,6 +228,9 @@ export default function BankReconciliation() {
           <button onClick={() => navigate("/reports/bank-reconciliation/history")} className="brc-btn">
             Statement History
           </button>
+          <button onClick={() => navigate("/reports/bank-reconciliation/deposits")} className="brc-btn">
+            Deposit Slips
+          </button>
           <button onClick={openNewForm} className="brc-btn primary">
             + New Session
           </button>

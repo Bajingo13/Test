@@ -188,6 +188,8 @@ const INTENTS = {
   CONFIRM_ALL_EXACT: "CONFIRM_ALL_EXACT",
   EXPLAIN_LINE: "EXPLAIN_LINE",
   UNMATCHED_BANK: "UNMATCHED_BANK",
+  DEPOSIT_SLIPS: "DEPOSIT_SLIPS",
+  DEPOSIT_SLIP_DETAIL: "DEPOSIT_SLIP_DETAIL",
   CARRIED_FORWARD: "CARRIED_FORWARD",
   QUEUE: "QUEUE",
   UNKNOWN: "UNKNOWN",
@@ -229,6 +231,12 @@ function parsePrompt(text, context = {}) {
     intent = INTENTS.CONFIRM_ALL_EXACT;
   } else if (/needs?\s+(my\s+)?(attention|review)|review\s+queue|reconciliation\s+queue|what\s+(should|do)\s+i\s+(review|check)/i.test(raw)) {
     intent = INTENTS.QUEUE;
+  } else if (/\bDS-?\d+\b/i.test(raw)) {
+    intent = INTENTS.DEPOSIT_SLIP_DETAIL;
+    params.depositNo = raw.match(/\bDS-?(\d+)\b/i)[1];
+  } else if (/deposit\s*slips?|deposits?\s+(are\s+)?(not\s+yet\s+reconciled|unreconciled|missing)|missing\s+from\s+the\s+bank\s+statement|today'?s\s+deposits?/i.test(raw)) {
+    intent = INTENTS.DEPOSIT_SLIPS;
+    params.depositFilter = /missing/i.test(raw) ? "MISSING" : /not\s+yet\s+reconciled|unreconciled/i.test(raw) ? "UNRECONCILED" : /today/i.test(raw) ? "TODAY" : "ALL";
   } else if (/carried[\s-]*forward|carried\s+over|carry[\s-]*forward/i.test(raw)) {
     intent = INTENTS.CARRIED_FORWARD;
   } else if (!lineRef && /unmatched\s+(bank\s+)?(transaction|row|line|deposit|item)s?|unreconciled\s+bank/i.test(raw)) {

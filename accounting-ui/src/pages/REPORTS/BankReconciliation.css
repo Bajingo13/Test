@@ -630,7 +630,7 @@ button.danger {
 .brc-link-btn { display: inline-flex; align-items: center; text-decoration: none; box-sizing: border-box; }
 .brc-history-scope, .brc-history-filters, .brc-history-more {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(170px, 100%), 1fr));
   gap: 12px;
   align-items: end;
 }
@@ -713,7 +713,7 @@ button.danger {
 .brc-drawer-header h2 { margin: 0; }
 .brc-drawer .brc-table { min-width: 520px; }
 .brc-detail-status { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.brc-detail-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px 16px; margin: 12px 0; }
+.brc-detail-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(200px, 100%), 1fr)); gap: 10px 16px; margin: 12px 0; }
 .brc-detail-field { min-width: 0; }
 .brc-detail-field dt { font-size: 12px; color: var(--text-secondary); }
 .brc-detail-field dd { margin: 2px 0 0; overflow-wrap: anywhere; }
@@ -735,3 +735,7 @@ button.danger {
    tables must not push it - they scroll inside their own box instead. */
 .brc-history-page .brc-table-wrap,
 .brc-drawer .brc-table-wrap { contain: inline-size; width: 100%; }
+
+/* R10: deposit slips */
+.brc-ds-total { margin: 12px 0; font-size: 16px; font-weight: 700; color: var(--text-primary); }
+.brc-history-page input[type="checkbox"]:focus-visible { outline: 3px solid var(--accent-blue); outline-offset: 2px; }

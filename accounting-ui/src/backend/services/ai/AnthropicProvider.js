@@ -178,6 +178,26 @@ function buildTools(touched, user) {
     run: async (input) => JSON.stringify(await actions.getBankLineDetail(input.statementLineId, user)),
   });
 
+  const getDepositSlips = betaZodTool({
+    name: "getDepositSlips",
+    description:
+      "Read-only: deposit slips of a session's company + bank account (number, date, total, document count, status DRAFT / DEPOSITED / RECONCILED / CANCELLED, missingFromStatement). Filter status (or UNRECONCILED = deposited but not matched yet), from / to dates, q (number). Use for 'which deposits are not yet reconciled?' or 'which deposits are missing from the bank statement?'. You cannot create, edit, deposit or cancel slips.",
+    inputSchema: z.object({ sessionId: z.number(), status: z.string().optional(), from: z.string().optional(), to: z.string().optional(), q: z.string().optional() }),
+    run: async (input) => {
+      touched.sessionId = input.sessionId;
+      const { sessionId, ...filters } = input;
+      return JSON.stringify(await actions.getDepositSlips(sessionId, filters, user));
+    },
+  });
+
+  const getDepositSlipDetail = betaZodTool({
+    name: "getDepositSlipDetail",
+    description:
+      "Read-only: one deposit slip by its number (e.g. DS-00125) in the session's company - its OR / CV documents with amounts and payment methods, total, status, and when reconciled the statement deposit it was matched to with the matching engine's explanation. Use for 'what receipts are in DS-00125?' or 'why did this deposit match DS-00125?'.",
+    inputSchema: z.object({ sessionId: z.number(), depositNo: z.string() }),
+    run: async (input) => JSON.stringify(await actions.getDepositSlipDetail(input.sessionId, input.depositNo, user)),
+  });
+
   const confirmMatch = betaZodTool({
     name: "confirmMatch",
     description:
@@ -211,6 +231,8 @@ function buildTools(touched, user) {
     getReconciliationQueue,
     getBankHistory,
     getBankLineDetail,
+    getDepositSlips,
+    getDepositSlipDetail,
     runMatching,
     updateSessionTolerance,
     confirmMatch,

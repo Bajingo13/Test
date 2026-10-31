@@ -37,6 +37,13 @@ router.post(
   handleUpload(bankStatementUpload.single("file")),
   ctrl.previewStatement
 );
+router.get("/deposit-slips", authenticateToken, authorizePermission("REPORTS.BANK_RECONCILIATION", "VIEW"), ctrl.listDepositSlips);
+router.get("/deposit-slips/eligible", authenticateToken, authorizePermission("REPORTS.BANK_RECONCILIATION", "VIEW"), ctrl.listDepositEligible);
+router.get("/deposit-slips/:id", authenticateToken, authorizePermission("REPORTS.BANK_RECONCILIATION", "VIEW"), ctrl.getDepositSlip);
+router.post("/deposit-slips", authenticateToken, authorizePermission("REPORTS.BANK_RECONCILIATION", "CREATE"), ctrl.createDepositSlip);
+router.put("/deposit-slips/:id", authenticateToken, authorizePermission("REPORTS.BANK_RECONCILIATION", "CREATE"), ctrl.updateDepositSlip);
+router.post("/deposit-slips/:id/deposit", authenticateToken, authorizePermission("REPORTS.BANK_RECONCILIATION", "CREATE"), ctrl.depositDepositSlip);
+router.post("/deposit-slips/:id/cancel", authenticateToken, authorizePermission("REPORTS.BANK_RECONCILIATION", "CREATE"), ctrl.cancelDepositSlip);
 router.get("/statement-history", authenticateToken, authorizePermission("REPORTS.BANK_RECONCILIATION", "VIEW"), ctrl.getStatementHistory);
 router.get("/statement-history/imports", authenticateToken, authorizePermission("REPORTS.BANK_RECONCILIATION", "VIEW"), ctrl.getStatementImports);
 router.get("/statement-history/lines/:id", authenticateToken, authorizePermission("REPORTS.BANK_RECONCILIATION", "VIEW"), line, ctrl.getStatementLineDetail);
