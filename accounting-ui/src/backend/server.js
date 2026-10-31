@@ -56,6 +56,7 @@ const OutputVatReportService = require("./services/outputVatReportService");
 const { assertVoucherNoUnique, handleVoucherDupError, normalizeVoucherNo } = require("./services/voucherNumberService");
 const { assertRequiredTransactionLines, assertRequiredQuotationLines } = require("./services/transactionLineValidation");
 const TransactionCurrencyService = require("./services/transactionCurrencyService");
+const PaymentDetails = require("./services/paymentDetailsService");
 const AgingReportService = require("./services/agingReportService");
 const AccountingPeriodService = require("./services/accountingPeriodService");
 const TaxEntryService = require("./services/taxEntryService");
@@ -1786,6 +1787,8 @@ app.get("/api/or", authenticateToken, authorizePermission("TRANSACTIONS.OR", "VI
         bank_account_id AS bankAccountId,
         check_no AS checkNo,
         DATE_FORMAT(check_date, '%Y-%m-%d') AS checkDate,
+        payment_reference AS paymentReference,
+        DATE_FORMAT(payment_date, '%Y-%m-%d') AS paymentDate,
         or_headers.currency_id AS currencyId,
         cur.currency_code AS currencyCode,
         cur.currency_symbol AS currencySymbol,
@@ -1860,6 +1863,9 @@ app.post("/api/or", authenticateToken, authorizePermission("TRANSACTIONS.OR", "C
       isPosting,
     });
 
+    // R9: one validated set of payment fields (method, bank account, check
+    // or transfer details) - see paymentDetailsService.
+    const payment = await PaymentDetails.resolvePaymentDetails(conn, req.body, { isPosting });
     const [result] = await conn.execute(
       `INSERT INTO or_headers(
         company_id,
@@ -1877,6 +1883,8 @@ app.post("/api/or", authenticateToken, authorizePermission("TRANSACTIONS.OR", "C
         bank_account_id,
         check_no,
         check_date,
+        payment_reference,
+        payment_date,
         atc_code,
         tax_type,
         tax_rate,
@@ -1884,7 +1892,7 @@ app.post("/api/or", authenticateToken, authorizePermission("TRANSACTIONS.OR", "C
         taxable_base,
         currency_id
       )
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         companyId,
         (normalizeVoucherNo(voucherNo) || ""),
@@ -1897,10 +1905,12 @@ app.post("/api/or", authenticateToken, authorizePermission("TRANSACTIONS.OR", "C
         currencyResult.baseTotalDebit,
         currencyResult.baseTotalCredit,
         finalStatus,
-        paymentMethod === "Check" ? "Check" : "Cash",
-        bankAccountId || null,
-        paymentMethod === "Check" ? checkNo || "" : "",
-        paymentMethod === "Check" ? checkDate || null : null,
+        payment.paymentMethod,
+        payment.bankAccountId,
+        payment.checkNo,
+        payment.checkDate,
+        payment.paymentReference,
+        payment.paymentDate,
         ewt.atcCode,
         ewt.taxType,
         ewt.taxRate,
@@ -2073,6 +2083,8 @@ app.get("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
         bank_account_id AS bankAccountId,
         check_no AS checkNo,
         DATE_FORMAT(check_date, '%Y-%m-%d') AS checkDate,
+        payment_reference AS paymentReference,
+        DATE_FORMAT(payment_date, '%Y-%m-%d') AS paymentDate,
         atc_code AS atcCode,
         tax_type AS taxType,
         tax_rate AS taxRate,
@@ -2348,6 +2360,10 @@ app.put("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
       isPosting,
     });
 
+    // R9: one validated set of payment fields (method, bank account, check
+    // or transfer details) - see paymentDetailsService.
+    const payment = await PaymentDetails.resolvePaymentDetails(conn, req.body, { isPosting });
+    const paymentBefore = await PaymentDetails.loadPaymentDetails(conn, "or_headers", id);
     await conn.execute(
       `UPDATE or_headers SET
          voucher_no = ?,
@@ -2364,6 +2380,8 @@ app.put("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
          bank_account_id = ?,
          check_no = ?,
          check_date = ?,
+         payment_reference = ?,
+         payment_date = ?,
          atc_code = ?,
          tax_type = ?,
          tax_rate = ?,
@@ -2382,10 +2400,12 @@ app.put("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
         currencyResult.baseTotalDebit,
         currencyResult.baseTotalCredit,
         finalStatus,
-        paymentMethod === "Check" ? "Check" : "Cash",
-        bankAccountId || null,
-        paymentMethod === "Check" ? checkNo || "" : "",
-        paymentMethod === "Check" ? checkDate || null : null,
+        payment.paymentMethod,
+        payment.bankAccountId,
+        payment.checkNo,
+        payment.checkDate,
+        payment.paymentReference,
+        payment.paymentDate,
         ewt.atcCode,
         ewt.taxType,
         ewt.taxRate,
@@ -2396,6 +2416,10 @@ app.put("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
         companyId,
       ]
     );
+    await PaymentDetails.auditPaymentChange(conn, {
+      module: "TRANSACTIONS.OR", entityType: "OR", entityId: Number(id), companyId,
+      label: `OR ${normalizeVoucherNo(voucherNo) || ""}`, before: paymentBefore, after: payment, user: req.user,
+    });
 
     /*
      * STEP 6:
@@ -4969,6 +4993,7 @@ app.post("/api/posting/post", authenticateToken, authorizePermission("POSTING", 
     let postedCount = 0;
     let blockedCount = 0;
     let periodBlockedCount = 0;
+    let paymentBlockedCount = 0;
 
     for (const target of targets) {
       // Rate locking (section 10) needs to know WHICH rows are about to
@@ -5021,6 +5046,23 @@ app.post("/api/posting/post", authenticateToken, authorizePermission("POSTING", 
         blockedCount += blockedIds.length;
       }
 
+      // R9: an OR / CV whose payment is incomplete for posting (a Check
+      // without its bank account / check number / check date, a Bank
+      // Transfer without its bank account / reference / date) is skipped and
+      // reported - bulk posting is never a way around the per-document rule.
+      if (target.isPaymentDoc && draftIds.length) {
+        const [payRows] = await conn.query(
+          `SELECT id, payment_method AS paymentMethod, bank_account_id AS bankAccountId, check_no AS checkNo,
+                  DATE_FORMAT(check_date, '%Y-%m-%d') AS checkDate, payment_reference AS paymentReference,
+                  DATE_FORMAT(payment_date, '%Y-%m-%d') AS paymentDate
+           FROM ${target.table} WHERE id IN (?)`,
+          [draftIds]
+        );
+        const incomplete = payRows.filter((r) => PaymentDetails.postingGaps(r).length).map((r) => r.id);
+        draftIds = draftIds.filter((did) => !incomplete.includes(did));
+        paymentBlockedCount += incomplete.length;
+      }
+
       const [result] = draftIds.length
         ? await conn.query(`UPDATE ${target.table} SET status = ? WHERE id IN (?) AND company_id = ?`, [target.status, draftIds, companyId])
         : [{ affectedRows: 0 }];
@@ -5067,6 +5109,7 @@ app.post("/api/posting/post", authenticateToken, authorizePermission("POSTING", 
     const notes = [];
     if (blockedCount) notes.push(`${blockedCount} were skipped because their payment rate differs from their source document's rate (realized FX gain/loss accounting is not yet implemented) - post those individually to see the details.`);
     if (periodBlockedCount) notes.push(`${periodBlockedCount} were skipped because their accounting period is closed.`);
+    if (paymentBlockedCount) notes.push(`${paymentBlockedCount} were skipped because their payment details are incomplete (check number / check date, or transfer reference / date, and bank account) - complete them and post again.`);
 
     res.json({
       success: true,
@@ -5076,6 +5119,7 @@ app.post("/api/posting/post", authenticateToken, authorizePermission("POSTING", 
       postedCount,
       blockedCount,
       periodBlockedCount,
+      paymentBlockedCount,
     });
   } catch (err) {
     await conn.rollback();
@@ -5238,6 +5282,8 @@ app.get("/api/cv", authenticateToken, authorizePermission("TRANSACTIONS.CV", "VI
         payment_method AS paymentMethod,
         bank_account_id AS bankAccountId,
         DATE_FORMAT(check_date, '%Y-%m-%d') AS checkDate,
+        payment_reference AS paymentReference,
+        DATE_FORMAT(payment_date, '%Y-%m-%d') AS paymentDate,
         cv_headers.currency_id AS currencyId,
         cur.currency_code AS currencyCode,
         cur.currency_symbol AS currencySymbol,
@@ -5309,6 +5355,9 @@ app.post("/api/cv", authenticateToken, authorizePermission("TRANSACTIONS.CV", "C
       isPosting,
     });
 
+    // R9: one validated set of payment fields (method, bank account, check
+    // or transfer details) - see paymentDetailsService.
+    const payment = await PaymentDetails.resolvePaymentDetails(conn, req.body, { isPosting });
     const [result] = await conn.execute(
       `INSERT INTO cv_headers(
         company_id,
@@ -5325,6 +5374,8 @@ app.post("/api/cv", authenticateToken, authorizePermission("TRANSACTIONS.CV", "C
         payment_method,
         bank_account_id,
         check_date,
+        payment_reference,
+        payment_date,
         atc_code,
         tax_type,
         tax_rate,
@@ -5333,7 +5384,7 @@ app.post("/api/cv", authenticateToken, authorizePermission("TRANSACTIONS.CV", "C
         payee_tin,
         currency_id
       )
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         companyId,
         (normalizeVoucherNo(voucherNo) || ""),
@@ -5341,14 +5392,16 @@ app.post("/api/cv", authenticateToken, authorizePermission("TRANSACTIONS.CV", "C
         finalPayeeName,
         transactionDate || null,
         referenceNo || "",
-        checkNo || "",
+        payment.checkNo,
         description || "",
         currencyResult.baseTotalDebit,
         currencyResult.baseTotalCredit,
         finalStatus,
-        paymentMethod === "Cash" ? "Cash" : "Check",
-        bankAccountId || null,
-        paymentMethod !== "Cash" ? checkDate || null : null,
+        payment.paymentMethod,
+        payment.bankAccountId,
+        payment.checkDate,
+        payment.paymentReference,
+        payment.paymentDate,
         ewt.atcCode,
         ewt.taxType,
         ewt.taxRate,
@@ -5515,6 +5568,8 @@ app.get("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
         payment_method AS paymentMethod,
         bank_account_id AS bankAccountId,
         DATE_FORMAT(check_date, '%Y-%m-%d') AS checkDate,
+        payment_reference AS paymentReference,
+        DATE_FORMAT(payment_date, '%Y-%m-%d') AS paymentDate,
         atc_code AS atcCode,
         tax_type AS taxType,
         tax_rate AS taxRate,
@@ -5756,6 +5811,10 @@ app.put("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
       isPosting,
     });
 
+    // R9: one validated set of payment fields (method, bank account, check
+    // or transfer details) - see paymentDetailsService.
+    const payment = await PaymentDetails.resolvePaymentDetails(conn, req.body, { isPosting });
+    const paymentBefore = await PaymentDetails.loadPaymentDetails(conn, "cv_headers", id);
     await conn.execute(
       `UPDATE cv_headers SET
          voucher_no = ?,
@@ -5771,6 +5830,8 @@ app.put("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
          payment_method = ?,
          bank_account_id = ?,
          check_date = ?,
+         payment_reference = ?,
+         payment_date = ?,
          atc_code = ?,
          tax_type = ?,
          tax_rate = ?,
@@ -5785,14 +5846,16 @@ app.put("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
         finalPayeeName,
         transactionDate || null,
         referenceNo || "",
-        checkNo || "",
+        payment.checkNo,
         description || "",
         currencyResult.baseTotalDebit,
         currencyResult.baseTotalCredit,
         finalStatus,
-        paymentMethod === "Cash" ? "Cash" : "Check",
-        bankAccountId || null,
-        paymentMethod !== "Cash" ? checkDate || null : null,
+        payment.paymentMethod,
+        payment.bankAccountId,
+        payment.checkDate,
+        payment.paymentReference,
+        payment.paymentDate,
         ewt.atcCode,
         ewt.taxType,
         ewt.taxRate,
@@ -5804,6 +5867,10 @@ app.put("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
         companyId,
       ]
     );
+    await PaymentDetails.auditPaymentChange(conn, {
+      module: "TRANSACTIONS", entityType: "CV", entityId: Number(id), companyId,
+      label: `CV ${normalizeVoucherNo(voucherNo) || ""}`, before: paymentBefore, after: payment, user: req.user,
+    });
 
     await conn.execute("DELETE FROM cv_lines WHERE cv_id = ?", [id]);
 

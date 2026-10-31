@@ -100,18 +100,35 @@ function scoreCandidate(stmtLine, bookTxn, session) {
     return null;
   }
 
-  // Banks put the check number in either column, so both statement
-  // identifiers are compared with both kinds of book identifier.
-  const stmtIdentifiers = strongIdentifiers([stmtLine.referenceNo, stmtLine.checkNo]);
+  // Banks put the check number in either the check or the reference
+  // column, so both are compared with the book's check number (check_no -
+  // never receipt_no). The statement's check column is NOT compared with
+  // document numbers: a receipt / voucher number is not a check number
+  // (R9). References (incl. the bank's own reference) are compared with the
+  // document numbers and a Bank Transfer's transfer reference.
+  const stmtIdentifiers = strongIdentifiers([stmtLine.referenceNo, stmtLine.checkNo, stmtLine.bankReference]);
+  const stmtReferenceIds = strongIdentifiers([stmtLine.referenceNo, stmtLine.bankReference]);
   const bookCheckIds = strongIdentifiers([bookTxn.checkNo]);
-  const bookDocumentIds = strongIdentifiers([bookTxn.voucherNo, bookTxn.receiptNo, bookTxn.referenceNo]);
+  const bookTransferIds = strongIdentifiers([bookTxn.paymentReference]);
+  const bookDocumentIds = strongIdentifiers([bookTxn.voucherNo, bookTxn.receiptNo, bookTxn.referenceNo, bookTxn.paymentReference]);
   const bookIdentifiers = [...bookCheckIds, ...bookDocumentIds];
 
   const checkNoExact = stmtIdentifiers.some((s) => bookCheckIds.includes(s));
-  const documentExact = stmtIdentifiers.some((s) => bookDocumentIds.includes(s));
+  const documentExact = stmtReferenceIds.some((s) => bookDocumentIds.includes(s));
+  const transferReferenceExact = stmtReferenceIds.some((s) => bookTransferIds.includes(s));
+
+  // R9 date evidence: a check is compared by the date on the check and a
+  // bank transfer by its transfer date, when recorded; otherwise the
+  // document date.
+  const dateBasis = bookTxn.paymentMethod === "Check" && bookTxn.checkDate
+    ? "CHECK_DATE"
+    : bookTxn.paymentMethod === "Bank Transfer" && bookTxn.paymentDate
+      ? "TRANSFER_DATE"
+      : "DOCUMENT_DATE";
+  const evidenceDate = dateBasis === "CHECK_DATE" ? bookTxn.checkDate : dateBasis === "TRANSFER_DATE" ? bookTxn.paymentDate : bookTxn.date;
 
   const tolerance = Number(session.dateToleranceDays) || 0;
-  const dateDiffDays = daysBetween(stmtLine.txnDate, bookTxn.date);
+  const dateDiffDays = daysBetween(stmtLine.txnDate, evidenceDate);
 
   // R8.3 check-number-first: a check can clear weeks after it is written
   // (January's check on February's statement). An exact check number with
@@ -119,7 +136,7 @@ function scoreCandidate(stmtLine, bookTxn, session) {
   // when the check is not dated after the statement line (beyond tolerance)
   // - with no date score. Everything else keeps the window.
   const lateClearingCheck =
-    checkNoExact && amountDiff === 0 && bookTxn.date <= shiftDate(stmtLine.txnDate, tolerance);
+    checkNoExact && amountDiff === 0 && evidenceDate <= shiftDate(stmtLine.txnDate, tolerance);
 
   let dateScore = 0;
   let dateOutsideWindow = false;
@@ -194,6 +211,8 @@ function scoreCandidate(stmtLine, bookTxn, session) {
       payeeScore,
       descScore: round2(descScore),
       matchLevel,
+      dateBasis,
+      ...(matchLevel === MATCH_LEVEL.REFERENCE && transferReferenceExact ? { evidence: "TRANSFER_REFERENCE" } : {}),
       ...(dateOutsideWindow ? { dateOutsideWindow: true } : {}),
     },
   };

@@ -213,6 +213,10 @@ const MIGRATION_ORDER = [
   // deposit proposal (NULL for one-to-one). Must run after
   // bank_reconciliation_migration.sql.
   "r84b_bank_recon_match_group_migration.sql",
+  // R9: payment_method widened for "Bank Transfer" + payment_reference /
+  // payment_date (transfer reference + date) on or_headers / cv_headers.
+  // Schema only. Must run after cashcheck_migration.sql.
+  "r9_payment_details_migration.sql",
 ];
 
 module.exports = { MIGRATION_ORDER };

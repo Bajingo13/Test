@@ -12,7 +12,9 @@ export default function TransactionVoucherHeader({
   title,
   partyLabel,
   partyType,
-  showCheckNo,
+  // R9: OR only - the receipt number (receipt_no). Before R9 this field was
+  // labelled "Check No."; the check number lives in Payment Details.
+  showReceiptNo,
   form,
   updateForm,
   handlePartyChange,
@@ -43,8 +45,8 @@ export default function TransactionVoucherHeader({
           {!hideDateAndReference && <ViewField label="Reference No." value={form.referenceNo} />}
           <ViewField label={partyLabel} value={form.party} />
           <ViewField
-            label={showCheckNo ? "Check No." : "Transaction Type"}
-            value={showCheckNo ? form.checkNo : title}
+            label={showReceiptNo ? "Receipt No." : "Transaction Type"}
+            value={showReceiptNo ? form.checkNo : title}
           />
         </div>
         <ViewField label="Description / Memo" value={form.description} wide block />
@@ -133,18 +135,18 @@ export default function TransactionVoucherHeader({
 
         <div className="transaction-field">
           <label className="transaction-label">
-            {showCheckNo ? "Check No." : "Transaction Type"}
+            {showReceiptNo ? "Receipt No." : "Transaction Type"}
           </label>
           <input
             type="text"
-            value={showCheckNo ? form.checkNo : title}
+            value={showReceiptNo ? form.checkNo : title}
             onChange={(e) => {
-              if (showCheckNo) updateForm("checkNo", e.target.value);
+              if (showReceiptNo) updateForm("checkNo", e.target.value);
             }}
-            readOnly={!showCheckNo}
-            placeholder={showCheckNo ? "Enter check number" : ""}
+            readOnly={!showReceiptNo}
+            placeholder={showReceiptNo ? "Receipt number (optional)" : ""}
             className={`transaction-input ${
-              !showCheckNo ? "transaction-input-readonly" : ""
+              !showReceiptNo ? "transaction-input-readonly" : ""
             }`}
           />
         </div>

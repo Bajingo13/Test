@@ -63,7 +63,7 @@ async function voucher(kind, company, o) {
   const res = await api(who, "post", `/api/${kind}`, {
     voucherNo: `${P}${o.no}`, [isCv ? "payeeName" : "customerName"]: "R83 Party", transactionDate: o.date,
     referenceNo: "", description: "R83", status: o.status || "Posted", paymentMethod: o.checkNo ? "Check" : "Cash",
-    bankAccountId: o.bank ?? bank.BK, checkNo: o.checkNo || "", checkDate: o.date, totalDebit: o.amount, totalCredit: o.amount,
+    bankAccountId: o.bank ?? bank.BK, checkNo: o.checkNo || "", checkDate: o.checkNo ? o.date : "", totalDebit: o.amount, totalCredit: o.amount,
     lines: isCv ? [ln("EXP", o.amount, 0), ln(o.bankKey || "BANK", 0, o.amount)] : [ln(o.bankKey || "BANK", o.amount, 0), ln("AR", 0, o.amount)],
     currency: { companyId: co[company], currencyId: cur[company], exchangeRate: 1, rateDate: o.date },
   });

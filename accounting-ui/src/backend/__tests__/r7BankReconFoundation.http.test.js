@@ -89,8 +89,8 @@ async function sourceDoc(table, company, no, amount) {
 async function createCv(who, company, o) {
   const res = await api(who, "post", "/api/cv", {
     voucherNo: o.no, payeeName: "R7 Supplier", transactionDate: o.date || "2098-07-10", referenceNo: o.ref || "",
-    description: o.description || "R7 CV", status: o.status || "Posted", paymentMethod: "Check",
-    bankAccountId: o.bank ?? bank.BK, checkNo: o.checkNo || "", checkDate: o.date || "2098-07-10",
+    description: o.description || "R7 CV", status: o.status || "Posted", paymentMethod: o.checkNo ? "Check" : "Cash",
+    bankAccountId: o.bank ?? bank.BK, checkNo: o.checkNo || "", checkDate: o.checkNo ? (o.date || "2098-07-10") : "",
     totalDebit: o.gross, totalCredit: o.gross, lines: o.lines, apvApplications: o.apps || [],
     currency: { companyId: co[company], currencyId: cur[company], exchangeRate: 1, rateDate: o.date || "2098-07-10" },
   });
@@ -102,7 +102,7 @@ async function createOr(who, company, o) {
     voucherNo: o.no, customerName: "R7 Customer", transactionDate: o.date || "2098-07-10", referenceNo: o.ref || "",
     receiptNo: o.receiptNo || "", description: "R7 OR", status: o.status || "Posted",
     paymentMethod: o.checkNo ? "Check" : "Cash", bankAccountId: o.bank ?? bank.BK,
-    checkNo: o.checkNo || "", checkDate: o.date || "2098-07-10",
+    checkNo: o.checkNo || "", checkDate: o.checkNo ? (o.date || "2098-07-10") : "",
     totalDebit: o.gross, totalCredit: o.gross, lines: o.lines, invoiceApplications: o.apps || [],
     currency: { companyId: co[company], currencyId: cur[company], exchangeRate: 1, rateDate: o.date || "2098-07-10" },
   });

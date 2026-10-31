@@ -60,6 +60,10 @@ function companyClause(alias, companyId) {
 // fall back to the stored header values: gross - tax_withheld_amount.
 // The accounting document is never changed; amountSource says which rule
 // produced the figure.
+// R9 keeps this rule for every payment method, Cash included: how Cash
+// vouchers booked to cash on hand are treated is deliberately unchanged
+// until the historical population is reviewed (r9PaymentFieldAudit.sql,
+// query 7).
 const AMOUNT_SOURCE = { BANK_LINE: "BANK_LINE", GROSS_LESS_WITHHOLDING: "GROSS_LESS_WITHHOLDING" };
 
 function bankMovement(row) {
@@ -138,6 +142,8 @@ async function queryVoucherMovements(conn, type, scope) {
     `SELECT h.id, h.voucher_no AS voucherNo, ${party},
             DATE_FORMAT(h.transaction_date, '%Y-%m-%d') AS txnDate,
             h.reference_no AS referenceNo, ${receipt}, h.check_no AS checkNo, h.description,
+            h.payment_method AS paymentMethod, DATE_FORMAT(h.check_date, '%Y-%m-%d') AS checkDate,
+            h.payment_reference AS paymentReference, DATE_FORMAT(h.payment_date, '%Y-%m-%d') AS paymentDate,
             h.status, h.bank_account_id AS bankAccountId, h.company_id AS companyId,
             h.total_debit AS grossAmount, h.tax_withheld_amount AS withholdingAmount,
             h.currency_id AS currencyId,
@@ -176,6 +182,12 @@ function toBookTxn(type, row) {
     payeeOrCustomer: row.partyName,
     description: row.description,
     voucherNo: row.voucherNo,
+    // R9 payment details (Check: check number + check date; Bank Transfer:
+    // transfer reference + date)
+    paymentMethod: row.paymentMethod || null,
+    checkDate: row.checkDate || null,
+    paymentReference: row.paymentReference || "",
+    paymentDate: row.paymentDate || null,
     currencyId: row.currencyId ?? null,
     // R8.4-B: a document in a currency other than the company's base
     // currency is never combined into a multi-OR deposit match.

@@ -8,7 +8,7 @@ export default function OR() {
       code="OR"
       partyLabel="Customer"
       partyType="CUSTOMER"
-      showCheckNo={true}
+      showReceiptNo={true}
       printModuleType="or"
       recurringModuleType="or"
       defaultDescription="Collection from customer"

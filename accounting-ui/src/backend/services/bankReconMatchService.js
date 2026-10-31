@@ -127,7 +127,7 @@ async function runMatching({ sessionId, user, channel = CHANNEL.WORKSPACE }) {
     const set = statementSetWhere(session);
     const [stmtLines] = await conn.execute(
       `SELECT sl.id, DATE_FORMAT(sl.txn_date, '%Y-%m-%d') AS txnDate, sl.description,
-              sl.reference_no AS referenceNo, sl.check_no AS checkNo, sl.debit, sl.credit
+              sl.reference_no AS referenceNo, sl.check_no AS checkNo, sl.bank_reference AS bankReference, sl.debit, sl.credit
        FROM bank_recon_statement_lines sl
        WHERE ${set.sql} AND sl.match_status IN ('UNMATCHED', 'SUGGESTED')
        ORDER BY sl.txn_date, sl.id`,
@@ -308,6 +308,8 @@ function explainCandidate(matchType, breakdown, ctx = null) {
     const doc = `${candidate.bookSourceType} ${candidate.detail?.voucherNo || `#${candidate.bookSourceId}`}`;
     if (level === MATCH_LEVEL.CHECK_NO) {
       base = `Bank statement check ${line.checkNo || line.referenceNo} for ${peso(stmtAmount)} matches ${doc} for ${peso(candidate.amount)}: the check number and amount match exactly, and the ${candidate.bookSourceType} is posted to this company and bank account.`;
+    } else if (level === MATCH_LEVEL.REFERENCE && breakdown?.evidence === "TRANSFER_REFERENCE") {
+      base = `Bank statement reference ${line.referenceNo || line.bankReference} for ${peso(stmtAmount)} matches the bank transfer reference of ${doc} for ${peso(candidate.amount)}: the transfer reference and amount match exactly, and the ${candidate.bookSourceType} is posted to this company and bank account.`;
     } else if (level === MATCH_LEVEL.REFERENCE) {
       base = `Bank statement reference ${line.referenceNo || line.checkNo} for ${peso(stmtAmount)} matches ${doc} for ${peso(candidate.amount)}: the document / reference number and amount match exactly, and the ${candidate.bookSourceType} is posted to this company and bank account.`;
     } else if (level === MATCH_LEVEL.AMOUNT_DATE) {

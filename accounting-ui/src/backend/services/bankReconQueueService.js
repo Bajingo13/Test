@@ -95,12 +95,13 @@ async function documentsByIdentifier(conn, companyId, keys) {
     const lt = isCv ? "cv_lines" : "or_lines";
     const fk = isCv ? "cv_id" : "or_id";
     const net = isCv ? "l.credit - l.debit" : "l.debit - l.credit";
-    const cols = isCv ? ["check_no", "voucher_no", "reference_no"] : ["check_no", "voucher_no", "reference_no", "receipt_no"];
+    const cols = isCv ? ["check_no", "voucher_no", "reference_no", "payment_reference"] : ["check_no", "voucher_no", "reference_no", "receipt_no", "payment_reference"];
     const where = cols.map((c) => `TRIM(LEADING '0' FROM LOWER(TRIM(h.${c}))) IN (?)`).join(" OR ");
     const [rows] = await conn.query(
       `SELECT h.id, h.voucher_no AS voucherNo, h.check_no AS checkNo, h.reference_no AS referenceNo,
               ${isCv ? "''" : "h.receipt_no"} AS receiptNo, h.status, h.bank_account_id AS bankAccountId,
-              DATE_FORMAT(h.transaction_date, '%Y-%m-%d') AS txnDate,
+              DATE_FORMAT(h.transaction_date, '%Y-%m-%d') AS txnDate, h.payment_method AS paymentMethod,
+              h.payment_reference AS paymentReference,
               h.total_debit AS grossAmount, h.tax_withheld_amount AS withholdingAmount,
               (SELECT COUNT(*) FROM ${lt} l WHERE l.${fk} = h.id AND l.account_id = bc.coa_account_id) AS bankLineCount,
               (SELECT COALESCE(SUM(${net}), 0) FROM ${lt} l WHERE l.${fk} = h.id AND l.account_id = bc.coa_account_id) AS bankLineNet
@@ -119,7 +120,9 @@ async function documentsByIdentifier(conn, companyId, keys) {
         bankAccountId: r.bankAccountId,
         txnDate: r.txnDate,
         checkIds: strongIds(r.checkNo),
-        documentIds: strongIds(r.voucherNo, r.receiptNo, r.referenceNo),
+        // R9: check numbers come only from check_no; receipt / document /
+        // transfer references are document identifiers.
+        documentIds: strongIds(r.voucherNo, r.receiptNo, r.referenceNo, r.paymentReference),
         amount: Math.abs(m.bankMovementAmount),
         direction: m.bankMovementAmount >= 0 ? natural : natural === "OUT" ? "IN" : "OUT",
       });
@@ -138,7 +141,7 @@ async function buildQueue({ sessionId, user }) {
     const set = statementSetWhere(session);
     const [lines] = await conn.execute(
       `SELECT sl.id, DATE_FORMAT(sl.txn_date, '%Y-%m-%d') AS txnDate, sl.description, sl.reference_no AS referenceNo,
-              sl.check_no AS checkNo, sl.debit, sl.credit, sl.match_status AS matchStatus, sl.row_fingerprint AS fingerprint,
+              sl.check_no AS checkNo, sl.bank_reference AS bankReference, sl.debit, sl.credit, sl.match_status AS matchStatus, sl.row_fingerprint AS fingerprint,
               sl.company_id AS companyId, (sl.txn_date < ?) AS carried
        FROM bank_recon_statement_lines sl WHERE ${set.sql} ORDER BY sl.txn_date, sl.id`,
       [session.periodStart, ...set.params]
@@ -240,18 +243,19 @@ async function buildQueue({ sessionId, user }) {
     // ---- exceptions ----
     const exceptions = [];
     const reviewable = unresolved.filter((l) => !highConfidence.some((h) => h.line.id === l.id));
-    const keys = new Set(reviewable.flatMap((l) => strongIds(l.checkNo, l.referenceNo)));
+    const keys = new Set(reviewable.flatMap((l) => strongIds(l.checkNo, l.referenceNo, l.bankReference)));
     const docs = session.companyId ? await documentsByIdentifier(conn, session.companyId, keys) : [];
     const edge = (amount) => round2(session.amountVarianceType === "PERCENT"
       ? amount * (Number(session.amountVarianceValue) / 100)
       : Number(session.amountVarianceValue));
     for (const l of reviewable) {
-      const ids = strongIds(l.checkNo, l.referenceNo);
+      const ids = strongIds(l.checkNo, l.referenceNo, l.bankReference);
+      const refIds = strongIds(l.referenceNo, l.bankReference);
       if (!ids.length) continue;
       const pendingDocs = new Set((pendingByLine.get(l.id) || []).map((p) => `${p.bookSourceType}:${p.bookSourceId}`));
       for (const d of docs) {
         const viaCheck = d.checkIds.some((k) => ids.includes(k));
-        const viaDocument = d.documentIds.some((k) => ids.includes(k));
+        const viaDocument = d.documentIds.some((k) => refIds.includes(k));
         if (!viaCheck && !viaDocument) continue;
         const amt = lineAmount(l);
         let reason = null;

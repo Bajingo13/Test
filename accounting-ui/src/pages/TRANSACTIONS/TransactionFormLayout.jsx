@@ -82,7 +82,7 @@ export default function TransactionFormLayout({
   title,
   code,
   partyLabel,
-  showCheckNo = false,
+  showReceiptNo = false,
   defaultDescription = "",
   defaultLines = [createLine(), createLine()],
   partyType = null,
@@ -236,6 +236,9 @@ export default function TransactionFormLayout({
   const [bankAccountId, setBankAccountId] = useState("");
   const [checkNumber, setCheckNumber] = useState("");
   const [checkDate, setCheckDate] = useState("");
+  // R9: Bank Transfer details (payment_reference / payment_date).
+  const [paymentReference, setPaymentReference] = useState("");
+  const [paymentDate, setPaymentDate] = useState("");
 
   const [form, setForm] = useState({
     date: new Date().toISOString().split("T")[0],
@@ -1347,6 +1350,8 @@ setPaymentMethod(code === "CV" ? "Check" : "Cash");
 setBankAccountId("");
 setCheckNumber("");
 setCheckDate("");
+setPaymentReference("");
+setPaymentDate("");
 
 setError("");
   }
@@ -1640,10 +1645,12 @@ if (code === "INV") {
 }
 
 if (code === "OR" || code === "CV") {
-  setPaymentMethod(data.paymentMethod === "Check" ? "Check" : "Cash");
+  setPaymentMethod(["Check", "Bank Transfer"].includes(data.paymentMethod) ? data.paymentMethod : "Cash");
   setBankAccountId(data.bankAccountId || "");
   setCheckNumber(data.checkNo || "");
   setCheckDate(data.checkDate || "");
+  setPaymentReference(data.paymentReference || "");
+  setPaymentDate(data.paymentDate || "");
 }
         setFormMode(targetFormMode);
         setMode("form");
@@ -2439,6 +2446,8 @@ if (code === "OR" || code === "CV") {
         bankAccountId: code === "OR" || code === "CV" ? bankAccountId || null : null,
         checkNo: (code === "OR" || code === "CV") && paymentMethod === "Check" ? checkNumber : null,
         checkDate: (code === "OR" || code === "CV") && paymentMethod === "Check" ? checkDate : null,
+        paymentReference: (code === "OR" || code === "CV") && paymentMethod === "Bank Transfer" ? paymentReference : null,
+        paymentDate: (code === "OR" || code === "CV") && paymentMethod === "Bank Transfer" ? paymentDate : null,
 
         // Multi-currency (Checkpoint 3A) - the backend independently
         // resolves/validates this (never trusts exchangeRate at face
@@ -2481,6 +2490,13 @@ if (code === "OR" || code === "CV") {
 
       if (!res.ok) {
         if (handleAuthError(res.status)) return;
+        // R9: payment-details problems (method, check / transfer fields,
+        // bank account) are shown in the form error box, next to Payment
+        // Details, instead of a browser alert.
+        if (/^(INVALID_PAYMENT_METHOD|PAYMENT_|INVALID_BANK_ACCOUNT|BANK_ACCOUNT_)/.test(String(data.code || ""))) {
+          setError(data.message);
+          return;
+        }
         alert(data.message || "Failed to save transaction.");
         // Phase 7G: a per-company duplicate voucher number (409) - surface
         // it in the form's error box too and leave every field as typed so
@@ -2829,7 +2845,7 @@ if (code === "OR") {
                   title={title}
                   partyLabel={partyLabel}
                   partyType={partyType}
-                  showCheckNo={showCheckNo}
+                  showReceiptNo={showReceiptNo}
                   form={form}
                   updateForm={updateForm}
                   handlePartyChange={handlePartyChange}
@@ -2889,7 +2905,7 @@ if (code === "OR") {
                 title={title}
                 partyLabel={partyLabel}
                 partyType={partyType}
-                showCheckNo={showCheckNo}
+                showReceiptNo={showReceiptNo}
                 form={form}
                 updateForm={updateForm}
                 handlePartyChange={handlePartyChange}
@@ -2938,7 +2954,7 @@ if (code === "OR") {
               <div className="transaction-card">
                 <div className="transaction-section-header">
                   <div>
-                    <h2 className="transaction-section-title">Cash / Check Details</h2>
+                    <h2 className="transaction-section-title">Payment Details</h2>
                   </div>
                 </div>
 
@@ -2954,8 +2970,14 @@ if (code === "OR") {
                   />
                   {paymentMethod === "Check" && (
                     <>
-                      <ViewField label="Check No." value={checkNumber} />
+                      <ViewField label="Check Number" value={checkNumber} />
                       <ViewField label="Check Date" value={checkDate} />
+                    </>
+                  )}
+                  {paymentMethod === "Bank Transfer" && (
+                    <>
+                      <ViewField label="Transfer Reference No." value={paymentReference} />
+                      <ViewField label="Transfer Date" value={paymentDate} />
                     </>
                   )}
                 </div>
@@ -3055,7 +3077,7 @@ if (code === "OR") {
                         className="transaction-entry-status-chip"
                         onClick={() => setShowCashCheckModal(true)}
                       >
-                        💳 {paymentMethod}{paymentMethod === "Check" && checkNumber ? ` #${checkNumber}` : ""}
+                        💳 {paymentMethod}{paymentMethod === "Check" && checkNumber ? ` #${checkNumber}` : ""}{paymentMethod === "Bank Transfer" && paymentReference ? ` ref ${paymentReference}` : ""}
                       </button>
                     )}
 
@@ -3730,6 +3752,11 @@ if (code === "OR") {
           setCheckNumber={setCheckNumber}
           checkDate={checkDate}
           setCheckDate={setCheckDate}
+          paymentReference={paymentReference}
+          setPaymentReference={setPaymentReference}
+          paymentDate={paymentDate}
+          setPaymentDate={setPaymentDate}
+          amount={code === "OR" ? totals.totalDebit : totals.totalCredit}
         />
       </div>
     </div>

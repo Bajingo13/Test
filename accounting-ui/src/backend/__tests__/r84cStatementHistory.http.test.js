@@ -69,7 +69,7 @@ async function voucher(kind, company, o) {
   const res = await api(who, "post", `/api/${kind}`, {
     voucherNo: `${P}${o.no}`, [isCv ? "payeeName" : "customerName"]: o.party || "R84C Party", transactionDate: o.date,
     referenceNo: o.ref || "", receiptNo: o.receiptNo || "", description: "R84C", status: "Posted",
-    paymentMethod: o.method || (o.checkNo ? "Check" : "Cash"), bankAccountId: o.bank, checkNo: o.checkNo || "", checkDate: o.checkDate || o.date,
+    paymentMethod: o.method || (o.checkNo ? "Check" : "Cash"), bankAccountId: o.bank, checkNo: o.checkNo || "", checkDate: o.checkNo ? (o.checkDate || o.date) : "",
     totalDebit: o.amount, totalCredit: o.amount,
     lines: isCv ? [ln(acct.EXP, o.amount, 0), ln(bankCoa[o.bank], 0, o.amount)] : [ln(bankCoa[o.bank], o.amount, 0), ln(acct.AR, 0, o.amount)],
     currency: { companyId: co[company], currencyId: cur[company], exchangeRate: 1, rateDate: o.date },
@@ -517,18 +517,19 @@ describe("OR / CV payment fields (investigation)", () => {
     expect(got).toMatchObject({ receiptNo: "RCPT-77", checkNo: "CHK-88", referenceNo: "REF-99", paymentMethod: "Check" });
   });
 
-  test("OR form: the header field labelled 'Check No.' is sent and reloaded as receiptNo (a label problem, not a mapping or column bug)", () => {
+  test("OR form: the header field is sent and reloaded as receiptNo - labelled 'Receipt No.' since R9 (was 'Check No.')", () => {
     const src = require("fs").readFileSync(require("path").join(__dirname, "..", "..", "pages", "TRANSACTIONS", "TransactionFormLayout.jsx"), "utf8");
-    // submit: header form.checkNo goes to receiptNo (and remarks); the cash/check modal's checkNumber goes to checkNo
+    // submit: header form.checkNo goes to receiptNo (and remarks); the payment details' checkNumber goes to checkNo
     expect(src).toMatch(/receiptNo: updatedForm\.checkNo/);
     expect(src).toMatch(/checkNo: \(code === "OR" \|\| code === "CV"\) && paymentMethod === "Check" \? checkNumber : null/);
-    // load: OR header shows receiptNo back in the same "Check No." field; the modal reloads data.checkNo
+    // load: OR header shows receiptNo back in the same field; the payment details reload data.checkNo
     expect(src).toMatch(/: code === "OR"\s*\?\s*data\.receiptNo \|\| ""/);
     expect(src).toMatch(/setCheckNumber\(data\.checkNo \|\| ""\)/);
     const header = require("fs").readFileSync(require("path").join(__dirname, "..", "..", "pages", "TRANSACTIONS", "TransactionVoucherHeader.jsx"), "utf8");
-    expect(header).toMatch(/showCheckNo \? "Check No\." : "Transaction Type"/);
+    expect(header).toMatch(/showReceiptNo \? "Receipt No\." : "Transaction Type"/);
+    expect(header).not.toMatch(/\? "Check No\." :/);
     const orPage = require("fs").readFileSync(require("path").join(__dirname, "..", "..", "pages", "TRANSACTIONS", "OR.jsx"), "utf8");
-    expect(orPage).toMatch(/showCheckNo=\{true\}/);
+    expect(orPage).toMatch(/showReceiptNo=\{true\}/);
   });
 
   test("Cash OR / CV: no check fields are stored; CV has no receipt_no", async () => {
