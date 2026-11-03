@@ -10,7 +10,8 @@
     "db:migrate:dev": "cross-env NODE_ENV=development node src/backend/scripts/migrate.js",
     "db:migrate:test": "cross-env NODE_ENV=test node src/backend/scripts/migrate.js",
     "db:test:reset": "cross-env NODE_ENV=test node src/backend/scripts/dbTestReset.js",
-    "db:verify-env": "node src/backend/scripts/verifyEnv.js"
+    "db:verify-env": "node src/backend/scripts/verifyEnv.js",
+    "secrets:scan": "node src/backend/scripts/secretScan.js"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^6.0.1",

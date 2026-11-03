@@ -1,1 +1,41 @@
 node_modules/
+
+# Secrets: environment files at any depth. Templates and the frontend's
+# build-time config are tracked on purpose and must hold no secrets.
+.env
+.env.*
+!.env.example
+!.env.*.example
+!accounting-ui/.env.development
+!accounting-ui/.env.production
+
+# Secrets: keys, certificates, credential files
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.ppk
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+.git-credentials
+.netrc
+.my.cnf
+.mylogin.cnf
+*credentials*.json
+*service-account*.json
+*service_account*.json
+client_secret*.json
+
+# Database dumps and local databases (migration .sql files stay tracked)
+*.sql.gz
+*.sql.zip
+*.sql.bz2
+*.dump
+*dump*.sql
+*backup*.sql
+*.sqlite
+*.sqlite3
