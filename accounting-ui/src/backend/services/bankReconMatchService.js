@@ -162,8 +162,7 @@ async function runMatching({ sessionId, user, channel = CHANNEL.WORKSPACE }) {
 
     // R10: deposited slips of this company + bank account; their documents
     // are matched through their slip only.
-    const slips = await loadDepositedSlips(conn, session, bookTxns, confirmedKeys);
-    const slipMemberKeys = new Set(slips.flatMap((s) => s.members.map(bookKey)));
+    const { slips, memberKeys: slipMemberKeys } = await loadDepositedSlips(conn, session, bookTxns, confirmedKeys);
     const slipsByLine = proposeSlipMatches(stmtLines, slips, session);
 
     // Score every line first, then decide EXACT vs AMBIGUOUS with the whole
@@ -324,11 +323,11 @@ function explainCandidate(matchType, breakdown, ctx = null) {
     const stmtAmount = Number(line.debit) > 0 ? line.debit : line.credit;
     const doc = `${candidate.bookSourceType} ${candidate.detail?.voucherNo || `#${candidate.bookSourceId}`}`;
     if (level === MATCH_LEVEL.CHECK_NO) {
-      base = `Bank statement check ${line.checkNo || line.referenceNo} for ${peso(stmtAmount)} matches ${doc} for ${peso(candidate.amount)}: the check number and amount match exactly, and the ${candidate.bookSourceType} is posted to this company and bank account.`;
+      base = `Bank statement check ${line.checkNo || line.referenceNo || line.bankReference} for ${peso(stmtAmount)} matches ${doc} for ${peso(candidate.amount)}: the check number and amount match exactly, and the ${candidate.bookSourceType} is posted to this company and bank account.`;
     } else if (level === MATCH_LEVEL.REFERENCE && breakdown?.evidence === "TRANSFER_REFERENCE") {
       base = `Bank statement reference ${line.referenceNo || line.bankReference} for ${peso(stmtAmount)} matches the bank transfer reference of ${doc} for ${peso(candidate.amount)}: the transfer reference and amount match exactly, and the ${candidate.bookSourceType} is posted to this company and bank account.`;
     } else if (level === MATCH_LEVEL.REFERENCE) {
-      base = `Bank statement reference ${line.referenceNo || line.checkNo} for ${peso(stmtAmount)} matches ${doc} for ${peso(candidate.amount)}: the document / reference number and amount match exactly, and the ${candidate.bookSourceType} is posted to this company and bank account.`;
+      base = `Bank statement reference ${line.referenceNo || line.bankReference} for ${peso(stmtAmount)} matches ${doc} for ${peso(candidate.amount)}: the document / reference number and amount match exactly, and the ${candidate.bookSourceType} is posted to this company and bank account.`;
     } else if (level === MATCH_LEVEL.AMOUNT_DATE) {
       base = `${doc} has the same amount (${peso(candidate.amount)}) and a date within tolerance, but no check or document number confirms it.`;
     }
@@ -441,7 +440,7 @@ async function listCandidates({ statementLineId, user }) {
 
   const [lineRows] = await pool.execute(
     `SELECT id, session_id AS sessionId, DATE_FORMAT(txn_date, '%Y-%m-%d') AS txnDate, description,
-            reference_no AS referenceNo, check_no AS checkNo, debit, credit, match_status AS matchStatus
+            reference_no AS referenceNo, check_no AS checkNo, bank_reference AS bankReference, debit, credit, match_status AS matchStatus
      FROM bank_recon_statement_lines WHERE id = ?`,
     [statementLineId]
   );

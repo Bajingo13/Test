@@ -15,10 +15,12 @@ const { normalizeIdentifier, shiftDate, daysBetween, bookKey } = require("./Conf
 const DEPOSIT_SLIP_LEVEL = "DEPOSIT_SLIP";
 const cents = (n) => Math.round(Number(n) * 100);
 
-// Deposited slips of the session's company + bank account whose documents
-// are still unreconciled book items with unchanged amounts.
+// Deposited slips of the session's company + bank account. slips: those whose
+// documents are still unreconciled book items with unchanged amounts.
+// memberKeys: the documents of every deposited slip, usable or not - they are
+// matched through their slip only, so they are never proposed on their own.
 async function loadDepositedSlips(conn, session, bookTxns, confirmedKeys) {
-  if (!session.companyId) return [];
+  if (!session.companyId) return { slips: [], memberKeys: new Set() };
   const [rows] = await conn.execute(
     `SELECT s.id, s.deposit_no AS depositNo, DATE_FORMAT(s.deposit_date, '%Y-%m-%d') AS depositDate, s.total_amount AS total,
             l.source_type AS sourceType, COALESCE(l.or_id, l.cv_id) AS sourceId, l.amount
@@ -40,20 +42,22 @@ async function loadDepositedSlips(conn, session, bookTxns, confirmedKeys) {
       && members.reduce((sum, m) => sum + cents(m.amount), 0) === s.totalCents;
     if (usable) out.push({ ...s, members });
   }
-  return out;
+  return { slips: out, memberKeys: new Set(rows.map((r) => `${r.sourceType}:${r.sourceId}:`)) };
 }
 
-const statementIds = (line) => [line.description, line.referenceNo, line.bankReference, line.checkNo]
+// The statement's check column holds check numbers, so it never names a slip.
+const statementIds = (line) => [line.description, line.referenceNo, line.bankReference]
   .filter(Boolean).map((v) => String(v).toLowerCase());
 
-// "DS-00125" named on the statement (as typed, or as DS125 / 00125 / 125 in
-// a reference column).
+// "DS-00125" named on the statement: the whole number (as typed, or as DS125
+// / DS 00125) anywhere in the text, or 00125 / 125 as a reference column's
+// whole value - never digits that happen to follow "ds" inside another word
+// ("FUNDS 125") or a longer number ("DS1250").
 function namesSlip(line, depositNo) {
-  const no = depositNo.toLowerCase();
-  const digits = no.replace(/^ds-?/, "");
+  const digits = depositNo.toLowerCase().replace(/^ds-?/, "");
   const stripped = digits.replace(/^0+/, "");
-  const texts = statementIds(line);
-  if (texts.some((t) => t.includes(no) || t.replace(/[\s-]/g, "").includes(`ds${digits}`) || t.replace(/[\s-]/g, "").includes(`ds${stripped}`))) return true;
+  const whole = new RegExp(`(^|[^a-z0-9])ds[\\s-]*0*${stripped}(?![a-z0-9])`);
+  if (statementIds(line).some((t) => whole.test(t))) return true;
   const refs = [line.referenceNo, line.bankReference].filter(Boolean).map((v) => normalizeIdentifier(String(v)));
   return stripped.length >= 3 && refs.some((r) => r === stripped || r === digits);
 }

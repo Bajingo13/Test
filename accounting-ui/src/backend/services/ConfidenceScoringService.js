@@ -111,7 +111,7 @@ function scoreCandidate(stmtLine, bookTxn, session) {
   const bookCheckIds = strongIdentifiers([bookTxn.checkNo]);
   const bookTransferIds = strongIdentifiers([bookTxn.paymentReference]);
   const bookDocumentIds = strongIdentifiers([bookTxn.voucherNo, bookTxn.receiptNo, bookTxn.referenceNo, bookTxn.paymentReference]);
-  const bookIdentifiers = [...bookCheckIds, ...bookDocumentIds];
+  const partlyEqual = (stmtIds, bookIds) => stmtIds.some((s) => bookIds.some((b) => s.includes(b) || b.includes(s)));
 
   const checkNoExact = stmtIdentifiers.some((s) => bookCheckIds.includes(s));
   const documentExact = stmtReferenceIds.some((s) => bookDocumentIds.includes(s));
@@ -155,18 +155,10 @@ function scoreCandidate(stmtLine, bookTxn, session) {
 
   let identifierScore = 0;
 
-  if (stmtIdentifiers.length && bookIdentifiers.length) {
-    if (checkNoExact || documentExact) {
-      identifierScore = 25;
-    } else if (
-      stmtIdentifiers.some((s) =>
-        bookIdentifiers.some(
-          (b) => s.length >= 3 && b.length >= 3 && (s.includes(b) || b.includes(s))
-        )
-      )
-    ) {
-      identifierScore = 10;
-    }
+  if (checkNoExact || documentExact) {
+    identifierScore = 25;
+  } else if (partlyEqual(stmtIdentifiers, bookCheckIds) || partlyEqual(stmtReferenceIds, bookDocumentIds)) {
+    identifierScore = 10;
   }
 
   const stmtDescNormalized = normalizeIdentifier(stmtLine.description);

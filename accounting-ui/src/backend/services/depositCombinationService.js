@@ -45,9 +45,10 @@ function depositPool(bookTxns, confirmedKeys) {
     && !confirmedKeys.has(`${t.sourceType}:${t.sourceId}:${t.lineId ?? ""}`));
 }
 
-// Statement text the ORs' own numbers are looked for in.
+// Statement text the ORs' own numbers are looked for in. Not the check
+// column: a check number is never a receipt or document number (R9).
 function statementText(line) {
-  return [line.description, line.referenceNo, line.checkNo].filter(Boolean).join(" ").toLowerCase();
+  return [line.description, line.referenceNo, line.bankReference].filter(Boolean).join(" ").toLowerCase();
 }
 
 function namesReceipt(text, or) {

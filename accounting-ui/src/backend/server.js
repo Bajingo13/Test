@@ -5048,13 +5048,15 @@ app.post("/api/posting/post", authenticateToken, authorizePermission("POSTING", 
 
       // R9: an OR / CV whose payment is incomplete for posting (a Check
       // without its bank account / check number / check date, a Bank
-      // Transfer without its bank account / reference / date) is skipped and
-      // reported - bulk posting is never a way around the per-document rule.
+      // Transfer without its bank account / reference / date, or a bank
+      // account that is no longer active) is skipped and reported - bulk
+      // posting is never a way around the per-document rule.
       if (target.isPaymentDoc && draftIds.length) {
         const [payRows] = await conn.query(
           `SELECT id, payment_method AS paymentMethod, bank_account_id AS bankAccountId, check_no AS checkNo,
                   DATE_FORMAT(check_date, '%Y-%m-%d') AS checkDate, payment_reference AS paymentReference,
-                  DATE_FORMAT(payment_date, '%Y-%m-%d') AS paymentDate
+                  DATE_FORMAT(payment_date, '%Y-%m-%d') AS paymentDate,
+                  (SELECT bc.status FROM bank_codes bc WHERE bc.id = ${target.table}.bank_account_id) AS bankStatus
            FROM ${target.table} WHERE id IN (?)`,
           [draftIds]
         );
@@ -10881,9 +10883,21 @@ app.put("/api/bank-codes/:id", authenticateToken, authorizePermission("FILESETUP
 app.delete("/api/bank-codes/:id", authenticateToken, authorizePermission("FILESETUP.BANK_CODES", "CONFIGURE"), async (req, res) => {
   try {
     const { id } = req.params;
+    // or_headers / cv_headers have no foreign key to bank_codes, so a delete
+    // would silently leave documents pointing at nothing.
+    const [[use]] = await pool.execute(
+      `SELECT (SELECT COUNT(*) FROM or_headers WHERE bank_account_id = ?) + (SELECT COUNT(*) FROM cv_headers WHERE bank_account_id = ?) AS documents`,
+      [id, id]
+    );
+    if (Number(use.documents) > 0) {
+      return res.status(409).json({ message: `This bank code is used by ${use.documents} document(s) and cannot be deleted. Set it to Inactive instead.`, code: "BANK_CODE_IN_USE" });
+    }
     await pool.execute("DELETE FROM bank_codes WHERE id = ?", [id]);
     res.json({ success: true, message: "Bank code deleted successfully" });
   } catch (err) {
+    if (err.code === "ER_ROW_IS_REFERENCED_2") {
+      return res.status(409).json({ message: "This bank code is used by a bank reconciliation or deposit slip and cannot be deleted. Set it to Inactive instead.", code: "BANK_CODE_IN_USE" });
+    }
     console.error("DELETE BANK CODE ERROR:", err);
     res.status(500).json({ message: "Failed to delete bank code" });
   }

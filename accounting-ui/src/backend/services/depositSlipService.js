@@ -56,6 +56,10 @@ async function bankAccount(conn, bankAccountId) {
   return bank;
 }
 
+function assertActiveBank(bank) {
+  if (String(bank.status || "").toUpperCase() !== "ACTIVE") throw new HttpError(400, "The selected bank account is not active.", "BANK_ACCOUNT_INACTIVE");
+}
+
 async function baseCurrencyId(conn, companyId) {
   const [[cur]] = await conn.execute("SELECT id FROM currencies WHERE company_id = ? AND is_base_currency = 1 ORDER BY id LIMIT 1", [companyId]);
   return cur ? cur.id : null;
@@ -264,7 +268,7 @@ async function createSlip({ user, body }) {
   return withTransaction(async (conn) => {
     await conn.execute("SELECT id FROM companies WHERE id = ? FOR UPDATE", [companyId]);
     const bank = await bankAccount(conn, input.bankAccountId);
-    if (String(bank.status || "").toUpperCase() !== "ACTIVE") throw new HttpError(400, "The selected bank account is not active.", "BANK_ACCOUNT_INACTIVE");
+    assertActiveBank(bank);
     const ctx = { companyId, bankAccountId: input.bankAccountId, depositDate: input.depositDate };
     const { resolved, base } = await lockAndResolve(conn, input.items, ctx);
     const depositNo = await nextDepositNo(conn, companyId);
@@ -292,6 +296,7 @@ async function updateSlip({ user, slipId, body }) {
     if (slip.status !== STATUS.DRAFT) throw new HttpError(409, `Deposit slip ${slip.depositNo} is ${slip.status} and can no longer be edited.`, "DEPOSIT_SLIP_NOT_EDITABLE");
     const before = await slipLines(conn, slip.id);
     const ctx = { companyId: slip.companyId, bankAccountId: slip.bankAccountId, depositDate: input.depositDate, slipId: slip.id };
+    assertActiveBank(await bankAccount(conn, slip.bankAccountId));
     const { resolved } = await lockAndResolve(conn, input.items, ctx);
     await conn.execute("DELETE FROM deposit_slip_lines WHERE deposit_slip_id = ? AND released_at IS NULL", [slip.id]);
     await conn.execute("UPDATE deposit_slips SET deposit_date = ?, remarks = ? WHERE id = ?", [input.depositDate, input.remarks, slip.id]);
@@ -315,6 +320,7 @@ async function markDeposited({ user, slipId }) {
     const lines = await slipLines(conn, slip.id);
     if (!lines.length) throw new HttpError(400, "Add at least one receipt before marking the slip deposited.", "DEPOSIT_SLIP_EMPTY");
     const ctx = { companyId: slip.companyId, bankAccountId: slip.bankAccountId, depositDate: slip.depositDate, slipId: slip.id };
+    assertActiveBank(await bankAccount(conn, slip.bankAccountId));
     const { resolved } = await lockAndResolve(conn, lines.map((l) => ({ type: l.sourceType, id: l.sourceId, key: `${l.sourceType}:${l.sourceId}:` })), ctx);
     for (const t of resolved) {
       const line = lines.find((l) => l.sourceType === t.sourceType && Number(l.sourceId) === Number(t.sourceId));

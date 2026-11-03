@@ -269,7 +269,7 @@ async function buildQueue({ sessionId, user }) {
         else if (Math.abs(round2(amt - d.amount)) > edge(amt)) reason = EXCEPTION.AMOUNT_MISMATCH;
         else if (!pendingDocs.has(`${d.type}:${d.id}`)) reason = EXCEPTION.OUTSIDE_DATE_WINDOW;
         if (!reason) continue;
-        const what = `${viaCheck ? "check" : "reference"} ${viaCheck ? l.checkNo || l.referenceNo : l.referenceNo || l.checkNo}`;
+        const what = `${viaCheck ? "check" : "reference"} ${viaCheck ? l.checkNo || l.referenceNo || l.bankReference : l.referenceNo || l.bankReference}`;
         const doc = `${d.type} ${d.voucherNo || `#${d.id}`}`;
         const message = {
           NOT_POSTED: `Statement ${what} names ${doc}, which is ${d.status || "not posted"} - post it before it can be reconciled.`,

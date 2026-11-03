@@ -178,9 +178,13 @@ function normalizeStored(row) {
 
 // What a stored document still needs before it can be posted (bulk
 // posting uses this to skip incomplete payments instead of posting them).
+// bankStatus is the current status of its bank account: an account
+// deactivated after the draft was saved blocks posting, as it does for a
+// single document.
 function postingGaps(stored) {
   const m = String(stored.paymentMethod || "");
   const gaps = [];
+  if (stored.bankAccountId && String(stored.bankStatus || "").toUpperCase() !== "ACTIVE") gaps.push("active bank account");
   if (m === PAYMENT_METHOD.CHECK) {
     if (!stored.bankAccountId) gaps.push("bank account");
     if (!stored.checkNo) gaps.push("check number");
