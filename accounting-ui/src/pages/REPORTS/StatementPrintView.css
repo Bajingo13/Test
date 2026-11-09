@@ -41,6 +41,12 @@
   }
 
   /* ---- centered header block, closed by a full-width rule ---- */
+  body.printing-statement .spv-head {
+    /* TransactionFormLayout.css hides every <header> in print, and that
+       stylesheet is bundled globally. */
+    display: block !important;
+  }
+
   .spv-head {
     text-align: center;
     padding-bottom: 7pt;

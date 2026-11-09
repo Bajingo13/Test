@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Private attachment store (RFP receipts etc.) - uploaded files, never committed
+storage/

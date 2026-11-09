@@ -2,6 +2,9 @@ import { useMemo, useState } from "react";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
 import { downloadCsvText, typedRowsToCsv } from "./reportCsv.mjs";
 import ReportExportMenu from "./ReportExportMenu.jsx";
+import ReportPeriodFilter, { ReportPeriodLabel } from "./ReportPeriodFilter.jsx";
+import useReportPeriod from "./useReportPeriod.js";
+import { periodCsvRows, periodFileSlug } from "./reportPeriod.mjs";
 import "./LedgerReport.css";
 import "./BookReport.css";
 
@@ -36,13 +39,6 @@ function formatMoney(amount) {
   });
 }
 
-function formatAsOfDate(dateValue) {
-  if (!dateValue) return "";
-  return new Date(dateValue)
-    .toLocaleDateString("en-US", { month: "long", day: "2-digit", year: "numeric" })
-    .toUpperCase();
-}
-
 export default function BookReport({
   title,
   apiPath,
@@ -59,18 +55,20 @@ export default function BookReport({
   // DM-/CM- prefix and would otherwise be indistinguishable on screen.
   typeColumn,
 }) {
-  const [fromDate, setFromDate] = useState(defaultFromDate);
-  const [toDate, setToDate] = useState(new Date().toISOString().slice(0, 10));
+  const period = useReportPeriod({ defaultFrom: defaultFromDate });
+  const { toDate } = period;
   const [search, setSearch] = useState("");
   const [rows, setRows] = useState(null); // null = not yet generated
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
   async function generateReport() {
+    const applied = period.apply();
+    if (!applied) return;
     setLoading(true);
     setError(null);
     try {
-      const params = new URLSearchParams({ from: fromDate, to: toDate });
+      const params = new URLSearchParams(applied.params);
       const res = await fetch(`${API_URL}${apiPath}?${params.toString()}`, {
         credentials: "include",
         headers: authHeaders(),
@@ -136,7 +134,8 @@ export default function BookReport({
   }, [rows]);
 
   function exportCSV() {
-    if (!rows || !rows.length) return;
+    // An empty period still exports: its header says which period had no entries.
+    if (!rows) return;
     const T = (v) => ({ t: "text", v: v == null ? "" : String(v) });
     const N = (v) => ({ t: "num", v: Number(v || 0).toFixed(2) });
 
@@ -161,7 +160,7 @@ export default function BookReport({
 
     const csvRows = [
       [T(title.toUpperCase())],
-      [T(`For the period ${fromDate} to ${toDate}`)],
+      ...periodCsvRows(period.applied),
       [],
       headerRow,
       ...filteredRows.map((r) => {
@@ -184,7 +183,7 @@ export default function BookReport({
       totalRow,
     ];
 
-    const safeTo = String(toDate).replace(/[^0-9A-Za-z_-]/g, "_");
+    const safeTo = periodFileSlug(period.applied);
     downloadCsvText(`${filenamePrefix}_${safeTo}.csv`, typedRowsToCsv(csvRows));
   }
 
@@ -200,15 +199,7 @@ export default function BookReport({
         <h2>Report Filters</h2>
 
         <div className="lgr-filter-grid">
-          <div>
-            <label htmlFor="bk-from">Date From</label>
-            <input id="bk-from" type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
-          </div>
-
-          <div>
-            <label htmlFor="bk-to">Date To</label>
-            <input id="bk-to" type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
-          </div>
+          <ReportPeriodFilter period={period} idPrefix="bk" />
 
           <div>
             <label htmlFor="bk-search">Search</label>
@@ -230,7 +221,7 @@ export default function BookReport({
             Clear Filters
           </button>
           <ReportExportMenu
-            disabled={!rows || !rows.length}
+            disabled={!rows}
             onPrint={() => window.print()}
             onExportCsv={exportCSV}
           />
@@ -247,9 +238,7 @@ export default function BookReport({
         <div className="lgr-report-card">
           <div className="lgr-report-title">
             <h2>{title.toUpperCase()}</h2>
-            <h3>
-              FOR THE PERIOD {formatAsOfDate(fromDate)} TO {formatAsOfDate(toDate)}
-            </h3>
+            <ReportPeriodLabel period={period.applied} />
           </div>
 
           {filteredRows.length === 0 ? (
@@ -328,7 +317,7 @@ export default function BookReport({
       )}
 
       {!generated && !error ? (
-        <div className="lgr-empty">Choose a date range and click Generate Report.</div>
+        <div className="lgr-empty">Choose a report period and click Generate Report.</div>
       ) : null}
     </div>
   );

@@ -2,6 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
 import { downloadCsvText, typedRowsToCsv } from "./reportCsv.mjs";
 import ReportExportMenu from "./ReportExportMenu.jsx";
+import ReportPeriodFilter, { ReportPeriodLabel } from "./ReportPeriodFilter.jsx";
+import useReportPeriod from "./useReportPeriod.js";
+import { periodCsvRows, periodFileSlug } from "./reportPeriod.mjs";
 import "./LedgerReport.css";
 
 // AR Statement of Accounts - fourth of the 9 "Coming Soon" reports
@@ -36,8 +39,8 @@ function formatDate(dateValue) {
 }
 
 export default function ArStatementOfAccounts() {
-  const [fromDate, setFromDate] = useState("2026-01-01");
-  const [toDate, setToDate] = useState(new Date().toISOString().slice(0, 10));
+  const period = useReportPeriod({ defaultFrom: "2026-01-01", defaultTo: new Date().toISOString().slice(0, 10) });
+  const { toDate } = period;
   const [parties, setParties] = useState([]);
   const [partyId, setPartyId] = useState("");
   const [statement, setStatement] = useState(null); // null = not yet generated
@@ -64,6 +67,8 @@ export default function ArStatementOfAccounts() {
   );
 
   async function generateReport() {
+    const applied = period.apply();
+    if (!applied) return;
     if (!partyId) {
       setError("Please select a customer.");
       return;
@@ -71,7 +76,7 @@ export default function ArStatementOfAccounts() {
     setLoading(true);
     setError(null);
     try {
-      const params = new URLSearchParams({ partyId, from: fromDate, to: toDate });
+      const params = new URLSearchParams({ partyId, ...applied.params });
       const res = await fetch(`${API_URL}/api/reports/ar-statement-of-accounts?${params.toString()}`, {
         credentials: "include",
         headers: authHeaders(),
@@ -106,7 +111,7 @@ export default function ArStatementOfAccounts() {
     const csvRows = [
       [T("AR STATEMENT OF ACCOUNTS")],
       [T(`${statement.partyCode || ""} - ${statement.partyName || ""}`)],
-      [T(`For the period ${fromDate} to ${toDate}`)],
+      ...periodCsvRows(period.applied),
       [],
       [T("Date"), T("Reference No."), T("Type"), T("Due Date"), T("Particulars"), T("Debit"), T("Credit"), T("Running Balance")],
       [T(""), T(""), T(""), T(""), T("BEGINNING BALANCE"), T(""), T(""), N(statement.beginningBalance)],
@@ -124,7 +129,7 @@ export default function ArStatementOfAccounts() {
       [T(""), T(""), T(""), T(""), T("ENDING BALANCE"), T(""), T(""), N(statement.endingBalance)],
     ];
 
-    const safeTo = String(toDate).replace(/[^0-9A-Za-z_-]/g, "_");
+    const safeTo = periodFileSlug(period.applied);
     downloadCsvText(`AR_Statement_of_Accounts_${safeTo}.csv`, typedRowsToCsv(csvRows));
   }
 
@@ -152,15 +157,7 @@ export default function ArStatementOfAccounts() {
             </select>
           </div>
 
-          <div>
-            <label htmlFor="ars-from">Date From</label>
-            <input id="ars-from" type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
-          </div>
-
-          <div>
-            <label htmlFor="ars-to">Date To</label>
-            <input id="ars-to" type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
-          </div>
+          <ReportPeriodFilter period={period} idPrefix="ars" />
         </div>
 
         <div className="lgr-actions">
@@ -189,9 +186,7 @@ export default function ArStatementOfAccounts() {
           <div className="lgr-report-title">
             <h2>AR STATEMENT OF ACCOUNTS</h2>
             <h3>{statement.partyCode} - {statement.partyName}</h3>
-            <h3>
-              FOR THE PERIOD {formatDate(statement.from)} TO {formatDate(statement.to)}
-            </h3>
+            <ReportPeriodLabel period={period.applied} />
           </div>
 
           <table className="lgr-table">

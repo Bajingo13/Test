@@ -2,6 +2,9 @@ import { useState } from "react";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
 import { downloadCsvText, typedRowsToCsv } from "./reportCsv.mjs";
 import ReportExportMenu from "./ReportExportMenu.jsx";
+import ReportPeriodFilter, { ReportPeriodLabel } from "./ReportPeriodFilter.jsx";
+import useReportPeriod from "./useReportPeriod.js";
+import { periodCsvRows, periodFileSlug } from "./reportPeriod.mjs";
 import "./LedgerReport.css";
 
 // Net Summary of Books - second of the 9 "Coming Soon" reports identified
@@ -32,25 +35,20 @@ function formatMoney(amount) {
   });
 }
 
-function formatAsOfDate(dateValue) {
-  if (!dateValue) return "";
-  return new Date(dateValue)
-    .toLocaleDateString("en-US", { month: "long", day: "2-digit", year: "numeric" })
-    .toUpperCase();
-}
-
 export default function NetSummaryOfBooks() {
-  const [fromDate, setFromDate] = useState("2026-01-01");
-  const [toDate, setToDate] = useState(new Date().toISOString().slice(0, 10));
+  const period = useReportPeriod({ defaultFrom: "2026-01-01", defaultTo: new Date().toISOString().slice(0, 10) });
+  const { toDate } = period;
   const [summary, setSummary] = useState(null); // null = not yet generated
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
   async function generateReport() {
+    const applied = period.apply();
+    if (!applied) return;
     setLoading(true);
     setError(null);
     try {
-      const params = new URLSearchParams({ from: fromDate, to: toDate });
+      const params = new URLSearchParams(applied.params);
       const res = await fetch(`${API_URL}/api/reports/books/net-summary?${params.toString()}`, {
         credentials: "include",
         headers: authHeaders(),
@@ -84,7 +82,7 @@ export default function NetSummaryOfBooks() {
 
     const csvRows = [
       [T("NET SUMMARY OF BOOKS")],
-      [T(`For the period ${fromDate} to ${toDate}`)],
+      ...periodCsvRows(period.applied),
       [],
       [T("Book"), T("Transactions"), T("Total Debit"), T("Total Credit"), T("Net")],
       ...summary.books.map((b) => [T(b.label), N(b.transactionCount), N(b.totalDebit), N(b.totalCredit), N(b.net)]),
@@ -92,7 +90,7 @@ export default function NetSummaryOfBooks() {
       [T("GRAND TOTAL"), T(""), N(summary.grandTotalDebit), N(summary.grandTotalCredit), N(summary.grandTotalNet)],
     ];
 
-    const safeTo = String(toDate).replace(/[^0-9A-Za-z_-]/g, "_");
+    const safeTo = periodFileSlug(period.applied);
     downloadCsvText(`Net_Summary_of_Books_${safeTo}.csv`, typedRowsToCsv(csvRows));
   }
 
@@ -108,15 +106,7 @@ export default function NetSummaryOfBooks() {
         <h2>Report Filters</h2>
 
         <div className="lgr-filter-grid">
-          <div>
-            <label htmlFor="nsb-from">Date From</label>
-            <input id="nsb-from" type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
-          </div>
-
-          <div>
-            <label htmlFor="nsb-to">Date To</label>
-            <input id="nsb-to" type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
-          </div>
+          <ReportPeriodFilter period={period} idPrefix="nsb" />
         </div>
 
         <div className="lgr-actions">
@@ -144,9 +134,7 @@ export default function NetSummaryOfBooks() {
         <div className="lgr-report-card">
           <div className="lgr-report-title">
             <h2>NET SUMMARY OF BOOKS</h2>
-            <h3>
-              FOR THE PERIOD {formatAsOfDate(fromDate)} TO {formatAsOfDate(toDate)}
-            </h3>
+            <ReportPeriodLabel period={period.applied} />
           </div>
 
           {summary.books.length === 0 ? (
@@ -191,7 +179,7 @@ export default function NetSummaryOfBooks() {
       )}
 
       {!generated && !error ? (
-        <div className="lgr-empty">Choose a date range and click Generate Report.</div>
+        <div className="lgr-empty">Choose a report period and click Generate Report.</div>
       ) : null}
     </div>
   );

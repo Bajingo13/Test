@@ -100,7 +100,7 @@ function parseIncomeStatementParams(query) {
   const periods = [
     {
       key: "current",
-      bandLabel: "FOR THE MONTH",
+      bandLabel: wholeMonth ? "FOR THE MONTH" : "FOR THE PERIOD",
       periodLabel: wholeMonth ? monthLabel(from) : `${from} to ${to}`,
       from,
       to,

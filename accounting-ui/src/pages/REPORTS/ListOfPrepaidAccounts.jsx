@@ -6,6 +6,7 @@ export default function ListOfPrepaidAccounts() {
       title="List of Prepaid Accounts"
       reportTitle="LIST OF PREPAID ACCOUNTS"
       endpoint="/api/reports/prepaid-list"
+      filenamePrefix="List_of_Prepaid_Accounts"
     />
   );
 }

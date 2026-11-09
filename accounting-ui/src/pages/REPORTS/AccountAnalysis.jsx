@@ -2,6 +2,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { createRequestGuard, isCompanyLocked } from "../../utils/trialBalanceCompany.mjs";
 import { accountAnalysisQuery, resolveIncomingCompany } from "../../utils/accountAnalysisCompany.mjs";
+import ReportPeriodFilter, { ReportPeriodLabel } from "./ReportPeriodFilter.jsx";
+import { downloadCsvText, reportRowsToCsv } from "./reportCsv.mjs";
+import useReportPeriod from "./useReportPeriod.js";
+import { periodCsvRows, periodModeQuery, reportCsvFilename, reportFileStem, reportPeriodText, selectionFromLink } from "./reportPeriod.mjs";
 import "./AccountAnalysis.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
@@ -22,8 +26,8 @@ export default function AccountAnalysis() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
-  const [fromDate, setFromDate] = useState("2026-01-01");
-  const [toDate, setToDate] = useState(new Date().toISOString().slice(0, 10));
+  const period = useReportPeriod({ defaultFrom: "2026-01-01" });
+  const { toDate } = period;
   const [accounts, setAccounts] = useState([]);
   const [accountCode, setAccountCode] = useState("");
   const [rows, setRows] = useState([]);
@@ -55,8 +59,7 @@ export default function AccountAnalysis() {
     const from = searchParams.get("from");
     const to = searchParams.get("to");
 
-    if (from) setFromDate(from);
-    if (to) setToDate(to);
+    if (from && to) period.select(selectionFromLink(from, to));
     if (code) setAccountCode(code);
   }, [searchParams]);
 
@@ -82,7 +85,7 @@ export default function AccountAnalysis() {
     setLoading(false);
 
     if (code && incoming.companyId) {
-      generateReport(code, from || fromDate, to || toDate, incoming.companyId);
+      generateReport(code, from && to ? selectionFromLink(from, to) : null, incoming.companyId);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams, companyState]);
@@ -148,10 +151,8 @@ export default function AccountAnalysis() {
       maximumFractionDigits: 2,
     });
 
-  async function generateReport(codeOverride = null, fromOverride = null, toOverride = null, companyOverride = null) {
+  async function generateReport(codeOverride = null, linkSelection = null, companyOverride = null) {
     const finalAccountCode = codeOverride || accountCode;
-    const finalFromDate = fromOverride || fromDate;
-    const finalToDate = toOverride || toDate;
     const finalCompanyId = companyOverride || companyId;
 
     if (!finalAccountCode) {
@@ -159,6 +160,11 @@ export default function AccountAnalysis() {
       return;
     }
 
+    const applied = linkSelection ? period.select(linkSelection) : period.apply();
+    if (!applied) return;
+
+    const finalFromDate = applied.fromDate;
+    const finalToDate = applied.toDate;
     const query = accountAnalysisQuery({ from: finalFromDate, to: finalToDate, accountCode: finalAccountCode, companyId: finalCompanyId });
     if (!query) return; // no company selected - nothing is requested
 
@@ -167,7 +173,7 @@ export default function AccountAnalysis() {
 
     try {
       const res = await fetch(
-        `${API_URL}/api/reports/account-analysis?${query}`,
+        `${API_URL}/api/reports/account-analysis?${query}&${periodModeQuery(applied)}`,
         { credentials: "include", headers: authHeaders() }
       );
       if (!requestGuard.current.isCurrent(ticket)) return;
@@ -210,7 +216,7 @@ export default function AccountAnalysis() {
       ["ACCOUNT ANALYSIS"],
       [`Company: ${selectedCompany?.name || ""}`],
       [`${accountCode} - ${selectedAccount?.title || ""}`],
-      [`Period: ${fromDate} to ${toDate}`],
+      ...periodCsvRows(period.applied),
       [],
       ["DATE", "DOC REF", "PARTICULARS", "DEBIT", "CREDIT"],
       ...rows.map((row) => [
@@ -224,21 +230,7 @@ export default function AccountAnalysis() {
       ["", "", "TOTAL", totals.debit.toFixed(2), totals.credit.toFixed(2)],
     ];
 
-    const csvContent = csvRows
-      .map((row) =>
-        row.map((cell) => `"${String(cell || "").replace(/"/g, '""')}"`).join(",")
-      )
-      .join("\n");
-
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-
-    link.href = url;
-    link.download = `Account_Analysis_${accountCode}_${toDate}.csv`;
-    link.click();
-
-    URL.revokeObjectURL(url);
+    downloadCsvText(reportCsvFilename("Account_Analysis", period.applied, accountCode), reportRowsToCsv(csvRows));
   };
 
   const downloadExcel = () => {
@@ -252,7 +244,7 @@ export default function AccountAnalysis() {
         <tr><th colspan="5">ACCOUNT ANALYSIS</th></tr>
         <tr><th colspan="5">Company: ${selectedCompany?.name || ""}</th></tr>
         <tr><th colspan="5">${accountCode} - ${selectedAccount?.title || ""}</th></tr>
-        <tr><th colspan="5">Period: ${fromDate} to ${toDate}</th></tr>
+        <tr><th colspan="5">${reportPeriodText(period.applied)}</th></tr>
         <tr>
           <th>DATE</th>
           <th>DOC REF</th>
@@ -291,7 +283,7 @@ export default function AccountAnalysis() {
     const link = document.createElement("a");
 
     link.href = url;
-    link.download = `Account_Analysis_${accountCode}_${toDate}.xls`;
+    link.download = `${reportFileStem("Account_Analysis", period.applied, accountCode)}.xls`;
     link.click();
 
     URL.revokeObjectURL(url);
@@ -307,23 +299,7 @@ export default function AccountAnalysis() {
         <h2>Report Filters</h2>
 
         <div className="aa-filter-grid">
-          <div>
-            <label>Date From</label>
-            <input
-              type="date"
-              value={fromDate}
-              onChange={(e) => setFromDate(e.target.value)}
-            />
-          </div>
-
-          <div>
-            <label>Date To</label>
-            <input
-              type="date"
-              value={toDate}
-              onChange={(e) => setToDate(e.target.value)}
-            />
-          </div>
+          <ReportPeriodFilter period={period} idPrefix="aa" />
 
           <div>
             <label>Account</label>
@@ -423,9 +399,7 @@ export default function AccountAnalysis() {
             <h3>
               {accountCode} - {selectedAccount?.title || ""}
             </h3>
-            <p>
-              Period: {fromDate} to {toDate}
-            </p>
+            <ReportPeriodLabel period={period.applied} />
           </div>
 
           <table className="aa-table">

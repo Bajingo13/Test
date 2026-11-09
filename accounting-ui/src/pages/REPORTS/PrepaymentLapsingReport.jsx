@@ -6,6 +6,7 @@ export default function PrepaymentLapsingReport() {
       title="Prepayment Lapsing Report"
       reportTitle="PREPAYMENT LAPSING REPORT"
       endpoint="/api/reports/prepayment-lapsing"
+      filenamePrefix="Prepayment_Lapsing"
       showMonthsElapsed
     />
   );

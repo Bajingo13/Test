@@ -27,6 +27,7 @@ const LedgerReportService = require("./services/LedgerReportService");
 const FinancialStatementService = require("./services/financialStatementService");
 const FinancialStatementStructureService = require("./services/financialStatementStructureService");
 const StructuredStatementRequest = require("./lib/structuredStatementRequest");
+const { reportPeriodMiddleware, filterByDocumentPeriod } = require("./lib/reportPeriod");
 const GroupCodeClassification = require("./services/groupCodeClassification");
 const ReportSectionService = require("./services/reportSectionService");
 const ArStatementService = require("./services/ArStatementService");
@@ -3047,7 +3048,7 @@ app.put("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV
         supplier_id = ?,
         supplier_name = ?,
         transaction_date = ?,
-        due_date = ?,
+        due_date = CASE WHEN ? THEN due_date ELSE ? END,
         reference_no = ?,
         description = ?,
         remarks = ?,
@@ -3067,6 +3068,9 @@ app.put("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV
         supplierId || null,
         supplierName || "",
         transactionDate || null,
+        // A request that does not send dueDate keeps the stored due date
+        // (AP aging reads it); only an explicit value replaces it.
+        dueDate === undefined ? 1 : 0,
         dueDate || null,
         referenceNo || "",
         description || "",
@@ -7428,6 +7432,10 @@ app.use("/api/audit-logs", require("./routes/auditLogs.routes"));
 app.use("/api/bank-recon", require("./routes/bankRecon.routes"));
 app.use("/api/ai/bank-recon", require("./routes/aiRecon.routes"));
 app.use("/api/beginning-balances", require("./routes/beginningBalanceImport.routes"));
+// Global report date standard: dateMode=range|asof is validated and translated
+// here, ahead of every /api/reports route. See lib/reportPeriod.js.
+app.use("/api/reports", reportPeriodMiddleware);
+
 app.use("/api/reports/trial-balance-checker", require("./routes/trialBalanceChecker.routes"));
 app.use("/api", require("./routes/roles.routes"));
 app.use("/api/invitations", require("./routes/invitations.routes"));
@@ -7445,6 +7453,8 @@ app.use("/api/currencies", require("./routes/currency.routes"));
 app.use("/api/exchange-rates", require("./routes/exchangeRate.routes"));
 app.use("/api/accounting-periods", require("./routes/accountingPeriods.routes"));
 app.use("/api/rfp", require("./routes/rfp.routes"));
+// The source RFP's supporting documents, read from its APV (APV VIEW).
+app.use("/api/apv", require("./routes/apvAttachments.routes"));
 
 // ===================== ACCOUNT GROUP CODES API =====================
 
@@ -8409,8 +8419,10 @@ app.get("/api/reports/cash-flow-statement", authenticateToken, authorizePermissi
 app.get("/api/reports/daily-cash-position", authenticateToken, authorizePermission("REPORTS.FINANCIAL", "VIEW"), async (req, res) => {
   try {
     const { date } = req.query;
+    const periodFrom = req.query.from || date;
+    const periodTo = req.query.to || date;
 
-    if (!date) {
+    if (!periodFrom || !periodTo) {
       return res.status(400).json({ message: "date is required" });
     }
 
@@ -8424,7 +8436,7 @@ app.get("/api/reports/daily-cash-position", authenticateToken, authorizePermissi
 
     if (accountCodes.length === 0) {
       return res.json({
-        asOfDate: date,
+        asOfDate: periodTo,
         accounts: [],
         totalBeginningBalance: 0,
         totalCashReceipts: 0,
@@ -8435,8 +8447,8 @@ app.get("/api/reports/daily-cash-position", authenticateToken, authorizePermissi
     }
 
     const [rows, beginningBalances] = await Promise.all([
-      LedgerReportService.getLedgerRows({ from: date, to: date, accountCodes, companyId }),
-      LedgerReportService.getBeginningBalances({ before: date, accountCodes, companyId }),
+      LedgerReportService.getLedgerRows({ from: periodFrom, to: periodTo, accountCodes, companyId }),
+      LedgerReportService.getBeginningBalances({ before: periodFrom, accountCodes, companyId }),
     ]);
 
     const byAccount = new Map();
@@ -8470,7 +8482,7 @@ app.get("/api/reports/daily-cash-position", authenticateToken, authorizePermissi
     const totalEndingBalance = accounts.reduce((sum, a) => sum + a.endingBalance, 0);
 
     res.json({
-      asOfDate: date,
+      asOfDate: periodTo,
       accounts,
       totalBeginningBalance,
       totalCashReceipts,
@@ -9062,7 +9074,7 @@ app.get("/api/reports/aging", authenticateToken, authorizePermission("REPORTS.FI
 // ====================== AP AGING REPORT ======================
 app.get("/api/reports/ap-aging", authenticateToken, authorizePermission("REPORTS.AP", "VIEW"), async (req, res) => {
   try {
-    const { asOf, currency, partyId, status } = req.query;
+    const { asOf, currency, partyId, status, documentFrom, documentTo } = req.query;
     const reportDate = asOf || new Date().toISOString().slice(0, 10);
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
@@ -9072,6 +9084,8 @@ app.get("/api/reports/ap-aging", authenticateToken, authorizePermission("REPORTS
       currencyCode: currency,
       partyId,
       status,
+      documentFrom,
+      documentTo,
     });
     const bucketTotals = AgingReportService.getBucketTotals(rows);
 
@@ -9087,7 +9101,7 @@ app.get("/api/reports/ap-aging", authenticateToken, authorizePermission("REPORTS
 
 app.get("/api/reports/ap-aging-summary", authenticateToken, authorizePermission("REPORTS.AP", "VIEW"), async (req, res) => {
   try {
-    const { asOf, currency, partyId, status } = req.query;
+    const { asOf, currency, partyId, status, documentFrom, documentTo } = req.query;
     const reportDate = asOf || new Date().toISOString().slice(0, 10);
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
@@ -9097,6 +9111,8 @@ app.get("/api/reports/ap-aging-summary", authenticateToken, authorizePermission(
       currencyCode: currency,
       partyId,
       status,
+      documentFrom,
+      documentTo,
     });
     const parties = AgingReportService.getSummaryByParty(rows);
 
@@ -9167,7 +9183,7 @@ app.get("/api/reports/ap-payables-and-payments", authenticateToken, authorizePer
 // read-only.
 app.get("/api/reports/ap-overdue-accounts", authenticateToken, authorizePermission("REPORTS.AP", "VIEW"), async (req, res) => {
   try {
-    const { asOf, currency, partyId, status } = req.query;
+    const { asOf, currency, partyId, status, documentFrom, documentTo } = req.query;
     const reportDate = asOf || new Date().toISOString().slice(0, 10);
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
@@ -9177,6 +9193,8 @@ app.get("/api/reports/ap-overdue-accounts", authenticateToken, authorizePermissi
       currencyCode: currency,
       partyId,
       status,
+      documentFrom,
+      documentTo,
     });
 
     res.json({ asOfDate: reportDate, rows, bucketTotals, parties });
@@ -9192,7 +9210,7 @@ app.get("/api/reports/ap-overdue-accounts", authenticateToken, authorizePermissi
 // ====================== AR AGING REPORT ======================
 app.get("/api/reports/ar-aging", authenticateToken, authorizePermission("REPORTS.AR", "VIEW"), async (req, res) => {
   try {
-    const { asOf, currency, partyId, status } = req.query;
+    const { asOf, currency, partyId, status, documentFrom, documentTo } = req.query;
     const reportDate = asOf || new Date().toISOString().slice(0, 10);
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
@@ -9202,6 +9220,8 @@ app.get("/api/reports/ar-aging", authenticateToken, authorizePermission("REPORTS
       currencyCode: currency,
       partyId,
       status,
+      documentFrom,
+      documentTo,
     });
     const bucketTotals = AgingReportService.getBucketTotals(rows);
 
@@ -9217,7 +9237,7 @@ app.get("/api/reports/ar-aging", authenticateToken, authorizePermission("REPORTS
 
 app.get("/api/reports/ar-aging-summary", authenticateToken, authorizePermission("REPORTS.AR", "VIEW"), async (req, res) => {
   try {
-    const { asOf, currency, partyId, status } = req.query;
+    const { asOf, currency, partyId, status, documentFrom, documentTo } = req.query;
     const reportDate = asOf || new Date().toISOString().slice(0, 10);
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
@@ -9227,6 +9247,8 @@ app.get("/api/reports/ar-aging-summary", authenticateToken, authorizePermission(
       currencyCode: currency,
       partyId,
       status,
+      documentFrom,
+      documentTo,
     });
     const parties = AgingReportService.getSummaryByParty(rows);
 
@@ -9255,7 +9277,7 @@ app.get("/api/reports/ar-aging-summary", authenticateToken, authorizePermission(
 // AP/tax logic touched; read-only.
 app.get("/api/reports/ar-overdue-accounts", authenticateToken, authorizePermission("REPORTS.AR", "VIEW"), async (req, res) => {
   try {
-    const { asOf, currency, partyId, status } = req.query;
+    const { asOf, currency, partyId, status, documentFrom, documentTo } = req.query;
     const reportDate = asOf || new Date().toISOString().slice(0, 10);
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
@@ -9265,6 +9287,8 @@ app.get("/api/reports/ar-overdue-accounts", authenticateToken, authorizePermissi
       currencyCode: currency,
       partyId,
       status,
+      documentFrom,
+      documentTo,
     });
 
     res.json({ asOfDate: reportDate, rows, bucketTotals, parties });
@@ -9662,7 +9686,7 @@ app.delete("/api/fixed-assets/:id", authenticateToken, authorizePermission("FILE
 
 app.get("/api/reports/fixed-asset-register", authenticateToken, authorizePermission("REPORTS.FIXED_ASSETS", "VIEW"), async (req, res) => {
   try {
-    const { asOf } = req.query;
+    const { asOf, documentFrom, documentTo } = req.query;
     const reportDate = asOf || new Date().toISOString().slice(0, 10);
 
     const [rows] = await pool.execute(
@@ -9690,9 +9714,10 @@ app.get("/api/reports/fixed-asset-register", authenticateToken, authorizePermiss
         ) AS bookValue
       FROM fixed_assets
       WHERE status = 'Active'
+        ${documentFrom && documentTo ? "AND acquisition_date BETWEEN ? AND ?" : ""}
       ORDER BY asset_code ASC
       `,
-      [reportDate, reportDate]
+      documentFrom && documentTo ? [reportDate, reportDate, documentFrom, documentTo] : [reportDate, reportDate]
     );
 
     res.json(rows);
@@ -9892,7 +9917,7 @@ app.get("/api/reports/prepaid-list", authenticateToken, authorizePermission("REP
       [reportDate, reportDate, reportDate, reportDate]
     );
 
-    res.json(rows);
+    res.json(filterByDocumentPeriod(rows, req.query, "startDate"));
   } catch (err) {
     console.error("PREPAID LIST REPORT ERROR:", err.message);
     res.status(500).json({ message: "Failed to generate list of prepaid accounts", error: err.message });
@@ -9918,7 +9943,7 @@ app.get("/api/reports/lapsed-prepayments", authenticateToken, authorizePermissio
       [reportDate, reportDate, reportDate, reportDate]
     );
 
-    res.json(rows);
+    res.json(filterByDocumentPeriod(rows, req.query, "startDate"));
   } catch (err) {
     console.error("LAPSED PREPAYMENTS REPORT ERROR:", err.message);
     res.status(500).json({ message: "Failed to generate list of lapsed prepayments", error: err.message });
@@ -9946,7 +9971,7 @@ app.get("/api/reports/prepayment-lapsing", authenticateToken, authorizePermissio
       [reportDate, reportDate, reportDate, reportDate]
     );
 
-    res.json(rows);
+    res.json(filterByDocumentPeriod(rows, req.query, "startDate"));
   } catch (err) {
     console.error("PREPAYMENT LAPSING REPORT ERROR:", err.message);
     res.status(500).json({ message: "Failed to generate prepayment lapsing report", error: err.message });
@@ -10009,7 +10034,9 @@ app.get("/api/reports/prepaid-subsidiary", authenticateToken, authorizePermissio
       startDate: p.start_date,
       amount: p.amount,
       termMonths: p.term_months,
-      schedule,
+      schedule: req.query.documentFrom && req.query.documentTo
+        ? schedule.filter((s) => s.period >= req.query.documentFrom.slice(0, 7) && s.period <= req.query.documentTo.slice(0, 7))
+        : schedule,
     });
   } catch (err) {
     console.error("PREPAID SUBSIDIARY REPORT ERROR:", err.message);

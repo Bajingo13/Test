@@ -93,3 +93,80 @@ exports.lookups = async (req, res) => {
     sendError(res, err, "Failed to load the Request for Payment form options", "RFP LOOKUPS ERROR");
   }
 };
+
+// --- supporting documents -------------------------------------------------
+
+const RfpAttachmentService = require("../services/rfpAttachmentService");
+const { contentDisposition } = require("../lib/attachmentFileType");
+
+// Sends a stored attachment: its verified type, always as a download, never
+// cached, never sniffed into another type, and sandboxed if opened directly.
+function sendAttachment(res, file) {
+  res.set({
+    "Content-Type": file.mimeType,
+    "Content-Length": String(file.buffer.length),
+    "Content-Disposition": contentDisposition(file.filename),
+    "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": "default-src 'none'; sandbox",
+    "Cache-Control": "private, no-store",
+    "X-Attachment-SHA256": file.sha256,
+  });
+  res.end(file.buffer);
+}
+
+exports.sendAttachment = sendAttachment;
+
+exports.listAttachments = async (req, res) => {
+  try {
+    res.json(await RfpAttachmentService.listRfpAttachments({ id: req.params.id, user: req.user }));
+  } catch (err) {
+    sendError(res, err, "Failed to load the attachments", "RFP ATTACHMENT LIST ERROR");
+  }
+};
+
+exports.uploadAttachment = async (req, res) => {
+  try {
+    const result = await RfpAttachmentService.uploadRfpAttachment({
+      id: req.params.id,
+      user: { ...req.user, ...requestMeta(req) },
+      file: req.file,
+      body: req.body || {},
+    });
+    res.status(201).json(result);
+  } catch (err) {
+    sendError(res, err, "Failed to attach the file", "RFP ATTACHMENT UPLOAD ERROR");
+  }
+};
+
+exports.downloadAttachment = async (req, res) => {
+  try {
+    sendAttachment(res, await RfpAttachmentService.downloadRfpAttachment({ id: req.params.id, attachmentId: req.params.attachmentId, user: req.user }));
+  } catch (err) {
+    sendError(res, err, "Failed to download the attachment", "RFP ATTACHMENT DOWNLOAD ERROR");
+  }
+};
+
+exports.removeAttachment = async (req, res) => {
+  try {
+    res.json(await RfpAttachmentService.removeRfpAttachment({ id: req.params.id, attachmentId: req.params.attachmentId, user: { ...req.user, ...requestMeta(req) } }));
+  } catch (err) {
+    sendError(res, err, "Failed to remove the attachment", "RFP ATTACHMENT REMOVE ERROR");
+  }
+};
+
+// The APV page reads its source RFP's documents through the conversion link.
+exports.listApvAttachments = async (req, res) => {
+  try {
+    res.json(await RfpAttachmentService.listApvAttachments({ apvId: req.params.id, user: req.user }));
+  } catch (err) {
+    sendError(res, err, "Failed to load the supporting documents", "APV ATTACHMENT LIST ERROR");
+  }
+};
+
+exports.downloadApvAttachment = async (req, res) => {
+  try {
+    sendAttachment(res, await RfpAttachmentService.downloadApvAttachment({ apvId: req.params.id, attachmentId: req.params.attachmentId, user: req.user }));
+  } catch (err) {
+    sendError(res, err, "Failed to download the supporting document", "APV ATTACHMENT DOWNLOAD ERROR");
+  }
+};

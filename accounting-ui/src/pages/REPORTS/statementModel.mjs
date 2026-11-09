@@ -20,6 +20,7 @@
 // that comes from the model.
 
 import { csvCell, csvTextCell } from "./reportCsv.mjs";
+import { periodFileSlug } from "./reportPeriod.mjs";
 
 const SIGNATURE_LINES = ["Prepared By:", "Checked By:", "Approved By:"];
 
@@ -60,19 +61,23 @@ function subtitleLines(model, columns) {
   const byKey = Object.fromEntries(columns.map((c) => [c.key, c]));
   const lbl = (k) => (byKey[k] ? byKey[k].periodLabel || "" : "");
 
+  // The page attaches the period it generated, which replaces the line
+  // derived from the columns.
+  const selected = Array.isArray(model.reportPeriodLines) ? model.reportPeriodLines : [];
+
   if (model.statement === "BALANCE_SHEET") {
     const cur = lbl("current");
     const cmp = lbl("comparative");
-    const lines = [];
-    if (cur) lines.push(cmp ? `${cur} and ${cmp}` : cur);
+    const lines = [...selected];
+    if (cur && !selected.length) lines.push(cmp ? `${cur} and ${cmp}` : cur);
     if (cmp) lines.push(`With comparative figures as of ${cmp}`);
     return lines;
   }
 
   const cur = lbl("current");
   const prev = lbl("previous");
-  const lines = [];
-  if (cur) lines.push(`For the period ended ${cur}`);
+  const lines = [...selected];
+  if (cur && !selected.length) lines.push(`For the period ended ${cur}`);
   if (prev) lines.push(`With comparative figures for the month of ${prev}`);
   return lines;
 }
@@ -254,6 +259,9 @@ export function statementFilename(model) {
     const cur = (meta.periods || []).find((p) => p.key === "current");
     date = (cur && (cur.to || cur.from)) || "";
   }
+  // The page attaches the period it generated; its file name says whether the
+  // statement is a Range or an As Of.
+  if (model && model.reportPeriod) return `${base}${detailed}_${periodFileSlug(model.reportPeriod)}.csv`;
   const safe = String(date).replace(/[^0-9A-Za-z_-]/g, "_");
   return `${base}${detailed}${safe ? `_${safe}` : ""}.csv`;
 }

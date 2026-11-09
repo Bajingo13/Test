@@ -2,6 +2,9 @@ import { useState } from "react";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
 import { downloadCsvText, typedRowsToCsv } from "./reportCsv.mjs";
 import ReportExportMenu from "./ReportExportMenu.jsx";
+import ReportPeriodFilter, { ReportPeriodLabel } from "./ReportPeriodFilter.jsx";
+import useReportPeriod from "./useReportPeriod.js";
+import { AS_OF, periodCsvRows, periodFileSlug } from "./reportPeriod.mjs";
 import "./LedgerReport.css";
 
 // Daily Cash Position Report - third of the 9 "Coming Soon" reports
@@ -27,24 +30,20 @@ function formatMoney(amount) {
   });
 }
 
-function formatAsOfDate(dateValue) {
-  if (!dateValue) return "";
-  return new Date(dateValue)
-    .toLocaleDateString("en-US", { month: "long", day: "2-digit", year: "numeric" })
-    .toUpperCase();
-}
-
 export default function DailyCashPositionReport() {
-  const [asOfDate, setAsOfDate] = useState(new Date().toISOString().slice(0, 10));
+  const period = useReportPeriod({ defaultMode: AS_OF });
+  const { asOfDate } = period;
   const [report, setReport] = useState(null); // null = not yet generated
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
   async function generateReport() {
+    const applied = period.apply();
+    if (!applied) return;
     setLoading(true);
     setError(null);
     try {
-      const params = new URLSearchParams({ date: asOfDate });
+      const params = new URLSearchParams(applied.params);
       const res = await fetch(`${API_URL}/api/reports/daily-cash-position?${params.toString()}`, {
         credentials: "include",
         headers: authHeaders(),
@@ -78,7 +77,7 @@ export default function DailyCashPositionReport() {
 
     const csvRows = [
       [T("DAILY CASH POSITION REPORT")],
-      [T(`As of ${asOfDate}`)],
+      ...periodCsvRows(period.applied),
       [],
       [T("Account"), T("Beginning Cash"), T("Cash Receipts"), T("Cash Disbursements"), T("Net Movement"), T("Ending Cash")],
       ...report.accounts.map((a) => [
@@ -100,7 +99,7 @@ export default function DailyCashPositionReport() {
       ],
     ];
 
-    const safeDate = String(asOfDate).replace(/[^0-9A-Za-z_-]/g, "_");
+    const safeDate = periodFileSlug(period.applied);
     downloadCsvText(`Daily_Cash_Position_${safeDate}.csv`, typedRowsToCsv(csvRows));
   }
 
@@ -116,10 +115,7 @@ export default function DailyCashPositionReport() {
         <h2>Report Filters</h2>
 
         <div className="lgr-filter-grid">
-          <div>
-            <label htmlFor="dcp-asof">As Of Date</label>
-            <input id="dcp-asof" type="date" value={asOfDate} onChange={(e) => setAsOfDate(e.target.value)} />
-          </div>
+          <ReportPeriodFilter period={period} idPrefix="dcp" />
         </div>
 
         <div className="lgr-actions">
@@ -147,7 +143,7 @@ export default function DailyCashPositionReport() {
         <div className="lgr-report-card">
           <div className="lgr-report-title">
             <h2>DAILY CASH POSITION REPORT</h2>
-            <h3>AS OF {formatAsOfDate(report.asOfDate)}</h3>
+            <ReportPeriodLabel period={period.applied} />
           </div>
 
           {report.accounts.length === 0 ? (
@@ -194,7 +190,7 @@ export default function DailyCashPositionReport() {
       )}
 
       {!generated && !error ? (
-        <div className="lgr-empty">Choose an As Of Date and click Generate Report.</div>
+        <div className="lgr-empty">Choose a report period and click Generate Report.</div>
       ) : null}
     </div>
   );

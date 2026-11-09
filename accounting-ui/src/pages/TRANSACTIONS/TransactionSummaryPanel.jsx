@@ -152,9 +152,8 @@ export default function TransactionSummaryPanel({
             </div>
           )}
 
-          {/* Invoice-only (showDueDate). Every other module in scope keeps
-              sending dueDate === transactionDate exactly as before this
-              checkpoint (unchanged, non-scope). */}
+          {/* Invoice and APV (showDueDate). Every other module keeps
+              sending dueDate === transactionDate exactly as before. */}
           {showDueDate && (
             <div className="transaction-field">
               <label className="transaction-label">Due Date</label>

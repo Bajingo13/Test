@@ -12,6 +12,9 @@ import StatementView from "./StatementView.jsx";
 import StatementPrintView from "./StatementPrintView.jsx";
 import ReportExportMenu from "./ReportExportMenu.jsx";
 import { accountAnalysisLink } from "../../utils/accountAnalysisCompany.mjs";
+import ReportPeriodFilter from "./ReportPeriodFilter.jsx";
+import useReportPeriod from "./useReportPeriod.js";
+import { AS_OF, reportPeriodLineList } from "./reportPeriod.mjs";
 import "./IncomeStatement.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
@@ -25,8 +28,8 @@ export function IncomeStatement() {
   const navigate = useNavigate();
   const today = new Date().toISOString().slice(0, 10);
 
-  const [fromDate, setFromDate] = useState("2026-01-01");
-  const [toDate, setToDate] = useState(today);
+  // AS OF on this statement is calendar year to date.
+  const period = useReportPeriod({ defaultFrom: "2026-01-01", defaultTo: today, asOfStart: "year" });
   const [mode, setMode] = useState("condensed");
   const [comparePrevWanted, setComparePrevWanted] = useState(true);
 
@@ -39,15 +42,19 @@ export function IncomeStatement() {
   // helper; previous-month comparison is only offered for a full calendar
   // month.
   const req = useMemo(
-    () => incomeStatementScreenParams({ from: fromDate, to: toDate, mode, comparePrevWanted }),
-    [fromDate, toDate, mode, comparePrevWanted]
+    () => incomeStatementScreenParams({ from: period.current?.fromDate, to: period.current?.toDate, mode, comparePrevWanted }),
+    [period.current?.fromDate, period.current?.toDate, mode, comparePrevWanted]
   );
 
   async function generateReport() {
+    const applied = period.apply();
+    if (!applied) return;
+    // AS OF is one year-to-date figure, so no separate "to date" column.
+    const query = { ...req.params, ...applied.params, ...(applied.mode === AS_OF ? { ytd: "0" } : {}) };
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${API_URL}/api/reports/income-statement?${toQueryString(req.params)}`, {
+      const res = await fetch(`${API_URL}/api/reports/income-statement?${toQueryString(query)}`, {
         credentials: "include",
         headers: authHeaders(),
       });
@@ -57,7 +64,7 @@ export function IncomeStatement() {
         setError(body.message || "Unable to generate the Income Statement for the selected filters.");
         return;
       }
-      setModel(body);
+      setModel({ ...body, reportPeriod: applied, reportPeriodLines: reportPeriodLineList(applied) });
     } catch (err) {
       console.error("INCOME STATEMENT ERROR:", err);
       setModel(null);
@@ -95,7 +102,7 @@ export function IncomeStatement() {
   // (model.meta.companyId, resolved by the server), so Account Analysis
   // shows the same company's ledger. No company -> Account Analysis asks.
   function openAccount(accountCode) {
-    navigate(accountAnalysisLink({ accountCode, from: fromDate, to: toDate, companyId: model?.meta?.companyId }));
+    navigate(accountAnalysisLink({ accountCode, from: period.fromDate, to: period.toDate, companyId: model?.meta?.companyId }));
   }
 
   const warnings = statementWarnings(model);
@@ -108,15 +115,7 @@ export function IncomeStatement() {
         <h2>Report Filters</h2>
 
         <div className="is-grid">
-          <div>
-            <label htmlFor="is-from">Date From</label>
-            <input id="is-from" type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
-          </div>
-
-          <div>
-            <label htmlFor="is-to">Date To</label>
-            <input id="is-to" type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
-          </div>
+          <ReportPeriodFilter period={period} idPrefix="is" />
 
           <div>
             <label htmlFor="is-mode">Report Mode</label>
@@ -181,7 +180,7 @@ export function IncomeStatement() {
           <StatementPrintView model={model} />
         </>
       ) : !loading && !error ? (
-        <div className="stmt-empty">Choose a date range and click Generate Report.</div>
+        <div className="stmt-empty">Choose a report period and click Generate Report.</div>
       ) : null}
     </div>
   );

@@ -3,6 +3,7 @@ const router = express.Router();
 const { authenticateToken } = require("../lib/auth");
 const authorizePermission = require("../middleware/authorizePermission");
 const ctrl = require("../controllers/rfp.controller");
+const { handleAttachmentUpload } = require("../lib/uploadMiddleware");
 
 // Request for Payment (RFP): draft CRUD (R2), workflow actions (R3) and
 // conversion of an APPROVED request into a Draft APV (R5, CONVERT). APPROVE
@@ -22,5 +23,13 @@ router.post("/:id/approve", authenticateToken, authorizePermission("TRANSACTIONS
 router.post("/:id/return", authenticateToken, authorizePermission("TRANSACTIONS.RFP", "APPROVE"), ctrl.return);
 router.post("/:id/reject", authenticateToken, authorizePermission("TRANSACTIONS.RFP", "APPROVE"), ctrl.reject);
 router.post("/:id/convert", authenticateToken, authorizePermission("TRANSACTIONS.RFP", "CONVERT"), ctrl.convert);
+
+// Supporting documents (receipt images / PDFs). The upload is only read after
+// authentication and the EDIT check; the service adds the company scope and
+// the DRAFT / RETURNED rule.
+router.get("/:id/attachments", authenticateToken, authorizePermission("TRANSACTIONS.RFP", "VIEW"), ctrl.listAttachments);
+router.post("/:id/attachments", authenticateToken, authorizePermission("TRANSACTIONS.RFP", "EDIT"), handleAttachmentUpload, ctrl.uploadAttachment);
+router.get("/:id/attachments/:attachmentId/download", authenticateToken, authorizePermission("TRANSACTIONS.RFP", "VIEW"), ctrl.downloadAttachment);
+router.delete("/:id/attachments/:attachmentId", authenticateToken, authorizePermission("TRANSACTIONS.RFP", "EDIT"), ctrl.removeAttachment);
 
 module.exports = router;

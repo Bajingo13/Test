@@ -220,6 +220,10 @@ const MIGRATION_ORDER = [
   // R10: deposit_slips + deposit_slip_lines (new tables only). Must run
   // after r9_payment_details_migration.sql.
   "r10_deposit_slips_migration.sql",
+  // RFP supporting documents: rfp_attachments (metadata only - the files
+  // live in the private attachment store). New table only. Must run after
+  // rfp_schema_permissions_migration.sql.
+  "rfp_attachments_migration.sql",
 ];
 
 module.exports = { MIGRATION_ORDER };

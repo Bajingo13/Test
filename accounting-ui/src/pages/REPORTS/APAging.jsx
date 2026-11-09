@@ -1,4 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
+import ReportPeriodFilter, { ReportPeriodLabel } from "./ReportPeriodFilter.jsx";
+import { downloadCsvText, reportRowsToCsv } from "./reportCsv.mjs";
+import useReportPeriod from "./useReportPeriod.js";
+import { AS_OF, periodCsvRows, reportCsvFilename } from "./reportPeriod.mjs";
 import "./TrialBalance.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
@@ -23,21 +27,9 @@ function formatMoney(amount) {
   });
 }
 
-function formatAsOfDate(dateValue) {
-  if (!dateValue) return "";
-  return new Date(dateValue)
-    .toLocaleDateString("en-US", { month: "long", day: "2-digit", year: "numeric" })
-    .toUpperCase();
-}
-
-function csvEscape(value) {
-  const str = String(value ?? "");
-  if (/[",\n]/.test(str)) return `"${str.replace(/"/g, '""')}"`;
-  return str;
-}
-
 export default function APAging() {
-  const [asOfDate, setAsOfDate] = useState(new Date().toISOString().slice(0, 10));
+  const period = useReportPeriod({ defaultMode: AS_OF });
+  const { asOfDate } = period;
   const [currencyFilter, setCurrencyFilter] = useState("");
   const [partyFilter, setPartyFilter] = useState("");
   const [bucketFilter, setBucketFilter] = useState("");
@@ -76,6 +68,8 @@ export default function APAging() {
   }, [rows, bucketFilter]);
 
   async function generateReport() {
+    const applied = period.apply();
+    if (!applied) return;
     setLoading(true);
 
     const now = new Date();
@@ -86,7 +80,7 @@ export default function APAging() {
     });
 
     try {
-      const params = new URLSearchParams({ asOf: asOfDate, status: statusFilter });
+      const params = new URLSearchParams({ ...applied.params, status: statusFilter });
       if (currencyFilter) params.set("currency", currencyFilter);
       if (partyFilter) params.set("partyId", partyFilter);
 
@@ -111,32 +105,27 @@ export default function APAging() {
   }
 
   function exportCsv() {
-    const headers = [
-      "supplier", "reference_no", "document_date", "due_date", "days_outstanding", "aging_bucket",
-      "currency_code", "currency_symbol", "foreign_original", "foreign_paid", "foreign_balance",
-      "historical_rate", "base_original", "base_paid", "base_balance",
+    const csvRows = [
+      ["AP DETAILED AGING REPORT"],
+      ...periodCsvRows(period.applied),
+      ["Status", statusFilter || "All"],
+      ...(currencyFilter ? [["Currency", currencyFilter]] : []),
+      ...(partyFilter ? [["Supplier", parties.find((p) => String(p.id) === String(partyFilter))?.name || partyFilter]] : []),
+      ...(bucketFilter ? [["Aging Bucket", BUCKET_LABELS[bucketFilter] || bucketFilter]] : []),
+      [],
+      [
+        "supplier", "reference_no", "document_date", "due_date", "days_outstanding", "aging_bucket",
+        "currency_code", "currency_symbol", "foreign_original", "foreign_paid", "foreign_balance",
+        "historical_rate", "base_original", "base_paid", "base_balance",
+      ],
+      ...filteredRows.map((r) => [
+        r.partyName, r.referenceNo, r.transactionDate, r.dueDate, r.daysOutstanding, BUCKET_LABELS[r.bucket] || r.bucket,
+        r.currencyCode || "", r.currencySymbol || "",
+        r.isForeign ? r.foreignOriginal : "", r.isForeign ? r.foreignPaid : "", r.isForeign ? r.foreignBalance : "",
+        r.isForeign ? r.historicalRate : "", r.baseOriginal, r.basePaid, r.baseBalance,
+      ]),
     ];
-    const lines = [headers.join(",")];
-
-    for (const r of filteredRows) {
-      lines.push(
-        [
-          r.partyName, r.referenceNo, r.transactionDate, r.dueDate, r.daysOutstanding, BUCKET_LABELS[r.bucket] || r.bucket,
-          r.currencyCode || "", r.currencySymbol || "",
-          r.isForeign ? r.foreignOriginal : "", r.isForeign ? r.foreignPaid : "", r.isForeign ? r.foreignBalance : "",
-          r.isForeign ? r.historicalRate : "", r.baseOriginal, r.basePaid, r.baseBalance,
-        ]
-          .map(csvEscape)
-          .join(",")
-      );
-    }
-
-    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = `ap-aging-detailed-${asOfDate}.csv`;
-    link.click();
-    URL.revokeObjectURL(link.href);
+    downloadCsvText(reportCsvFilename("AP_Aging_Detailed", period.applied), reportRowsToCsv(csvRows));
   }
 
   return (
@@ -149,10 +138,7 @@ export default function APAging() {
         <h2>Report Filters</h2>
 
         <div className="tb-filter-grid">
-          <div>
-            <label>As Of Date</label>
-            <input type="date" value={asOfDate} onChange={(e) => setAsOfDate(e.target.value)} />
-          </div>
+          <ReportPeriodFilter period={period} idPrefix="apa" />
 
           <div>
             <label>Supplier</label>
@@ -231,7 +217,7 @@ export default function APAging() {
 
             <div className="tb-report-title">
               <h2>ACCOUNTS PAYABLE DETAILED AGING REPORT</h2>
-              <h3>AS OF {formatAsOfDate(asOfDate)}</h3>
+              <ReportPeriodLabel period={period.applied} />
               <p style={{ fontSize: 11, color: "var(--text-secondary, #888)", margin: "4px 0 0" }}>
                 Base Currency amounts shown in the CURRENT/1-30/.../BALANCE columns. Foreign amounts are
                 carried at each document's own historical rate and are never converted at today's rate.

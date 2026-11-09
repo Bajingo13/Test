@@ -2,6 +2,9 @@ import { useState } from "react";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
 import { downloadCsvText, typedRowsToCsv } from "./reportCsv.mjs";
 import ReportExportMenu from "./ReportExportMenu.jsx";
+import ReportPeriodFilter, { ReportPeriodLabel } from "./ReportPeriodFilter.jsx";
+import useReportPeriod from "./useReportPeriod.js";
+import { periodCsvRows, periodFileSlug } from "./reportPeriod.mjs";
 import "./LedgerReport.css";
 
 // Fixed Asset Lapsing Report - the last of the 9 "Coming Soon" reports
@@ -31,17 +34,19 @@ function formatMoney(amount) {
 
 export default function FixedAssetLapsing() {
   const today = new Date().toISOString().slice(0, 10);
-  const [fromDate, setFromDate] = useState(new Date(new Date().getFullYear(), 0, 1).toISOString().slice(0, 10));
-  const [toDate, setToDate] = useState(today);
+  const period = useReportPeriod({ defaultFrom: new Date(new Date().getFullYear(), 0, 1).toISOString().slice(0, 10), defaultTo: today });
+  const { fromDate, toDate } = period;
   const [report, setReport] = useState(null); // null = not yet generated
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
   async function generateReport() {
+    const applied = period.apply();
+    if (!applied) return;
     setLoading(true);
     setError(null);
     try {
-      const params = new URLSearchParams({ from: fromDate, to: toDate });
+      const params = new URLSearchParams(applied.params);
       const res = await fetch(`${API_URL}/api/reports/fixed-asset-lapsing?${params.toString()}`, {
         credentials: "include",
         headers: authHeaders(),
@@ -75,7 +80,7 @@ export default function FixedAssetLapsing() {
 
     const csvRows = [
       [T("FIXED ASSET LAPSING REPORT")],
-      [T(`From ${report.from} to ${report.to}`)],
+      ...periodCsvRows(period.applied),
       [],
       [
         T("Asset Code"),
@@ -125,9 +130,8 @@ export default function FixedAssetLapsing() {
       ],
     ];
 
-    const safeFrom = String(fromDate).replace(/[^0-9A-Za-z_-]/g, "_");
-    const safeTo = String(toDate).replace(/[^0-9A-Za-z_-]/g, "_");
-    downloadCsvText(`Fixed_Asset_Lapsing_${safeFrom}_to_${safeTo}.csv`, typedRowsToCsv(csvRows));
+    const safePeriod = periodFileSlug(period.applied);
+    downloadCsvText(`Fixed_Asset_Lapsing_${safePeriod}.csv`, typedRowsToCsv(csvRows));
   }
 
   const generated = report !== null;
@@ -142,15 +146,7 @@ export default function FixedAssetLapsing() {
         <h2>Report Filters</h2>
 
         <div className="lgr-filter-grid">
-          <div>
-            <label htmlFor="fal-from">From Date</label>
-            <input id="fal-from" type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
-          </div>
-
-          <div>
-            <label htmlFor="fal-to">To Date</label>
-            <input id="fal-to" type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
-          </div>
+          <ReportPeriodFilter period={period} idPrefix="fal" />
         </div>
 
         <div className="lgr-actions">
@@ -178,7 +174,7 @@ export default function FixedAssetLapsing() {
         <div className="lgr-report-card">
           <div className="lgr-report-title">
             <h2>FIXED ASSET LAPSING REPORT</h2>
-            <h3>FROM {report.from} TO {report.to}</h3>
+            <ReportPeriodLabel period={period.applied} />
           </div>
 
           {report.rows.length === 0 ? (

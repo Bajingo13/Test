@@ -1,5 +1,7 @@
 import { Link } from "react-router-dom";
 import { STATUS_META, VAT_TREATMENTS, formatAmount, historyActionLabel, showDecision } from "../../utils/rfpPage.mjs";
+import { rfpAttachmentsPath } from "../../utils/rfpAttachments.mjs";
+import { AttachmentsCard } from "./RfpAttachments";
 
 export function StatusBadge({ status }) {
   const meta = STATUS_META[status] || { label: status, tone: "neutral" };
@@ -164,6 +166,19 @@ export default function RfpDetail({ rfp, accountsById, actions, onAction, onEdit
           </table>
         </div>
       </div>
+
+      <AttachmentsCard
+        key={`attachments-${rfp.id}-${rfp.updatedAt}`}
+        listPath={rfpAttachmentsPath(rfp.id)}
+        basePath={rfpAttachmentsPath(rfp.id)}
+        note={
+          actions.edit
+            ? "Add or remove documents with Edit while the request is Draft or Returned."
+            : rfp.status === "CONVERTED"
+              ? `The documents stay with this request and can also be opened from APV ${rfp.convertedApvNo || ""}.`
+              : null
+        }
+      />
 
       <div className="rfp-card">
         <div className="rfp-section-title"><h3>History</h3></div>

@@ -1,4 +1,8 @@
 import { useState } from "react";
+import ReportPeriodFilter, { ReportPeriodLabel } from "./ReportPeriodFilter.jsx";
+import { csvAmount, downloadCsvText, reportRowsToCsv } from "./reportCsv.mjs";
+import useReportPeriod from "./useReportPeriod.js";
+import { AS_OF, periodCsvRows, reportCsvFilename } from "./reportPeriod.mjs";
 import "./AccountAnalysis.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
@@ -9,7 +13,7 @@ function authHeaders() {
 }
 
 export default function FixedAssetReport() {
-  const [asOfDate, setAsOfDate] = useState(new Date().toISOString().slice(0, 10));
+  const period = useReportPeriod({ defaultMode: AS_OF });
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [generated, setGenerated] = useState(false);
@@ -29,11 +33,33 @@ export default function FixedAssetReport() {
     { cost: 0, accumulatedDepreciation: 0, bookValue: 0 }
   );
 
+  function exportCSV() {
+    if (!generated) return alert("Please generate the report first.");
+    const csvRows = [
+      ["FIXED ASSET REGISTER"],
+      ...periodCsvRows(period.applied),
+      [],
+      ["ASSET CODE", "ASSET NAME", "ACQ. DATE", "COST", "ACCUM. DEPRECIATION", "BOOK VALUE"],
+      ...rows.map((row) => [
+        row.assetCode,
+        row.assetName,
+        row.acquisitionDate,
+        csvAmount(row.acquisitionCost),
+        csvAmount(row.accumulatedDepreciation),
+        csvAmount(row.bookValue),
+      ]),
+      ["", "TOTAL", "", csvAmount(totals.cost), csvAmount(totals.accumulatedDepreciation), csvAmount(totals.bookValue)],
+    ];
+    downloadCsvText(reportCsvFilename("Fixed_Asset_Register", period.applied), reportRowsToCsv(csvRows));
+  }
+
   async function generateReport() {
+    const applied = period.apply();
+    if (!applied) return;
     setLoading(true);
 
     try {
-      const res = await fetch(`${API_URL}/api/reports/fixed-asset-register?asOf=${asOfDate}`, {
+      const res = await fetch(`${API_URL}/api/reports/fixed-asset-register?${new URLSearchParams(applied.params)}`, {
         credentials: "include",
         headers: authHeaders(),
       });
@@ -62,10 +88,7 @@ export default function FixedAssetReport() {
         <h2>Report Filters</h2>
 
         <div className="aa-filter-grid">
-          <div>
-            <label>As Of Date</label>
-            <input type="date" value={asOfDate} onChange={(e) => setAsOfDate(e.target.value)} />
-          </div>
+          <ReportPeriodFilter period={period} idPrefix="far" />
         </div>
 
         <div className="aa-actions">
@@ -86,6 +109,10 @@ export default function FixedAssetReport() {
           <button className="dark" onClick={() => window.print()}>
             Export PDF
           </button>
+
+          <button className="dark" onClick={exportCSV} disabled={!generated}>
+            Export CSV
+          </button>
         </div>
       </div>
 
@@ -93,7 +120,7 @@ export default function FixedAssetReport() {
         <div className="aa-report-card">
           <div className="aa-report-title">
             <h2>FIXED ASSET REGISTER</h2>
-            <p>As Of {asOfDate}</p>
+            <ReportPeriodLabel period={period.applied} />
           </div>
 
           <table className="aa-table fa-table">

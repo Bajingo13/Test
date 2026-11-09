@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { statusMatchesCompany, trialBalanceStatusQuery } from "../utils/trialBalanceCompany.mjs";
+import { BEGINNING_OF_RECORDS } from "../pages/REPORTS/reportPeriod.mjs";
 import "./TrialBalanceCheckerPanel.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
@@ -634,7 +635,7 @@ export default function TrialBalanceCheckerPanel({ open, companyId, companyName,
 
         <div className="tbcp-footer">
           <span className="tbcp-muted">
-            Period: {from} to {to} · Tolerance: ₱{tolerance}
+            {from === BEGINNING_OF_RECORDS ? `As of ${to}` : `Period: ${from} to ${to}`} · Tolerance: ₱{tolerance}
           </span>
           <div className="tbcp-footer-right">
             <button type="button" className="tbcp-btn-secondary" onClick={onClose}>

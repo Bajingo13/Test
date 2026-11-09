@@ -1,5 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { LIMITS, VAT_TREATMENTS, emptyLine, formatAmount, sumLines, validateForm } from "../../utils/rfpPage.mjs";
+import { rfpAttachmentsPath } from "../../utils/rfpAttachments.mjs";
+import { AttachmentPicker, useAttachmentList } from "./RfpAttachments";
 
 // Create / edit form for one RFP. Company is fixed while the form is open
 // (shown, never editable here); the requester is always the signed-in user;
@@ -12,6 +14,7 @@ export default function RfpForm({
   companyName,
   requesterName,
   rfpNo,
+  rfpId,
   fallbackSupplier,
   returnNote,
   saving,
@@ -21,6 +24,26 @@ export default function RfpForm({
 }) {
   const [form, setForm] = useState(initialForm);
   const [attempted, setAttempted] = useState(false);
+
+  // Supporting documents: new files wait here (with a local preview) and are
+  // uploaded after the RFP itself is saved; saved ones can be marked for
+  // removal on save.
+  const [queued, setQueued] = useState([]);
+  const [removeIds, setRemoveIds] = useState([]);
+  const [savedAttachments] = useAttachmentList(mode === "edit" && rfpId ? rfpAttachmentsPath(rfpId) : null);
+  const queuedRef = useRef(queued);
+  queuedRef.current = queued;
+  useEffect(() => () => queuedRef.current.forEach((q) => URL.revokeObjectURL(q.url)), []);
+  const addFiles = (files) =>
+    setQueued((list) => [...list, ...files.map((file) => ({ key: crypto.randomUUID(), file, category: "RECEIPT", url: URL.createObjectURL(file) }))]);
+  const unqueue = (key) =>
+    setQueued((list) => {
+      const gone = list.find((q) => q.key === key);
+      if (gone) URL.revokeObjectURL(gone.url);
+      return list.filter((q) => q.key !== key);
+    });
+  const setCategory = (key, category) => setQueued((list) => list.map((q) => (q.key === key ? { ...q, category } : q)));
+  const toggleRemove = (id) => setRemoveIds((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]));
 
   const { valid, errors } = useMemo(() => validateForm(form), [form]);
   const shown = attempted ? errors : { lines: [] };
@@ -45,7 +68,7 @@ export default function RfpForm({
     e.preventDefault();
     setAttempted(true);
     if (!valid || saving) return;
-    onSave(form);
+    onSave(form, { queued: queued.map(({ file, category }) => ({ file, category })), removeIds });
   }
 
   const fieldClass = (name) => (shown[name] ? "rfp-input-error" : "");
@@ -237,6 +260,19 @@ export default function RfpForm({
           {total.invalid ? <small className="rfp-subtle">({total.invalid} line{total.invalid > 1 ? "s" : ""} without a valid amount)</small> : null}
         </div>
       </div>
+
+      <AttachmentPicker
+        saved={Array.isArray(savedAttachments.data) ? savedAttachments.data : []}
+        savedBasePath={rfpId ? rfpAttachmentsPath(rfpId) : ""}
+        savedStatus={savedAttachments.status}
+        queued={queued}
+        removeIds={removeIds}
+        onAdd={addFiles}
+        onUnqueue={unqueue}
+        onCategory={setCategory}
+        onToggleRemove={toggleRemove}
+        disabled={saving}
+      />
 
       <div className="rfp-form-actions">
         <button type="button" className="rfp-btn rfp-btn-secondary" onClick={onCancel} disabled={saving}>

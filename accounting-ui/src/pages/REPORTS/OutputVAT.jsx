@@ -1,4 +1,7 @@
 import { useEffect, useState } from "react";
+import ReportPeriodFilter, { ReportPeriodLabel } from "./ReportPeriodFilter.jsx";
+import useReportPeriod from "./useReportPeriod.js";
+import { periodCsvRows, reportCsvFilename } from "./reportPeriod.mjs";
 import "./AccountAnalysis.css";
 import { downloadCsv } from "./reportCsv";
 
@@ -18,8 +21,8 @@ const EMPTY_TOTALS = {
 };
 
 export default function OutputVAT() {
-  const [fromDate, setFromDate] = useState("2026-01-01");
-  const [toDate, setToDate] = useState(new Date().toISOString().slice(0, 10));
+  const period = useReportPeriod({ defaultFrom: "2026-01-01", defaultTo: new Date().toISOString().slice(0, 10) });
+  const { toDate } = period;
   const [accounts, setAccounts] = useState([]);
   const [accountCode, setAccountCode] = useState("");
   const [rows, setRows] = useState([]);
@@ -74,14 +77,15 @@ export default function OutputVAT() {
   const csvNum = (value) => (value === null || value === undefined ? "" : Number(value).toFixed(2));
 
   function exportCSV() {
-    if (!rows.length) {
+    // An empty period still exports: its header says which period had no entries.
+    if (!generated) {
       alert("Please generate the report first.");
       return;
     }
     const meta = [
       ["OUTPUT VAT REPORT"],
       selectedAccount ? [`GL fallback account: ${accountCode} - ${selectedAccount.title}`] : [],
-      [`Period: ${fromDate} to ${toDate}`],
+      ...periodCsvRows(period.applied),
       inclusionRule ? [inclusionRule] : [],
       [],
     ];
@@ -110,13 +114,15 @@ export default function OutputVAT() {
       Number(totals.vatAmount || 0).toFixed(2),
       Number(totals.grossAmount || 0).toFixed(2),
     ];
-    downloadCsv(`Output_VAT_${toDate}.csv`, [...meta, header, ...body, totalRow]);
+    downloadCsv(reportCsvFilename("Output_VAT", period.applied), [...meta, header, ...body, totalRow]);
   }
 
   async function generateReport() {
+    const applied = period.apply();
+    if (!applied) return;
     setLoading(true);
     try {
-      const params = new URLSearchParams({ from: fromDate, to: toDate });
+      const params = new URLSearchParams(applied.params);
       if (accountCode) params.set("accountCode", accountCode);
       const res = await fetch(`${API_URL}/api/reports/output-vat?${params.toString()}`, {
         credentials: "include",
@@ -151,15 +157,7 @@ export default function OutputVAT() {
         <h2>Report Filters</h2>
 
         <div className="aa-filter-grid">
-          <div>
-            <label>Date From</label>
-            <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
-          </div>
-
-          <div>
-            <label>Date To</label>
-            <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
-          </div>
+          <ReportPeriodFilter period={period} idPrefix="ov" />
 
           <div>
             <label>Output VAT Account (historical GL fallback)</label>
@@ -207,7 +205,7 @@ export default function OutputVAT() {
             {selectedAccount ? (
               <h3>GL fallback account: {accountCode} - {selectedAccount.title}</h3>
             ) : null}
-            <p>Period: {fromDate} to {toDate}</p>
+            <ReportPeriodLabel period={period.applied} />
             {inclusionRule ? <p>{inclusionRule}</p> : null}
           </div>
 

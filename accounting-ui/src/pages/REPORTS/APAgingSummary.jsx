@@ -1,4 +1,8 @@
 import { useEffect, useState } from "react";
+import ReportPeriodFilter, { ReportPeriodLabel } from "./ReportPeriodFilter.jsx";
+import { downloadCsvText, reportRowsToCsv } from "./reportCsv.mjs";
+import useReportPeriod from "./useReportPeriod.js";
+import { AS_OF, periodCsvRows, reportCsvFilename } from "./reportPeriod.mjs";
 import "./TrialBalance.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
@@ -15,21 +19,9 @@ function formatMoney(amount) {
   });
 }
 
-function formatAsOfDate(dateValue) {
-  if (!dateValue) return "";
-  return new Date(dateValue)
-    .toLocaleDateString("en-US", { month: "long", day: "2-digit", year: "numeric" })
-    .toUpperCase();
-}
-
-function csvEscape(value) {
-  const str = String(value ?? "");
-  if (/[",\n]/.test(str)) return `"${str.replace(/"/g, '""')}"`;
-  return str;
-}
-
 export default function APAgingSummary() {
-  const [asOfDate, setAsOfDate] = useState(new Date().toISOString().slice(0, 10));
+  const period = useReportPeriod({ defaultMode: AS_OF });
+  const { asOfDate } = period;
   const [currencyFilter, setCurrencyFilter] = useState("");
   const [currencies, setCurrencies] = useState([]);
 
@@ -50,6 +42,8 @@ export default function APAgingSummary() {
   }, []);
 
   async function generateReport() {
+    const applied = period.apply();
+    if (!applied) return;
     setLoading(true);
 
     const now = new Date();
@@ -60,7 +54,7 @@ export default function APAgingSummary() {
     });
 
     try {
-      const params = new URLSearchParams({ asOf: asOfDate, status: "OPEN" });
+      const params = new URLSearchParams({ ...applied.params, status: "OPEN" });
       if (currencyFilter) params.set("currency", currencyFilter);
 
       const res = await fetch(`${API_URL}/api/reports/ap-aging-summary?${params.toString()}`, {
@@ -84,22 +78,23 @@ export default function APAgingSummary() {
   const grandTotal = parties.reduce((sum, p) => sum + p.baseBalance, 0);
 
   function exportCsv() {
-    const headers = ["supplier", "document_count", "base_balance", "foreign_breakdown"];
-    const lines = [headers.join(",")];
-
-    for (const p of parties) {
-      const foreignBreakdown = Object.entries(p.foreignByCurrency)
-        .map(([code, fc]) => `${code} ${fc.balance}`)
-        .join("; ");
-      lines.push([p.partyName, p.documentCount, p.baseBalance, foreignBreakdown].map(csvEscape).join(","));
-    }
-
-    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = `ap-aging-summary-${asOfDate}.csv`;
-    link.click();
-    URL.revokeObjectURL(link.href);
+    const csvRows = [
+      ["AP AGING SUMMARY REPORT"],
+      ...periodCsvRows(period.applied),
+      ["Status", "OPEN"],
+      ...(currencyFilter ? [["Currency", currencyFilter]] : []),
+      [],
+      ["supplier", "document_count", "base_balance", "foreign_breakdown"],
+      ...parties.map((p) => [
+        p.partyName,
+        p.documentCount,
+        p.baseBalance,
+        Object.entries(p.foreignByCurrency)
+          .map(([code, fc]) => `${code} ${fc.balance}`)
+          .join("; "),
+      ]),
+    ];
+    downloadCsvText(reportCsvFilename("AP_Aging_Summary", period.applied), reportRowsToCsv(csvRows));
   }
 
   return (
@@ -112,10 +107,7 @@ export default function APAgingSummary() {
         <h2>Report Filters</h2>
 
         <div className="tb-filter-grid">
-          <div>
-            <label>As Of Date</label>
-            <input type="date" value={asOfDate} onChange={(e) => setAsOfDate(e.target.value)} />
-          </div>
+          <ReportPeriodFilter period={period} idPrefix="aps" />
 
           <div>
             <label>Currency</label>
@@ -154,7 +146,7 @@ export default function APAgingSummary() {
 
             <div className="tb-report-title">
               <h2>ACCOUNTS PAYABLE AGING SUMMARY</h2>
-              <h3>AS OF {formatAsOfDate(asOfDate)}</h3>
+              <ReportPeriodLabel period={period.applied} />
               <p style={{ fontSize: 11, color: "var(--text-secondary, #888)", margin: "4px 0 0" }}>
                 Grouped by supplier. Foreign balances are shown per currency and are never summed with base or other currencies.
               </p>

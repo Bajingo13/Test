@@ -10,6 +10,10 @@ import {
   trialBalanceStatusQuery,
 } from "../../utils/trialBalanceCompany.mjs";
 import { accountAnalysisLink } from "../../utils/accountAnalysisCompany.mjs";
+import ReportPeriodFilter, { ReportPeriodLabel } from "./ReportPeriodFilter.jsx";
+import { downloadCsvText, reportRowsToCsv } from "./reportCsv.mjs";
+import useReportPeriod from "./useReportPeriod.js";
+import { periodCsvRows, periodModeQuery, reportCsvFilename, reportFileStem, reportPeriodText } from "./reportPeriod.mjs";
 import "./TrialBalance.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
@@ -22,8 +26,8 @@ function authHeaders() {
 export default function TrialBalance() {
   const navigate = useNavigate();
 
-  const [fromDate, setFromDate] = useState("2026-01-01");
-  const [toDate, setToDate] = useState(new Date().toISOString().slice(0, 10));
+  const period = useReportPeriod({ defaultFrom: "2026-01-01" });
+  const { fromDate, toDate } = period;
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [generated, setGenerated] = useState(false);
@@ -103,18 +107,6 @@ export default function TrialBalance() {
       maximumFractionDigits: 2,
     });
 
-  const formatAsOfDate = (dateValue) => {
-    if (!dateValue) return "";
-    const date = new Date(dateValue);
-    return date
-      .toLocaleDateString("en-US", {
-        month: "long",
-        day: "2-digit",
-        year: "numeric",
-      })
-      .toUpperCase();
-  };
-
   // The drill-down carries this page's selected company, so Account
   // Analysis shows the same company's ledger.
   const openAccountAnalysis = (row) => {
@@ -122,6 +114,10 @@ export default function TrialBalance() {
   };
 
   async function generateTrialBalance(forCompanyId = companyId) {
+    const applied = period.apply();
+    if (!applied) return;
+
+    const { fromDate, toDate } = applied;
     const query = trialBalanceQuery({ from: fromDate, to: toDate, companyId: forCompanyId });
     if (!query) return; // no company selected - nothing is requested
 
@@ -138,7 +134,7 @@ export default function TrialBalance() {
 
     try {
       const res = await fetch(
-        `${API_URL}/api/reports/trial-balance?${query}`,
+        `${API_URL}/api/reports/trial-balance?${query}&${periodModeQuery(applied)}`,
         { credentials: "include", headers: authHeaders() }
       );
       if (!requestGuard.current.isCurrent(ticket)) return;
@@ -159,7 +155,7 @@ export default function TrialBalance() {
       const finalRows = Array.isArray(data) ? data : data.data || [];
 
       setRows(finalRows);
-      await loadBalanceStatus(forCompanyId, ticket);
+      await loadBalanceStatus(forCompanyId, ticket, applied);
     } catch (err) {
       if (!requestGuard.current.isCurrent(ticket)) return;
       console.error(err);
@@ -174,7 +170,8 @@ export default function TrialBalance() {
     }
   }
 
-  async function loadBalanceStatus(forCompanyId, ticket) {
+  async function loadBalanceStatus(forCompanyId, ticket, applied) {
+    const { fromDate, toDate } = applied;
     const query = trialBalanceStatusQuery({ from: fromDate, to: toDate, tolerance: "0.01", companyId: forCompanyId });
     if (!query) {
       setBalanceStatus(null);
@@ -210,7 +207,8 @@ export default function TrialBalance() {
 
     const csvRows = [
       ["TRIAL BALANCE"],
-      [`AS OF ${formatAsOfDate(toDate)}`],
+      ["Company", selectedCompany?.name || ""],
+      ...periodCsvRows(period.applied),
       [],
       ["CODE", "TITLE", "DEBIT", "CREDIT", "CLASS"],
       ...rows.map((row) => [
@@ -224,21 +222,7 @@ export default function TrialBalance() {
       ["", "TOTAL", totals.debit.toFixed(2), totals.credit.toFixed(2), ""],
     ];
 
-    const csvContent = csvRows
-      .map((row) =>
-        row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(",")
-      )
-      .join("\n");
-
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-
-    link.href = url;
-    link.download = `Trial_Balance_${toDate}.csv`;
-    link.click();
-
-    URL.revokeObjectURL(url);
+    downloadCsvText(reportCsvFilename("Trial_Balance", period.applied), reportRowsToCsv(csvRows));
   };
 
   const downloadExcel = () => {
@@ -250,7 +234,7 @@ export default function TrialBalance() {
     const htmlTable = `
       <table border="1">
         <tr><th colspan="5">TRIAL BALANCE</th></tr>
-        <tr><th colspan="5">AS OF ${formatAsOfDate(toDate)}</th></tr>
+        <tr><th colspan="5">${reportPeriodText(period.applied)}</th></tr>
         <tr></tr>
         <tr>
           <th>CODE</th>
@@ -290,7 +274,7 @@ export default function TrialBalance() {
     const link = document.createElement("a");
 
     link.href = url;
-    link.download = `Trial_Balance_${toDate}.xls`;
+    link.download = `${reportFileStem("Trial_Balance", period.applied)}.xls`;
     link.click();
 
     URL.revokeObjectURL(url);
@@ -306,23 +290,7 @@ export default function TrialBalance() {
         <h2>Report Filters</h2>
 
         <div className="tb-filter-grid">
-          <div>
-            <label>Date From</label>
-            <input
-              type="date"
-              value={fromDate}
-              onChange={(e) => setFromDate(e.target.value)}
-            />
-          </div>
-
-          <div>
-            <label>Date To</label>
-            <input
-              type="date"
-              value={toDate}
-              onChange={(e) => setToDate(e.target.value)}
-            />
-          </div>
+          <ReportPeriodFilter period={period} idPrefix="tb" />
 
           <div>
             <label htmlFor="tb-company">Company</label>
@@ -420,7 +388,7 @@ export default function TrialBalance() {
             <div className="tb-report-title">
               <h2>TRIAL BALANCE</h2>
               {selectedCompany && <h3 className="tb-report-company">{selectedCompany.name}</h3>}
-              <h3>AS OF {formatAsOfDate(toDate)}</h3>
+              <ReportPeriodLabel period={period.applied} />
             </div>
 
             <div className="tb-run-info">

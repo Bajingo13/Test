@@ -21,6 +21,7 @@ const { resolveSelectedCompany } = require("./trialBalanceCheckerService");
 const { VAT_TREATMENTS } = require("./vatCalculationService");
 const PermissionService = require("./permissionService");
 const { createApvRecord } = require("./apvCreateService");
+const attachmentStorage = require("../lib/attachmentStorage");
 
 const MODULE = "TRANSACTIONS.RFP";
 const ENTITY = "RFP";
@@ -602,7 +603,24 @@ async function deleteRfp({ id, user }) {
       throw httpError("This Request for Payment has workflow history and cannot be deleted.", 409);
     }
 
-    const before = auditState(header, await readLines(conn, rfpId));
+    // A never-submitted draft takes its attachments with it: the audit row
+    // keeps their metadata and SHA-256; the files are removed after commit.
+    const [attachments] = await conn.execute(
+      "SELECT id, category, original_filename, mime_type, file_size, sha256, storage_key, deleted_at FROM rfp_attachments WHERE rfp_id = ? FOR UPDATE",
+      [rfpId]
+    );
+    const before = {
+      ...auditState(header, await readLines(conn, rfpId)),
+      ...(attachments.length
+        ? {
+            attachments: attachments.map((a) => ({
+              attachmentId: a.id, category: a.category, originalFilename: a.original_filename,
+              mimeType: a.mime_type, fileSize: Number(a.file_size), sha256: a.sha256, removed: Boolean(a.deleted_at),
+            })),
+          }
+        : {}),
+    };
+    await conn.execute("DELETE FROM rfp_attachments WHERE rfp_id = ?", [rfpId]);
     await conn.execute("DELETE FROM rfp_lines WHERE rfp_id = ?", [rfpId]);
     await conn.execute("DELETE FROM rfp_headers WHERE id = ? AND company_id = ? AND status = 'DRAFT'", [rfpId, header.company_id]);
     await logAudit(conn, {
@@ -617,6 +635,9 @@ async function deleteRfp({ id, user }) {
     });
 
     await conn.commit();
+    for (const a of attachments) {
+      await attachmentStorage.remove(a.storage_key).catch((err) => console.error("RFP ATTACHMENT FILE CLEANUP ERROR:", a.id, err.code || err.message));
+    }
     return { id: rfpId, rfpNo: header.rfp_no, deleted: true };
   } catch (err) {
     await conn.rollback().catch(() => {});
@@ -1105,6 +1126,11 @@ async function getLookups({ user, query = {} }) {
 
 module.exports = {
   STATUSES,
+  EDITABLE_STATUSES,
+  // shared with rfpAttachmentService (same company scope and id parsing)
+  loadAccessibleRfp,
+  parseId,
+  httpError,
   WORKFLOW,
   getLookups,
   createRfp,

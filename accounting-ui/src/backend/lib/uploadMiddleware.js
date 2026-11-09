@@ -52,4 +52,38 @@ function handleUpload(uploadMiddleware) {
   };
 }
 
-module.exports = { templateImportUpload, coaImportUpload, handleUpload };
+// Supporting documents (RFP receipts): same memory storage as the imports,
+// one file per request, 10 MB cap. The extension filter here only refuses
+// obviously wrong files before their bytes are buffered; the real check is
+// on the content (lib/attachmentFileType.js validateAttachmentFile).
+const { MAX_ATTACHMENT_BYTES, SUPPORTED_TEXT, isAllowedExtension } = require("./attachmentFileType");
+
+const attachmentUpload = multer({
+  storage: multer.memoryStorage(),
+  // Browsers send the filename as UTF-8 (multer would read it as Latin-1).
+  defParamCharset: "utf8",
+  // Busboy stops AT its limit, so allow one byte more here; a file of exactly
+  // 10 MB is accepted and anything larger is refused (413) - by multer while
+  // streaming, or by validateAttachmentFile.
+  limits: { fileSize: MAX_ATTACHMENT_BYTES + 1, files: 1, fields: 5, fieldSize: 1024, parts: 6 },
+  fileFilter: (req, file, cb) => {
+    if (isAllowedExtension(file.originalname)) cb(null, true);
+    else cb(Object.assign(new Error(`Only ${SUPPORTED_TEXT} files can be attached.`), { statusCode: 415 }));
+  },
+});
+
+// Upload errors as clear 4xx responses: too large -> 413, wrong type -> 415,
+// anything else about the multipart body -> 400.
+function handleAttachmentUpload(req, res, next) {
+  attachmentUpload.single("file")(req, res, (err) => {
+    if (!err) return next();
+    if (err.code === "LIMIT_FILE_SIZE") return res.status(413).json({ message: "The file is larger than the 10 MB limit." });
+    if (err.statusCode) return res.status(err.statusCode).json({ message: err.message });
+    if (err.code === "LIMIT_FILE_COUNT" || err.code === "LIMIT_UNEXPECTED_FILE") {
+      return res.status(400).json({ message: "Attach one file at a time, in the \"file\" field." });
+    }
+    return res.status(400).json({ message: "The upload could not be read." });
+  });
+}
+
+module.exports = { templateImportUpload, coaImportUpload, handleUpload, attachmentUpload, handleAttachmentUpload };

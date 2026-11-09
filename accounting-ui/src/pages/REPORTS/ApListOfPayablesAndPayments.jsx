@@ -2,6 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
 import { downloadCsvText, typedRowsToCsv } from "./reportCsv.mjs";
 import ReportExportMenu from "./ReportExportMenu.jsx";
+import ReportPeriodFilter, { ReportPeriodLabel } from "./ReportPeriodFilter.jsx";
+import useReportPeriod from "./useReportPeriod.js";
+import { periodCsvRows, periodFileSlug } from "./reportPeriod.mjs";
 import "./LedgerReport.css";
 
 // AP List of Payables and Payments - seventh of the 9 "Coming Soon"
@@ -30,8 +33,8 @@ function formatMoney(amount) {
 }
 
 export default function ApListOfPayablesAndPayments() {
-  const [fromDate, setFromDate] = useState("2026-01-01");
-  const [toDate, setToDate] = useState(new Date().toISOString().slice(0, 10));
+  const period = useReportPeriod({ defaultFrom: "2026-01-01", defaultTo: new Date().toISOString().slice(0, 10) });
+  const { toDate } = period;
   const [parties, setParties] = useState([]);
   const [partyId, setPartyId] = useState("");
   const [report, setReport] = useState(null); // null = not yet generated
@@ -58,10 +61,12 @@ export default function ApListOfPayablesAndPayments() {
   );
 
   async function generateReport() {
+    const applied = period.apply();
+    if (!applied) return;
     setLoading(true);
     setError(null);
     try {
-      const params = new URLSearchParams({ from: fromDate, to: toDate });
+      const params = new URLSearchParams(applied.params);
       if (partyId) params.set("partyId", partyId);
       const res = await fetch(`${API_URL}/api/reports/ap-payables-and-payments?${params.toString()}`, {
         credentials: "include",
@@ -96,7 +101,7 @@ export default function ApListOfPayablesAndPayments() {
 
     const csvRows = [
       [T("AP LIST OF PAYABLES AND PAYMENTS")],
-      [T(`For the period ${fromDate} to ${toDate}`)],
+      ...periodCsvRows(period.applied),
       [],
       [T("Supplier"), T("Beginning Payable"), T("Payables"), T("Debit Memos"), T("Payments"), T("Credit Memos"), T("Ending Payable")],
       ...report.suppliers.map((s) => [
@@ -120,7 +125,7 @@ export default function ApListOfPayablesAndPayments() {
       ],
     ];
 
-    const safeTo = String(toDate).replace(/[^0-9A-Za-z_-]/g, "_");
+    const safeTo = periodFileSlug(period.applied);
     downloadCsvText(`AP_Payables_and_Payments_${safeTo}.csv`, typedRowsToCsv(csvRows));
   }
 
@@ -148,15 +153,7 @@ export default function ApListOfPayablesAndPayments() {
             </select>
           </div>
 
-          <div>
-            <label htmlFor="apy-from">Date From</label>
-            <input id="apy-from" type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
-          </div>
-
-          <div>
-            <label htmlFor="apy-to">Date To</label>
-            <input id="apy-to" type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
-          </div>
+          <ReportPeriodFilter period={period} idPrefix="apy" />
         </div>
 
         <div className="lgr-actions">
@@ -184,7 +181,7 @@ export default function ApListOfPayablesAndPayments() {
         <div className="lgr-report-card">
           <div className="lgr-report-title">
             <h2>AP LIST OF PAYABLES AND PAYMENTS</h2>
-            <h3>FOR THE PERIOD {report.from} TO {report.to}</h3>
+            <ReportPeriodLabel period={period.applied} />
           </div>
 
           {report.suppliers.length === 0 ? (

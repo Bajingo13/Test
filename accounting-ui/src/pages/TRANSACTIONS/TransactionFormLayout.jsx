@@ -22,7 +22,8 @@ import TaxDetailsViewModal from "./TaxDetailsViewModal";
 import LegacyVatEntryModal from "./LegacyVatEntryModal";
 import LegacyEwtEntryModal from "./LegacyEwtEntryModal";
 import CashCheckDetailsModal from "./CashCheckDetailsModal";
-import { filterTransactions, deriveStatusOptions, sortTransactions } from "./transactionListFilters.mjs";
+import ApvSourceAttachments from "./ApvSourceAttachments";
+import { filterTransactions, deriveStatusOptions, sortTransactions, apvNumberFields, apvListStatus } from "./transactionListFilters.mjs";
 import {
   inputVatAccounts,
   outputVatAccounts,
@@ -259,6 +260,12 @@ export default function TransactionFormLayout({
   // Invoice Date changes never overwrite it again. Only ever read/written
   // for code === "INV" - every other module ignores this state entirely
   // and keeps sending dueDate === transactionDate exactly as before.
+  //
+  // APV uses the same Due Date handling (its apv_headers.due_date drives AP
+  // aging, and an APV converted from a Request for Payment carries the RFP's
+  // requested payment date). It used to be sent as the APV date on every
+  // save, so editing a converted APV silently reset its due date.
+  const HAS_DUE_DATE = code === "INV" || code === "APV";
   const [dueDate, setDueDate] = useState(new Date().toISOString().split("T")[0]);
   const [dueDateTouched, setDueDateTouched] = useState(false);
 
@@ -587,7 +594,7 @@ export default function TransactionFormLayout({
         setTransactions(
           data.map((item) => ({
             id: item.id,
-            referenceNo: item.referenceNo || item.voucherNo,
+            referenceNo: apvNumberFields(item).referenceNo,
             date: item.transactionDate,
             party: item.supplierName,
             // totalDebit/totalCredit are base-currency GL values (section
@@ -598,12 +605,12 @@ export default function TransactionFormLayout({
             amount: item.foreignTotal ?? (item.totalCredit || item.totalDebit),
             paidAmount: item.paidAmount || 0,
             balanceAmount: item.balanceAmount ?? item.totalCredit ?? item.totalDebit,
-            status: item.paymentStatus || item.status,
+            status: apvListStatus(item),
             currencySymbol: item.currencySymbol || null,
             currencyCode: item.currencyCode || null,
             form: {
               date: item.transactionDate,
-              referenceNo: item.referenceNo || item.voucherNo,
+              ...apvNumberFields(item),
               party: item.supplierName,
               partyId: item.supplierId,
               description: item.description,
@@ -1489,7 +1496,7 @@ setError("");
       if (res.ok) {
         setForm({
   date: data.transactionDate,
-  referenceNo: data.referenceNo || data.voucherNo,
+  ...(code === "APV" ? apvNumberFields(data) : { referenceNo: data.referenceNo || data.voucherNo }),
 
   party:
     code === "CV"
@@ -1533,9 +1540,11 @@ setError("");
         // intentional accounting data - never auto-follow Invoice Date
         // changes for it, hence dueDateTouched = true here (as opposed to
         // resetForm()'s false for a brand-new, never-saved Invoice).
-        if (code === "INV") {
+        if (HAS_DUE_DATE) {
           setDueDate(data.dueDate || data.transactionDate || "");
           setDueDateTouched(true);
+        }
+        if (code === "INV") {
           setTerms(data.terms || "");
         }
 
@@ -2372,15 +2381,15 @@ if (code === "OR" || code === "CV") {
         partyType: updatedForm.partyType || null,
 
         transactionDate: updatedForm.date,
-        // Phase 7A: Invoice sends its real, user-editable Due Date; every
+        // Phase 7A: Invoice and APV send their real, user-editable Due
+        // Date (an edited APV keeps the due date it was loaded with); every
         // other module keeps sending dueDate === transactionDate exactly
-        // as before this checkpoint (unchanged behavior, per the explicit
-        // non-scope instruction).
-        dueDate: code === "INV" ? (dueDate || updatedForm.date) : updatedForm.date,
+        // as before.
+        dueDate: HAS_DUE_DATE ? (dueDate || updatedForm.date) : updatedForm.date,
         // Invoice-only; every other module has no terms column to receive
         // this and server.js only reads it off the INV payload.
         terms: code === "INV" ? terms || null : undefined,
-        referenceNo: updatedForm.referenceNo,
+        referenceNo: updatedForm.supportingReference || updatedForm.referenceNo,
         description: updatedForm.description,
         remarks: updatedForm.checkNo,
         receiptNo: updatedForm.checkNo,
@@ -2823,6 +2832,14 @@ if (code === "OR") {
               <h2 className="transaction-view-section-title">Voucher Information</h2>
             )}
 
+            {/* An APV converted from a Request for Payment shows that
+                request's supporting documents (receipts), read through the
+                RFP -> APV link - nothing is copied. Renders nothing for an
+                APV that did not come from an RFP. */}
+            {code === "APV" && selectedTransaction?.id ? (
+              <ApvSourceAttachments apvId={selectedTransaction.id} />
+            ) : null}
+
             {/* Phase 7G: compact top section, generalized from Phase 7F's
                 Invoice-only version to every module in COMPACT_HEADER_MODULES
                 (INV/OR/APV/CV/PO/JV, plus PCV/DM/CM since the transaction-UI
@@ -2862,9 +2879,9 @@ if (code === "OR") {
                   form={form}
                   updateForm={updateForm}
                   dueDate={dueDate}
-                  onDateChange={code === "INV" ? handleInvoiceDateChange : (value) => updateForm("date", value)}
+                  onDateChange={HAS_DUE_DATE ? handleInvoiceDateChange : (value) => updateForm("date", value)}
                   onDueDateChange={handleDueDateChange}
-                  showDueDate={code === "INV"}
+                  showDueDate={HAS_DUE_DATE}
                   terms={terms}
                   onTermsChange={setTerms}
                   showTerms={code === "INV"}

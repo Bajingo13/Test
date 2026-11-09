@@ -1,0 +1,97 @@
+.rpf {
+  grid-column: 1 / -1;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.rpf-legend {
+  padding: 0;
+  margin-bottom: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #111827;
+}
+
+/* Report filter grids style every nested div and label, so these selectors
+   need the extra class to keep the options side by side. */
+.rpf > .rpf-options {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 24px;
+  margin-bottom: 12px;
+}
+
+.rpf .rpf-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.rpf .rpf-option input[type="radio"] {
+  width: 16px;
+  height: 16px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+.rpf > .rpf-dates {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 240px));
+  gap: 12px 16px;
+}
+
+.rpf-dates label {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.rpf-dates input[type="date"] {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.rpf-error {
+  margin-top: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #b91c1c;
+}
+
+.rpl {
+  margin: 4px 0 8px;
+  text-align: center;
+}
+
+.rpl-primary,
+.rpl-secondary {
+  white-space: nowrap;
+}
+
+.rpl-primary {
+  font-size: 14px;
+  font-weight: 700;
+  color: #111827;
+}
+
+.rpl-secondary {
+  margin-top: 2px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+}
+
+@media print {
+  .rpl-primary,
+  .rpl-secondary {
+    color: #000;
+  }
+}

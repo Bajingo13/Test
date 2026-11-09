@@ -25,6 +25,7 @@ import RfpForm from "./RfpForm";
 import RfpDetail, { StatusBadge, formatDateTime } from "./RfpDetail";
 import RfpActionDialog from "./RfpActionDialog";
 import RfpConvertDialog from "./RfpConvertDialog";
+import { rfpAttachmentsPath } from "../../utils/rfpAttachments.mjs";
 import "./RFP.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
@@ -49,6 +50,37 @@ async function api(path, { method = "GET", body } = {}) {
   } catch {
     return { ok: false, status: 0, data: null };
   }
+}
+
+// Multipart upload of one supporting document (the browser sets the
+// boundary header). Same never-throws contract as api().
+async function apiUpload(path, formData) {
+  try {
+    const res = await fetch(`${API_URL}${path}`, { method: "POST", credentials: "include", headers: authHeaders(), body: formData });
+    const data = await res.json().catch(() => null);
+    return { ok: res.ok, status: res.status, data };
+  } catch {
+    return { ok: false, status: 0, data: null };
+  }
+}
+
+// After the RFP is saved: remove the attachments marked for removal, then
+// upload the queued files one by one. Returns what could not be done.
+async function syncAttachments(rfpId, { queued = [], removeIds = [] } = {}) {
+  const failures = [];
+  const base = rfpAttachmentsPath(rfpId);
+  for (const id of removeIds) {
+    const r = await api(`${base}/${encodeURIComponent(id)}`, { method: "DELETE" });
+    if (!r.ok) failures.push(`removing an attachment: ${errorMessage(r.status, r.data, "not removed")}`);
+  }
+  for (const { file, category } of queued) {
+    const fd = new FormData();
+    fd.append("category", category);
+    fd.append("file", file, file.name);
+    const r = await apiUpload(base, fd);
+    if (!r.ok) failures.push(`${file.name}: ${errorMessage(r.status, r.data, "not uploaded")}`);
+  }
+  return failures;
 }
 
 const DELETE_DIALOG = {
@@ -79,6 +111,7 @@ export default function RFP() {
   const [history, setHistory] = useState({ status: "idle", rows: [], error: "" });
   const [filters, setFilters] = useState({ status: "", search: "", from: "", to: "" });
   const [notice, setNotice] = useState("");
+  const [warning, setWarning] = useState("");
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
   const [dialog, setDialog] = useState(null); // { key, busy, error }
@@ -205,19 +238,25 @@ export default function RFP() {
   const apvPath = canOpenApvPage({ rfp, companies, isSuperAdmin: ctx.isSuperAdmin, canViewApv }) ? apvPagePath(rfp.convertedApvId) : null;
   const visibleRows = useMemo(() => refineList(list.rows, filters), [list.rows, filters]);
 
-  async function save(form) {
+  async function save(form, attachments) {
     setSaving(true);
     setFormError("");
+    setWarning("");
     const isCreate = mode === "create";
     const payload = buildPayload(form, { companyId, isCreate });
     const r = isCreate
       ? await api("/api/rfp", { method: "POST", body: payload })
       : await api(`/api/rfp/${encodeURIComponent(rfpId)}`, { method: "PUT", body: payload });
-    setSaving(false);
     if (!r.ok) {
+      setSaving(false);
       setFormError(errorMessage(r.status, r.data, "Unable to save the Request for Payment."));
       return;
     }
+    // The RFP is saved; its documents follow. A file the server refuses never
+    // undoes the save - it is reported so the user can attach it again.
+    const failures = await syncAttachments(r.data.id, attachments);
+    setSaving(false);
+    if (failures.length) setWarning(`Some attachments were not saved - ${failures.join("; ")}`);
     setNotice(
       isCreate
         ? `Request for Payment ${r.data.rfpNo} was created as a draft.`
@@ -326,6 +365,12 @@ export default function RFP() {
         {formOpen && !locked && companyId ? <div className="rfp-subtle">The company cannot be changed while the form is open.</div> : null}
       </div>
 
+      {warning ? (
+        <div className="rfp-banner rfp-banner-warning" role="alert">
+          <span>{warning}</span>
+          <button type="button" className="rfp-link-btn" onClick={() => setWarning("")} aria-label="Dismiss">Dismiss</button>
+        </div>
+      ) : null}
       {notice ? (
         <div className="rfp-banner rfp-banner-success" role="status">
           <span>{notice}</span>
@@ -486,6 +531,7 @@ export default function RFP() {
             companyName={rfp.companyName}
             requesterName={rfp.requesterUsername}
             rfpNo={rfp.rfpNo}
+            rfpId={rfp.id}
             fallbackSupplier={{ id: rfp.supplierId, name: rfp.supplierName, tin: rfp.supplierTin }}
             returnNote={rfp.status === "RETURNED" ? rfp.decisionNote || "" : undefined}
             saving={saving}

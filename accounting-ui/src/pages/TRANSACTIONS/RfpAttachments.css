@@ -1,0 +1,241 @@
+/* RFP supporting documents: shared by the RFP form / view and the APV page,
+   so it carries its own classes instead of relying on RFP.css. */
+.rfp-att-card,
+.rfp-att-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.rfp-att-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  padding: 16px 18px;
+  margin: 12px 0;
+}
+
+.rfp-att-picker {
+  border-top: 1px solid var(--border-color);
+  margin-top: 18px;
+  padding-top: 16px;
+}
+
+.rfp-att-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.rfp-att-card-head h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.rfp-att-sub {
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  margin: 0;
+}
+
+.rfp-att-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rfp-att-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: var(--bg-surface);
+  min-width: 0;
+}
+
+.rfp-att-item-new {
+  border-style: dashed;
+  border-color: var(--accent-indigo-border, var(--border-color-strong));
+}
+
+.rfp-att-item-marked {
+  opacity: 0.55;
+}
+
+.rfp-att-item-marked .rfp-att-name {
+  text-decoration: line-through;
+}
+
+.rfp-att-kind,
+.rfp-att-thumb {
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+}
+
+.rfp-att-kind {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  background: var(--bg-surface-muted);
+  color: var(--text-secondary);
+}
+
+.rfp-att-kind-pdf {
+  background: var(--danger-bg);
+  color: var(--danger-text);
+}
+
+.rfp-att-thumb {
+  object-fit: cover;
+  border: 1px solid var(--border-color);
+}
+
+.rfp-att-meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.rfp-att-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rfp-att-item select {
+  flex: 0 0 190px;
+  width: 190px;
+  min-width: 0;
+}
+
+.rfp-att-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.rfp-att-btn {
+  border: 1px solid var(--border-color-strong);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  border-radius: 8px;
+  padding: 6px 11px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.rfp-att-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.rfp-att-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.rfp-att-btn-danger {
+  color: var(--danger-text);
+  border-color: var(--danger-text);
+}
+
+.rfp-att-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.rfp-att-error {
+  background: var(--danger-bg);
+  color: var(--danger-text);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+.rfp-att-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(var(--shadow-rgb, 15, 23, 42), 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  z-index: 1300;
+}
+
+.rfp-att-preview {
+  width: min(960px, 100%);
+  height: min(86vh, 1000px);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  border-radius: 14px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.rfp-att-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-color);
+  min-width: 0;
+}
+
+.rfp-att-preview-body {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-surface-muted);
+  min-height: 0;
+}
+
+.rfp-att-preview-body img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.rfp-att-preview-body iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #fff;
+}
+
+@media (max-width: 640px) {
+  .rfp-att-item {
+    flex-wrap: wrap;
+  }
+}
+
+@media print {
+  .rfp-att-card,
+  .rfp-att-picker {
+    display: none;
+  }
+}

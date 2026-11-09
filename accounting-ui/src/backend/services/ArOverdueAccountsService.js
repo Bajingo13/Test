@@ -21,13 +21,15 @@ const AgingReportService = require("./agingReportService");
 // row source never joins memo_headers). Neither is "fixed" here; doing so
 // would require modifying agingReportService.js itself, which is out of
 // scope for this report.
-async function getOverdueAccounts({ companyId, asOfDate, currencyCode, partyId, status }) {
+async function getOverdueAccounts({ companyId, asOfDate, currencyCode, partyId, status, documentFrom, documentTo }) {
   const allRows = await AgingReportService.getAgingRows("AR", {
     companyId,
     asOfDate,
     currencyCode,
     partyId,
     status,
+    documentFrom,
+    documentTo,
   });
 
   const overdueRows = allRows.filter((r) => r.bucket !== "current");

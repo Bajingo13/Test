@@ -453,7 +453,9 @@ export function errorMessage(status, body, fallback = "Something went wrong. Ple
   const safe = server && server.length <= 300 && !LEAKY.test(server) ? server : "";
   if (status === 403) return safe || "You do not have permission to perform this action.";
   if (status === 404) return safe || "Request for Payment not found.";
-  if (status === 400 || status === 409) return safe || fallback;
+  // 410 / 413 / 415: attachment upload and download refusals (missing file,
+  // too large, wrong type) - the server message says which.
+  if ([400, 409, 410, 413, 415].includes(status)) return safe || fallback;
   return fallback;
 }
 

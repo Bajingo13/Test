@@ -1,4 +1,8 @@
 import { useState } from "react";
+import ReportPeriodFilter, { ReportPeriodLabel } from "./ReportPeriodFilter.jsx";
+import { downloadCsvText, reportRowsToCsv } from "./reportCsv.mjs";
+import useReportPeriod from "./useReportPeriod.js";
+import { periodCsvRows, reportCsvFilename } from "./reportPeriod.mjs";
 import "./AccountAnalysis.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
@@ -17,8 +21,8 @@ function authHeaders() {
 // audited module (APV/CV/PO/Invoice/OR) is `transaction_date` - verified
 // directly against each header table's schema, not assumed.
 export default function EwtAudit() {
-  const [fromDate, setFromDate] = useState("");
-  const [toDate, setToDate] = useState("");
+  const period = useReportPeriod({ defaultFrom: "2026-01-01" });
+  const { toDate } = period;
   const [atcCode, setAtcCode] = useState("");
   const [rows, setRows] = useState([]);
   const [summary, setSummary] = useState({ generatedAt: "", totalChecked: 0, flaggedCount: 0 });
@@ -35,12 +39,12 @@ export default function EwtAudit() {
     stored === null || stored === undefined ? null : Number(computed || 0) - Number(stored || 0);
 
   async function generateReport() {
+    const applied = period.apply();
+    if (!applied) return;
     setLoading(true);
     setError("");
     try {
-      const params = new URLSearchParams();
-      if (fromDate) params.set("from", fromDate);
-      if (toDate) params.set("to", toDate);
+      const params = new URLSearchParams(applied.params);
       if (atcCode.trim()) params.set("atcCode", atcCode.trim());
 
       const res = await fetch(`${API_URL}/api/reports/ewt-audit?${params.toString()}`, {
@@ -77,14 +81,15 @@ export default function EwtAudit() {
   }
 
   const downloadCSV = () => {
-    if (!rows.length) {
+    // An empty period still exports: its header says which period had no entries.
+    if (!generated) {
       alert("Please generate the report first.");
       return;
     }
 
     const csvRows = [
       ["EWT AUDIT"],
-      [`Period: ${fromDate || "(all)"} to ${toDate || "(all)"}`],
+      ...periodCsvRows(period.applied),
       atcCode ? [`ATC: ${atcCode}`] : [],
       [],
       [
@@ -109,17 +114,7 @@ export default function EwtAudit() {
       ]),
     ];
 
-    const csvContent = csvRows
-      .map((row) => row.map((cell) => `"${String(cell || "").replace(/"/g, '""')}"`).join(","))
-      .join("\n");
-
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `EWT_Audit_${toDate || "all"}.csv`;
-    link.click();
-    URL.revokeObjectURL(url);
+    downloadCsvText(reportCsvFilename("EWT_Audit", period.applied), reportRowsToCsv(csvRows));
   };
 
   return (
@@ -132,15 +127,7 @@ export default function EwtAudit() {
         <h2>Report Filters</h2>
 
         <div className="aa-filter-grid">
-          <div>
-            <label>From Date</label>
-            <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
-          </div>
-
-          <div>
-            <label>To Date</label>
-            <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
-          </div>
+          <ReportPeriodFilter period={period} idPrefix="ewt" />
 
           <div>
             <label>ATC</label>
@@ -178,10 +165,8 @@ export default function EwtAudit() {
         <div className="aa-report-card">
           <div className="aa-report-title">
             <h2>EWT AUDIT</h2>
-            <p>
-              Period: {fromDate || "(all)"} to {toDate || "(all)"}
-              {atcCode ? ` — ATC ${atcCode}` : ""}
-            </p>
+            <ReportPeriodLabel period={period.applied} />
+            {atcCode ? <p>ATC {atcCode}</p> : null}
             <p>
               {summary.totalChecked} document(s) checked, {summary.flaggedCount} flagged
               {summary.generatedAt ? ` — generated ${new Date(summary.generatedAt).toLocaleString()}` : ""}

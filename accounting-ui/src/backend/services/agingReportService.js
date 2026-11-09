@@ -1,4 +1,5 @@
 const pool = require("../db");
+const { filterByDocumentPeriod } = require("../lib/reportPeriod");
 
 // Checkpoint 3E - Multi-Currency AR/AP Aging Reporting.
 //
@@ -225,12 +226,12 @@ function applyFilters(rows, { currencyCode, partyId, status }) {
   return out;
 }
 
-async function getAgingRows(type, { companyId, asOfDate, currencyCode, partyId, status } = {}) {
+async function getAgingRows(type, { companyId, asOfDate, currencyCode, partyId, status, documentFrom, documentTo } = {}) {
   if (!companyId) throw new Error("getAgingRows requires companyId - no fallback to all companies.");
   const reportDate = asOfDate || new Date().toISOString().slice(0, 10);
   const raw = await fetchRawRows(type, reportDate, companyId);
   const shaped = raw.map((r) => shapeRow(r, reportDate));
-  return applyFilters(shaped, { currencyCode, partyId, status });
+  return filterByDocumentPeriod(applyFilters(shaped, { currencyCode, partyId, status }), { documentFrom, documentTo }, "transactionDate");
 }
 
 const EMPTY_BUCKETS = { current: 0, days1to30: 0, days31to60: 0, days61to90: 0, over90: 0, total: 0 };

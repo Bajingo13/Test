@@ -2,6 +2,9 @@ import { useState } from "react";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
 import { downloadCsvText, typedRowsToCsv } from "./reportCsv.mjs";
 import ReportExportMenu from "./ReportExportMenu.jsx";
+import ReportPeriodFilter, { ReportPeriodLabel } from "./ReportPeriodFilter.jsx";
+import useReportPeriod from "./useReportPeriod.js";
+import { periodCsvRows, periodFileSlug } from "./reportPeriod.mjs";
 import "./LedgerReport.css";
 
 // Summary of Books by Totals - first of the 9 "Coming Soon" reports
@@ -30,25 +33,20 @@ function formatMoney(amount) {
   });
 }
 
-function formatAsOfDate(dateValue) {
-  if (!dateValue) return "";
-  return new Date(dateValue)
-    .toLocaleDateString("en-US", { month: "long", day: "2-digit", year: "numeric" })
-    .toUpperCase();
-}
-
 export default function SummaryOfBooksByTotals() {
-  const [fromDate, setFromDate] = useState("2026-01-01");
-  const [toDate, setToDate] = useState(new Date().toISOString().slice(0, 10));
+  const period = useReportPeriod({ defaultFrom: "2026-01-01", defaultTo: new Date().toISOString().slice(0, 10) });
+  const { toDate } = period;
   const [summary, setSummary] = useState(null); // null = not yet generated
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
   async function generateReport() {
+    const applied = period.apply();
+    if (!applied) return;
     setLoading(true);
     setError(null);
     try {
-      const params = new URLSearchParams({ from: fromDate, to: toDate });
+      const params = new URLSearchParams(applied.params);
       const res = await fetch(`${API_URL}/api/reports/books/summary-totals?${params.toString()}`, {
         credentials: "include",
         headers: authHeaders(),
@@ -82,7 +80,7 @@ export default function SummaryOfBooksByTotals() {
 
     const csvRows = [
       [T("SUMMARY OF BOOKS BY TOTALS")],
-      [T(`For the period ${fromDate} to ${toDate}`)],
+      ...periodCsvRows(period.applied),
       [],
       [T("Book"), T("Transactions"), T("Total Debit"), T("Total Credit")],
       ...summary.books.map((b) => [T(b.label), N(b.transactionCount), N(b.totalDebit), N(b.totalCredit)]),
@@ -90,7 +88,7 @@ export default function SummaryOfBooksByTotals() {
       [T("GRAND TOTAL"), T(""), N(summary.grandTotalDebit), N(summary.grandTotalCredit)],
     ];
 
-    const safeTo = String(toDate).replace(/[^0-9A-Za-z_-]/g, "_");
+    const safeTo = periodFileSlug(period.applied);
     downloadCsvText(`Summary_of_Books_by_Totals_${safeTo}.csv`, typedRowsToCsv(csvRows));
   }
 
@@ -106,15 +104,7 @@ export default function SummaryOfBooksByTotals() {
         <h2>Report Filters</h2>
 
         <div className="lgr-filter-grid">
-          <div>
-            <label htmlFor="sbt-from">Date From</label>
-            <input id="sbt-from" type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
-          </div>
-
-          <div>
-            <label htmlFor="sbt-to">Date To</label>
-            <input id="sbt-to" type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
-          </div>
+          <ReportPeriodFilter period={period} idPrefix="sbt" />
         </div>
 
         <div className="lgr-actions">
@@ -142,9 +132,7 @@ export default function SummaryOfBooksByTotals() {
         <div className="lgr-report-card">
           <div className="lgr-report-title">
             <h2>SUMMARY OF BOOKS BY TOTALS</h2>
-            <h3>
-              FOR THE PERIOD {formatAsOfDate(fromDate)} TO {formatAsOfDate(toDate)}
-            </h3>
+            <ReportPeriodLabel period={period.applied} />
           </div>
 
           {summary.books.length === 0 ? (
@@ -186,7 +174,7 @@ export default function SummaryOfBooksByTotals() {
       )}
 
       {!generated && !error ? (
-        <div className="lgr-empty">Choose a date range and click Generate Report.</div>
+        <div className="lgr-empty">Choose a report period and click Generate Report.</div>
       ) : null}
     </div>
   );

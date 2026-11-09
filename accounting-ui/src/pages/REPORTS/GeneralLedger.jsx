@@ -1,4 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
+import ReportPeriodFilter, { ReportPeriodLabel } from "./ReportPeriodFilter.jsx";
+import { downloadCsvText, reportRowsToCsv } from "./reportCsv.mjs";
+import useReportPeriod from "./useReportPeriod.js";
+import { periodCsvRows, reportCsvFilename, reportFileStem, reportPeriodText } from "./reportPeriod.mjs";
 import "./LedgerReport.css";
 import "./BookReport.css";
 
@@ -84,13 +88,6 @@ function formatMoney(amount) {
   });
 }
 
-function formatAsOfDate(dateValue) {
-  if (!dateValue) return "";
-  return new Date(dateValue)
-    .toLocaleDateString("en-US", { month: "long", day: "2-digit", year: "numeric" })
-    .toUpperCase();
-}
-
 // Backend returns flat rows (one per transaction line, running_balance
 // already computed per account_code) - group them into per-account sections
 // here, same "flat rows in, sections rendered out" split trial-balance uses.
@@ -112,8 +109,8 @@ function groupByAccount(rows) {
 }
 
 export default function GeneralLedger() {
-  const [fromDate, setFromDate] = useState("2026-01-01");
-  const [toDate, setToDate] = useState(new Date().toISOString().slice(0, 10));
+  const period = useReportPeriod({ defaultFrom: "2026-01-01", defaultTo: new Date().toISOString().slice(0, 10) });
+  const { toDate } = period;
   const [accountCode, setAccountCode] = useState("");
   const [accounts, setAccounts] = useState([]);
   const [sections, setSections] = useState([]);
@@ -139,9 +136,11 @@ export default function GeneralLedger() {
   }
 
   async function generateReport() {
+    const applied = period.apply();
+    if (!applied) return;
     setLoading(true);
     try {
-      const params = new URLSearchParams({ from: fromDate, to: toDate });
+      const params = new URLSearchParams(applied.params);
       if (accountCode) params.set("accountCode", accountCode);
 
       const res = await fetch(`${API_URL}/api/reports/general-ledger?${params.toString()}`, {
@@ -178,7 +177,7 @@ export default function GeneralLedger() {
   function downloadCSV() {
     if (!sections.length) return alert("Please generate the General Ledger first.");
 
-    const csvRows = [["GENERAL LEDGER"], [`FOR THE PERIOD ${formatAsOfDate(fromDate)} TO ${formatAsOfDate(toDate)}`], []];
+    const csvRows = [["GENERAL LEDGER"], ...periodCsvRows(period.applied), []];
 
     for (const section of sections) {
       csvRows.push([`${section.accountCode} - ${section.accountTitle}`]);
@@ -190,17 +189,7 @@ export default function GeneralLedger() {
       csvRows.push([]);
     }
 
-    const csvContent = csvRows
-      .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","))
-      .join("\n");
-
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `General_Ledger_${toDate}.csv`;
-    link.click();
-    URL.revokeObjectURL(url);
+    downloadCsvText(reportCsvFilename("General_Ledger", period.applied), reportRowsToCsv(csvRows));
   }
 
   function downloadExcel() {
@@ -229,7 +218,7 @@ export default function GeneralLedger() {
     const htmlTable = `
       <table border="1">
         <tr><th colspan="${span}">GENERAL LEDGER</th></tr>
-        <tr><th colspan="${span}">FOR THE PERIOD ${formatAsOfDate(fromDate)} TO ${formatAsOfDate(toDate)}</th></tr>
+        <tr><th colspan="${span}">${reportPeriodText(period.applied)}</th></tr>
         <tr></tr>
         ${htmlSections}
       </table>
@@ -239,7 +228,7 @@ export default function GeneralLedger() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `General_Ledger_${toDate}.xls`;
+    link.download = `${reportFileStem("General_Ledger", period.applied)}.xls`;
     link.click();
     URL.revokeObjectURL(url);
   }
@@ -254,15 +243,7 @@ export default function GeneralLedger() {
         <h2>Report Filters</h2>
 
         <div className="lgr-filter-grid">
-          <div>
-            <label>Date From</label>
-            <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
-          </div>
-
-          <div>
-            <label>Date To</label>
-            <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
-          </div>
+          <ReportPeriodFilter period={period} idPrefix="gl" />
 
           <div>
             <label>Account (optional)</label>
@@ -310,9 +291,7 @@ export default function GeneralLedger() {
         <div className="lgr-report-card">
           <div className="lgr-report-title">
             <h2>GENERAL LEDGER</h2>
-            <h3>
-              FOR THE PERIOD {formatAsOfDate(fromDate)} TO {formatAsOfDate(toDate)}
-            </h3>
+            <ReportPeriodLabel period={period.applied} />
           </div>
 
           {sections.length === 0 ? (

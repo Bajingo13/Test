@@ -470,7 +470,8 @@ describe("33. CSV export stays formula-injection safe", () => {
   test("FixedAssetLapsing.jsx exports via downloadCsvText + typedRowsToCsv (same shared utility as its siblings)", () => {
     const src = read(FRONTEND, "FixedAssetLapsing.jsx");
     expect(src).toMatch(/import { downloadCsvText, typedRowsToCsv } from "\.\/reportCsv\.mjs"/);
-    expect(src).toMatch(/downloadCsvText\(`Fixed_Asset_Lapsing_\$\{safeFrom\}_to_\$\{safeTo\}\.csv`, typedRowsToCsv\(csvRows\)\)/);
+    expect(src).toMatch(/downloadCsvText\(`Fixed_Asset_Lapsing_\$\{safePeriod\}\.csv`, typedRowsToCsv\(csvRows\)\)/);
+    expect(src).toMatch(/const safePeriod = periodFileSlug\(period\.applied\);/);
   });
 
   test("amount cells in the export are typed numeric (t: \"num\"), not run through the text guard", () => {

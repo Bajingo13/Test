@@ -1,4 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import ReportPeriodFilter, { ReportPeriodLabel } from "./ReportPeriodFilter.jsx";
+import useReportPeriod from "./useReportPeriod.js";
+import { periodCsvRows, periodModeQuery, reportCsvFilename } from "./reportPeriod.mjs";
 import "./AccountAnalysis.css";
 import { downloadCsv } from "./reportCsv";
 import { createRequestGuard, isCompanyLocked, pickInitialCompany } from "../../utils/trialBalanceCompany.mjs";
@@ -12,8 +15,8 @@ function authHeaders() {
 }
 
 export default function InputVAT() {
-  const [fromDate, setFromDate] = useState("2026-01-01");
-  const [toDate, setToDate] = useState(new Date().toISOString().slice(0, 10));
+  const period = useReportPeriod({ defaultFrom: "2026-01-01", defaultTo: new Date().toISOString().slice(0, 10) });
+  const { toDate } = period;
   const [accounts, setAccounts] = useState([]);
   const [accountCode, setAccountCode] = useState("");
   const [rows, setRows] = useState([]);
@@ -106,7 +109,8 @@ export default function InputVAT() {
   // the CSV mirrors exactly the rows already on screen for the current
   // account + date range; it never re-queries.
   function exportCSV() {
-    if (!rows.length) {
+    // An empty period still exports: its header says which period had no entries.
+    if (!generated) {
       alert("Please generate the report first.");
       return;
     }
@@ -114,7 +118,7 @@ export default function InputVAT() {
       ["INPUT VAT REPORT"],
       [`Company: ${selectedCompany?.name || ""}`],
       [`${accountCode} - ${selectedAccount?.title || ""}`],
-      [`Period: ${fromDate} to ${toDate}`],
+      ...periodCsvRows(period.applied),
       [],
     ];
     const header = ["DATE", "SOURCE", "DOC REF", "PARTICULARS", "DEBIT", "CREDIT"];
@@ -128,15 +132,18 @@ export default function InputVAT() {
     ]);
     const totalRow = ["", "", "", "TOTAL", totals.debit.toFixed(2), totals.credit.toFixed(2)];
     const netRow = ["", "", "", "", "TOTAL INPUT VAT", totals.net.toFixed(2)];
-    downloadCsv(`Input_VAT_${accountCode}_${toDate}.csv`, [...meta, header, ...body, totalRow, netRow]);
+    downloadCsv(reportCsvFilename("Input_VAT", period.applied, accountCode), [...meta, header, ...body, totalRow, netRow]);
   }
 
   async function generateReport() {
+    const applied = period.apply();
+    if (!applied) return;
     if (!accountCode) {
       alert("Please select the Input VAT account first.");
       return;
     }
 
+    const { fromDate, toDate } = applied;
     const query = accountAnalysisQuery({ from: fromDate, to: toDate, accountCode, companyId });
     if (!query) return; // no company selected - nothing is requested
 
@@ -145,7 +152,7 @@ export default function InputVAT() {
 
     try {
       const res = await fetch(
-        `${API_URL}/api/reports/account-analysis?${query}`,
+        `${API_URL}/api/reports/account-analysis?${query}&${periodModeQuery(applied)}`,
         { credentials: "include", headers: authHeaders() }
       );
       if (!requestGuard.current.isCurrent(ticket)) return;
@@ -186,15 +193,7 @@ export default function InputVAT() {
         <h2>Report Filters</h2>
 
         <div className="aa-filter-grid">
-          <div>
-            <label>Date From</label>
-            <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
-          </div>
-
-          <div>
-            <label>Date To</label>
-            <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
-          </div>
+          <ReportPeriodFilter period={period} idPrefix="iv" />
 
           <div>
             <label>Input VAT Account</label>
@@ -280,7 +279,7 @@ export default function InputVAT() {
             <h3>
               {accountCode} - {selectedAccount?.title || ""}
             </h3>
-            <p>Period: {fromDate} to {toDate}</p>
+            <ReportPeriodLabel period={period.applied} />
           </div>
 
           <table className="aa-table">

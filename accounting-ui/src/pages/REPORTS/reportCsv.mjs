@@ -56,7 +56,31 @@ export function withUtf8Bom(text) {
 }
 
 export function downloadCsv(filename, rows) {
-  downloadCsvText(filename, rowsToCsv(rows));
+  downloadCsvText(filename, reportRowsToCsv(rows));
+}
+
+// A report row may mix plain values and typed cells. A plain value that is a
+// plain number (a JS number, or a string such as "-1120.00") is a numeric cell,
+// so a negative amount is never prefixed by the text guard; anything else is a
+// guarded text cell. Typed {t, v} cells pass through unchanged.
+const PLAIN_NUMBER = /^-?\d+(\.\d+)?$/;
+
+function toReportCell(value) {
+  if (value && typeof value === "object" && "t" in value) return value;
+  if (typeof value === "number") return Number.isFinite(value) ? { t: "num", v: String(value) } : { t: "text", v: "" };
+  const text = value === null || value === undefined ? "" : String(value);
+  return PLAIN_NUMBER.test(text) ? { t: "num", v: text } : { t: "text", v: text };
+}
+
+// A money cell: numeric with two decimals, blank when there is no value.
+export function csvAmount(value) {
+  if (value === "" || value === null || value === undefined) return { t: "text", v: "" };
+  const n = Number(value);
+  return Number.isFinite(n) ? { t: "num", v: n.toFixed(2) } : { t: "text", v: "" };
+}
+
+export function reportRowsToCsv(rows) {
+  return typedRowsToCsv((rows || []).map((row) => (row || []).map(toReportCell)));
 }
 
 // Formula-injection-safe row builder for reports whose cells mix free text

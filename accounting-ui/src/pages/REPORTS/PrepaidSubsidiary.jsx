@@ -1,4 +1,8 @@
 import { useEffect, useState } from "react";
+import ReportPeriodFilter, { ReportPeriodLabel } from "./ReportPeriodFilter.jsx";
+import { csvAmount, downloadCsvText, reportRowsToCsv } from "./reportCsv.mjs";
+import useReportPeriod from "./useReportPeriod.js";
+import { AS_OF, periodCsvRows, reportCsvFilename } from "./reportPeriod.mjs";
 import "./AccountAnalysis.css";
 import "./PrepaidReports.css";
 
@@ -12,7 +16,7 @@ function authHeaders() {
 export default function PrepaidSubsidiary() {
   const [prepaidAccounts, setPrepaidAccounts] = useState([]);
   const [prepaidId, setPrepaidId] = useState("");
-  const [asOfDate, setAsOfDate] = useState(new Date().toISOString().slice(0, 10));
+  const period = useReportPeriod({ defaultMode: AS_OF });
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(false);
   const [generated, setGenerated] = useState(false);
@@ -40,7 +44,32 @@ export default function PrepaidSubsidiary() {
       maximumFractionDigits: 2,
     });
 
+  function exportCSV() {
+    if (!report) return alert("Please generate the report first.");
+    const csvRows = [
+      ["PREPAID SUBSIDIARY"],
+      ...periodCsvRows(period.applied),
+      ["Prepaid Code", report.prepaidCode],
+      ["Description", report.description],
+      ["Amount", csvAmount(report.amount)],
+      ["Term (Months)", report.termMonths],
+      ["Start Date", String(report.startDate || "").slice(0, 10)],
+      [],
+      ["PERIOD", "AMORTIZATION", "CUMULATIVE", "REMAINING BALANCE", "STATUS"],
+      ...report.schedule.map((row) => [
+        row.period,
+        csvAmount(row.amortization),
+        csvAmount(row.cumulativeAmortized),
+        csvAmount(row.remainingBalance),
+        row.lapsed ? "Lapsed" : "Active",
+      ]),
+    ];
+    downloadCsvText(reportCsvFilename("Prepaid_Subsidiary", period.applied, report.prepaidCode), reportRowsToCsv(csvRows));
+  }
+
   async function generateReport() {
+    const applied = period.apply();
+    if (!applied) return;
     if (!prepaidId) {
       alert("Please select a prepaid account first.");
       return;
@@ -50,7 +79,7 @@ export default function PrepaidSubsidiary() {
 
     try {
       const res = await fetch(
-        `${API_URL}/api/reports/prepaid-subsidiary?prepaidId=${prepaidId}&asOf=${asOfDate}`,
+        `${API_URL}/api/reports/prepaid-subsidiary?prepaidId=${prepaidId}&${new URLSearchParams(applied.params)}`,
         { credentials: "include", headers: authHeaders() }
       );
 
@@ -79,10 +108,7 @@ export default function PrepaidSubsidiary() {
         <h2>Report Filters</h2>
 
         <div className="aa-filter-grid">
-          <div>
-            <label>As Of Date</label>
-            <input type="date" value={asOfDate} onChange={(e) => setAsOfDate(e.target.value)} />
-          </div>
+          <ReportPeriodFilter period={period} idPrefix="pps" />
 
           <div>
             <label>Prepaid Account</label>
@@ -115,6 +141,10 @@ export default function PrepaidSubsidiary() {
           <button className="dark" onClick={() => window.print()}>
             Export PDF
           </button>
+
+          <button className="dark" onClick={exportCSV} disabled={!report}>
+            Export CSV
+          </button>
         </div>
       </div>
 
@@ -123,6 +153,7 @@ export default function PrepaidSubsidiary() {
           <div className="aa-report-title">
             <h2>PREPAID SUBSIDIARY</h2>
             <h3>{report.prepaidCode} - {report.description}</h3>
+            <ReportPeriodLabel period={period.applied} />
             <p>
               Amount: {formatMoney(report.amount)} over {report.termMonths} month(s), starting {report.startDate}
             </p>

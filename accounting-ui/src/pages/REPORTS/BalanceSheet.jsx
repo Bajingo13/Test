@@ -13,6 +13,9 @@ import StatementView from "./StatementView.jsx";
 import StatementPrintView from "./StatementPrintView.jsx";
 import ReportExportMenu from "./ReportExportMenu.jsx";
 import { accountAnalysisLink } from "../../utils/accountAnalysisCompany.mjs";
+import ReportPeriodFilter from "./ReportPeriodFilter.jsx";
+import useReportPeriod from "./useReportPeriod.js";
+import { AS_OF, reportPeriodLineList } from "./reportPeriod.mjs";
 import "./BalanceSheet.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
@@ -26,7 +29,7 @@ export default function BalanceSheet() {
   const navigate = useNavigate();
   const today = new Date().toISOString().slice(0, 10);
 
-  const [toDate, setToDate] = useState(today);
+  const period = useReportPeriod({ defaultMode: AS_OF, defaultTo: today });
   const [compareTo, setCompareTo] = useState("");
   const [mode, setMode] = useState("condensed");
 
@@ -35,15 +38,17 @@ export default function BalanceSheet() {
   const [loading, setLoading] = useState(false);
 
   const req = useMemo(
-    () => balanceSheetScreenParams({ to: toDate, compareTo, mode }),
-    [toDate, compareTo, mode]
+    () => balanceSheetScreenParams({ to: period.toDate, compareTo: period.mode === AS_OF ? compareTo : "", mode }),
+    [period.toDate, period.mode, compareTo, mode]
   );
 
   async function generateReport() {
+    const applied = period.apply();
+    if (!applied) return;
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${API_URL}/api/reports/balance-sheet?${toQueryString(req.params)}`, {
+      const res = await fetch(`${API_URL}/api/reports/balance-sheet?${toQueryString({ ...req.params, ...applied.params })}`, {
         credentials: "include",
         headers: authHeaders(),
       });
@@ -53,7 +58,7 @@ export default function BalanceSheet() {
         setError(body.message || "Unable to generate the Balance Sheet for the selected filters.");
         return;
       }
-      setModel(body);
+      setModel({ ...body, reportPeriod: applied, reportPeriodLines: reportPeriodLineList(applied) });
     } catch (err) {
       console.error("BALANCE SHEET ERROR:", err);
       setModel(null);
@@ -89,7 +94,7 @@ export default function BalanceSheet() {
   // (model.meta.companyId, resolved by the server), so Account Analysis
   // shows the same company's ledger. No company -> Account Analysis asks.
   function openAccount(accountCode) {
-    navigate(accountAnalysisLink({ accountCode, from: "2026-01-01", to: toDate, companyId: model?.meta?.companyId }));
+    navigate(accountAnalysisLink({ accountCode, from: "2026-01-01", to: period.toDate, companyId: model?.meta?.companyId }));
   }
 
   const warnings = statementWarnings(model);
@@ -102,15 +107,14 @@ export default function BalanceSheet() {
         <h2>Report Filters</h2>
 
         <div className="bs-grid">
-          <div>
-            <label htmlFor="bs-asof">As Of</label>
-            <input id="bs-asof" type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
-          </div>
+          <ReportPeriodFilter period={period} idPrefix="bs" />
 
-          <div>
-            <label htmlFor="bs-compare">Compare To (optional)</label>
-            <input id="bs-compare" type="date" value={compareTo} onChange={(e) => setCompareTo(e.target.value)} />
-          </div>
+          {period.mode === AS_OF ? (
+            <div>
+              <label htmlFor="bs-compare">Compare To (optional)</label>
+              <input id="bs-compare" type="date" value={compareTo} onChange={(e) => setCompareTo(e.target.value)} />
+            </div>
+          ) : null}
 
           <div>
             <label htmlFor="bs-mode">Report Mode</label>
@@ -173,7 +177,7 @@ export default function BalanceSheet() {
           <StatementPrintView model={model} />
         </>
       ) : !loading && !error ? (
-        <div className="stmt-empty">Choose an as-of date and click Generate Report.</div>
+        <div className="stmt-empty">Choose a report period and click Generate Report.</div>
       ) : null}
     </div>
   );

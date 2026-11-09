@@ -2,6 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
 import { downloadCsvText, typedRowsToCsv } from "./reportCsv.mjs";
 import ReportExportMenu from "./ReportExportMenu.jsx";
+import ReportPeriodFilter, { ReportPeriodLabel } from "./ReportPeriodFilter.jsx";
+import useReportPeriod from "./useReportPeriod.js";
+import { periodCsvRows, periodFileSlug } from "./reportPeriod.mjs";
 import "./LedgerReport.css";
 
 // AR Billings & Collections - fifth of the 9 "Coming Soon" reports
@@ -29,8 +32,8 @@ function formatMoney(amount) {
 }
 
 export default function ArBillingsAndCollections() {
-  const [fromDate, setFromDate] = useState("2026-01-01");
-  const [toDate, setToDate] = useState(new Date().toISOString().slice(0, 10));
+  const period = useReportPeriod({ defaultFrom: "2026-01-01", defaultTo: new Date().toISOString().slice(0, 10) });
+  const { toDate } = period;
   const [parties, setParties] = useState([]);
   const [partyId, setPartyId] = useState("");
   const [report, setReport] = useState(null); // null = not yet generated
@@ -57,10 +60,12 @@ export default function ArBillingsAndCollections() {
   );
 
   async function generateReport() {
+    const applied = period.apply();
+    if (!applied) return;
     setLoading(true);
     setError(null);
     try {
-      const params = new URLSearchParams({ from: fromDate, to: toDate });
+      const params = new URLSearchParams(applied.params);
       if (partyId) params.set("partyId", partyId);
       const res = await fetch(`${API_URL}/api/reports/ar-billings-and-collections?${params.toString()}`, {
         credentials: "include",
@@ -95,7 +100,7 @@ export default function ArBillingsAndCollections() {
 
     const csvRows = [
       [T("AR BILLINGS & COLLECTIONS")],
-      [T(`For the period ${fromDate} to ${toDate}`)],
+      ...periodCsvRows(period.applied),
       [],
       [T("Customer"), T("Beginning AR"), T("Billings"), T("Debit Memos"), T("Collections"), T("Credit Memos"), T("Ending AR")],
       ...report.customers.map((c) => [
@@ -119,7 +124,7 @@ export default function ArBillingsAndCollections() {
       ],
     ];
 
-    const safeTo = String(toDate).replace(/[^0-9A-Za-z_-]/g, "_");
+    const safeTo = periodFileSlug(period.applied);
     downloadCsvText(`AR_Billings_and_Collections_${safeTo}.csv`, typedRowsToCsv(csvRows));
   }
 
@@ -147,15 +152,7 @@ export default function ArBillingsAndCollections() {
             </select>
           </div>
 
-          <div>
-            <label htmlFor="abc-from">Date From</label>
-            <input id="abc-from" type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
-          </div>
-
-          <div>
-            <label htmlFor="abc-to">Date To</label>
-            <input id="abc-to" type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
-          </div>
+          <ReportPeriodFilter period={period} idPrefix="abc" />
         </div>
 
         <div className="lgr-actions">
@@ -183,7 +180,7 @@ export default function ArBillingsAndCollections() {
         <div className="lgr-report-card">
           <div className="lgr-report-title">
             <h2>AR BILLINGS &amp; COLLECTIONS</h2>
-            <h3>FOR THE PERIOD {report.from} TO {report.to}</h3>
+            <ReportPeriodLabel period={period.applied} />
           </div>
 
           {report.customers.length === 0 ? (

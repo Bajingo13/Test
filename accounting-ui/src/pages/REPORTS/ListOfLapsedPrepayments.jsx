@@ -6,6 +6,7 @@ export default function ListOfLapsedPrepayments() {
       title="List of Lapsed Prepayments"
       reportTitle="LIST OF LAPSED PREPAYMENTS"
       endpoint="/api/reports/lapsed-prepayments"
+      filenamePrefix="List_of_Lapsed_Prepayments"
     />
   );
 }

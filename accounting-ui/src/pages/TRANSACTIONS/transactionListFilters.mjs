@@ -26,10 +26,25 @@
 
 import { matchesDateRange } from "../../utils/dateRangeFilter.mjs";
 
+// An APV's own number is voucher_no. reference_no can hold something else: an
+// APV converted from an RFP stores the supplier's invoice number there. The
+// APV screens keep the two apart, so the list shows the APV's real number and
+// saving never replaces it with the supporting reference.
+export function apvNumberFields(item) {
+  const number = item.voucherNo || item.referenceNo || "";
+  const supporting = item.referenceNo && item.referenceNo !== number ? item.referenceNo : "";
+  return { referenceNo: number, supportingReference: supporting };
+}
+
+// A Draft APV has nothing to pay yet, so the list says Draft, not Unpaid.
+export function apvListStatus(item) {
+  return item.status === "Draft" ? "Draft" : item.paymentStatus || item.status;
+}
+
 export function matchesSearch(transaction, searchQuery) {
   if (!searchQuery || !searchQuery.trim()) return true;
   const q = searchQuery.trim().toLowerCase();
-  const haystack = [transaction.referenceNo, transaction.party, transaction.form?.description]
+  const haystack = [transaction.referenceNo, transaction.form?.supportingReference, transaction.party, transaction.form?.description]
     .filter(Boolean)
     .join(" ")
     .toLowerCase();

@@ -1,4 +1,8 @@
 import { useState } from "react";
+import ReportPeriodFilter, { ReportPeriodLabel } from "./ReportPeriodFilter.jsx";
+import { csvAmount, downloadCsvText, reportRowsToCsv } from "./reportCsv.mjs";
+import useReportPeriod from "./useReportPeriod.js";
+import { AS_OF, periodCsvRows, reportCsvFilename } from "./reportPeriod.mjs";
 import "./AccountAnalysis.css";
 import "./PrepaidReports.css";
 
@@ -9,8 +13,8 @@ function authHeaders() {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
-export default function PrepaidListReportBase({ title, reportTitle, endpoint, showMonthsElapsed }) {
-  const [asOfDate, setAsOfDate] = useState(new Date().toISOString().slice(0, 10));
+export default function PrepaidListReportBase({ title, reportTitle, endpoint, showMonthsElapsed, filenamePrefix }) {
+  const period = useReportPeriod({ defaultMode: AS_OF });
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [generated, setGenerated] = useState(false);
@@ -30,11 +34,37 @@ export default function PrepaidListReportBase({ title, reportTitle, endpoint, sh
     { amount: 0, amortizedToDate: 0, remainingBalance: 0 }
   );
 
+  function exportCSV() {
+    if (!generated) return alert("Please generate the report first.");
+    const header = ["CODE", "DESCRIPTION", "PARTY", "START DATE", "AMOUNT", "TERM (MOS)"];
+    if (showMonthsElapsed) header.push("MOS ELAPSED");
+    header.push("AMORTIZED", "BALANCE");
+    const totalRow = ["", "TOTAL", "", "", csvAmount(totals.amount), ""];
+    if (showMonthsElapsed) totalRow.push("");
+    totalRow.push(csvAmount(totals.amortizedToDate), csvAmount(totals.remainingBalance));
+    const csvRows = [
+      [reportTitle],
+      ...periodCsvRows(period.applied),
+      [],
+      header,
+      ...rows.map((row) => {
+        const out = [row.prepaidCode, row.description, row.partyName, row.startDate, csvAmount(row.amount), row.termMonths];
+        if (showMonthsElapsed) out.push(row.monthsElapsed);
+        out.push(csvAmount(row.amortizedToDate), csvAmount(row.remainingBalance));
+        return out;
+      }),
+      totalRow,
+    ];
+    downloadCsvText(reportCsvFilename(filenamePrefix, period.applied), reportRowsToCsv(csvRows));
+  }
+
   async function generateReport() {
+    const applied = period.apply();
+    if (!applied) return;
     setLoading(true);
 
     try {
-      const res = await fetch(`${API_URL}${endpoint}?asOf=${asOfDate}`, {
+      const res = await fetch(`${API_URL}${endpoint}?${new URLSearchParams(applied.params)}`, {
         credentials: "include",
         headers: authHeaders(),
       });
@@ -63,10 +93,7 @@ export default function PrepaidListReportBase({ title, reportTitle, endpoint, sh
         <h2>Report Filters</h2>
 
         <div className="aa-filter-grid">
-          <div>
-            <label>As Of Date</label>
-            <input type="date" value={asOfDate} onChange={(e) => setAsOfDate(e.target.value)} />
-          </div>
+          <ReportPeriodFilter period={period} idPrefix="ppl" />
         </div>
 
         <div className="aa-actions">
@@ -87,6 +114,10 @@ export default function PrepaidListReportBase({ title, reportTitle, endpoint, sh
           <button className="dark" onClick={() => window.print()}>
             Export PDF
           </button>
+
+          <button className="dark" onClick={exportCSV} disabled={!generated}>
+            Export CSV
+          </button>
         </div>
       </div>
 
@@ -94,7 +125,7 @@ export default function PrepaidListReportBase({ title, reportTitle, endpoint, sh
         <div className="aa-report-card">
           <div className="aa-report-title">
             <h2>{reportTitle}</h2>
-            <p>As Of {asOfDate}</p>
+            <ReportPeriodLabel period={period.applied} />
           </div>
 
           <table className="aa-table prepaid-table">

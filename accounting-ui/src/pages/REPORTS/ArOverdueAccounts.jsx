@@ -2,6 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
 import { downloadCsvText, typedRowsToCsv } from "./reportCsv.mjs";
 import ReportExportMenu from "./ReportExportMenu.jsx";
+import ReportPeriodFilter, { ReportPeriodLabel } from "./ReportPeriodFilter.jsx";
+import useReportPeriod from "./useReportPeriod.js";
+import { AS_OF, periodCsvRows, periodFileSlug } from "./reportPeriod.mjs";
 import "./LedgerReport.css";
 
 // AR List of Overdue Accounts - sixth of the 9 "Coming Soon" reports
@@ -33,15 +36,9 @@ function formatMoney(amount) {
   });
 }
 
-function formatAsOfDate(dateValue) {
-  if (!dateValue) return "";
-  return new Date(dateValue)
-    .toLocaleDateString("en-US", { month: "long", day: "2-digit", year: "numeric" })
-    .toUpperCase();
-}
-
 export default function ArOverdueAccounts() {
-  const [asOfDate, setAsOfDate] = useState(new Date().toISOString().slice(0, 10));
+  const period = useReportPeriod({ defaultMode: AS_OF });
+  const { asOfDate } = period;
   const [parties, setParties] = useState([]);
   const [partyId, setPartyId] = useState("");
   const [report, setReport] = useState(null); // null = not yet generated
@@ -68,10 +65,12 @@ export default function ArOverdueAccounts() {
   );
 
   async function generateReport() {
+    const applied = period.apply();
+    if (!applied) return;
     setLoading(true);
     setError(null);
     try {
-      const params = new URLSearchParams({ asOf: asOfDate });
+      const params = new URLSearchParams(applied.params);
       if (partyId) params.set("partyId", partyId);
       const res = await fetch(`${API_URL}/api/reports/ar-overdue-accounts?${params.toString()}`, {
         credentials: "include",
@@ -106,7 +105,7 @@ export default function ArOverdueAccounts() {
 
     const csvRows = [
       [T("AR LIST OF OVERDUE ACCOUNTS")],
-      [T(`As of ${asOfDate}`)],
+      ...periodCsvRows(period.applied),
       [],
       [T("SUMMARY BY CUSTOMER")],
       [T("Customer"), T("Documents"), ...BUCKET_KEYS.map((k) => T(BUCKET_LABELS[k])), T("Total Overdue")],
@@ -133,7 +132,7 @@ export default function ArOverdueAccounts() {
       [T("GRAND TOTAL OVERDUE"), N(report.bucketTotals.base.total)],
     ];
 
-    const safeDate = String(asOfDate).replace(/[^0-9A-Za-z_-]/g, "_");
+    const safeDate = periodFileSlug(period.applied);
     downloadCsvText(`AR_Overdue_Accounts_${safeDate}.csv`, typedRowsToCsv(csvRows));
   }
 
@@ -161,10 +160,7 @@ export default function ArOverdueAccounts() {
             </select>
           </div>
 
-          <div>
-            <label htmlFor="aoa-asof">As Of Date</label>
-            <input id="aoa-asof" type="date" value={asOfDate} onChange={(e) => setAsOfDate(e.target.value)} />
-          </div>
+          <ReportPeriodFilter period={period} idPrefix="aoa" />
         </div>
 
         <div className="lgr-actions">
@@ -192,7 +188,7 @@ export default function ArOverdueAccounts() {
         <div className="lgr-report-card">
           <div className="lgr-report-title">
             <h2>AR LIST OF OVERDUE ACCOUNTS</h2>
-            <h3>AS OF {formatAsOfDate(report.asOfDate)}</h3>
+            <ReportPeriodLabel period={period.applied} />
           </div>
 
           {report.rows.length === 0 ? (
@@ -281,7 +277,7 @@ export default function ArOverdueAccounts() {
       )}
 
       {!generated && !error ? (
-        <div className="lgr-empty">Choose an As Of Date and click Generate Report.</div>
+        <div className="lgr-empty">Choose a report period and click Generate Report.</div>
       ) : null}
     </div>
   );

@@ -1,4 +1,8 @@
 import { useState } from "react";
+import ReportPeriodFilter, { ReportPeriodLabel } from "./ReportPeriodFilter.jsx";
+import { downloadCsvText, reportRowsToCsv } from "./reportCsv.mjs";
+import useReportPeriod from "./useReportPeriod.js";
+import { periodCsvRows, periodFileSlug, reportPeriodText } from "./reportPeriod.mjs";
 import "./LedgerReport.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
@@ -15,13 +19,6 @@ function formatMoney(amount) {
   });
 }
 
-function formatAsOfDate(dateValue) {
-  if (!dateValue) return "";
-  return new Date(dateValue)
-    .toLocaleDateString("en-US", { month: "long", day: "2-digit", year: "numeric" })
-    .toUpperCase();
-}
-
 // Bank & Cash Movement Report (formerly mislabeled "Cash Flow Statement" -
 // see the Reports Module Audit): same LedgerReportService engine as the
 // General Ledger, just scoped server-side to accounts flagged BANK / CASH
@@ -35,17 +32,19 @@ function formatAsOfDate(dateValue) {
 // (GET /api/reports/cash-flow-statement) paths are intentionally kept for
 // backward compatibility; only user-facing labels changed.
 export default function CashFlowStatement() {
-  const [fromDate, setFromDate] = useState("2026-01-01");
-  const [toDate, setToDate] = useState(new Date().toISOString().slice(0, 10));
+  const period = useReportPeriod({ defaultFrom: "2026-01-01", defaultTo: new Date().toISOString().slice(0, 10) });
+  const { toDate } = period;
   const [accounts, setAccounts] = useState([]);
   const [totals, setTotals] = useState({ beginning: 0, ending: 0 });
   const [loading, setLoading] = useState(false);
   const [generated, setGenerated] = useState(false);
 
   async function generateReport() {
+    const applied = period.apply();
+    if (!applied) return;
     setLoading(true);
     try {
-      const params = new URLSearchParams({ from: fromDate, to: toDate });
+      const params = new URLSearchParams(applied.params);
 
       const res = await fetch(`${API_URL}/api/reports/cash-flow-statement?${params.toString()}`, {
         credentials: "include",
@@ -81,10 +80,10 @@ export default function CashFlowStatement() {
 
   function downloadCSV() {
     if (!accounts.length) return alert("Please generate the Bank & Cash Movement Report first.");
-
+    const toDate = periodFileSlug(period.applied);
     const csvRows = [
       ["BANK & CASH MOVEMENT REPORT"],
-      [`FOR THE PERIOD ${formatAsOfDate(fromDate)} TO ${formatAsOfDate(toDate)}`],
+      ...periodCsvRows(period.applied),
       [],
       ["", "TOTAL BEGINNING CASH", totals.beginning.toFixed(2)],
       ["", "TOTAL CASH INFLOWS", totalInflows.toFixed(2)],
@@ -112,21 +111,12 @@ export default function CashFlowStatement() {
       csvRows.push([]);
     }
 
-    const csvContent = csvRows
-      .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","))
-      .join("\n");
-
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `Bank_And_Cash_Movement_${toDate}.csv`;
-    link.click();
-    URL.revokeObjectURL(url);
+    downloadCsvText(`Bank_And_Cash_Movement_${toDate}.csv`, reportRowsToCsv(csvRows));
   }
 
   function downloadExcel() {
     if (!accounts.length) return alert("Please generate the Bank & Cash Movement Report first.");
+    const toDate = periodFileSlug(period.applied);
 
     const htmlAccounts = accounts
       .map(
@@ -163,7 +153,7 @@ export default function CashFlowStatement() {
     const htmlTable = `
       <table border="1">
         <tr><th colspan="7">BANK &amp; CASH MOVEMENT REPORT</th></tr>
-        <tr><th colspan="7">FOR THE PERIOD ${formatAsOfDate(fromDate)} TO ${formatAsOfDate(toDate)}</th></tr>
+        <tr><th colspan="7">${reportPeriodText(period.applied)}</th></tr>
         <tr></tr>
         <tr><td colspan="2">TOTAL BEGINNING CASH</td><td>${totals.beginning.toFixed(2)}</td></tr>
         <tr><td colspan="2">TOTAL CASH INFLOWS</td><td>${totalInflows.toFixed(2)}</td></tr>
@@ -197,15 +187,7 @@ export default function CashFlowStatement() {
         <h2>Report Filters</h2>
 
         <div className="lgr-filter-grid">
-          <div>
-            <label>Date From</label>
-            <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
-          </div>
-
-          <div>
-            <label>Date To</label>
-            <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
-          </div>
+          <ReportPeriodFilter period={period} idPrefix="cf" />
         </div>
 
         <div className="lgr-actions">
@@ -241,9 +223,7 @@ export default function CashFlowStatement() {
         <div className="lgr-report-card">
           <div className="lgr-report-title">
             <h2>BANK &amp; CASH MOVEMENT REPORT</h2>
-            <h3>
-              FOR THE PERIOD {formatAsOfDate(fromDate)} TO {formatAsOfDate(toDate)}
-            </h3>
+            <ReportPeriodLabel period={period.applied} />
           </div>
 
           {accounts.length === 0 ? (

@@ -1,4 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
+import ReportPeriodFilter, { ReportPeriodLabel } from "./ReportPeriodFilter.jsx";
+import useReportPeriod from "./useReportPeriod.js";
+import { periodCsvRows, reportCsvFilename } from "./reportPeriod.mjs";
 import "./AccountAnalysis.css";
 import { downloadCsv } from "./reportCsv";
 
@@ -11,8 +14,8 @@ function authHeaders() {
 
 export default function SubsidiaryLedger() {
   const [ledgerType, setLedgerType] = useState("AR");
-  const [fromDate, setFromDate] = useState("2026-01-01");
-  const [toDate, setToDate] = useState(new Date().toISOString().slice(0, 10));
+  const period = useReportPeriod({ defaultFrom: "2026-01-01", defaultTo: new Date().toISOString().slice(0, 10) });
+  const { toDate } = period;
   const [parties, setParties] = useState([]);
   const [partyId, setPartyId] = useState("");
   const [rows, setRows] = useState([]);
@@ -68,7 +71,7 @@ export default function SubsidiaryLedger() {
     const meta = [
       [`${ledgerType} SUBSIDIARY LEDGER`],
       [`${selectedParty?.code || ""} - ${selectedParty?.name || ""}`],
-      [`Period: ${fromDate} to ${toDate}`],
+      ...periodCsvRows(period.applied),
       [],
     ];
     const header = ["DATE", "SOURCE", "DOC REF", "PARTICULARS", "DEBIT", "CREDIT", "RUNNING BALANCE"];
@@ -88,12 +91,14 @@ export default function SubsidiaryLedger() {
       totals.endingBalance.toFixed(2),
     ];
     downloadCsv(
-      `Subsidiary_Ledger_${ledgerType}_${selectedParty?.code || partyId}_${toDate}.csv`,
+      reportCsvFilename("Subsidiary_Ledger", period.applied, ledgerType, selectedParty?.code || partyId),
       [...meta, header, ...body, totalRow]
     );
   }
 
   async function generateReport() {
+    const applied = period.apply();
+    if (!applied) return;
     if (!partyId) {
       alert(`Please select a ${ledgerType === "AR" ? "customer" : "supplier"} first.`);
       return;
@@ -103,7 +108,7 @@ export default function SubsidiaryLedger() {
 
     try {
       const res = await fetch(
-        `${API_URL}/api/reports/subsidiary-ledger?type=${ledgerType}&partyId=${partyId}&from=${fromDate}&to=${toDate}`,
+        `${API_URL}/api/reports/subsidiary-ledger?type=${ledgerType}&partyId=${partyId}&${new URLSearchParams(applied.params)}`,
         { credentials: "include", headers: authHeaders() }
       );
 
@@ -140,15 +145,7 @@ export default function SubsidiaryLedger() {
             </select>
           </div>
 
-          <div>
-            <label>Date From</label>
-            <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
-          </div>
-
-          <div>
-            <label>Date To</label>
-            <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
-          </div>
+          <ReportPeriodFilter period={period} idPrefix="sl" />
 
           <div>
             <label>{ledgerType === "AR" ? "Customer" : "Supplier"}</label>
@@ -193,7 +190,7 @@ export default function SubsidiaryLedger() {
           <div className="aa-report-title">
             <h2>{ledgerType} SUBSIDIARY LEDGER</h2>
             <h3>{selectedParty?.code} - {selectedParty?.name}</h3>
-            <p>Period: {fromDate} to {toDate}</p>
+            <ReportPeriodLabel period={period.applied} />
           </div>
 
           <table className="aa-table">
