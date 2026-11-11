@@ -20,14 +20,24 @@ const { postedOnlySql } = require("./reportRecognitionService");
 
 const MONEY_EPSILON = 0.01;
 
+// Only applications made by a POSTED payment document reduce an aging
+// balance, the same Posted-only rule the ledger applies to the OR/CV itself:
+// a Draft OR/CV has no ledger effect yet, so its application must not lower
+// the receivable/payable either (Demo UAT 2026-11-11). OR and CV are the only
+// applied_type values written (POST/PUT /api/or, /api/cv and the CV-only
+// legacy /api/apply-payment); Cancel/Void of a CV deletes its applications.
 function buildPaymentAggregateSql() {
   return `(
-    SELECT source_type, source_id,
-      SUM(amount) AS paid_base,
-      SUM(foreign_amount_applied) AS paid_foreign
-    FROM transaction_applications
-    WHERE application_date <= ?
-    GROUP BY source_type, source_id
+    SELECT ta.source_type, ta.source_id,
+      SUM(ta.amount) AS paid_base,
+      SUM(ta.foreign_amount_applied) AS paid_foreign
+    FROM transaction_applications ta
+    LEFT JOIN or_headers pay_or ON ta.applied_type = 'OR' AND pay_or.id = ta.applied_id
+    LEFT JOIN cv_headers pay_cv ON ta.applied_type = 'CV' AND pay_cv.id = ta.applied_id
+    WHERE ta.application_date <= ?
+      AND ((ta.applied_type = 'OR' AND ${postedOnlySql("pay_or")})
+        OR (ta.applied_type = 'CV' AND ${postedOnlySql("pay_cv")}))
+    GROUP BY ta.source_type, ta.source_id
   )`;
 }
 
@@ -121,6 +131,8 @@ async function fetchRawRows(type, asOfDate, companyId) {
       -- links a Posted reversing JV - recognise that here too so a reversed
       -- APV stops ageing as outstanding. Its payment_status / balance_amount
       -- header columns are never modified (linkage-based recognition only).
+      -- The reversal only takes effect from its own JV date: as of an
+      -- earlier date the APV was still outstanding (Demo UAT 2026-11-11).
       WHERE h.transaction_date <= ? AND h.company_id = ?
         AND ${postedOnlySql("h")}
         AND NOT EXISTS (
@@ -129,6 +141,7 @@ async function fetchRawRows(type, asOfDate, companyId) {
              AND rev.source_module = 'APV_REVERSAL'
              AND rev.source_reference_id = h.id
              AND UPPER(rev.status) = 'POSTED'
+             AND rev.transaction_date <= ?
         )
 
       UNION ALL
@@ -157,7 +170,8 @@ async function fetchRawRows(type, asOfDate, companyId) {
     ) agg
     ORDER BY party_name ASC, due_date ASC
     `,
-    [asOfDate, asOfDate, companyId, asOfDate, asOfDate, companyId]
+    // pmt, APV date, company, reversal-JV date, pmt2, beginning-balance date, company
+    [asOfDate, asOfDate, companyId, asOfDate, asOfDate, asOfDate, companyId]
   );
   return rows;
 }

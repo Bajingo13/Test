@@ -508,9 +508,16 @@ describe("Phase 7K.1 - EWT + AP aging exclusion by reversal linkage", () => {
     expect((aging.body.rows || []).some((r) => r.referenceNo === voucherNo)).toBe(true);
     const before = await apvRow(apvId);
 
-    await reverseApv(apvId);
-    aging = await request(app).get("/api/reports/ap-aging").set(authH()).query({ companyId: CO, asOf: "2026-09-30" });
+    const rev = await reverseApv(apvId);
+    expect(rev.status).toBe(200);
+    // The reversal JV is dated today (rev.body.reversalDate): from that date
+    // on the reversed APV no longer ages as outstanding...
+    aging = await request(app).get("/api/reports/ap-aging").set(authH()).query({ companyId: CO, asOf: rev.body.reversalDate });
     expect((aging.body.rows || []).some((r) => r.referenceNo === voucherNo)).toBe(false);
+    // ...but as of an earlier date (before the reversal existed) it was still
+    // outstanding, so historical aging keeps it (Demo UAT 2026-11-11 fix).
+    aging = await request(app).get("/api/reports/ap-aging").set(authH()).query({ companyId: CO, asOf: "2026-09-30" });
+    expect((aging.body.rows || []).some((r) => r.referenceNo === voucherNo)).toBe(true);
 
     const after = await apvRow(apvId);
     expect(after.payment_status).toBe(before.payment_status);

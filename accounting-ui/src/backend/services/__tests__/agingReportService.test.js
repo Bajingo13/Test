@@ -66,12 +66,26 @@ async function insertSnapshot({ transactionType, transactionId, currencyId, curr
   );
 }
 
+// Aging only counts applications made by a POSTED OR/CV, so each fixture
+// application gets its own real Posted payment header in this company (the
+// appliedId argument is only a label for the payment voucher number).
+const paymentHeaderIds = { OR: [], CV: [] };
+async function insertPostedPayment(appliedType, label, date) {
+  const voucherNo = `TEST3E-${appliedType}-${label}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  const [r] = appliedType === "OR"
+    ? await pool.execute("INSERT INTO or_headers (company_id, voucher_no, customer_name, transaction_date, status) VALUES (?, ?, 'Test Payor', ?, 'Posted')", [companyId, voucherNo, date])
+    : await pool.execute("INSERT INTO cv_headers (company_id, voucher_no, transaction_date, status) VALUES (?, ?, ?, 'Posted')", [companyId, voucherNo, date]);
+  paymentHeaderIds[appliedType].push(r.insertId);
+  return r.insertId;
+}
+
 async function insertApplication({ sourceType, sourceId, appliedType, appliedId, amount, applicationDate, foreignAmountApplied = null, sourceExchangeRate = null, paymentExchangeRate = null }) {
+  const paymentId = await insertPostedPayment(appliedType, appliedId, applicationDate);
   await pool.execute(
     `INSERT INTO transaction_applications
       (source_type, source_id, applied_type, applied_id, amount, application_date, foreign_amount_applied, source_exchange_rate, payment_exchange_rate)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [sourceType, sourceId, appliedType, appliedId, amount, applicationDate, foreignAmountApplied, sourceExchangeRate, paymentExchangeRate]
+    [sourceType, sourceId, appliedType, paymentId, amount, applicationDate, foreignAmountApplied, sourceExchangeRate, paymentExchangeRate]
   );
 }
 
@@ -132,6 +146,8 @@ afterAll(async () => {
   if (bbHeaderIds.length) {
     await pool.query("DELETE FROM arap_beginning_balance_headers WHERE id IN (?)", [bbHeaderIds]);
   }
+  if (paymentHeaderIds.OR.length) await pool.query("DELETE FROM or_headers WHERE id IN (?)", [paymentHeaderIds.OR]);
+  if (paymentHeaderIds.CV.length) await pool.query("DELETE FROM cv_headers WHERE id IN (?)", [paymentHeaderIds.CV]);
   await pool.execute("DELETE FROM currency_rates WHERE company_id = ?", [companyId]);
   await pool.execute("DELETE FROM currencies WHERE company_id = ?", [companyId]);
   await pool.execute("DELETE FROM user_companies WHERE user_id = ?", [adminUser.id]);

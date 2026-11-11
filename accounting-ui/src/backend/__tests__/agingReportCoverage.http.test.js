@@ -77,11 +77,21 @@ async function inv(companyId, voucherNo, customerId, txnDate, dueDate, amount, s
   invIds.push(h.insertId);
   return h.insertId;
 }
+// Aging only counts applications made by a POSTED OR/CV, so each payment is a
+// real Posted OR (for an invoice) or CV (for an APV) in company A.
+const orIds = [];
+const cvIds = [];
 async function applyPayment(sourceType, sourceId, amount, date) {
+  const appliedType = sourceType === "INV" ? "OR" : "CV";
+  const voucherNo = `RB2AG-${appliedType}-${sourceId}-${appIds.length + 1}`;
+  const [p] = appliedType === "OR"
+    ? await pool.execute("INSERT INTO or_headers (company_id, voucher_no, customer_name, transaction_date, status) VALUES (?, ?, 'x', ?, 'Posted')", [companyAId, voucherNo, date])
+    : await pool.execute("INSERT INTO cv_headers (company_id, voucher_no, transaction_date, status) VALUES (?, ?, ?, 'Posted')", [companyAId, voucherNo, date]);
+  (appliedType === "OR" ? orIds : cvIds).push(p.insertId);
   const [r] = await pool.execute(
     `INSERT INTO transaction_applications (source_type, source_id, applied_type, applied_id, amount, application_date)
-     VALUES (?, ?, 'CV', 999999, ?, ?)`,
-    [sourceType, sourceId, amount, date]
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [sourceType, sourceId, appliedType, p.insertId, amount, date]
   );
   appIds.push(r.insertId);
   return r.insertId;
@@ -142,6 +152,8 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await pool.query("DELETE FROM transaction_applications WHERE id IN (?)", [appIds.length ? appIds : [0]]);
+  await pool.query("DELETE FROM or_headers WHERE id IN (?)", [orIds.length ? orIds : [0]]);
+  await pool.query("DELETE FROM cv_headers WHERE id IN (?)", [cvIds.length ? cvIds : [0]]);
   await pool.query("DELETE FROM jv_headers WHERE voucher_no = 'RB2AG-JV-REVERSAL'");
   await pool.query("DELETE FROM apv_headers WHERE id IN (?)", [apvIds.length ? apvIds : [0]]);
   await pool.query("DELETE FROM invoice_headers WHERE id IN (?)", [invIds.length ? invIds : [0]]);

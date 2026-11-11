@@ -21,6 +21,17 @@ let testCustomerId, testSupplierId;
 const createdUserIds = [];
 const createdInvoiceIds = [];
 const createdApvIds = [];
+// Aging (reused by calculate()) only counts applications made by a POSTED
+// OR/CV, so each simulated settlement gets a real Posted OR in this company.
+const createdOrIds = [];
+async function postedOr(date) {
+  const [r] = await pool.execute(
+    "INSERT INTO or_headers (company_id, voucher_no, customer_name, transaction_date, status) VALUES (?, ?, 'Test Payor', ?, 'Posted')",
+    [companyId, `TEST4-OR-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, date]
+  );
+  createdOrIds.push(r.insertId);
+  return r.insertId;
+}
 
 async function makeCompany(name) {
   const [result] = await pool.execute("INSERT INTO companies (name, status) VALUES (?, 'Active')", [name]);
@@ -232,6 +243,7 @@ afterAll(async () => {
     await pool.query("DELETE FROM transaction_currency_snapshots WHERE transaction_type = 'APV' AND transaction_id IN (?)", [createdApvIds]);
     await pool.query("DELETE FROM apv_headers WHERE id IN (?)", [createdApvIds]);
   }
+  if (createdOrIds.length) await pool.query("DELETE FROM or_headers WHERE id IN (?)", [createdOrIds]);
   await pool.execute("DELETE FROM company_fx_accounts WHERE company_id = ?", [companyId]);
   await pool.execute("DELETE FROM chart_of_accounts WHERE code LIKE 'TEST4%'");
   await pool.execute("DELETE FROM general_libraries WHERE id IN (?, ?)", [testCustomerId, testSupplierId]);
@@ -302,8 +314,8 @@ describe("Calculation - AR/AP gain/loss, exclusions, historical As-Of", () => {
     await insertSnapshot({ transactionType: "INV", transactionId: invId, currencyId: usdId, currencyCode: "USD", rate: 57.0, rateDate: "2026-05-01", foreignTotal: 1000, baseTotal: 57000 });
     await pool.execute(
       `INSERT INTO transaction_applications (source_type, source_id, applied_type, applied_id, amount, application_date, foreign_amount_applied, source_exchange_rate, payment_exchange_rate)
-       VALUES ('INV', ?, 'OR', 1, 22800, '2026-05-10', 400, 57.0, 57.0)`,
-      [invId]
+       VALUES ('INV', ?, 'OR', ?, 22800, '2026-05-10', 400, 57.0, 57.0)`,
+      [invId, await postedOr("2026-05-10")]
     );
 
     await CurrencyService.recordRate(adminUser, usdId, { rateMode: "MANUAL", rate: 58.0, effectiveDate: "2026-05-31" });
@@ -325,8 +337,8 @@ describe("Calculation - AR/AP gain/loss, exclusions, historical As-Of", () => {
     // required to actually simulate "fully settled".
     await pool.execute(
       `INSERT INTO transaction_applications (source_type, source_id, applied_type, applied_id, amount, application_date, foreign_amount_applied, source_exchange_rate, payment_exchange_rate)
-       VALUES ('INV', ?, 'OR', 3, 57000, '2026-06-15', 1000, 57.0, 57.0)`,
-      [invId]
+       VALUES ('INV', ?, 'OR', ?, 57000, '2026-06-15', 1000, 57.0, 57.0)`,
+      [invId, await postedOr("2026-06-15")]
     );
 
     const { items } = await calc("2026-06-30");
@@ -355,8 +367,8 @@ describe("Calculation - AR/AP gain/loss, exclusions, historical As-Of", () => {
     // Payment happens AFTER the revaluation date being tested.
     await pool.execute(
       `INSERT INTO transaction_applications (source_type, source_id, applied_type, applied_id, amount, application_date, foreign_amount_applied, source_exchange_rate, payment_exchange_rate)
-       VALUES ('INV', ?, 'OR', 2, 22800, '2026-09-10', 400, 57.0, 57.5)`,
-      [invId]
+       VALUES ('INV', ?, 'OR', ?, 22800, '2026-09-10', 400, 57.0, 57.5)`,
+      [invId, await postedOr("2026-09-10")]
     );
 
     await CurrencyService.recordRate(adminUser, usdId, { rateMode: "MANUAL", rate: 58.0, effectiveDate: "2026-07-31" });
@@ -621,7 +633,7 @@ describe("CRITICAL: settlement after revaluation - no double-counting of realize
       await conn.beginTransaction();
       const result = await PaymentApplicationService.applyInvoicePayment(conn, {
         appItem: { sourceType: "INV", sourceId: invId, amount: 1000, applicationDate: "2027-10-15" },
-        appliedType: "OR", appliedId: 900010, paymentCurrencyCode: "USD", paymentExchangeRate: 58.5,
+        appliedType: "OR", appliedId: await postedOr("2027-10-15"), paymentCurrencyCode: "USD", paymentExchangeRate: 58.5,
         baseCurrencyCode: "PHP", isPosting: true, companyId,
       });
       await conn.commit();
@@ -663,7 +675,7 @@ describe("CRITICAL: settlement after revaluation - no double-counting of realize
       await conn.beginTransaction();
       const result = await PaymentApplicationService.applyInvoicePayment(conn, {
         appItem: { sourceType: "INV", sourceId: invId, amount: 400, applicationDate: "2027-12-05" },
-        appliedType: "OR", appliedId: 900011, paymentCurrencyCode: "USD", paymentExchangeRate: 58.5,
+        appliedType: "OR", appliedId: await postedOr("2027-12-05"), paymentCurrencyCode: "USD", paymentExchangeRate: 58.5,
         baseCurrencyCode: "PHP", isPosting: true, companyId,
       });
       await conn.commit();

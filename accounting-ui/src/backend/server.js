@@ -2840,6 +2840,9 @@ app.get("/api/apv/unpaid", authenticateToken, authorizePermission("TRANSACTIONS.
 
     res.json(rows);
   } catch (err) {
+    // An access refusal from the company check (e.g. another company's
+    // companyId -> 403) keeps its own status instead of becoming a 500.
+    if (err.statusCode && err.statusCode < 500) return res.status(err.statusCode).json({ message: err.message });
     console.error("GET UNPAID APV/AP BEGINNING ERROR:", err);
     res.status(500).json({ message: "Failed to load outstanding payables" });
   }
