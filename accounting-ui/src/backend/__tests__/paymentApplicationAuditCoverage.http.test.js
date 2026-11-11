@@ -86,9 +86,10 @@ async function createInvoice(token, { voucherNo, customerId, customerName, amoun
 }
 
 async function createApv(token, { voucherNo, supplierId, supplierName, amount }) {
+  // Posted: only a Posted APV is payable (assertApvPayable).
   const res = await request(app).post("/api/apv").set(auth(token)).send({
     voucherNo, supplierId, supplierName, transactionDate: "2026-09-01",
-    totalDebit: amount, totalCredit: amount, status: "Draft",
+    totalDebit: amount, totalCredit: amount, status: "Posted",
     lines: [
       { accountId: revA, accountCode: "TESTPA-REV", accountTitle: "Expense", particulars: "x", debit: amount, credit: 0 },
       { accountId: apA, accountCode: "TESTPA-AP", accountTitle: "AP", particulars: "x", debit: 0, credit: amount },

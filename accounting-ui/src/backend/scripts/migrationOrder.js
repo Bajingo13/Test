@@ -224,6 +224,10 @@ const MIGRATION_ORDER = [
   // live in the private attachment store). New table only. Must run after
   // rfp_schema_permissions_migration.sql.
   "rfp_attachments_migration.sql",
+  // Dashboard Activity Timeline: DASHBOARD.ACTIVITY / VIEW for ADMIN and
+  // ACCOUNTANT (data only, INSERT IGNORE; ADMIN.AUDIT_LOGS unchanged). Must
+  // run after user_access_control_migration.sql.
+  "dashboard_activity_permission_migration.sql",
 ];
 
 module.exports = { MIGRATION_ORDER };

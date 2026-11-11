@@ -34,6 +34,30 @@ const LINE_ID_COL = {
   po: "po_id", or: "or_id", cv: "cv_id",
 };
 
+// Records, for cleanup, every document a processDueSchedules() call generated
+// for THIS suite's companies. Uses the call's own results (schedule ids) and
+// the occurrence rows the generator wrote for them - never document numbers,
+// dates or other companies' schedules. An unknown module type fails loudly
+// rather than leaving documents behind.
+async function trackBatchGenerated(results) {
+  const scheduleIds = results.filter((r) => r.status === "SUCCESS").map((r) => r.scheduleId);
+  if (!scheduleIds.length) return;
+  const [rows] = await pool.query(
+    `SELECT o.generated_module_type AS moduleType, o.generated_transaction_id AS generatedId
+     FROM recurring_transaction_occurrences o
+     JOIN recurring_transaction_schedules s ON s.id = o.schedule_id
+     JOIN recurring_transaction_templates t ON t.id = s.template_id
+     WHERE o.schedule_id IN (?) AND o.trigger_type = 'SCHEDULED' AND o.generated_transaction_id IS NOT NULL
+       AND t.company_id IN (?, ?)`,
+    [scheduleIds, companyId, otherCompanyId]
+  );
+  for (const { moduleType, generatedId } of rows) {
+    const key = String(moduleType).toLowerCase();
+    if (!generatedByModule[key]) throw new Error(`untracked generated module type '${moduleType}' (id ${generatedId})`);
+    if (!generatedByModule[key].includes(generatedId)) generatedByModule[key].push(generatedId);
+  }
+}
+
 async function makeCompany(name) {
   const [result] = await pool.execute("INSERT INTO companies (name, status) VALUES (?, 'Active')", [name]);
   return result.insertId;
@@ -427,12 +451,18 @@ describe("12-14: Generate Now, scheduler batch processing, idempotency for new m
     await setNextRunDate(poDue.scheduleId, "2020-01-01");
 
     const result = await GenerationService.processDueSchedules({ triggerType: "SCHEDULED", limit: 200 });
+    // The batch runs EVERY due schedule, so once the calendar passes the
+    // start dates used by earlier tests it also generates their next
+    // occurrences. Record every document this call generated for this
+    // suite's own companies (via the occurrence row that links schedule ->
+    // generated document) so afterAll removes all of them, whatever today is.
+    await trackBatchGenerated(result.results);
     const apvResult = result.results.find((r) => r.scheduleId === apvDue.scheduleId);
     const poResult = result.results.find((r) => r.scheduleId === poDue.scheduleId);
     expect(apvResult.status).toBe("SUCCESS");
     expect(poResult.status).toBe("SUCCESS");
-    if (apvResult.generatedId) generatedByModule.apv.push(apvResult.generatedId);
-    if (poResult.generatedId) generatedByModule.po.push(poResult.generatedId);
+    expect(generatedByModule.apv).toContain(apvResult.generatedId);
+    expect(generatedByModule.po).toContain(poResult.generatedId);
   });
 
   test("Duplicate scheduler execution for a new module type (APV) remains idempotent under a simulated race", async () => {

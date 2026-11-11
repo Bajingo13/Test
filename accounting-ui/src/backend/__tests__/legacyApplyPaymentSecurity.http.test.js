@@ -64,8 +64,9 @@ const auth = (t) => ({ Authorization: `Bearer ${t}` });
 
 async function createApv(token, { voucherNo, supplierId, supplierName, amount, companyId }) {
   const res = await request(app).post("/api/apv").set(auth(token)).send({
+    // Posted: only a Posted APV is payable (assertApvPayable).
     voucherNo, supplierId, supplierName, transactionDate: "2026-09-05",
-    totalDebit: amount, totalCredit: amount, status: "Draft", companyId,
+    totalDebit: amount, totalCredit: amount, status: "Posted", companyId,
     lines: [
       { accountId: revA_acct, accountCode: "TESTLA-EXP", accountTitle: "Expense", particulars: "x", debit: amount, credit: 0 },
       { accountId: apA_acct, accountCode: "TESTLA-AP", accountTitle: "AP", particulars: "x", debit: 0, credit: amount },
@@ -363,13 +364,14 @@ describe("No PAYMENT_APPLIED/PAYMENT_UNAPPLIED audit event is added to this rout
 });
 
 describe("Source guards - other implementations and protected files untouched", () => {
-  test("paymentApplicationService.js's applyInvoicePayment/applyApvPayment are unchanged", () => {
+  test("paymentApplicationService.js's applyInvoicePayment/applyApvPayment keep their row lock (APV now also checks payment eligibility)", () => {
     const src = fs.readFileSync(require.resolve("../services/paymentApplicationService.js"), "utf8");
     expect(src).toContain("async function applyInvoicePayment(conn, {");
     expect(src).toContain("async function applyApvPayment(conn, {");
     expect(src).toContain(
-      'SELECT COALESCE(balance_amount, total_credit, 0) AS balanceAmount, company_id AS companyId FROM apv_headers WHERE id = ? FOR UPDATE'
+      'SELECT COALESCE(balance_amount, total_credit, 0) AS balanceAmount, company_id AS companyId, voucher_no AS voucherNo, status FROM apv_headers WHERE id = ? FOR UPDATE'
     );
+    expect(src).toContain("await assertApvPayable(conn, sourceId, apvRows[0]);");
   });
 
   test("unwindCvApplications is unchanged", () => {

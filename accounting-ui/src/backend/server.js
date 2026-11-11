@@ -106,6 +106,7 @@ const {
   updateApvPaymentStatus,
   applyInvoicePayment,
   applyApvPayment,
+  assertApvPayable,
   applyForeignSettlementToLines,
 } = require("./services/paymentApplicationService");
 
@@ -2786,7 +2787,19 @@ app.get("/api/apv/unpaid", authenticateToken, authorizePermission("TRANSACTIONS.
       FROM apv_headers
       LEFT JOIN currencies cur ON cur.id = apv_headers.currency_id
       LEFT JOIN transaction_currency_snapshots snap ON snap.transaction_type = 'APV' AND snap.transaction_id = apv_headers.id
+      -- Payment eligibility = the AP Aging recognition rule: a Posted APV
+      -- (Draft / Cancelled / Void are not payables), not reversed by a
+      -- Posted APV_REVERSAL JV, with an outstanding balance (fully paid
+      -- ones drop out; partially paid ones stay with their remaining balance).
       WHERE apv_headers.company_id = ?
+        AND ${postedOnlySql("apv_headers")}
+        AND NOT EXISTS (
+          SELECT 1 FROM jv_headers rev
+           WHERE rev.company_id = apv_headers.company_id
+             AND rev.source_module = 'APV_REVERSAL'
+             AND rev.source_reference_id = apv_headers.id
+             AND UPPER(rev.status) = 'POSTED'
+        )
         AND COALESCE(balance_amount, total_credit, 0) > 0
         AND COALESCE(payment_status, 'Unpaid') != 'Paid'
         ${supplierFilterApv}
@@ -2815,6 +2828,7 @@ app.get("/api/apv/unpaid", authenticateToken, authorizePermission("TRANSACTIONS.
       LEFT JOIN transaction_currency_snapshots bbsnap ON bbsnap.transaction_type = 'AP_BEGINNING' AND bbsnap.transaction_id = l.id
       WHERE h.balance_type = 'AP'
         AND h.company_id = ?
+        AND ${postedOnlySql("h")}
         AND COALESCE(l.balance_amount, l.credit, 0) > 0
         AND COALESCE(l.status, 'Unpaid') != 'Paid'
         ${supplierFilterBb}
@@ -5195,7 +5209,10 @@ app.post("/api/apply-payment", authenticateToken, authorizePermission("POSTING",
         id,
         total_credit AS totalAmount,
         COALESCE(paid_amount, 0) AS paidAmount,
-        COALESCE(balance_amount, total_credit) AS balanceAmount
+        COALESCE(balance_amount, total_credit) AS balanceAmount,
+        company_id AS companyId,
+        voucher_no AS voucherNo,
+        status
       FROM apv_headers
       WHERE id = ? AND company_id = ?
       FOR UPDATE`,
@@ -5220,6 +5237,10 @@ app.post("/api/apply-payment", authenticateToken, authorizePermission("POSTING",
       await conn.rollback();
       return res.status(404).json({ message: "CV not found." });
     }
+
+    // Same eligibility as /api/apv/unpaid and the CV save path: Posted,
+    // not reversed, with an outstanding balance (throws 400 APV_NOT_PAYABLE).
+    await assertApvPayable(conn, sourceId, apvRows[0]);
 
     const balanceAmount = Number(apvRows[0].balanceAmount || 0);
     const paymentAmount = Number(amount || 0);
@@ -7426,6 +7447,9 @@ registerMemoRoutes("CREDIT", "credit-memos", "TRANSACTIONS.DEBIT_CREDIT_MEMO", "
 // that company; company-less system events: Super Admin only) - see
 // routes/auditLogs.routes.js and services/auditLogService.js.
 app.use("/api/audit-logs", require("./routes/auditLogs.routes"));
+// Dashboard: one read-only summary built from the report services (see
+// routes/dashboard.routes.js and services/dashboardService.js).
+app.use("/api/dashboard", require("./routes/dashboard.routes"));
 
 // ===================== BANK RECONCILIATION API =====================
 // Extracted into services/controllers/routes (see backend/routes/bankRecon.routes.js).
@@ -9091,6 +9115,9 @@ app.get("/api/reports/ap-aging", authenticateToken, authorizePermission("REPORTS
 
     res.json({ asOfDate: reportDate, rows, bucketTotals });
   } catch (err) {
+    // An access refusal from the company check (e.g. another company's
+    // companyId -> 403) keeps its own status instead of becoming a 500.
+    if (err.statusCode && err.statusCode < 500) return res.status(err.statusCode).json({ message: err.message });
     console.error("AP AGING REPORT ERROR:", err.message);
     res.status(500).json({
       message: "Failed to generate AP aging report",
@@ -9118,6 +9145,9 @@ app.get("/api/reports/ap-aging-summary", authenticateToken, authorizePermission(
 
     res.json({ asOfDate: reportDate, parties });
   } catch (err) {
+    // An access refusal from the company check (e.g. another company's
+    // companyId -> 403) keeps its own status instead of becoming a 500.
+    if (err.statusCode && err.statusCode < 500) return res.status(err.statusCode).json({ message: err.message });
     console.error("AP AGING SUMMARY REPORT ERROR:", err.message);
     res.status(500).json({
       message: "Failed to generate AP aging summary report",
@@ -9227,6 +9257,9 @@ app.get("/api/reports/ar-aging", authenticateToken, authorizePermission("REPORTS
 
     res.json({ asOfDate: reportDate, rows, bucketTotals });
   } catch (err) {
+    // An access refusal from the company check (e.g. another company's
+    // companyId -> 403) keeps its own status instead of becoming a 500.
+    if (err.statusCode && err.statusCode < 500) return res.status(err.statusCode).json({ message: err.message });
     console.error("AR AGING REPORT ERROR:", err.message);
     res.status(500).json({
       message: "Failed to generate AR aging report",
@@ -9254,6 +9287,9 @@ app.get("/api/reports/ar-aging-summary", authenticateToken, authorizePermission(
 
     res.json({ asOfDate: reportDate, parties });
   } catch (err) {
+    // An access refusal from the company check (e.g. another company's
+    // companyId -> 403) keeps its own status instead of becoming a 500.
+    if (err.statusCode && err.statusCode < 500) return res.status(err.statusCode).json({ message: err.message });
     console.error("AR AGING SUMMARY REPORT ERROR:", err.message);
     res.status(500).json({
       message: "Failed to generate AR aging summary report",

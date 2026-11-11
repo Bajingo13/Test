@@ -15,7 +15,7 @@ const { assertNotProductionDatabase } = require("../lib/testDatabaseGuard");
 // and AP Aging Summary already use - and drops the "current" bucket. This
 // suite proves: auth, REPORTS.AP enforcement, as-of-date default,
 // supplier filtering, company isolation, every aging-bucket boundary
-// (0/1/30/31/60/61/90/91 days), Draft-inclusion, VOID/CANCELLED/reversed-
+// (0/1/30/31/60/61/90/91 days), Draft-exclusion, VOID/CANCELLED/reversed-
 // APV exclusion, partial payment, multiple payments, a split CV across
 // two APVs, an unallocated CV that never appears, a payment applied after
 // the as-of date not yet counted, a fully-paid APV excluded, an AP
@@ -154,9 +154,9 @@ beforeAll(async () => {
   await makeApv(companyAId, suppA1Id, "APO-APV-90DAY", "2026-08-01", "2026-06-21", "Posted", 900); // 90 days -> days61to90 (upper)
   await makeApv(companyAId, suppA1Id, "APO-APV-91DAY", "2026-08-01", "2026-06-20", "Posted", 1000); // 91 days -> over90 (lower)
 
-  // ---- Draft APV, overdue (due 2026-08-01, 49 days) - inherited
-  // AgingReportService behavior: the AP branch only excludes VOID/
-  // CANCELLED (plus reversed), so this MUST still appear.
+  // ---- Draft APV, overdue by date (due 2026-08-01, 49 days): not a
+  // payable (Posted-only, same as the ledger and Balance Sheet), so it
+  // must NOT appear.
   await makeApv(companyAId, suppA1Id, "APO-APV-DRAFT", "2026-08-01", "2026-08-01", "Draft", 9999); // 49 days -> days31to60
 
   // ---- Void/Cancelled/Reversed APVs - all excluded by AgingReportService's
@@ -324,10 +324,8 @@ describe("GET /api/reports/ap-overdue-accounts", () => {
     expect(row.bucket).toBe("over90");
   });
 
-  test("13. Draft APVs ARE included - inherited AgingReportService AP-branch behavior (only VOID/CANCELLED/reversed excluded, not Draft)", () => {
-    const row = findRow(report, "APO-APV-DRAFT");
-    expect(row).toBeDefined();
-    expect(Number(row.baseBalance)).toBe(9999);
+  test("13. Draft APVs are NOT payables (Posted-only recognition, same as the ledger)", () => {
+    expect(findRow(report, "APO-APV-DRAFT")).toBeUndefined();
   });
 
   test("14. a Voided APV is excluded", () => {
@@ -392,15 +390,15 @@ describe("GET /api/reports/ap-overdue-accounts", () => {
     expect(findRow(report, "APO-B-APV-1")).toBeUndefined();
   });
 
-  test("26. supplier A1's summary row totals match the hand-computed sum (14 documents, 20699 total)", () => {
+  test("26. supplier A1's summary row totals match the hand-computed sum (13 documents, 10700 total)", () => {
     const p = findParty(report, suppA1Id);
     expect(p).toBeDefined();
-    expect(p.documentCount).toBe(14);
+    expect(p.documentCount).toBe(13);
     expect(Number(p.buckets.days1to30)).toBe(2500);
-    expect(Number(p.buckets.days31to60)).toBe(15499);
+    expect(Number(p.buckets.days31to60)).toBe(5500);
     expect(Number(p.buckets.days61to90)).toBe(1700);
     expect(Number(p.buckets.over90)).toBe(1000);
-    expect(Number(p.baseBalance)).toBe(20699);
+    expect(Number(p.baseBalance)).toBe(10700);
   });
 
   test("27. supplier A2's summary row (single 300 APV)", () => {
@@ -412,10 +410,10 @@ describe("GET /api/reports/ap-overdue-accounts", () => {
 
   test("28. grand total bucketTotals equal the sum across all suppliers in scope (A1 + A2)", () => {
     expect(Number(report.bucketTotals.base.days1to30)).toBe(2500);
-    expect(Number(report.bucketTotals.base.days31to60)).toBe(15799);
+    expect(Number(report.bucketTotals.base.days31to60)).toBe(5800);
     expect(Number(report.bucketTotals.base.days61to90)).toBe(1700);
     expect(Number(report.bucketTotals.base.over90)).toBe(1000);
-    expect(Number(report.bucketTotals.base.total)).toBe(20999);
+    expect(Number(report.bucketTotals.base.total)).toBe(11000);
   });
 
   test("29. single-supplier filter (partyId) narrows the report to exactly that supplier's overdue documents", async () => {
@@ -426,7 +424,7 @@ describe("GET /api/reports/ap-overdue-accounts", () => {
     expect(res.status).toBe(200);
     expect(res.body.parties).toHaveLength(1);
     expect(res.body.parties[0].partyId).toBe(suppA1Id);
-    expect(Number(res.body.parties[0].baseBalance)).toBe(20699);
+    expect(Number(res.body.parties[0].baseBalance)).toBe(10700);
   });
 
   test("30. empty result (a supplier with zero overdue documents) returns empty arrays, not an error", async () => {

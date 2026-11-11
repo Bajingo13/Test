@@ -571,9 +571,16 @@ describe("Beginning Balance closed-period enforcement", () => {
 
 describe("Reports and printing remain available for a CLOSED period", () => {
   test("AR Aging still surfaces the closed-period invoice - locking controls mutation, not reporting", async () => {
-    const arRes = await request(app).get("/api/reports/ar-aging?asOf=2026-07-31").set("Authorization", `Bearer ${tokenA}`);
-    expect(arRes.status).toBe(200);
-    expect(JSON.stringify(arRes.body)).toMatch(/TEST5-INV-JUL1/);
+    // AR Aging recognizes Posted invoices only (same as the ledger); the
+    // fixture invoice is a Draft, so it is posted for this check and put back.
+    await pool.execute("UPDATE invoice_headers SET status = 'Posted' WHERE voucher_no = 'TEST5-INV-JUL1' AND company_id = ?", [companyAId]);
+    try {
+      const arRes = await request(app).get("/api/reports/ar-aging?asOf=2026-07-31").set("Authorization", `Bearer ${tokenA}`);
+      expect(arRes.status).toBe(200);
+      expect(JSON.stringify(arRes.body)).toMatch(/TEST5-INV-JUL1/);
+    } finally {
+      await pool.execute("UPDATE invoice_headers SET status = 'Draft' WHERE voucher_no = 'TEST5-INV-JUL1' AND company_id = ?", [companyAId]);
+    }
   });
 
   test("printing the closed-period invoice by direct ID still succeeds", async () => {

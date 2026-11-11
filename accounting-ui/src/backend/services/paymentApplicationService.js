@@ -353,6 +353,37 @@ async function applyInvoicePayment(conn, {
   return { ...application, applicationId: insertResult.insertId, fxAccount };
 }
 
+// APV payment eligibility - the SAME rule /api/apv/unpaid uses to build the
+// selection list, enforced again here on save so a hand-crafted request
+// cannot pay a non-payable APV:
+//   Posted, belongs to the company (checked by the caller), not reversed by a
+//   POSTED APV_REVERSAL journal voucher, and has an outstanding balance.
+// Draft / Cancelled / Void / reversed / fully paid -> 400 APV_NOT_PAYABLE.
+function notPayable(message) {
+  const err = new Error(message);
+  err.statusCode = 400;
+  err.code = "APV_NOT_PAYABLE";
+  return err;
+}
+
+async function assertApvPayable(conn, apvId, apv) {
+  const label = apv.voucherNo ? `APV ${apv.voucherNo}` : `APV ${apvId}`;
+  if (String(apv.status || "").toUpperCase() !== "POSTED") {
+    throw notPayable(`${label} is not Posted (status: ${apv.status || "unknown"}) and cannot be paid.`);
+  }
+  const [rev] = await conn.execute(
+    `SELECT 1 FROM jv_headers
+     WHERE company_id = ? AND source_module = 'APV_REVERSAL' AND source_reference_id = ?
+       AND UPPER(status) = 'POSTED'
+     LIMIT 1`,
+    [apv.companyId, apvId]
+  );
+  if (rev.length) throw notPayable(`${label} has been reversed and cannot be paid.`);
+  if (Number(apv.balanceAmount || 0) <= 0.005) {
+    throw notPayable(`${label} is already fully paid.`);
+  }
+}
+
 async function applyApvPayment(conn, {
   appItem,
   appliedType, // "CV"
@@ -373,7 +404,7 @@ async function applyApvPayment(conn, {
 
   if (sourceType === "AP_BEGINNING") {
     const [rows] = await conn.execute(
-      `SELECT COALESCE(l.balance_amount, l.credit, 0) AS balanceAmount, h.company_id AS companyId
+      `SELECT COALESCE(l.balance_amount, l.credit, 0) AS balanceAmount, h.company_id AS companyId, h.status AS headerStatus
        FROM arap_beginning_balance_lines l
        JOIN arap_beginning_balance_headers h ON h.id = l.header_id
        WHERE l.id = ? FOR UPDATE`,
@@ -382,6 +413,14 @@ async function applyApvPayment(conn, {
     if (!rows.length) throw new Error(`AP beginning balance ${sourceId} was not found.`);
     if (companyId && rows[0].companyId !== companyId) {
       throw new Error(`AP beginning balance ${sourceId} does not belong to this company - cross-company payment application is not allowed.`);
+    }
+    // Same eligibility as /api/apv/unpaid: only a Posted beginning balance
+    // with an open balance is a payable.
+    if (String(rows[0].headerStatus || "").toUpperCase() !== "POSTED") {
+      throw notPayable(`AP beginning balance ${sourceId} is not Posted (status: ${rows[0].headerStatus || "unknown"}) and cannot be paid.`);
+    }
+    if (Number(rows[0].balanceAmount || 0) <= 0.005) {
+      throw notPayable(`AP beginning balance ${sourceId} is already fully paid.`);
     }
 
     const sourceSnapshot = await TransactionCurrencyService.getSnapshot("AP_BEGINNING", sourceId);
@@ -450,13 +489,14 @@ async function applyApvPayment(conn, {
   }
 
   const [apvRows] = await conn.execute(
-    "SELECT COALESCE(balance_amount, total_credit, 0) AS balanceAmount, company_id AS companyId FROM apv_headers WHERE id = ? FOR UPDATE",
+    "SELECT COALESCE(balance_amount, total_credit, 0) AS balanceAmount, company_id AS companyId, voucher_no AS voucherNo, status FROM apv_headers WHERE id = ? FOR UPDATE",
     [sourceId]
   );
   if (!apvRows.length) throw new Error(`APV ${sourceId} was not found.`);
   if (companyId && apvRows[0].companyId !== companyId) {
     throw new Error(`APV ${sourceId} does not belong to this company - cross-company payment application is not allowed.`);
   }
+  await assertApvPayable(conn, sourceId, apvRows[0]);
 
   const sourceSnapshot = await TransactionCurrencyService.getSnapshot("APV", sourceId);
   const isForeign = !!sourceSnapshot && sourceSnapshot.currencyId !== sourceSnapshot.baseCurrencyId;
@@ -635,5 +675,6 @@ module.exports = {
   updateApvPaymentStatus,
   applyInvoicePayment,
   applyApvPayment,
+  assertApvPayable,
   applyForeignSettlementToLines,
 };

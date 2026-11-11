@@ -19,7 +19,7 @@ const { assertNotProductionDatabase } = require("../lib/testDatabaseGuard");
 // lifecycle. This suite proves: auth, REPORTS.AP enforcement, required
 // filters, company isolation, a fully hand-verified multi-source balance
 // chain (AP Beginning Balance + pre-period APV + pre-period payment for
-// Beginning Payable; in-period APV/Draft-inclusion/VOID-exclusion/
+// Beginning Payable; in-period APV/Draft-exclusion/VOID-exclusion/
 // CANCELLED-exclusion/reversed-APV-exclusion/an in-period AP Beginning
 // Balance edge case for Payables; split payment across two APVs from one
 // CV; multiple payments against one APV; an unallocated CV that does NOT
@@ -155,7 +155,7 @@ beforeAll(async () => {
 
   // ---- In-period Payables (2026-08-01 to 2026-08-31) ----
   const apv1Id = await makeApv(companyAId, suppA1Id, "APY-APV-1", "2026-08-05", "Posted", 5000);
-  await makeApv(companyAId, suppA1Id, "APY-APV-DRAFT", "2026-08-06", "Draft", 444); // inherited: included (Aging's AP branch only excludes VOID/CANCELLED)
+  await makeApv(companyAId, suppA1Id, "APY-APV-DRAFT", "2026-08-06", "Draft", 444); // not a payable: Posted-only, same as AP Aging
   await makeApv(companyAId, suppA1Id, "APY-APV-VOID", "2026-08-07", "Void", 9999); // excluded
   await makeApv(companyAId, suppA1Id, "APY-APV-CANCELLED", "2026-08-08", "Cancelled", 8888); // excluded
   const apvReversedId = await makeApv(companyAId, suppA1Id, "APY-APV-REVERSED", "2026-08-09", "Posted", 2000);
@@ -272,11 +272,11 @@ describe("GET /api/reports/ap-payables-and-payments", () => {
     expect(Number(s.beginningPayable)).toBe(10700);
   });
 
-  test("9. Draft APVs ARE included in Payables - inherited AgingReportService AP-branch behavior (only VOID/CANCELLED excluded, not Draft)", () => {
+  test("9. Draft APVs are NOT Payables - Posted-only, the same APV recognition as AP Aging", () => {
     const s = findSupplier(report, suppA1Id);
-    // Payables = 5000(APV-1) + 444(Draft) + 1500(SPLIT-X) + 1000(SPLIT-Y) + 400(in-period AP Beginning) = 8344
-    // VOID(9999)/CANCELLED(8888)/REVERSED(2000) all excluded.
-    expect(Number(s.payables)).toBe(8344);
+    // Payables = 5000(APV-1) + 1500(SPLIT-X) + 1000(SPLIT-Y) + 400(in-period AP Beginning) = 7900
+    // DRAFT(444)/VOID(9999)/CANCELLED(8888)/REVERSED(2000) all excluded.
+    expect(Number(s.payables)).toBe(7900);
   });
 
   test("10. a Voided APV is excluded from Payables", async () => {
@@ -334,7 +334,7 @@ describe("GET /api/reports/ap-payables-and-payments", () => {
 
   test("19. one CV split across two different APVs is correctly attributed to each (1500 to SPLIT-X, 1000 to SPLIT-Y, both counted in Payables and Payments)", () => {
     const s = findSupplier(report, suppA1Id);
-    // Both SPLIT-X (1500) and SPLIT-Y (1000) are part of the 8344 Payables
+    // Both SPLIT-X (1500) and SPLIT-Y (1000) are part of the 7900 Payables
     // total (test 9), and their combined 2500 payment is part of the 5500
     // Payments total (test 16) - proves split-CV handling without double
     // counting.
@@ -342,11 +342,11 @@ describe("GET /api/reports/ap-payables-and-payments", () => {
     expect(Number(s.payments)).toBeGreaterThanOrEqual(2500);
   });
 
-  test("20. ending payable reconciles exactly: Beginning + Payables + CreditMemos - Payments - DebitMemos = Ending (10700+8344+100-5500-250 = 13394)", () => {
+  test("20. ending payable reconciles exactly: Beginning + Payables + CreditMemos - Payments - DebitMemos = Ending (10700+7900+100-5500-250 = 12950)", () => {
     const s = findSupplier(report, suppA1Id);
     const reconciled = s.beginningPayable + s.payables + s.creditMemos - s.payments - s.debitMemos;
     expect(Number(s.endingPayable)).toBeCloseTo(reconciled, 2);
-    expect(Number(s.endingPayable)).toBe(13394);
+    expect(Number(s.endingPayable)).toBe(12950);
   });
 
   test("21. supplier A2 - simple single-APV scenario (beginning=0, payables=600, ending=600)", () => {
@@ -360,11 +360,11 @@ describe("GET /api/reports/ap-payables-and-payments", () => {
 
   test("22. grand totals are the sum across all included suppliers (A1 + A2)", () => {
     expect(Number(report.grandTotalBeginningPayable)).toBe(10700);
-    expect(Number(report.grandTotalPayables)).toBe(8944);
+    expect(Number(report.grandTotalPayables)).toBe(8500);
     expect(Number(report.grandTotalDebitMemos)).toBe(250);
     expect(Number(report.grandTotalPayments)).toBe(5500);
     expect(Number(report.grandTotalCreditMemos)).toBe(100);
-    expect(Number(report.grandTotalEndingPayable)).toBe(13994);
+    expect(Number(report.grandTotalEndingPayable)).toBe(13550);
   });
 
   test("23. single-supplier filter (partyId) narrows the report to exactly that supplier", async () => {
@@ -375,7 +375,7 @@ describe("GET /api/reports/ap-payables-and-payments", () => {
     expect(res.status).toBe(200);
     expect(res.body.suppliers).toHaveLength(1);
     expect(res.body.suppliers[0].partyId).toBe(suppA1Id);
-    expect(Number(res.body.suppliers[0].endingPayable)).toBe(13394);
+    expect(Number(res.body.suppliers[0].endingPayable)).toBe(12950);
   });
 
   test("24. a supplier with no transactions is still shown (at zero) when explicitly requested via partyId", async () => {
@@ -480,13 +480,16 @@ describe("route does not mutate anything and reuses canonical services (source g
     expect(svcSrc).not.toMatch(/cv_headers\.total_credit AS (amount|payment)/i);
   });
 
-  test("35. ApListOfPayablesPaymentsService.js reuses the EXACT VOID/CANCELLED + reversal-JV predicate agingReportService.js's own AP branch uses", () => {
+  test("35. ApListOfPayablesPaymentsService.js reuses the EXACT Posted-only + reversal-JV predicate agingReportService.js's own AP branch uses", () => {
     const svcSrc = fs.readFileSync(path.join(__dirname, "../services/ApListOfPayablesPaymentsService.js"), "utf8");
     const agingSrc = fs.readFileSync(path.join(__dirname, "../services/agingReportService.js"), "utf8");
-    expect(svcSrc).toMatch(/UPPER\(h\.status\) NOT IN \('VOID', 'CANCELLED'\)/);
+    expect(svcSrc).toMatch(/AND \$\{postedOnlySql\("h"\)\}\s+AND NOT EXISTS \(/);
     expect(svcSrc).toMatch(/source_module = 'APV_REVERSAL'/);
-    expect(agingSrc).toMatch(/UPPER\(h\.status\) NOT IN \('VOID', 'CANCELLED'\)/);
+    expect(agingSrc).toMatch(/AND \$\{postedOnlySql\("h"\)\}\s+AND NOT EXISTS \(/);
     expect(agingSrc).toMatch(/source_module = 'APV_REVERSAL'/);
+    // the old Draft-including predicate is gone from both
+    expect(svcSrc).not.toMatch(/UPPER\(h\.status\) NOT IN \('VOID', 'CANCELLED'\)/);
+    expect(agingSrc).not.toMatch(/UPPER\(h\.status\) NOT IN \('VOID', 'CANCELLED'\)/);
   });
 
   test("36. agingReportService.js itself was not modified by this phase", () => {

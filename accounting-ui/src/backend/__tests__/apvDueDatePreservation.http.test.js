@@ -212,9 +212,21 @@ describe("APV converted from an RFP", () => {
     expect(await storedDueDate("apv_headers", apvId)).toBe(RFP_DUE);
   });
 
+  // Draft APVs are not payables, so the aging checks post the APV and put
+  // it back to Draft afterwards.
+  async function agingRowWhilePosted() {
+    expect((await getAgingRows("AP", { companyId: co.A, asOfDate: "2097-12-10" })).some((r) => r.sourceType === "APV" && r.sourceId === apvId)).toBe(false);
+    await pool.execute("UPDATE apv_headers SET status = 'Posted' WHERE id = ?", [apvId]);
+    try {
+      const rows = await getAgingRows("AP", { companyId: co.A, asOfDate: "2097-12-10" });
+      return rows.find((r) => r.sourceType === "APV" && r.sourceId === apvId);
+    } finally {
+      await pool.execute("UPDATE apv_headers SET status = 'Draft' WHERE id = ?", [apvId]);
+    }
+  }
+
   test("AP aging uses the preserved due date", async () => {
-    const rows = await getAgingRows("AP", { companyId: co.A, asOfDate: "2097-12-10" });
-    const row = rows.find((r) => r.sourceType === "APV" && r.sourceId === apvId);
+    const row = await agingRowWhilePosted();
     expect(row.dueDate).toBe(RFP_DUE);
     expect(row.daysOutstanding).toBe(10); // Nov 30 -> Dec 10; the APV date would give 34
     expect(row.bucket).toBe("days1to30");
@@ -226,8 +238,7 @@ describe("APV converted from an RFP", () => {
     expect(res.status).toBe(200);
     expect((await loadApv(apvId)).dueDate).toBe("2097-12-15");
 
-    const rows = await getAgingRows("AP", { companyId: co.A, asOfDate: "2097-12-10" });
-    const row = rows.find((r) => r.sourceType === "APV" && r.sourceId === apvId);
+    const row = await agingRowWhilePosted();
     expect(row.dueDate).toBe("2097-12-15");
     expect(row.daysOutstanding).toBe(0);
     expect(row.bucket).toBe("current");

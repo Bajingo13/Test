@@ -18,8 +18,8 @@ const { assertNotProductionDatabase } = require("../lib/testDatabaseGuard");
 // payment application before vs. after the as-of date (as-of-date
 // correctness via transaction_applications), a fully-paid invoice
 // excluded, an AR Beginning Balance line that becomes overdue, that Draft
-// invoices ARE included (an existing, inherited AgingReportService
-// characteristic - not invented here, not "fixed" here), that Debit/
+// and Void invoices are NOT receivables (AgingReportService applies the
+// ledger's Posted-only recognition rule to the AR branch), that Debit/
 // Credit Memos are NEVER included (also inherited/confirmed, not
 // invented), multi-customer summary + grand totals, empty result, no
 // transaction mutation, menu/route/permission-map wiring, source guards
@@ -141,11 +141,11 @@ beforeAll(async () => {
   await makeInvoice(companyAId, custA1Id, "AOA-INV-90DAY", "2026-08-01", "2026-06-21", "Posted", 900); // 90 days -> days61to90 (upper)
   await makeInvoice(companyAId, custA1Id, "AOA-INV-91DAY", "2026-08-01", "2026-06-20", "Posted", 1000); // 91 days -> over90 (lower)
 
-  // ---- Draft invoice, overdue (due 2026-08-01, 49 days) - inherited
-  // AgingReportService behavior: the AR branch has NO status filter, so
-  // this MUST still appear (this is existing, evidence-confirmed
-  // behavior, not something this report invents or fixes).
-  await makeInvoice(companyAId, custA1Id, "AOA-INV-DRAFT", "2026-08-01", "2026-08-01", "Draft", 9999); // 49 days -> days31to60
+  // ---- Draft and Void invoices, overdue by date (due 2026-08-01, 49 days):
+  // not financially recognized (Posted-only rule, same as the ledger and
+  // Balance Sheet), so neither may appear as a receivable.
+  await makeInvoice(companyAId, custA1Id, "AOA-INV-DRAFT", "2026-08-01", "2026-08-01", "Draft", 9999);
+  await makeInvoice(companyAId, custA1Id, "AOA-INV-VOID", "2026-08-01", "2026-08-01", "Void", 7777);
 
   // ---- Partial payment, before AS_OF - balance = 1000 - 400 = 600.
   const invPartialId = await makeInvoice(companyAId, custA1Id, "AOA-INV-PARTIAL", "2026-08-01", "2026-08-01", "Posted", 1000);
@@ -289,10 +289,9 @@ describe("GET /api/reports/ar-overdue-accounts", () => {
     expect(row.bucket).toBe("over90");
   });
 
-  test("13. Draft invoices ARE included - inherited AgingReportService behavior (no status filter in the AR branch), not invented or fixed here", () => {
-    const row = findRow(report, "AOA-INV-DRAFT");
-    expect(row).toBeDefined();
-    expect(Number(row.baseBalance)).toBe(9999);
+  test("13. Draft and Void invoices are NOT receivables (Posted-only recognition, same as the ledger)", () => {
+    expect(findRow(report, "AOA-INV-DRAFT")).toBeUndefined();
+    expect(findRow(report, "AOA-INV-VOID")).toBeUndefined();
   });
 
   test("14. partial payment before As Of Date reduces the outstanding balance (1000 - 400 = 600)", () => {
@@ -330,15 +329,15 @@ describe("GET /api/reports/ar-overdue-accounts", () => {
     expect(findRow(report, "AOA-B-INV-1")).toBeUndefined();
   });
 
-  test("21. customer A1's summary row totals match the hand-computed sum (12 documents, 20099 total)", () => {
+  test("21. customer A1's summary row totals match the hand-computed sum (11 documents, 10100 total)", () => {
     const p = findParty(report, custA1Id);
     expect(p).toBeDefined();
-    expect(p.documentCount).toBe(12);
+    expect(p.documentCount).toBe(11);
     expect(Number(p.buckets.days1to30)).toBe(2500);
-    expect(Number(p.buckets.days31to60)).toBe(14899);
+    expect(Number(p.buckets.days31to60)).toBe(4900);
     expect(Number(p.buckets.days61to90)).toBe(1700);
     expect(Number(p.buckets.over90)).toBe(1000);
-    expect(Number(p.baseBalance)).toBe(20099);
+    expect(Number(p.baseBalance)).toBe(10100);
   });
 
   test("22. customer A2's summary row (single 300 invoice)", () => {
@@ -350,10 +349,10 @@ describe("GET /api/reports/ar-overdue-accounts", () => {
 
   test("23. grand total bucketTotals equal the sum across all customers in scope (A1 + A2)", () => {
     expect(Number(report.bucketTotals.base.days1to30)).toBe(2500);
-    expect(Number(report.bucketTotals.base.days31to60)).toBe(15199);
+    expect(Number(report.bucketTotals.base.days31to60)).toBe(5200);
     expect(Number(report.bucketTotals.base.days61to90)).toBe(1700);
     expect(Number(report.bucketTotals.base.over90)).toBe(1000);
-    expect(Number(report.bucketTotals.base.total)).toBe(20399);
+    expect(Number(report.bucketTotals.base.total)).toBe(10400);
   });
 
   test("24. single-customer filter (partyId) narrows the report to exactly that customer's overdue documents", async () => {
@@ -364,7 +363,7 @@ describe("GET /api/reports/ar-overdue-accounts", () => {
     expect(res.status).toBe(200);
     expect(res.body.parties).toHaveLength(1);
     expect(res.body.parties[0].partyId).toBe(custA1Id);
-    expect(Number(res.body.parties[0].baseBalance)).toBe(20099);
+    expect(Number(res.body.parties[0].baseBalance)).toBe(10100);
   });
 
   test("25. empty result (a customer with zero overdue documents) returns empty arrays, not an error", async () => {

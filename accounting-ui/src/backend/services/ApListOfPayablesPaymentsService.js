@@ -38,8 +38,11 @@ const { postedOnlySql } = require("./reportRecognitionService");
 // Ending Payable = Beginning Payable + Payables + Credit Memos - Payments
 // - Debit Memos.
 
+// The same APV recognition as agingReportService.js's AP branch: Posted only
+// (Draft / Cancelled / Void APVs are not payables - decided 2026-11-10) and
+// not reversed by a Posted APV_REVERSAL JV.
 const AP_REVERSAL_EXCLUSION_SQL = `
-  AND UPPER(h.status) NOT IN ('VOID', 'CANCELLED')
+  AND ${postedOnlySql("h")}
   AND NOT EXISTS (
     SELECT 1 FROM jv_headers rev
      WHERE rev.company_id = h.company_id

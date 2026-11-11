@@ -50,9 +50,14 @@ describe("entry points (source checks)", () => {
     expect(src).toMatch(/<tr><th colspan="5">Company: \$\{selectedCompany\?\.name \|\| ""\}<\/th><\/tr>/);
   });
 
-  test("Dashboard has no company context, so its Account Analysis button passes none (Account Analysis asks)", () => {
+  // The Dashboard now has a company context (its own Company filter, same
+  // rules as Trial Balance), so its Account Analysis button follows the
+  // Income Statement / Balance Sheet rule: the displayed summary's company,
+  // and none before a summary is on screen (Account Analysis then asks).
+  test("Dashboard links Account Analysis with the displayed summary's company only", () => {
     const src = read("pages", "DASHBOARD", "dashboard.jsx");
-    expect(src).toMatch(/navigate\("\/reports\/account-analysis"\)/);
-    expect(src).not.toMatch(/companyId/);
+    expect(src).toMatch(/navigate\(accountAnalysisLink\(\{ accountCode: "", from: summary\?\.meta\?\.from, to: summary\?\.meta\?\.to, companyId: summary\?\.meta\?\.companyId \}\)\)/);
+    expect(src).not.toMatch(/navigate\("\/reports\/account-analysis/);
+    expect(src).not.toMatch(/companies\[0\]/);
   });
 });

@@ -106,7 +106,23 @@ async function createOrApplying(token, { voucherNo, amount, invoiceApplications,
   return res.body.id;
 }
 
+// These tests need a DRAFT APV that already carries a payment application
+// (data that predates the save-time eligibility check, which now rejects
+// paying a Draft APV). The target APVs are made Posted for the CV save only
+// and put back to their original status, so the delete guard is still
+// exercised against a Draft APV with an application.
 async function createCvApplying(token, { voucherNo, amount, apvApplications, status = "Draft" }) {
+  const apvIds = apvApplications.filter((a) => a.sourceType !== "AP_BEGINNING").map((a) => a.sourceId ?? a.apvId);
+  const [orig] = apvIds.length ? await pool.query("SELECT id, status FROM apv_headers WHERE id IN (?)", [apvIds]) : [[]];
+  if (apvIds.length) await pool.query("UPDATE apv_headers SET status = 'Posted' WHERE id IN (?)", [apvIds]);
+  try {
+    return await saveCvApplying(token, { voucherNo, amount, apvApplications, status });
+  } finally {
+    for (const r of orig) await pool.execute("UPDATE apv_headers SET status = ? WHERE id = ?", [r.status, r.id]);
+  }
+}
+
+async function saveCvApplying(token, { voucherNo, amount, apvApplications, status }) {
   const res = await request(app).post("/api/cv").set(auth(token)).send({
     voucherNo, payeeId: suppAId, payeeName: "TestDI Supplier",
     transactionDate: "2026-09-11", totalDebit: amount, totalCredit: amount, status,

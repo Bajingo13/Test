@@ -1,5 +1,6 @@
 const pool = require("../db");
 const { filterByDocumentPeriod } = require("../lib/reportPeriod");
+const { postedOnlySql } = require("./reportRecognitionService");
 
 // Checkpoint 3E - Multi-Currency AR/AP Aging Reporting.
 //
@@ -54,7 +55,11 @@ async function fetchRawRows(type, asOfDate, companyId) {
         LEFT JOIN currencies cur ON cur.id = h.currency_id
         LEFT JOIN transaction_currency_snapshots snap ON snap.transaction_type = 'INV' AND snap.transaction_id = h.id
         LEFT JOIN ${pmtSql} pmt ON pmt.source_type = 'INV' AND pmt.source_id = h.id
-        WHERE h.transaction_date <= ? AND h.company_id = ?
+        -- A receivable exists only once the invoice is financially
+        -- recognized: the same Posted-only rule (reportRecognitionService)
+        -- the ledger, Balance Sheet and AR Statement of Accounts apply, so
+        -- Draft / Void / Cancelled invoices never age as receivables.
+        WHERE h.transaction_date <= ? AND h.company_id = ? AND ${postedOnlySql("h")}
 
         UNION ALL
 
@@ -76,7 +81,10 @@ async function fetchRawRows(type, asOfDate, companyId) {
         LEFT JOIN currencies bbcur ON bbcur.id = l.currency_id
         LEFT JOIN transaction_currency_snapshots bbsnap ON bbsnap.transaction_type = 'AR_BEGINNING' AND bbsnap.transaction_id = l.id
         LEFT JOIN ${pmtSql} pmt2 ON pmt2.source_type = 'AR_BEGINNING' AND pmt2.source_id = l.id
-        WHERE h.balance_date <= ? AND h.company_id = ?
+        -- Same rule for AR beginning balances: the ledger only recognizes a
+        -- Posted beginning-balance header (LedgerReportService), so a Draft
+        -- one is not yet a receivable either.
+        WHERE h.balance_date <= ? AND h.company_id = ? AND ${postedOnlySql("h")}
       ) agg
       ORDER BY party_name ASC, due_date ASC
       `,
@@ -105,15 +113,16 @@ async function fetchRawRows(type, asOfDate, companyId) {
       LEFT JOIN currencies cur ON cur.id = h.currency_id
       LEFT JOIN transaction_currency_snapshots snap ON snap.transaction_type = 'APV' AND snap.transaction_id = h.id
       LEFT JOIN ${pmtSql} pmt ON pmt.source_type = 'APV' AND pmt.source_id = h.id
-      -- Phase 7K: a Cancelled or Void APV is no longer an outstanding
-      -- payable. (Existing Draft-inclusion behaviour is deliberately left
-      -- unchanged - that is a separate pre-existing question.)
+      -- A payable exists only once the APV is financially recognized: the
+      -- same Posted-only rule (reportRecognitionService) the ledger and
+      -- Balance Sheet apply, so Draft, Cancelled and Void APVs never age as
+      -- payables (decided 2026-11-10; previously Draft APVs were included).
       -- Phase 7K.1: a closed-period reversal keeps the original Posted but
       -- links a Posted reversing JV - recognise that here too so a reversed
       -- APV stops ageing as outstanding. Its payment_status / balance_amount
       -- header columns are never modified (linkage-based recognition only).
       WHERE h.transaction_date <= ? AND h.company_id = ?
-        AND UPPER(h.status) NOT IN ('VOID', 'CANCELLED')
+        AND ${postedOnlySql("h")}
         AND NOT EXISTS (
           SELECT 1 FROM jv_headers rev
            WHERE rev.company_id = h.company_id
@@ -142,7 +151,9 @@ async function fetchRawRows(type, asOfDate, companyId) {
       LEFT JOIN currencies bbcur ON bbcur.id = l.currency_id
       LEFT JOIN transaction_currency_snapshots bbsnap ON bbsnap.transaction_type = 'AP_BEGINNING' AND bbsnap.transaction_id = l.id
       LEFT JOIN ${pmtSql} pmt2 ON pmt2.source_type = 'AP_BEGINNING' AND pmt2.source_id = l.id
-      WHERE h.balance_date <= ? AND h.company_id = ?
+      -- Same rule for AP beginning balances: the ledger only recognizes a
+      -- Posted beginning-balance header (LedgerReportService).
+      WHERE h.balance_date <= ? AND h.company_id = ? AND ${postedOnlySql("h")}
     ) agg
     ORDER BY party_name ASC, due_date ASC
     `,
