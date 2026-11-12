@@ -39,6 +39,7 @@ const FixedAssetLapsingService = require("./services/FixedAssetLapsingService");
 const { buildXlsxTemplate } = require("./services/TemplateExportService");
 const { templateImportUpload, coaImportUpload, handleUpload } = require("./lib/uploadMiddleware");
 const COAImportService = require("./services/COAImportService");
+const GroupCodeImportService = require("./services/GroupCodeImportService");
 const GenLibImportService = require("./services/GenLibImportService");
 const GLBeginningBalanceService = require("./services/GLBeginningBalanceService");
 const BeginningBalanceCurrencyService = require("./services/beginningBalanceCurrencyService");
@@ -7534,6 +7535,119 @@ app.get("/api/group-codes/classification-readiness", authenticateToken, authoriz
     res.status(500).json({ message: "Failed to compute group code classification readiness" });
   }
 });
+
+// ----- Group Codes Generate Template + Import (insert-only) -----
+// Same preview -> confirm architecture as /api/coa/import: preview parses +
+// validates with ZERO writes; confirm resubmits the SAME file, which is
+// re-parsed and re-validated against the database's current state (the
+// preview is never trusted), then every ready row is inserted in ONE
+// transaction. Existing group codes are skipped, never updated. Group codes
+// are global (no company_id), so no company scoping applies.
+app.get("/api/group-codes/template", authenticateToken, authorizePermission("FILESETUP.GROUP_CODES", "VIEW"), async (req, res) => {
+  try {
+    const buffer = await GroupCodeImportService.buildTemplate();
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", 'attachment; filename="Group_Codes_Template.xlsx"');
+    res.send(Buffer.from(buffer));
+  } catch (err) {
+    console.error("GROUP CODE TEMPLATE ERROR:", err);
+    res.status(500).json({ message: "Failed to generate template" });
+  }
+});
+
+// Shared by preview + import: returns the parse result, or sends the 400
+// for an empty file / missing required columns and returns null.
+async function parseGroupCodeImportFile(req, res) {
+  if (!req.file) {
+    res.status(400).json({ message: "No file uploaded" });
+    return null;
+  }
+  const parsed = await GroupCodeImportService.parseAndValidateRows(req.file.buffer, req.file.originalname);
+  if (parsed.headers.length === 0) {
+    res.status(400).json({ message: "The file appears to be empty" });
+    return null;
+  }
+  if (parsed.missingRequiredColumns) {
+    res.status(400).json({
+      message: `Could not find the required column(s): ${parsed.missingRequiredColumns.join(", ")}`,
+      missingColumns: parsed.missingRequiredColumns,
+      headers: parsed.headers,
+    });
+    return null;
+  }
+  return parsed;
+}
+
+app.post(
+  "/api/group-codes/import/preview",
+  authenticateToken,
+  authorizePermission("FILESETUP.GROUP_CODES", "CONFIGURE"),
+  handleUpload(coaImportUpload.single("file")),
+  async (req, res) => {
+    try {
+      const parsed = await parseGroupCodeImportFile(req, res);
+      if (!parsed) return;
+      const { ready, skipped, warnings } = parsed;
+      res.json({
+        success: true,
+        totalRows: ready.length + skipped.length,
+        readyCount: ready.length,
+        ready: ready.map((r) => ({
+          row: r.rowNum,
+          groupCode: r.groupCode,
+          groupDescription: r.groupDescription,
+          accountClass: r.accountClass,
+          reportSection: r.reportSection,
+          displayOrder: r.displayOrder,
+          status: r.status,
+        })),
+        skipped,
+        warnings,
+      });
+    } catch (err) {
+      console.error("GROUP CODE IMPORT PREVIEW ERROR:", err);
+      res.status(500).json({ message: "Failed to read the file. Please check its format and try again." });
+    }
+  }
+);
+
+app.post(
+  "/api/group-codes/import",
+  authenticateToken,
+  authorizePermission("FILESETUP.GROUP_CODES", "CONFIGURE"),
+  handleUpload(coaImportUpload.single("file")),
+  async (req, res) => {
+    try {
+      const parsed = await parseGroupCodeImportFile(req, res);
+      if (!parsed) return;
+      const { ready, skipped, warnings } = parsed;
+
+      let imported;
+      try {
+        imported = await GroupCodeImportService.insertGroupCodeRows(ready);
+      } catch (insertErr) {
+        // insertGroupCodeRows already rolled back - zero rows from this
+        // request were committed. A duplicate here means another user
+        // created one of these codes after this request validated the file.
+        console.error("GROUP CODE IMPORT - BATCH INSERT FAILED, ROLLED BACK:", insertErr);
+        const concurrent = insertErr && insertErr.code === "ER_DUP_ENTRY";
+        return res.status(concurrent ? 409 : 500).json({
+          success: false,
+          message: concurrent
+            ? "Another user created one of these Group Codes while the import was running. The import was rolled back and no Group Codes were imported. Please try again."
+            : "Import failed and was rolled back. No Group Codes were imported from this file. Please try again.",
+          skipped,
+          warnings,
+        });
+      }
+
+      res.json({ success: true, imported, skippedCount: skipped.length, skipped, warnings });
+    } catch (err) {
+      console.error("GROUP CODE IMPORT ERROR:", err);
+      res.status(500).json({ message: "Failed to import group codes. Please check the file and try again." });
+    }
+  }
+);
 
 app.post("/api/group-codes", authenticateToken, authorizePermission("FILESETUP.GROUP_CODES", "CONFIGURE"), async (req, res) => {
   try {

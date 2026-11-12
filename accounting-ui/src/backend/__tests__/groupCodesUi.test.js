@@ -305,3 +305,46 @@ describe("GroupCodes.jsx - existing permissions honored", () => {
     expect(src).not.toMatch(/GROUP_CODES\.(ADD|CREATE|UPDATE|DELETE|MODERNIZE)/);
   });
 });
+
+// --------------------------------------------------------------------------
+// Generate Template + Import (preview -> confirm), CONFIGURE-gated
+// --------------------------------------------------------------------------
+
+describe("GroupCodes.jsx - Generate Template + Import", () => {
+  const src = read("GroupCodes.jsx");
+
+  test("Generate Template / Import buttons and the hidden file picker render only with CONFIGURE", () => {
+    const block = src.slice(src.indexOf("{canConfigure && ("), src.indexOf("</>", src.indexOf("{canConfigure && (")));
+    expect(block).toMatch(/onClick=\{handleDownloadTemplate\}/);
+    expect(block).toMatch(/>\s*Generate Template\s*</);
+    expect(block).toMatch(/onClick=\{triggerImport\}/);
+    expect(block).toMatch(/type="file"[\s\S]*accept="\.csv,\.xlsx"/);
+  });
+
+  test("template calls the GET template endpoint; selecting a file only calls the read-only preview", () => {
+    expect(src).toMatch(/\/api\/group-codes\/template`/);
+    const pick = src.slice(src.indexOf("async function handleImportFileChange"), src.indexOf("async function handleConfirmImport"));
+    expect(pick).toMatch(/\/api\/group-codes\/import\/preview`/);
+    expect(pick).not.toMatch(/\/api\/group-codes\/import`/);
+  });
+
+  test("Confirm Import resubmits the SAME held file to the real import endpoint", () => {
+    const fn = src.slice(src.indexOf("async function handleConfirmImport"), src.indexOf("function closeImport"));
+    expect(fn).toMatch(/formData\.append\("file", importFile\)/);
+    expect(fn).toMatch(/\/api\/group-codes\/import`/);
+    expect(fn).toMatch(/loadGroupCodes\(/);
+  });
+
+  test("modal shows row-numbered skipped reasons, an Imported / Skipped / Warnings summary and the global-scope warning", () => {
+    expect(src).toMatch(/Row \{s\.row\}/);
+    expect(src).toMatch(/Imported: <strong>\{importResult\.imported\}<\/strong>/);
+    expect(src).toMatch(/Skipped:\{" "\}/);
+    expect(src).toMatch(/Warnings:\{" "\}/);
+    expect(src).toMatch(/shared by every company/);
+    expect(src).toMatch(/importPreview\.readyCount === 0/);
+  });
+
+  test("no new permission strings are introduced", () => {
+    expect(src).not.toMatch(/GROUP_CODES\.IMPORT|"IMPORT"\)/);
+  });
+});

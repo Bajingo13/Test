@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
 import usePermissions from "../../hooks/usePermissions";
 import AutoResizeTextarea from "../../components/AutoResizeTextarea";
 import ReportSectionQuickAddModal from "../../components/ReportSectionQuickAddModal";
 import RecordViewModal from "../../components/RecordViewModal";
 import "./GroupCodes.css";
+import "../../components/RecurringTemplateModal.css";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
 const MODULE_KEY = "FILESETUP.GROUP_CODES";
@@ -56,6 +57,18 @@ export default function GroupCodes() {
   const [sections, setSections] = useState([]);
   const [showSectionModal, setShowSectionModal] = useState(false);
   const [showViewModal, setShowViewModal] = useState(false);
+
+  // Generate Template + Import (same preview -> confirm flow as COA).
+  // Choosing a file only calls the READ-ONLY preview endpoint; the File is
+  // held so "Confirm Import" resubmits the SAME file, which the server
+  // re-parses and re-validates before inserting (the preview is never trusted).
+  const importInputRef = useRef(null);
+  const [importFile, setImportFile] = useState(null);
+  const [importPreview, setImportPreview] = useState(null);
+  const [importPreviewLoading, setImportPreviewLoading] = useState(false);
+  const [importError, setImportError] = useState("");
+  const [importConfirming, setImportConfirming] = useState(false);
+  const [importResult, setImportResult] = useState(null);
 
   const isEditing = mode === "add" || mode === "edit";
 
@@ -296,6 +309,110 @@ export default function GroupCodes() {
     window.print();
   }
 
+  async function handleDownloadTemplate() {
+    if (!canConfigure) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/group-codes/template`, {
+        credentials: "include",
+        headers: authHeaders(),
+      });
+      if (!res.ok) {
+        if (handleAuthError(res.status)) return;
+        alert("Failed to generate template.");
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "Group_Codes_Template.xlsx";
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("DOWNLOAD GROUP CODE TEMPLATE ERROR:", err);
+      alert("Unable to download template.");
+    }
+  }
+
+  function triggerImport() {
+    if (!canConfigure || isEditing) return;
+    importInputRef.current?.click();
+  }
+
+  // Step 1: READ-ONLY preview - no database write happens here.
+  async function handleImportFileChange(e) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+
+    setImportFile(file);
+    setImportPreview(null);
+    setImportResult(null);
+    setImportError("");
+    setImportPreviewLoading(true);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch(`${API_BASE}/api/group-codes/import/preview`, {
+        method: "POST",
+        credentials: "include",
+        headers: authHeaders(),
+        body: formData,
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        if (handleAuthError(res.status)) return;
+        setImportError(data.message || "Failed to read the file.");
+        return;
+      }
+      setImportPreview(data);
+    } catch (err) {
+      console.error("GROUP CODE IMPORT PREVIEW ERROR:", err);
+      setImportError("Unable to read the file.");
+    } finally {
+      setImportPreviewLoading(false);
+    }
+  }
+
+  // Step 2: explicit confirmation - resubmits the SAME file to the real
+  // import endpoint (server re-validates against the current database).
+  async function handleConfirmImport() {
+    if (!importFile || !canConfigure) return;
+    setImportConfirming(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", importFile);
+      const res = await fetch(`${API_BASE}/api/group-codes/import`, {
+        method: "POST",
+        credentials: "include",
+        headers: authHeaders(),
+        body: formData,
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        if (handleAuthError(res.status)) return;
+        setImportResult({ success: false, message: data.message || "Failed to import file.", skipped: data.skipped, warnings: data.warnings });
+        return;
+      }
+      setImportResult({ success: true, imported: data.imported, skipped: data.skipped, warnings: data.warnings });
+      await loadGroupCodes(selectedId);
+    } catch (err) {
+      console.error("GROUP CODE IMPORT ERROR:", err);
+      setImportResult({ success: false, message: "Unable to import file." });
+    } finally {
+      setImportConfirming(false);
+    }
+  }
+
+  function closeImport() {
+    if (importConfirming) return;
+    setImportFile(null);
+    setImportPreview(null);
+    setImportError("");
+    setImportResult(null);
+  }
+
   async function handleSave() {
     if (!canConfigure) return;
     if (!form.groupCode.trim() || !form.groupDescription.trim()) {
@@ -467,6 +584,34 @@ export default function GroupCodes() {
             >
               Next
             </button>
+            {canConfigure && (
+              <>
+                <button
+                  type="button"
+                  className="group-btn"
+                  onClick={handleDownloadTemplate}
+                  disabled={isEditing}
+                >
+                  Generate Template
+                </button>
+                <button
+                  type="button"
+                  className="group-btn"
+                  onClick={triggerImport}
+                  disabled={isEditing || importPreviewLoading}
+                >
+                  {importPreviewLoading ? "Reading file..." : "Import"}
+                </button>
+                <input
+                  type="file"
+                  ref={importInputRef}
+                  accept=".csv,.xlsx"
+                  style={{ display: "none" }}
+                  onChange={handleImportFileChange}
+                  data-testid="group-import-input"
+                />
+              </>
+            )}
           </div>
         </div>
 
@@ -709,6 +854,157 @@ export default function GroupCodes() {
           </div>
         </div>
       </div>
+
+      {importFile && (
+        <div
+          className="rtm-overlay"
+          onClick={(e) => e.target === e.currentTarget && closeImport()}
+        >
+          <div
+            className="rtm-modal"
+            style={{ width: "min(720px, 96vw)" }}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Import Group Codes"
+          >
+            <div className="rtm-header">
+              <div>
+                <h2>Import Group Codes</h2>
+                <p className="rtm-subtitle">{importFile.name}</p>
+              </div>
+              <button type="button" className="rtm-close" onClick={closeImport} disabled={importConfirming}>
+                &times;
+              </button>
+            </div>
+
+            <div className="rtm-body">
+              <div className="group-warning" role="note">
+                Group Codes are global: imported Group Codes are shared by every company in the system.
+                Existing Group Codes are never updated.
+              </div>
+
+              {importPreviewLoading && <div className="rtm-loading">Reading file...</div>}
+
+              {!importPreviewLoading && importError && (
+                <div className="rtm-error-banner">{importError}</div>
+              )}
+
+              {!importPreviewLoading && !importError && importPreview && !importResult && (
+                <>
+                  <p>
+                    <strong>{importPreview.totalRows}</strong> row(s) detected &mdash;{" "}
+                    <strong>{importPreview.readyCount}</strong> ready to import,{" "}
+                    <strong>{importPreview.skipped?.length || 0}</strong> will be skipped
+                    {importPreview.warnings?.length ? (
+                      <>
+                        , <strong>{importPreview.warnings.length}</strong> warning(s)
+                      </>
+                    ) : null}
+                    .
+                  </p>
+                  <p className="rtm-hint">
+                    Nothing has been saved yet. Review the rows below, then confirm to import.
+                  </p>
+
+                  {importPreview.ready?.length > 0 && (
+                    <div className="group-import-section">
+                      <h4>Ready to import ({importPreview.ready.length})</h4>
+                      <ul className="group-import-list">
+                        {importPreview.ready.map((r) => (
+                          <li key={r.row}>
+                            Row {r.row}: {r.groupCode} &mdash; {r.groupDescription} ({r.accountClass}
+                            {r.reportSection ? `, ${r.reportSection}` : ""}, {r.status})
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  <ImportIssueLists skipped={importPreview.skipped} warnings={importPreview.warnings} />
+                </>
+              )}
+
+              {importResult &&
+                (importResult.success ? (
+                  <>
+                    <p className="group-import-summary">
+                      Imported: <strong>{importResult.imported}</strong> &nbsp;|&nbsp; Skipped:{" "}
+                      <strong>{importResult.skipped?.length || 0}</strong> &nbsp;|&nbsp; Warnings:{" "}
+                      <strong>{importResult.warnings?.length || 0}</strong>
+                    </p>
+                    <ImportIssueLists skipped={importResult.skipped} warnings={importResult.warnings} />
+                  </>
+                ) : (
+                  <>
+                    <div className="rtm-error-banner">{importResult.message}</div>
+                    <ImportIssueLists skipped={importResult.skipped} warnings={importResult.warnings} />
+                  </>
+                ))}
+            </div>
+
+            <div className="rtm-footer">
+              {!importResult ? (
+                <>
+                  <button type="button" className="rtm-btn-secondary" onClick={closeImport} disabled={importConfirming}>
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="rtm-btn-primary"
+                    onClick={handleConfirmImport}
+                    disabled={
+                      importPreviewLoading ||
+                      !!importError ||
+                      !importPreview ||
+                      importPreview.readyCount === 0 ||
+                      importConfirming
+                    }
+                  >
+                    {importConfirming ? "Importing..." : "Confirm Import"}
+                  </button>
+                </>
+              ) : (
+                <button type="button" className="rtm-btn-primary" onClick={closeImport}>
+                  Close
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
+  );
+}
+
+// Row-numbered skipped reasons + warnings, shared by preview and result.
+function ImportIssueLists({ skipped, warnings }) {
+  return (
+    <>
+      {skipped?.length > 0 && (
+        <div className="group-import-section">
+          <h4>Skipped rows ({skipped.length})</h4>
+          <ul className="group-import-list">
+            {skipped.map((s, i) => (
+              <li key={i}>
+                Row {s.row}
+                {s.groupCode ? ` | ${s.groupCode}` : ""} | {s.reason}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {warnings?.length > 0 && (
+        <div className="group-import-section">
+          <h4>Warnings ({warnings.length})</h4>
+          <ul className="group-import-list">
+            {warnings.map((w, i) => (
+              <li key={i}>
+                Row {w.row}: {w.message}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </>
   );
 }

@@ -342,3 +342,31 @@
     box-shadow: none;
   }
 }
+
+/* Group Codes import preview / result (modal shell reuses the shared rtm-* styles) */
+.group-import-section {
+  margin-top: 14px;
+}
+
+.group-import-section h4 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.group-import-list {
+  margin: 0;
+  padding-left: 18px;
+  max-height: 180px;
+  overflow-y: auto;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.group-import-list li {
+  margin-bottom: 4px;
+}
+
+.group-import-summary {
+  font-size: 14px;
+}
