@@ -8,6 +8,7 @@ import {
   selectedDisplayLabel,
   accountLabel,
   clampIndex,
+  dropdownGeometry,
 } from "./accountSearch.mjs";
 import "./SearchableAccountSelect.css";
 
@@ -200,14 +201,19 @@ export default function SearchableAccountSelect({
   // position:fixed anchored under the trigger - escapes every `overflow`
   // clipping ancestor without a React portal. Opens upward when there is
   // more room above than below (near the bottom of a scroll container).
+  // Width: at least DROPDOWN_MIN_WIDTH so "code - full account name" is
+  // readable even from a narrow grid cell (previously exactly the cell width,
+  // which cut names to "901010 - SUSPENS..."), never wider than the viewport,
+  // and shifted left when needed so it never runs off the right edge.
   const dropdownStyle = anchorRect
     ? (() => {
         const below = window.innerHeight - anchorRect.bottom;
         const openUp = below < 220 && anchorRect.top > below;
+        const { left, width } = dropdownGeometry(anchorRect, window.innerWidth);
         return {
           position: "fixed",
-          left: anchorRect.left,
-          width: anchorRect.width,
+          left,
+          width,
           maxHeight: Math.max(150, Math.min(288, (openUp ? anchorRect.top : below) - 8)),
           ...(openUp
             ? { bottom: window.innerHeight - anchorRect.top + 2 }
@@ -323,6 +329,7 @@ export default function SearchableAccountSelect({
                     commit(account);
                   }}
                   onMouseEnter={() => setActiveIndex(index)}
+                  title={accountLabel(account)}
                 >
                   {accountLabel(account)}
                 </li>

@@ -80,7 +80,9 @@
   font-size: 13px;
   font-family: inherit;
   color: var(--text-primary, #111827);
-  background: #ffffff;
+  /* theme-aware: a hard-coded #ffffff made typed text (light in dark mode)
+     unreadable */
+  background: var(--bg-surface, #ffffff);
   border: 1px solid var(--border-color, #e5e7eb);
   border-radius: 6px;
   outline: none;
@@ -112,9 +114,11 @@
   border-radius: 6px;
   color: var(--text-primary, #111827);
   cursor: pointer;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* long account names wrap inside the (now wider) dropdown instead of being
+     cut off with an ellipsis */
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
 }
 
 .searchable-account-option.is-active {

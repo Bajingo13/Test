@@ -133,3 +133,17 @@ export function shouldCloseOnOutsidePointer({ open, rootContainsTarget }) {
 export function onQueryInput() {
   return { open: true, activeIndex: 0 };
 }
+
+// Fixed-position dropdown geometry: never narrower than DROPDOWN_MIN_WIDTH
+// (so "code - full account name" is readable from a narrow grid cell), never
+// wider than the viewport minus a margin, and shifted left so it never runs
+// past the right edge.
+export const DROPDOWN_MIN_WIDTH = 440;
+export const DROPDOWN_VIEWPORT_MARGIN = 8;
+export function dropdownGeometry(anchorRect, viewportWidth) {
+  const maxWidth = Math.max(0, viewportWidth - DROPDOWN_VIEWPORT_MARGIN * 2);
+  const width = Math.min(Math.max(anchorRect.width, DROPDOWN_MIN_WIDTH), maxWidth);
+  const maxLeft = viewportWidth - DROPDOWN_VIEWPORT_MARGIN - width;
+  const left = Math.max(DROPDOWN_VIEWPORT_MARGIN, Math.min(anchorRect.left, maxLeft));
+  return { left, width };
+}

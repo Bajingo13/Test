@@ -241,6 +241,45 @@ describe("Phase 7I - update from valid -> zero lines is rejected and leaves the 
   });
 });
 
+// Transaction-entry UAT bug F: a negative debit / credit on a journal line
+// was accepted and stored (e.g. Dr -200 / Cr -200 alongside a balanced pair).
+describe("UAT bug F - negative line amounts are rejected (400 TRANSACTION_LINE_NEGATIVE_AMOUNT)", () => {
+  const withNegative = () => [...balancedGl(), glLine(arId, "PH7I-AR", -200, -200)];
+  test.each(Object.keys(MODULES))("%s create with a negative line -> 400 with the line number", async (mod) => {
+    const vno = `PH7I-NEG-${mod}-${Math.random().toString(36).slice(2, 7)}`;
+    const res = await post(mod, withNegative(), vno);
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe("TRANSACTION_LINE_NEGATIVE_AMOUNT");
+    expect(res.body.message).toMatch(/Line 3: debit and credit amounts cannot be negative/);
+  });
+  test("a single negative side (Dr 1000 / Cr -1000) is rejected too", async () => {
+    const res = await post("JV", [glLine(arId, "PH7I-AR", 1000, 0), glLine(revId, "PH7I-REV", 0, -1000)]);
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe("TRANSACTION_LINE_NEGATIVE_AMOUNT");
+  });
+  test("JV edit to a negative line -> 400, original lines unchanged", async () => {
+    const create = await post("JV", balancedGl(), "PH7I-NEG-EDIT");
+    expect(create.status).toBe(200);
+    const id = create.body.id;
+    const [before] = await pool.query("SELECT debit, credit FROM jv_lines WHERE jv_id = ? ORDER BY id", [id]);
+    const upd = await request(app).put(`/api/jv/${id}`).set("Authorization", `Bearer ${token}`).send({
+      voucherNo: "PH7I-NEG-EDIT", transactionDate: "2026-11-22", referenceNo: "r", description: "x", status: "Draft",
+      preparedFor: "PH7I Party", totalDebit: 1000, totalCredit: 1000, currency: { companyId: CO }, lines: withNegative(),
+    });
+    expect(upd.status).toBe(400);
+    expect(upd.body.code).toBe("TRANSACTION_LINE_NEGATIVE_AMOUNT");
+    const [after] = await pool.query("SELECT debit, credit FROM jv_lines WHERE jv_id = ? ORDER BY id", [id]);
+    expect(after).toEqual(before);
+  });
+  test("ordinary positive lines still save; the validator's reversal opt-out keeps historical data reversible", async () => {
+    expect((await post("JV", balancedGl())).status).toBe(200);
+    const { assertRequiredTransactionLines } = require("../services/transactionLineValidation");
+    expect(() => assertRequiredTransactionLines([{ debit: 1000, credit: 0 }, { debit: -5, credit: 0 }])).toThrow(/cannot be negative/);
+    expect(() => assertRequiredTransactionLines([{ debit: 1000, credit: 0 }, { debit: -5, credit: 0 }], { allowNegative: true })).not.toThrow();
+    expect(() => assertRequiredTransactionLines([{ debit: "", credit: null }, { debit: "100", credit: "0" }])).not.toThrow();
+  });
+});
+
 describe("Phase 7I - failed create leaves no orphan header", () => {
   test("rejected INV create does not add an invoice_headers row", async () => {
     const [[before]] = await pool.query("SELECT COUNT(*) n FROM invoice_headers WHERE company_id = ?", [CO]);

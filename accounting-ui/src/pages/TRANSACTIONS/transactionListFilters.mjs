@@ -36,10 +36,14 @@ export function apvNumberFields(item) {
   return { referenceNo: number, supportingReference: supporting };
 }
 
-// A Draft APV has nothing to pay yet, so the list says Draft, not Unpaid.
-export function apvListStatus(item) {
-  return item.status === "Draft" ? "Draft" : item.paymentStatus || item.status;
+// A Draft document (APV, Invoice) has nothing to pay or collect yet, so the
+// list says Draft, not Unpaid; only a posted document shows its payment
+// status. (The Invoice list used `paymentStatus || status` directly and
+// showed "Unpaid" for Drafts - transaction-entry UAT bug G.)
+export function payableListStatus(item) {
+  return String(item?.status || "").toUpperCase() === "DRAFT" ? "Draft" : item?.paymentStatus || item?.status;
 }
+export const apvListStatus = payableListStatus;
 
 export function matchesSearch(transaction, searchQuery) {
   if (!searchQuery || !searchQuery.trim()) return true;

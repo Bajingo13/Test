@@ -72,8 +72,10 @@ describe("SearchableAccountSelect - dedicated search bar in the dropdown", () =>
     );
   });
 
-  test("styling stays compact/neutral - white field, thin border, small radius, subtle icon", () => {
-    expect(cssSrc).toMatch(/\.searchable-account-search-input\s*\{[^}]*background:\s*#ffffff/s);
+  test("styling stays compact/neutral - surface-coloured field, thin border, small radius, subtle icon", () => {
+    // theme-aware surface (white in light mode); a hard-coded #ffffff made
+    // the light dark-mode text unreadable (transaction-entry UAT, bug E)
+    expect(cssSrc).toMatch(/\.searchable-account-search-input\s*\{[^}]*background:\s*var\(--bg-surface, #ffffff\)/s);
     expect(cssSrc).toMatch(/\.searchable-account-search-input\s*\{[^}]*border:\s*1px solid/s);
     expect(cssSrc).toMatch(/\.searchable-account-search-input\s*\{[^}]*border-radius:\s*6px/s);
     expect(cssSrc).toMatch(/\.searchable-account-search-input\s*\{[^}]*height:\s*28px/s);

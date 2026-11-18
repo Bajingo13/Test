@@ -3504,8 +3504,11 @@ async function performReversal(conn, { module, companyId, original, reason, user
 
   // Phase 7I: the reversal JV must satisfy the zero-line guard exactly like
   // a real JV. Swapped originals are non-zero and balanced.
+  // allowNegative: a reversal mirrors stored history exactly, even a legacy
+  // line recorded before the negative-amount guard existed.
   assertRequiredTransactionLines(
-    origLines.map((ol) => ({ debit: Number(ol.credit) || 0, credit: Number(ol.debit) || 0 }))
+    origLines.map((ol) => ({ debit: Number(ol.credit) || 0, credit: Number(ol.debit) || 0 })),
+    { allowNegative: true }
   );
 
   const snapshot = await TransactionCurrencyService.getSnapshot(module, original.id);

@@ -4,6 +4,8 @@ import TransactionPrintOptionsModal from "../../components/TransactionPrintOptio
 import OrEmailModal from "./OrEmailModal";
 import RecurringTemplateModal from "../../components/RecurringTemplateModal";
 import { computeEwtTaxableBase, computeEwtAmount } from "../../utils/ewtCalculations.mjs";
+import { paymentAmount } from "../../utils/paymentAmount.mjs";
+import { filterPartiesForModule } from "../../utils/partyFilter.mjs";
 import usePermissions from "../../hooks/usePermissions";
 import { getTransactionModuleConfig } from "./transactionModuleConfig";
 import { getVoucherToolbarVisibility } from "./voucherToolbarRules.mjs";
@@ -23,7 +25,7 @@ import LegacyVatEntryModal from "./LegacyVatEntryModal";
 import LegacyEwtEntryModal from "./LegacyEwtEntryModal";
 import CashCheckDetailsModal from "./CashCheckDetailsModal";
 import ApvSourceAttachments from "./ApvSourceAttachments";
-import { filterTransactions, deriveStatusOptions, sortTransactions, apvNumberFields, apvListStatus } from "./transactionListFilters.mjs";
+import { filterTransactions, deriveStatusOptions, sortTransactions, apvNumberFields, apvListStatus, payableListStatus } from "./transactionListFilters.mjs";
 import {
   inputVatAccounts,
   outputVatAccounts,
@@ -550,21 +552,12 @@ export default function TransactionFormLayout({
         return;
       }
 
-      const wantsSupplier = partyLabel.toLowerCase().includes("supplier");
-      const wantsCustomer = partyLabel.toLowerCase().includes("customer");
-
-      let filtered = data;
-
-      if (wantsSupplier && wantsCustomer) {
-        // e.g. Debit/Credit Memo's "Customer / Supplier" label - both types
-        // are legitimate here, unlike the single-type cases below.
-        filtered = data.filter((item) => item.type === "SUPPLIER" || item.type === "CUSTOMER");
-      } else if (wantsSupplier) {
-        filtered = data.filter((item) => item.type === "SUPPLIER");
-      } else if (wantsCustomer) {
-        filtered = data.filter((item) => item.type === "CUSTOMER");
-      }
-
+      // The module's explicit partyType prop (SUPPLIER / CUSTOMER / BOTH)
+      // decides which parties may be picked; the field label is only a
+      // fallback for modules that pass none. Previously only the label was
+      // read, so Check Voucher ("Payee", partyType SUPPLIER) listed
+      // customers, employees and affiliates too.
+      const filtered = filterPartiesForModule(data, { partyType, partyLabel });
       const active = filtered.filter((item) => item.status === "ACTIVE");
       setPartyOptions(active);
       return active;
@@ -634,7 +627,7 @@ export default function TransactionFormLayout({
       paidAmount: item.paidAmount || 0,
       balanceAmount:
         item.balanceAmount ?? item.totalDebit ?? item.totalCredit,
-      status: item.paymentStatus || item.status,
+      status: payableListStatus(item),
       invoiceType: item.invoiceType || "Standard",
       currencySymbol: item.currencySymbol || null,
       currencyCode: item.currencyCode || null,
@@ -973,6 +966,19 @@ if (code === "OR") {
       balanced: totalDebit === totalCredit && totalDebit > 0,
     };
   }, [lines]);
+
+  // Payment Details amount: the voucher's bank movement (same rule as bank
+  // reconciliation), not the gross total of every credit/debit line.
+  const paymentDetailsAmount = useMemo(
+    () =>
+      paymentAmount({
+        code,
+        lines,
+        bankAccount: bankAccounts.find((b) => String(b.id) === String(bankAccountId)) || null,
+        taxWithheld: taxWithheldAmount,
+      }),
+    [code, lines, bankAccounts, bankAccountId, taxWithheldAmount]
+  );
 
   const selectedEwt = ewtCodes.find((e) => e.atcCode === atcCode);
 
@@ -3773,7 +3779,8 @@ if (code === "OR") {
           setPaymentReference={setPaymentReference}
           paymentDate={paymentDate}
           setPaymentDate={setPaymentDate}
-          amount={code === "OR" ? totals.totalDebit : totals.totalCredit}
+          amount={paymentDetailsAmount.amount}
+          amountSource={paymentDetailsAmount.source}
         />
       </div>
     </div>

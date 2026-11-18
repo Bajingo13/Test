@@ -31,15 +31,24 @@ export default function CashCheckDetailsModal({
   paymentDate,
   setPaymentDate,
   amount,
+  amountSource = "BANK_LINE",
 }) {
   const firstRef = useRef(null);
+  // The parent passes a new inline onClose on every render, and every
+  // keystroke here re-renders the parent (the fields are its state). Keeping
+  // onClose in a ref means the effect below runs only when the modal OPENS:
+  // previously it depended on onClose, so each keystroke re-ran it and
+  // focused the Payment Method select again - the Check Number field kept
+  // one character and the following keys landed in the select / date field.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   useEffect(() => {
     if (!open) return undefined;
     firstRef.current?.focus();
-    const onKey = (e) => e.key === "Escape" && onClose();
+    const onKey = (e) => e.key === "Escape" && onCloseRef.current();
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
 
@@ -166,6 +175,11 @@ export default function CashCheckDetailsModal({
               <output className="transaction-input transaction-input-readonly" aria-live="polite" data-testid="payment-amount">
                 {formattedAmount}
               </output>
+              <small className="transaction-label" data-testid="payment-amount-source" style={{ fontWeight: 400 }}>
+                {amountSource === "BANK_LINE"
+                  ? `From this voucher's ${code === "OR" ? "debit" : "credit"} line on the selected bank account - change that entry line to change the amount.`
+                  : "No entry line uses the selected bank account's GL account yet - showing the voucher total less tax withheld. Add the bank / cash entry line to set the amount."}
+              </small>
             </div>
           </div>
           {(isCheck || isTransfer) && (

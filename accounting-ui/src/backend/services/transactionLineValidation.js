@@ -24,7 +24,28 @@ function isSubstantiveBusinessLine(line) {
   return Number(line.debit) > 0 || Number(line.credit) > 0;
 }
 
-function assertRequiredTransactionLines(lines) {
+// A journal line's debit and credit are amounts on one side or the other -
+// never negative. A negative figure (e.g. Dr -200 / Cr -200) was accepted
+// and stored, which lets a "balanced" voucher carry entries that mean the
+// opposite of what they show. The user enters the amount on the other side
+// instead. `allowNegative` exists only for the APV reversal, which swaps an
+// already-stored document's lines and must stay able to reverse historical
+// data exactly as it was recorded.
+const NEGATIVE_CODE = "TRANSACTION_LINE_NEGATIVE_AMOUNT";
+function assertNoNegativeLineAmounts(lines) {
+  if (!Array.isArray(lines)) return;
+  const idx = lines.findIndex((l) => l && typeof l === "object" && (Number(l.debit) < 0 || Number(l.credit) < 0));
+  if (idx !== -1) {
+    throw new HttpError(
+      400,
+      `Line ${idx + 1}: debit and credit amounts cannot be negative. Enter the amount on the opposite side instead.`,
+      NEGATIVE_CODE
+    );
+  }
+}
+
+function assertRequiredTransactionLines(lines, { allowNegative = false } = {}) {
+  if (!allowNegative) assertNoNegativeLineAmounts(lines);
   if (!Array.isArray(lines) || !lines.some(isSubstantiveBusinessLine)) {
     throw new HttpError(400, GL_MESSAGE, CODE);
   }
@@ -51,6 +72,8 @@ function assertRequiredQuotationLines(lines) {
 
 module.exports = {
   assertRequiredTransactionLines,
+  assertNoNegativeLineAmounts,
+  TRANSACTION_LINE_NEGATIVE_AMOUNT_CODE: NEGATIVE_CODE,
   assertRequiredQuotationLines,
   isSubstantiveBusinessLine,
   isSubstantiveQuotationLine,
