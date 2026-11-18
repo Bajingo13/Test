@@ -263,18 +263,24 @@ export function hasActiveFilters({ status = "", search = "", from = "", to = "" 
 // requester or submitter - Super Admin included; CONVERT (APPROVED only)
 // needs CONVERT. The server re-checks everything (conversion also needs
 // APV CREATE there).
+// Requester-side actions (edit, delete, submit, resubmit, cancel - and the
+// attachment controls, which live in the edit form) are also limited to
+// whoever may manage this RFP: its requester, or a user with APPROVE (can()
+// is true for Super Admin). Display only - rfpService.assertCanManage is the
+// authority. Convert is deliberately not ownership-limited.
 export function availableActions({ rfp, can, userId }) {
   const none = { edit: false, remove: false, submit: false, resubmit: false, cancel: false, approve: false, return: false, reject: false, convert: false, selfDecisionBlocked: false };
   if (!rfp) return none;
   const status = rfp.status;
   const self = userId != null && (rfp.requesterUserId === userId || rfp.submittedBy === userId);
+  const mayManage = (userId != null && rfp.requesterUserId === userId) || can("APPROVE");
   const mayDecide = can("APPROVE") && status === "SUBMITTED";
   return {
-    edit: (status === "DRAFT" || status === "RETURNED") && can("EDIT"),
-    remove: status === "DRAFT" && can("DELETE"),
-    submit: status === "DRAFT" && can("SUBMIT"),
-    resubmit: status === "RETURNED" && can("SUBMIT"),
-    cancel: (status === "DRAFT" || status === "SUBMITTED") && can("SUBMIT"),
+    edit: (status === "DRAFT" || status === "RETURNED") && can("EDIT") && mayManage,
+    remove: status === "DRAFT" && can("DELETE") && mayManage,
+    submit: status === "DRAFT" && can("SUBMIT") && mayManage,
+    resubmit: status === "RETURNED" && can("SUBMIT") && mayManage,
+    cancel: (status === "DRAFT" || status === "SUBMITTED") && can("SUBMIT") && mayManage,
     approve: mayDecide && !self,
     return: mayDecide && !self,
     reject: mayDecide && !self,

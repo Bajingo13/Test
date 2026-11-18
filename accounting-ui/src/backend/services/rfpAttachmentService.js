@@ -20,7 +20,7 @@ const pool = require("../db");
 const { logAudit } = require("../lib/audit");
 const storage = require("../lib/attachmentStorage");
 const { validateAttachmentFile } = require("../lib/attachmentFileType");
-const { loadAccessibleRfp, parseId, httpError, EDITABLE_STATUSES } = require("./rfpService");
+const { loadAccessibleRfp, assertCanManage, parseId, httpError, EDITABLE_STATUSES } = require("./rfpService");
 
 const MODULE = "TRANSACTIONS.RFP";
 const ENTITY = "RFP";
@@ -116,6 +116,7 @@ async function uploadRfpAttachment({ id, user, file, body = {} }) {
   try {
     await conn.beginTransaction();
     const header = await loadAccessibleRfp(conn, rfpId, user, { forUpdate: true });
+    await assertCanManage(header, user);
     if (!EDITABLE_STATUSES.includes(header.status)) {
       throw httpError(`Attachments can only be added while the Request for Payment is DRAFT or RETURNED (this one is ${header.status}).`, 409);
     }
@@ -172,6 +173,7 @@ async function removeRfpAttachment({ id, attachmentId, user }) {
   try {
     await conn.beginTransaction();
     const header = await loadAccessibleRfp(conn, rfpId, user, { forUpdate: true });
+    await assertCanManage(header, user);
     const row = await activeRow(conn, rfpId, header.company_id, attId, { forUpdate: true });
     if (!EDITABLE_STATUSES.includes(header.status)) {
       throw httpError(`Attachments can only be removed while the Request for Payment is DRAFT or RETURNED (this one is ${header.status}).`, 409);

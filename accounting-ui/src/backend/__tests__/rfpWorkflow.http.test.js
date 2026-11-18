@@ -429,10 +429,15 @@ describe("permissions", () => {
   test("SUBMIT controls submission: an approver without SUBMIT cannot submit", async () => {
     const d = await draft("approverOnlyA");
     expect((await act("approverOnlyA", d, "submit")).status).toBe(403);
-    expect((await act("acctA", d, "submit")).status).toBe(200);
-    // approverOnlyA requested it, so maker-checker still blocks their decision
+    // ownership: another accountant may not submit someone else's RFP; an
+    // approver with SUBMIT (adminA) may
+    expect((await act("acctA", d, "submit")).status).toBe(403);
+    expect((await act("adminA", d, "submit")).status).toBe(200);
+    // approverOnlyA requested it and adminA submitted it, so maker-checker
+    // blocks both; another approver decides
     expect((await act("approverOnlyA", d, "approve")).status).toBe(403);
-    expect((await act("adminA", d, "approve")).status).toBe(200);
+    expect((await act("adminA", d, "approve")).status).toBe(403);
+    expect((await act("adminA2", d, "approve")).status).toBe(200);
   });
 
   test("APPROVE controls decisions: an Accountant granted APPROVE may approve", async () => {
@@ -483,7 +488,8 @@ describe("concurrency", () => {
 
   test("simultaneous submits: exactly one transition", async () => {
     const id = await draft();
-    const results = await Promise.all([act("acctA", id, "submit"), act("acctA", id, "submit"), act("acctA2", id, "submit")]);
+    // the third racer is an approver (may manage another user's RFP since the ownership rule)
+    const results = await Promise.all([act("acctA", id, "submit"), act("acctA", id, "submit"), act("adminA2", id, "submit")]);
     expect(results.map((r) => r.status).sort()).toEqual([200, 409, 409]);
     expect(await history(id)).toHaveLength(1);
     expect(await workflowAudits(id)).toHaveLength(1);

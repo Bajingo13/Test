@@ -490,11 +490,18 @@ describe("edit", () => {
     expect(after.changedFields).toContain("purpose");
   });
 
-  test("another user of the same company may edit it, but the requester never changes", async () => {
+  // Ownership (approved rule): only the requester, a user with RFP APPROVE,
+  // or Super Admin may change an RFP - previously any same-company user could.
+  test("another user of the same company without APPROVE cannot edit it (403, unchanged); an approver can, and the requester never changes", async () => {
     const id = await create();
-    expect((await api.update("acctA", id, bodyA({ companyId: undefined }))).status).toBe(200);
-    const [[row]] = await pool.query("SELECT requester_user_id FROM rfp_headers WHERE id = ?", [id]);
-    expect(row.requester_user_id).toBe(users.adminA);
+    const denied = await api.update("acctA", id, bodyA({ companyId: undefined, purpose: "Not yours" }));
+    expect(denied.status).toBe(403);
+    let [[row]] = await pool.query("SELECT requester_user_id, purpose FROM rfp_headers WHERE id = ?", [id]);
+    expect(row).toEqual({ requester_user_id: users.adminA, purpose: "Office supplies replenishment" });
+    // "multi" is another ADMIN of Company A (holds TRANSACTIONS.RFP.APPROVE)
+    expect((await api.update("multi", id, bodyA({ companyId: undefined, purpose: "Approver edit" }))).status).toBe(200);
+    [[row]] = await pool.query("SELECT requester_user_id, purpose FROM rfp_headers WHERE id = ?", [id]);
+    expect(row).toEqual({ requester_user_id: users.adminA, purpose: "Approver edit" });
   });
 
   test.each(["SUBMITTED", "APPROVED", "CONVERTED", "REJECTED", "CANCELLED"])("%s is not editable (409, unchanged; RETURNED is editable - see rfpResubmission)", async (status) => {

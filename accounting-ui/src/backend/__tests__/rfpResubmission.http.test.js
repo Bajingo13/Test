@@ -248,10 +248,14 @@ describe("resubmit", () => {
     expect(JSON.stringify(submits)).not.toMatch(/password|token|secret|authorization/i);
   });
 
-  test("another user of the company with SUBMIT may resubmit; submitted_by becomes them, requester unchanged", async () => {
+  // Ownership (approved rule): a same-company user with SUBMIT but without
+  // APPROVE cannot resubmit someone else's RFP; an approver still can.
+  test("another accountant with SUBMIT cannot resubmit (403, unchanged); an approver may - submitted_by becomes them, requester unchanged", async () => {
     const { id } = await returned();
-    expect((await act("acctA2", id, "submit")).status).toBe(200);
-    expect(await header(id)).toMatchObject({ submitted_by: users.acctA2, requester_user_id: users.acctA });
+    expect((await act("acctA2", id, "submit")).status).toBe(403);
+    expect(await header(id)).toMatchObject({ status: "RETURNED", submitted_by: users.acctA, requester_user_id: users.acctA });
+    expect((await act("adminA2", id, "submit")).status).toBe(200);
+    expect(await header(id)).toMatchObject({ status: "SUBMITTED", submitted_by: users.adminA2, requester_user_id: users.acctA });
   });
 
   test.each([
@@ -317,10 +321,20 @@ describe("security", () => {
     expect(await history(id)).toHaveLength(2);
   });
 
-  test("27. without SUBMIT a user cannot resubmit (403), but may still correct with EDIT", async () => {
-    const { id } = await returned();
+  test("27. without SUBMIT a user cannot resubmit (403), but may still correct their own RFP with EDIT", async () => {
+    // noSubmitA is the requester (ownership rule: only the requester or an
+    // approver may correct it); an approver submits on their behalf.
+    const created = await request(app).post("/api/rfp").set(auth("noSubmitA")).send(body());
+    expect(created.status).toBe(201);
+    const id = created.body.id;
+    expect((await act("adminA2", id, "submit")).status).toBe(200);
+    expect((await act("adminA", id, "return", { note: "Attach the supplier invoice" })).status).toBe(200);
     expect((await edit("noSubmitA", id, correction())).status).toBe(200);
     expect((await act("noSubmitA", id, "submit")).status).toBe(403);
+    expect((await header(id)).status).toBe("RETURNED");
+    // another accountant (EDIT + SUBMIT, no APPROVE) can neither correct nor resubmit it
+    expect((await edit("acctA2", id, correction({ purpose: "Not yours" }))).status).toBe(403);
+    expect((await act("acctA2", id, "submit")).status).toBe(403);
     expect((await header(id)).status).toBe("RETURNED");
   });
 
@@ -350,7 +364,8 @@ describe("security", () => {
 describe("concurrency", () => {
   test("30. two simultaneous resubmissions: exactly one transition, one history row, one audit row", async () => {
     const { id } = await returned();
-    const results = await Promise.all([act("acctA", id, "submit"), act("acctA2", id, "submit")]);
+    // the second racer is an approver (may manage another user's RFP since the ownership rule)
+    const results = await Promise.all([act("acctA", id, "submit"), act("adminA2", id, "submit")]);
     expect(results.map((r) => r.status).sort()).toEqual([200, 409]);
     expect((await history(id)).filter((x) => x.previous_status === "RETURNED")).toHaveLength(1);
     expect(await audits(id, "SUBMIT")).toHaveLength(2);
@@ -359,7 +374,8 @@ describe("concurrency", () => {
 
   test("an edit racing a resubmission never corrupts the record", async () => {
     const { id } = await returned();
-    const [e, s] = await Promise.all([edit("acctA", id, correction({ purpose: "Raced edit" })), act("acctA2", id, "submit")]);
+    // the resubmitter is an approver (may manage another user's RFP since the ownership rule)
+    const [e, s] = await Promise.all([edit("acctA", id, correction({ purpose: "Raced edit" })), act("adminA2", id, "submit")]);
     const h = await header(id);
     expect(s.status).toBe(200);
     expect(h.status).toBe("SUBMITTED");

@@ -129,6 +129,23 @@ async function loadAccessibleRfp(db, id, user, { forUpdate = false } = {}) {
   return rows[0];
 }
 
+// Ownership for requester-side management actions (edit, delete, submit /
+// resubmit, cancel, attachment upload / remove): the requester, a user who
+// may decide on RFPs (TRANSACTIONS.RFP.APPROVE - ADMIN by default), or
+// Super Admin. Anyone else in the company keeps read access (view, history,
+// download) but cannot change another user's request. Called AFTER
+// loadAccessibleRfp, so another company's RFP stays the same 404 as an
+// unknown id, and BEFORE the status rules, so a non-owner is refused
+// whatever the status. Decisions (approve / return / reject) and convert
+// do not use this: they keep their own permission and maker-checker rules.
+const NOT_REQUESTER = "You can only change a Request for Payment you requested.";
+async function assertCanManage(header, user) {
+  if (isSuperAdmin(user)) return;
+  if (user?.id != null && header.requester_user_id === user.id) return;
+  if (user?.id != null && (await PermissionService.can(user.id, "TRANSACTIONS.RFP", "APPROVE"))) return;
+  throw httpError(NOT_REQUESTER, 403);
+}
+
 // --- payload validation ----------------------------------------------------
 
 // Validates everything a create/edit writes, against the RFP's company.
@@ -532,6 +549,7 @@ async function updateRfp({ id, body, user }) {
   try {
     await conn.beginTransaction();
     const header = await loadAccessibleRfp(conn, rfpId, user, { forUpdate: true });
+    await assertCanManage(header, user);
     // Ownership is fixed at creation: a companyId may be echoed back but
     // never changed.
     if (body.companyId !== undefined && body.companyId !== null && String(body.companyId).trim() !== ""
@@ -593,6 +611,7 @@ async function deleteRfp({ id, user }) {
   try {
     await conn.beginTransaction();
     const header = await loadAccessibleRfp(conn, rfpId, user, { forUpdate: true });
+    await assertCanManage(header, user);
     if (header.status !== "DRAFT") {
       throw httpError(`Only a DRAFT Request for Payment can be deleted (this one is ${header.status}).`, 409);
     }
@@ -740,6 +759,9 @@ async function transitionRfp({ id, action, body, user }) {
     // same 404 as an unknown one, and concurrent actions on one RFP queue
     // here - the loser then sees the new status and gets 409.
     const header = await loadAccessibleRfp(conn, rfpId, user, { forUpdate: true });
+    // Requester-side actions (SUBMIT / resubmit, CANCEL) need ownership;
+    // decisions keep only their APPROVE permission + maker-checker below.
+    if (!rule.decision) await assertCanManage(header, user);
     const previous = header.status;
     if (!rule.from.includes(previous)) {
       throw httpError(`Cannot ${action.toLowerCase()} a Request for Payment that is ${previous} (allowed from: ${rule.from.join(", ")}).`, 409);
@@ -1127,8 +1149,9 @@ async function getLookups({ user, query = {} }) {
 module.exports = {
   STATUSES,
   EDITABLE_STATUSES,
-  // shared with rfpAttachmentService (same company scope and id parsing)
+  // shared with rfpAttachmentService (same company scope, ownership and id parsing)
   loadAccessibleRfp,
+  assertCanManage,
   parseId,
   httpError,
   WORKFLOW,

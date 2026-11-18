@@ -169,7 +169,24 @@ describe("actions", () => {
     expect(r.availableActions({ rfp: rfp("SUBMITTED"), can: all, userId: 99 })).toMatchObject({ approve: true, return: true, reject: true, cancel: true, edit: false, selfDecisionBlocked: false });
     expect(r.availableActions({ rfp: rfp("SUBMITTED"), can: all, userId: 10 })).toMatchObject({ approve: false, return: false, reject: false, selfDecisionBlocked: true });
     expect(r.availableActions({ rfp: rfp("SUBMITTED", { requesterUserId: 5, submittedBy: 77 }), can: all, userId: 77 }).approve).toBe(false);
-    expect(r.availableActions({ rfp: rfp("SUBMITTED"), can: only("VIEW", "SUBMIT"), userId: 99 })).toMatchObject({ approve: false, cancel: true, selfDecisionBlocked: false });
+    // cancel is requester-side: the requester (10) with SUBMIT may, another user without APPROVE may not
+    expect(r.availableActions({ rfp: rfp("SUBMITTED"), can: only("VIEW", "SUBMIT"), userId: 10 })).toMatchObject({ approve: false, cancel: true });
+    expect(r.availableActions({ rfp: rfp("SUBMITTED"), can: only("VIEW", "SUBMIT"), userId: 99 })).toMatchObject({ approve: false, cancel: false, selfDecisionBlocked: false });
+  });
+  test("ownership: requester-side actions only for the requester, an APPROVE holder or Super Admin (can() true)", () => {
+    const acct = only("VIEW", "CREATE", "EDIT", "DELETE", "SUBMIT", "CONVERT", "PRINT");
+    const own = r.availableActions({ rfp: rfp("DRAFT"), can: acct, userId: 10 });
+    expect(own).toMatchObject({ edit: true, remove: true, submit: true, cancel: true });
+    const other = r.availableActions({ rfp: rfp("DRAFT"), can: acct, userId: 11 });
+    expect(other).toMatchObject({ edit: false, remove: false, submit: false, cancel: false, approve: false });
+    expect(r.availableActions({ rfp: rfp("RETURNED", { decidedAt: "x" }), can: acct, userId: 11 })).toMatchObject({ edit: false, resubmit: false });
+    const approver = r.availableActions({ rfp: rfp("DRAFT"), can: only("VIEW", "EDIT", "DELETE", "SUBMIT", "APPROVE"), userId: 11 });
+    expect(approver).toMatchObject({ edit: true, remove: true, submit: true, cancel: true });
+    expect(r.availableActions({ rfp: rfp("DRAFT"), can: all, userId: 11 })).toMatchObject({ edit: true, remove: true, submit: true, cancel: true });
+    // convert is not ownership-limited
+    expect(r.availableActions({ rfp: rfp("APPROVED"), can: acct, userId: 11 }).convert).toBe(true);
+    // missing userId never grants ownership
+    expect(r.availableActions({ rfp: rfp("DRAFT"), can: acct, userId: null })).toMatchObject({ edit: false, submit: false });
   });
   test.each(["REJECTED", "CANCELLED", "CONVERTED"])("%s offers no action at all (no convert, no resubmit)", (status) => {
     const a = r.availableActions({ rfp: rfp(status), can: all, userId: 99 });
@@ -206,10 +223,11 @@ describe("returned RFP (R4.1)", () => {
       edit: true, remove: false, submit: false, resubmit: true, cancel: false, approve: false, return: false, reject: false, convert: false, selfDecisionBlocked: false,
     });
   });
-  test("Edit needs EDIT, Resubmit needs SUBMIT", () => {
-    expect(r.availableActions({ rfp: returned, can: only("VIEW", "EDIT"), userId: 99 })).toMatchObject({ edit: true, resubmit: false });
-    expect(r.availableActions({ rfp: returned, can: only("VIEW", "SUBMIT"), userId: 99 })).toMatchObject({ edit: false, resubmit: true });
-    expect(r.availableActions({ rfp: returned, can: only("VIEW"), userId: 99 })).toMatchObject({ edit: false, resubmit: false });
+  test("Edit needs EDIT, Resubmit needs SUBMIT (requester shown; another user without APPROVE gets neither)", () => {
+    expect(r.availableActions({ rfp: returned, can: only("VIEW", "EDIT"), userId: 10 })).toMatchObject({ edit: true, resubmit: false });
+    expect(r.availableActions({ rfp: returned, can: only("VIEW", "SUBMIT"), userId: 10 })).toMatchObject({ edit: false, resubmit: true });
+    expect(r.availableActions({ rfp: returned, can: only("VIEW"), userId: 10 })).toMatchObject({ edit: false, resubmit: false });
+    expect(r.availableActions({ rfp: returned, can: only("VIEW", "EDIT", "SUBMIT"), userId: 99 })).toMatchObject({ edit: false, resubmit: false });
   });
   test("after resubmission the requester / resubmitter still gets no decisions (Super Admin too)", () => {
     const resubmitted = { ...returned, status: "SUBMITTED", submittedBy: 22 };
