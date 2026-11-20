@@ -1,6 +1,8 @@
 const TransactionCurrencyService = require("./transactionCurrencyService");
 const FxAccountService = require("./fxAccountService");
 const ControlAmountService = require("./controlAmountService");
+// Multi-Branch Foundation: a payment may only settle a document of its own branch.
+const { assertSameBranchApplication } = require("./branchApplicationGuard");
 const { roundMoney } = TransactionCurrencyService;
 
 // Extracted from server.js verbatim (Checkpoint 3B) so this logic is
@@ -161,6 +163,7 @@ async function applyInvoicePayment(conn, {
 
   const applicationDate = appItem.applicationDate || fallbackDate || new Date().toISOString().slice(0, 10);
   const sourceType = appItem.sourceType === "AR_BEGINNING" ? "AR_BEGINNING" : "INV";
+  await assertSameBranchApplication(conn, { appliedType, appliedId, sourceType, sourceId });
 
   if (sourceType === "AR_BEGINNING") {
     const [rows] = await conn.execute(
@@ -367,6 +370,7 @@ async function applyApvPayment(conn, {
 
   const applicationDate = appItem.applicationDate || fallbackDate || new Date().toISOString().slice(0, 10);
   const sourceType = appItem.sourceType === "AP_BEGINNING" ? "AP_BEGINNING" : "APV";
+  await assertSameBranchApplication(conn, { appliedType, appliedId, sourceType, sourceId });
 
   if (sourceType === "AP_BEGINNING") {
     const [rows] = await conn.execute(

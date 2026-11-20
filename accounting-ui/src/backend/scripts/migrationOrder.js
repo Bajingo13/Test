@@ -242,6 +242,13 @@ const MIGRATION_ORDER = [
   // role - Super Admin only by bypass; explicit 0 for ADMIN / ACCOUNTANT). Data
   // only. Must run after user_access_control_migration.sql.
   "company_management_migration.sql",
+  // Multi-Branch Foundation (Phase A): nullable branch_id on transaction /
+  // beginning-balance headers (backfilled ONLY for single-branch companies;
+  // multi-branch history stays NULL - never guessed), branch-only COA /
+  // General Library rows (NULL = shared), FK -> branches ON DELETE RESTRICT,
+  // REPORTS.ALL_BRANCHES / VIEW (ADMIN; ACCOUNTANT explicit 0). Must run after
+  // branch_management_migration.sql.
+  "multi_branch_foundation_migration.sql",
 ];
 
 module.exports = { MIGRATION_ORDER };

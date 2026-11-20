@@ -29,7 +29,12 @@ const { postedOnlySql } = require("./reportRecognitionService");
 // an additive column: getLedgerRows/getBeginningBalances below select
 // explicit column lists and never reference it, so existing General
 // Ledger/Cash Flow Statement behavior is unchanged.
-function buildTransactionUnionSql(dateFilterSql) {
+// Multi-Branch Foundation: `branchSql` (optional, default "") is an extra
+// predicate on header alias `h`, e.g. from lib/branchResolution.branchScopeSql
+// (single branch or consolidated authorized branches). Omitted -> the SQL is
+// byte-identical to before, so every existing report is unchanged.
+function buildTransactionUnionSql(dateFilterSql, { branchSql = "" } = {}) {
+  const b = branchSql ? ` AND ${branchSql}` : "";
   return `
     SELECT l.id, DATE_FORMAT(h.transaction_date, '%Y-%m-%d') AS transaction_date,
       'APV' AS source_type, h.voucher_no AS reference_no, l.account_code, l.account_title,
@@ -37,7 +42,7 @@ function buildTransactionUnionSql(dateFilterSql) {
       COALESCE(l.debit, 0) AS debit, COALESCE(l.credit, 0) AS credit, 1 AS sort_order,
       h.id AS transaction_id
     FROM apv_lines l JOIN apv_headers h ON h.id = l.apv_id
-    WHERE h.transaction_date ${dateFilterSql} AND h.company_id = ? AND ${postedOnlySql("h")}
+    WHERE h.transaction_date ${dateFilterSql} AND h.company_id = ? AND ${postedOnlySql("h")}${b}
 
     UNION ALL
 
@@ -47,7 +52,7 @@ function buildTransactionUnionSql(dateFilterSql) {
       COALESCE(l.debit, 0) AS debit, COALESCE(l.credit, 0) AS credit, 2 AS sort_order,
       h.id AS transaction_id
     FROM cv_lines l JOIN cv_headers h ON h.id = l.cv_id
-    WHERE h.transaction_date ${dateFilterSql} AND h.company_id = ? AND ${postedOnlySql("h")}
+    WHERE h.transaction_date ${dateFilterSql} AND h.company_id = ? AND ${postedOnlySql("h")}${b}
 
     UNION ALL
 
@@ -57,7 +62,7 @@ function buildTransactionUnionSql(dateFilterSql) {
       COALESCE(l.debit, 0) AS debit, COALESCE(l.credit, 0) AS credit, 3 AS sort_order,
       h.id AS transaction_id
     FROM jv_lines l JOIN jv_headers h ON h.id = l.jv_id
-    WHERE h.transaction_date ${dateFilterSql} AND h.company_id = ? AND ${postedOnlySql("h")}
+    WHERE h.transaction_date ${dateFilterSql} AND h.company_id = ? AND ${postedOnlySql("h")}${b}
 
     UNION ALL
 
@@ -67,7 +72,7 @@ function buildTransactionUnionSql(dateFilterSql) {
       COALESCE(l.debit, 0) AS debit, COALESCE(l.credit, 0) AS credit, 4 AS sort_order,
       h.id AS transaction_id
     FROM invoice_lines l JOIN invoice_headers h ON h.id = l.invoice_id
-    WHERE h.transaction_date ${dateFilterSql} AND h.company_id = ? AND ${postedOnlySql("h")}
+    WHERE h.transaction_date ${dateFilterSql} AND h.company_id = ? AND ${postedOnlySql("h")}${b}
 
     UNION ALL
 
@@ -77,7 +82,7 @@ function buildTransactionUnionSql(dateFilterSql) {
       COALESCE(l.debit, 0) AS debit, COALESCE(l.credit, 0) AS credit, 5 AS sort_order,
       h.id AS transaction_id
     FROM or_lines l JOIN or_headers h ON h.id = l.or_id
-    WHERE h.transaction_date ${dateFilterSql} AND h.company_id = ? AND ${postedOnlySql("h")}
+    WHERE h.transaction_date ${dateFilterSql} AND h.company_id = ? AND ${postedOnlySql("h")}${b}
 
     UNION ALL
 
@@ -87,7 +92,7 @@ function buildTransactionUnionSql(dateFilterSql) {
       COALESCE(l.debit, 0) AS debit, COALESCE(l.credit, 0) AS credit, 0 AS sort_order,
       NULL AS transaction_id
     FROM arap_beginning_balance_lines l JOIN arap_beginning_balance_headers h ON h.id = l.header_id
-    WHERE h.balance_date ${dateFilterSql} AND h.company_id = ? AND ${postedOnlySql("h")}
+    WHERE h.balance_date ${dateFilterSql} AND h.company_id = ? AND ${postedOnlySql("h")}${b}
 
     UNION ALL
 
@@ -97,7 +102,7 @@ function buildTransactionUnionSql(dateFilterSql) {
       COALESCE(l.othrdebit, 0) AS debit, COALESCE(l.othrcredit, 0) AS credit, 0 AS sort_order,
       NULL AS transaction_id
     FROM gl_beginning_balance_lines l JOIN gl_beginning_balance_headers h ON h.id = l.header_id
-    WHERE h.balance_date ${dateFilterSql} AND h.company_id = ? AND ${postedOnlySql("h")}
+    WHERE h.balance_date ${dateFilterSql} AND h.company_id = ? AND ${postedOnlySql("h")}${b}
 
     UNION ALL
 
@@ -107,7 +112,7 @@ function buildTransactionUnionSql(dateFilterSql) {
       COALESCE(l.debit, 0) AS debit, COALESCE(l.credit, 0) AS credit, 6 AS sort_order,
       h.id AS transaction_id
     FROM petty_cash_lines l JOIN petty_cash_headers h ON h.id = l.petty_cash_id
-    WHERE h.transaction_date ${dateFilterSql} AND h.company_id = ? AND ${postedOnlySql("h")}
+    WHERE h.transaction_date ${dateFilterSql} AND h.company_id = ? AND ${postedOnlySql("h")}${b}
 
     UNION ALL
 
@@ -117,7 +122,7 @@ function buildTransactionUnionSql(dateFilterSql) {
       COALESCE(l.debit, 0) AS debit, COALESCE(l.credit, 0) AS credit, 7 AS sort_order,
       h.id AS transaction_id
     FROM memo_lines l JOIN memo_headers h ON h.id = l.memo_id
-    WHERE h.transaction_date ${dateFilterSql} AND h.company_id = ? AND ${postedOnlySql("h")}
+    WHERE h.transaction_date ${dateFilterSql} AND h.company_id = ? AND ${postedOnlySql("h")}${b}
   `;
 }
 

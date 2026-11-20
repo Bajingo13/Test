@@ -70,6 +70,10 @@ const { resolveTaxWithholding, resolveApvTaxWithholding, createApvRecord } = req
 const EwtReportReconciliationService = require("./services/ewtReportReconciliationService");
 const { assertWriteStatus, assertReason, unwindCvApplications, CANCELLED, VOID } = require("./services/voidCancelService");
 const { findPostedReversalJv, buildReversalLine, buildReversalTaxEntry, reversalVoucherNo } = require("./services/reversalService");
+// Multi-Branch Foundation: same-branch payment application + branch-preserving reversal.
+const { assertSameBranchApplication } = require("./services/branchApplicationGuard");
+const ReversalBranchService = require("./services/reversalBranchService");
+const BranchResolution = require("./lib/branchResolution");
 const InvoiceVerificationService = require("./services/invoiceVerificationService");
 
 console.log("ENV FILE:", require("path").resolve(".env"));
@@ -283,10 +287,13 @@ app.post("/api/login", loginRateLimiter, async (req, res) => {
 app.get("/api/genlib", authenticateToken, authorizePermission("FILESETUP.GENLIB", "VIEW"), async (req, res) => {
   try {
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+    // Multi-Branch Foundation: shared (branch_id NULL) + authorized branch-only rows.
+    const visibleBranchIds = await BranchResolution.setupBranchIds(req.user, { companyId, requestedBranchId: req.query.branchId });
     const [rows] = await pool.execute(`
       SELECT
         id,
         code,
+        branch_id AS branchId,
         party_type AS type,
         name,
         status,
@@ -310,7 +317,7 @@ app.get("/api/genlib", authenticateToken, authorizePermission("FILESETUP.GENLIB"
         is_prospective AS isProspective,
         is_client AS isClient
       FROM general_libraries
-      WHERE company_id = ?
+      WHERE company_id = ? AND ${BranchResolution.setupVisibilitySql("general_libraries", visibleBranchIds)}
       ORDER BY id DESC
     `, [companyId]);
 
@@ -322,6 +329,7 @@ app.get("/api/genlib", authenticateToken, authorizePermission("FILESETUP.GENLIB"
 
     res.json(records);
   } catch (err) {
+    if (err.statusCode && err.statusCode < 500) return res.status(err.statusCode).json({ message: err.message, code: err.code });
     console.error("GET GENLIB ERROR:", err);
     res.status(500).json({ message: "Failed to load General Libraries" });
   }
@@ -349,6 +357,8 @@ app.post("/api/genlib", authenticateToken, authorizePermission("FILESETUP.GENLIB
   try {
     const item = normalizeGenlibInput(req.body);
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, item.companyId);
+    // Multi-Branch Foundation: optional branch-only party (validated, never trusted).
+    const branchId = await BranchResolution.resolveBranch(req.user, companyId, req.body?.branchId, { required: false });
 
     const [result] = await pool.execute(
       `INSERT INTO general_libraries (
@@ -356,8 +366,8 @@ app.post("/api/genlib", authenticateToken, authorizePermission("FILESETUP.GENLIB
         address1, address2, address3, attention, position,
         telephone, fax, mobile, tin, email,
         atc_code, ewt_code, category, branch_code, rdo_code,
-        notes, is_prospective, is_client
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        notes, is_prospective, is_client, branch_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         companyId,
         item.code,
@@ -383,6 +393,7 @@ app.post("/api/genlib", authenticateToken, authorizePermission("FILESETUP.GENLIB
         item.notes,
         item.isProspective ? 1 : 0,
         item.isClient ? 1 : 0,
+        branchId,
       ]
     );
 
@@ -409,10 +420,16 @@ app.put("/api/genlib/:id", authenticateToken, authorizePermission("FILESETUP.GEN
     const item = normalizeGenlibInput(req.body);
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, item.companyId);
 
-    const [ownerRows] = await pool.execute("SELECT company_id FROM general_libraries WHERE id = ?", [id]);
+    const [ownerRows] = await pool.execute("SELECT company_id, branch_id FROM general_libraries WHERE id = ?", [id]);
     if (!ownerRows.length || ownerRows[0].company_id !== companyId) {
       return res.status(404).json({ message: "Record not found" });
     }
+    // Multi-Branch Foundation: another branch's record does not exist for this user;
+    // branchId (when sent) moves it - validated - and null makes it shared again.
+    await BranchResolution.assertSetupRecordVisible(req.user, ownerRows[0].branch_id);
+    const branchId = req.body && Object.prototype.hasOwnProperty.call(req.body, "branchId")
+      ? await BranchResolution.resolveBranch(req.user, companyId, req.body.branchId, { required: false })
+      : ownerRows[0].branch_id;
 
     await pool.execute(
       `UPDATE general_libraries SET
@@ -438,7 +455,8 @@ app.put("/api/genlib/:id", authenticateToken, authorizePermission("FILESETUP.GEN
         rdo_code = ?,
         notes = ?,
         is_prospective = ?,
-        is_client = ?
+        is_client = ?,
+        branch_id = ?
       WHERE id = ? AND company_id = ?`,
       [
         item.code,
@@ -464,6 +482,7 @@ app.put("/api/genlib/:id", authenticateToken, authorizePermission("FILESETUP.GEN
         item.notes,
         item.isProspective ? 1 : 0,
         item.isClient ? 1 : 0,
+        branchId,
         id,
         companyId,
       ]
@@ -486,10 +505,11 @@ app.delete("/api/genlib/:id", authenticateToken, authorizePermission("FILESETUP.
     const { id } = req.params;
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId || req.body?.companyId);
 
-    const [ownerRows] = await pool.execute("SELECT company_id FROM general_libraries WHERE id = ?", [id]);
+    const [ownerRows] = await pool.execute("SELECT company_id, branch_id FROM general_libraries WHERE id = ?", [id]);
     if (!ownerRows.length || ownerRows[0].company_id !== companyId) {
       return res.status(404).json({ message: "Record not found" });
     }
+    await BranchResolution.assertSetupRecordVisible(req.user, ownerRows[0].branch_id);
 
     await pool.execute("DELETE FROM general_libraries WHERE id = ? AND company_id = ?", [id, companyId]);
 
@@ -498,6 +518,7 @@ app.delete("/api/genlib/:id", authenticateToken, authorizePermission("FILESETUP.
       message: "Record deleted successfully",
     });
   } catch (err) {
+    if (err.statusCode && err.statusCode < 500) return res.status(err.statusCode).json({ message: err.message, code: err.code });
     console.error("DELETE GENLIB ERROR:", err);
     res.status(500).json({ message: "Failed to delete record" });
   }
@@ -684,6 +705,9 @@ async function syncBankCodeForAccount(conn, coaId, code, title, validations) {
 
 app.get("/api/coa", authenticateToken, authorizePermission("FILESETUP.COA", "VIEW"), async (req, res) => {
   try {
+    // Multi-Branch Foundation: shared accounts (branch_id NULL - the existing
+    // system-wide COA) + branch-only accounts of the caller's authorized branches.
+    const visibleBranchIds = await BranchResolution.setupBranchIds(req.user, { requestedBranchId: req.query.branchId });
     const [accounts] = await pool.execute(`
       SELECT
         id,
@@ -691,8 +715,10 @@ app.get("/api/coa", authenticateToken, authorizePermission("FILESETUP.COA", "VIE
         DATE_FORMAT(account_date, '%Y-%m-%d') AS date,
         title,
         account_class AS accountClass,
-        description
+        description,
+        branch_id AS branchId
       FROM chart_of_accounts
+      WHERE ${BranchResolution.setupVisibilitySql("chart_of_accounts", visibleBranchIds)}
       ORDER BY id DESC
     `);
 
@@ -721,6 +747,7 @@ app.get("/api/coa", authenticateToken, authorizePermission("FILESETUP.COA", "VIE
 
     res.json(accounts);
   } catch (err) {
+    if (err.statusCode && err.statusCode < 500) return res.status(err.statusCode).json({ message: err.message, code: err.code });
     console.error("GET COA ERROR:", err);
 
     res.status(500).json({
@@ -791,14 +818,16 @@ app.post("/api/coa", authenticateToken, authorizePermission("FILESETUP.COA", "CR
   try {
     const { description, validations, groups } = req.body;
     const { code, date, title, accountClass } = input;
+    // Multi-Branch Foundation: optional branch-only account (validated).
+    const branchId = await BranchResolution.resolveBranchAnyCompany(req.user, req.body?.branchId);
 
     await conn.beginTransaction();
 
     const [result] = await conn.execute(
       `INSERT INTO chart_of_accounts 
-        (code, account_date, title, account_class, description)
-       VALUES (?, ?, ?, ?, ?)`,
-      [code, date, title, accountClass, description ?? null]
+        (code, account_date, title, account_class, description, branch_id)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [code, date, title, accountClass, description ?? null, branchId]
     );
 
     const coaId = result.insertId;
@@ -829,6 +858,7 @@ app.post("/api/coa", authenticateToken, authorizePermission("FILESETUP.COA", "CR
   } catch (err) {
     await conn.rollback();
     console.error("CREATE COA ERROR:", err);
+    if (err.statusCode && err.statusCode < 500) return res.status(err.statusCode).json({ message: err.message, code: err.code });
 
     if (err.code === "ER_DUP_ENTRY") {
       return res.status(400).json({ message: "Account code already exists" });
@@ -853,14 +883,21 @@ app.put("/api/coa/:id", authenticateToken, authorizePermission("FILESETUP.COA", 
     const { id } = req.params;
     const { description, validations, groups } = req.body;
     const { code, date, title, accountClass } = input;
+    // Multi-Branch Foundation: another branch's account does not exist for this
+    // user; branchId (when sent) moves it - validated - and null makes it shared.
+    const [ownerRows] = await conn.execute("SELECT branch_id FROM chart_of_accounts WHERE id = ?", [id]);
+    if (ownerRows.length) await BranchResolution.assertSetupRecordVisible(req.user, ownerRows[0].branch_id);
+    const branchId = req.body && Object.prototype.hasOwnProperty.call(req.body, "branchId")
+      ? await BranchResolution.resolveBranchAnyCompany(req.user, req.body.branchId)
+      : (ownerRows[0]?.branch_id ?? null);
 
     await conn.beginTransaction();
 
     await conn.execute(
       `UPDATE chart_of_accounts 
-       SET code = ?, account_date = ?, title = ?, account_class = ?, description = ?
+       SET code = ?, account_date = ?, title = ?, account_class = ?, description = ?, branch_id = ?
        WHERE id = ?`,
-      [code, date, title, accountClass, description ?? null, id]
+      [code, date, title, accountClass, description ?? null, branchId, id]
     );
 
     await conn.execute("DELETE FROM coa_validations WHERE coa_id = ?", [id]);
@@ -891,6 +928,7 @@ app.put("/api/coa/:id", authenticateToken, authorizePermission("FILESETUP.COA", 
   } catch (err) {
     await conn.rollback();
     console.error("UPDATE COA ERROR:", err);
+    if (err.statusCode && err.statusCode < 500) return res.status(err.statusCode).json({ message: err.message, code: err.code });
     if (err.code === "ER_DUP_ENTRY") {
       return res.status(400).json({ message: "Account code already exists" });
     }
@@ -904,7 +942,8 @@ app.delete("/api/coa/:id", authenticateToken, authorizePermission("FILESETUP.COA
   try {
     const { id } = req.params;
 
-    const [accountRows] = await pool.execute("SELECT id, code FROM chart_of_accounts WHERE id = ?", [id]);
+    const [accountRows] = await pool.execute("SELECT id, code, branch_id FROM chart_of_accounts WHERE id = ?", [id]);
+    if (accountRows.length) await BranchResolution.assertSetupRecordVisible(req.user, accountRows[0].branch_id);
     if (accountRows.length) {
       const references = await countCoaReferences(accountRows[0]);
       if (Object.keys(references).length) {
@@ -924,6 +963,7 @@ app.delete("/api/coa/:id", authenticateToken, authorizePermission("FILESETUP.COA
       message: "Account deleted successfully",
     });
   } catch (err) {
+    if (err.statusCode && err.statusCode < 500) return res.status(err.statusCode).json({ message: err.message, code: err.code });
     console.error("DELETE COA ERROR:", err);
     res.status(500).json({ message: "Failed to delete account" });
   }
@@ -3728,6 +3768,9 @@ async function performReversal(conn, { module, companyId, original, reason, user
     ]
   );
   const reversalJvId = hdr.insertId;
+  // Multi-Branch Foundation: the reversal JV inherits the original's branch;
+  // a user outside that branch is refused (rolls the whole reversal back).
+  await ReversalBranchService.applyOriginalBranch(conn, { module, originalId: original.id, reversalJvId, companyId, user });
 
   const lineIdMap = new Map();
   for (const ol of origLines) {
@@ -5463,6 +5506,8 @@ app.post("/api/apply-payment", authenticateToken, authorizePermission("POSTING",
     // Same eligibility as /api/apv/unpaid and the CV save path: Posted,
     // not reversed, with an outstanding balance (throws 400 APV_NOT_PAYABLE).
     await assertApvPayable(conn, sourceId, apvRows[0]);
+    // Multi-Branch Foundation: the CV and the APV must be in the same branch.
+    await assertSameBranchApplication(conn, { appliedType: "CV", appliedId, sourceType: "APV", sourceId });
 
     const balanceAmount = Number(apvRows[0].balanceAmount || 0);
     const paymentAmount = Number(amount || 0);
@@ -7726,6 +7771,8 @@ app.use("/api/company-branches", require("./routes/companyBranches.routes"));
 app.use("/api/company-management", require("./routes/companyManagement.routes"));
 // Session keepalive for the inactivity timeout (lib/sessionPolicy.js).
 app.use("/api/auth", require("./routes/session.routes"));
+// Multi-Branch Foundation (Phase A): branch-aware open items, consolidated report scope.
+app.use("/api/branch-scope", require("./routes/branchScope.routes"));
 app.use("/api/exchange-rates", require("./routes/exchangeRate.routes"));
 app.use("/api/accounting-periods", require("./routes/accountingPeriods.routes"));
 app.use("/api/rfp", require("./routes/rfp.routes"));
