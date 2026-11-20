@@ -88,7 +88,7 @@ export default function AccountingEntriesGrid({
     <>
       <thead>
         <tr>
-          <th>Account</th>
+          <th className="transaction-account-col">Account</th>
           <th>Particulars</th>
           <th>Gen Ref</th>
           <th>Gen Name</th>
@@ -120,6 +120,7 @@ export default function AccountingEntriesGrid({
                 accounts={selectableAccounts}
                 fallbackAccounts={accountOptions}
                 ariaLabel="Line account"
+                wrapSelectedLabel
               />
             </td>
 

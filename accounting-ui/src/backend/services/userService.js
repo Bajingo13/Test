@@ -2,6 +2,7 @@ const pool = require("../db");
 const { logAudit } = require("../lib/audit");
 const { soleCompanyForAccess, soleCompanyOfUser } = require("../lib/auditCompany");
 const UserAccessService = require("./userAccessService");
+const BranchAssignment = require("../lib/branchAssignment");
 
 const VALID_STATUSES = ["ACTIVE", "INACTIVE", "SUSPENDED"];
 
@@ -204,7 +205,10 @@ async function updateUserAccess(id, { fullName, roleId, companyIds, branchIds },
 
   const isSuper = actingUser.roleCode === "SUPER_ADMIN";
   const actorCompanyScope = isSuper ? null : new Set(await UserAccessService.getAccessibleCompanyIds(actingUser.id));
-  const actorBranchScope = isSuper ? null : new Set(await UserAccessService.getAccessibleBranchIds(actingUser.id));
+  // Branch scope = every branch of the actor's companies (company-based, like
+  // Branch Management), so a company's Admin can hand out that company's
+  // branches without being personally assigned to each one.
+  const actorBranchScope = isSuper ? null : new Set(await BranchAssignment.branchIdsOfCompanies(actorCompanyScope));
 
   if (submittedCompanyIds) {
     await assertAllExist("companies", submittedCompanyIds, "Selected company does not exist.");
@@ -213,8 +217,10 @@ async function updateUserAccess(id, { fullName, roleId, companyIds, branchIds },
     }
   }
   if (submittedBranchIds) {
-    await assertAllExist("branches", submittedBranchIds, "Selected branch does not exist.");
-    if (actorBranchScope && submittedBranchIds.some((bid) => !actorBranchScope.has(bid))) {
+    if (isSuper) {
+      await assertAllExist("branches", submittedBranchIds, "Selected branch does not exist.");
+    } else if (submittedBranchIds.some((bid) => !actorBranchScope.has(bid))) {
+      // an unknown branch and another company's branch get the same answer
       throw forbidden("You can only assign companies/branches you yourself have access to.");
     }
   }
@@ -232,6 +238,16 @@ async function updateUserAccess(id, { fullName, roleId, companyIds, branchIds },
   const finalRoleCode = newRole ? newRole.code : target.role_code;
   if (submittedCompanyIds && finalRoleCode !== "SUPER_ADMIN" && finalCompanyIds.length === 0) {
     throw badRequest("Select at least one company for this user.");
+  }
+  // A branch assignment never crosses a company boundary: every branch the user
+  // ends up with must belong to one of the companies the user ends up with.
+  // Checked whenever companies or branches are submitted, for every assigner
+  // (Super Admins bypass SCOPE, not data integrity). Super Admin TARGETS are
+  // company-less by design and are skipped.
+  if ((submittedCompanyIds || submittedBranchIds) && finalRoleCode !== "SUPER_ADMIN") {
+    if (await BranchAssignment.branchOutsideCompanies(finalBranchIds, finalCompanyIds)) {
+      throw badRequest(BranchAssignment.BRANCH_COMPANY_MISMATCH);
+    }
   }
 
   const before = {

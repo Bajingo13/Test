@@ -1,5 +1,6 @@
 const pool = require("../db");
 const { postedOnlySql } = require("./reportRecognitionService");
+const ControlAmount = require("./controlAmountService");
 
 // AR Statement of Accounts - a customer-level (party-scoped) statement,
 // distinct from LedgerReportService.js's account-level (account_code-scoped)
@@ -32,9 +33,12 @@ const AR_UNION_SQL = `
     'INV' AS source_type, voucher_no AS reference_no, id AS transaction_id,
     COALESCE(description, '') AS particulars,
     DATE_FORMAT(due_date, '%Y-%m-%d') AS due_date,
-    COALESCE(total_debit, 0) AS debit, 0 AS credit, 1 AS sort_order
+    -- P0 TC1-062 mirror: the invoice's AR control amount (net of customer
+    -- withholding), not total_debit.
+    ${ControlAmount.baseOriginalExpr("INV", "invoice_headers", "ca")} AS debit, 0 AS credit, 1 AS sort_order
   FROM invoice_headers
-  WHERE customer_id = ? AND transaction_date {DATE_FILTER} AND company_id = ? AND ${postedOnlySql()}
+  LEFT JOIN ${ControlAmount.aggregateSql("INV")} ca ON ca.doc_id = invoice_headers.id
+  WHERE customer_id = ? AND transaction_date {DATE_FILTER} AND company_id = ? AND ${postedOnlySql("invoice_headers")}
 
   UNION ALL
 
@@ -43,9 +47,11 @@ const AR_UNION_SQL = `
     'OR' AS source_type, voucher_no AS reference_no, id AS transaction_id,
     COALESCE(description, '') AS particulars,
     NULL AS due_date,
-    0 AS debit, COALESCE(total_debit, 0) AS credit, 2 AS sort_order
+    -- P0: what the OR actually settled on the AR control account.
+    0 AS debit, ${ControlAmount.paymentSettledExpr("OR", "or_headers.total_debit", "ca")} AS credit, 2 AS sort_order
   FROM or_headers
-  WHERE customer_id = ? AND transaction_date {DATE_FILTER} AND company_id = ? AND ${postedOnlySql()}
+  LEFT JOIN ${ControlAmount.aggregateSql("OR")} ca ON ca.doc_id = or_headers.id
+  WHERE customer_id = ? AND transaction_date {DATE_FILTER} AND company_id = ? AND ${postedOnlySql("or_headers")}
 
   UNION ALL
 
@@ -66,11 +72,13 @@ const AR_UNION_SQL = `
     CONCAT(memo_type, ' MEMO') AS source_type, voucher_no AS reference_no, id AS transaction_id,
     COALESCE(description, '') AS particulars,
     NULL AS due_date,
-    CASE WHEN memo_type = 'DEBIT' THEN COALESCE(total_debit, 0) ELSE 0 END AS debit,
-    CASE WHEN memo_type = 'CREDIT' THEN COALESCE(total_credit, 0) ELSE 0 END AS credit,
+    -- P0 TC1-092b: the memo's AR control-line amount (signed: DM +, CM -).
+    GREATEST(${ControlAmount.memoSignedBaseExpr("AR", "memo_headers", "ma")}, 0) AS debit,
+    GREATEST(-${ControlAmount.memoSignedBaseExpr("AR", "memo_headers", "ma")}, 0) AS credit,
     3 AS sort_order
   FROM memo_headers
-  WHERE party_id = ? AND party_type = 'CUSTOMER' AND transaction_date {DATE_FILTER} AND company_id = ? AND ${postedOnlySql()}
+  LEFT JOIN ${ControlAmount.memoAggregateSql("AR")} ma ON ma.doc_id = memo_headers.id
+  WHERE party_id = ? AND party_type = 'CUSTOMER' AND transaction_date {DATE_FILTER} AND company_id = ? AND ${postedOnlySql("memo_headers")}
 `;
 
 function paramsFor(partyId, companyId, dateParams) {

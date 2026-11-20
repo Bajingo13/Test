@@ -15,7 +15,7 @@ jest.setTimeout(200000);
 let CO, userId, token;
 let arId, revId, cashId, ovatId, ewtPayId;
 let inputVatId, expId, apId, ewtRcvId;
-let custId;
+let custId, suppId;
 
 const ATC = "PH7I-WC010"; // 10% EWT fixture
 
@@ -49,8 +49,11 @@ beforeAll(async () => {
   expId = await mkAcc("PH7I-EXP", "Purchases Expense", "EXPENSE");
   apId = await mkAcc("PH7I-AP", "Accounts Payable", "LIABILITY");
   ewtRcvId = await mkAcc("PH7I-EWTR", "Creditable Withholding Tax Receivable", "ASSET");
-  const [p] = await pool.execute("INSERT INTO general_libraries (company_id, code, party_type, name, status, tin) VALUES (?, 'PH7I-C', 'BOTH', 'PH7I Party', 'ACTIVE', '111-222-333-000')", [CO]);
+  const [p] = await pool.execute("INSERT INTO general_libraries (company_id, code, party_type, name, status, tin) VALUES (?, 'PH7I-C', 'CUSTOMER', 'PH7I Party', 'ACTIVE', '111-222-333-000')", [CO]);
   custId = p.insertId;
+  // P1 (2026-11-18): AP documents need a real SUPPLIER (server-side party rule); 'BOTH' is not an app party type.
+  const [sp] = await pool.execute("INSERT INTO general_libraries (company_id, code, party_type, name, status, tin) VALUES (?, 'PH7I-S', 'SUPPLIER', 'PH7I Supplier', 'ACTIVE', '111-222-333-000')", [CO]);
+  suppId = sp.insertId;
   await pool.execute(
     "INSERT INTO ewt_library (atc_code, description, rate, tax_type, status) VALUES (?, 'PH7I fixture', 10, 'EWT', 'ACTIVE')",
     [ATC]
@@ -84,20 +87,23 @@ const glLine = (accountId, accountCode, debit, credit) => ({
 });
 const balancedGl = () => [glLine(arId, "PH7I-AR", 1000, 0), glLine(revId, "PH7I-REV", 0, 1000)];
 
-const MODULES = {
+// P1 (2026-11-18): a function, so the party ids are read AFTER beforeAll created
+// them - as a load-time object every party id was undefined (never sent).
+const modulesNow = () => ({
   INV: { url: "invoices", extra: { customerId: custId, customerName: "PH7I Party" } },
-  APV: { url: "apv", extra: { supplierId: custId, supplierName: "PH7I Party" } },
+  APV: { url: "apv", extra: { supplierId: suppId, supplierName: "PH7I Supplier" } },
   OR: { url: "or", extra: { customerId: custId, customerName: "PH7I Party", receiptNo: "R", paymentMethod: "Cash" } },
-  CV: { url: "cv", extra: { payeeId: custId, payeeName: "PH7I Party", paymentMethod: "Check" } },
+  CV: { url: "cv", extra: { payeeId: suppId, payeeName: "PH7I Supplier", paymentMethod: "Check" } },
   JV: { url: "jv", extra: { preparedFor: "PH7I Party" } },
-  PO: { url: "purchase-orders", extra: { supplierId: custId, supplierName: "PH7I Party" } },
+  PO: { url: "purchase-orders", extra: { supplierId: suppId, supplierName: "PH7I Supplier" } },
   PCV: { url: "petty-cash", extra: { payeeId: custId, payeeName: "PH7I Party" } },
   DM: { url: "debit-memos", extra: { partyId: custId, partyName: "PH7I Party", partyType: "CUSTOMER" } },
   CM: { url: "credit-memos", extra: { partyId: custId, partyName: "PH7I Party", partyType: "CUSTOMER" } },
-};
+});
+const MODULES = modulesNow();
 
 function post(mod, lines, voucherNo) {
-  const m = MODULES[mod];
+  const m = modulesNow()[mod];
   const body = {
     voucherNo: voucherNo || `PH7I-${mod}-${Math.random().toString(36).slice(2, 8)}`,
     transactionDate: "2026-11-22", referenceNo: "r", description: "ph7i", status: "Draft",
@@ -393,7 +399,7 @@ describe("Phase 7I - legacy OR/CV/PO tax/control-only payloads cannot bypass the
   test("CV: legacy Input-VAT + EWT-control fragment only -> 400, no orphan cv_headers row", async () => {
     const before = await headerCount("cv_headers");
     const res = await request(app).post("/api/cv").set("Authorization", `Bearer ${token}`).send({
-      voucherNo: "PH7I-CV-LEGACY-TAXONLY", payeeId: custId, payeeName: "PH7I Party",
+      voucherNo: "PH7I-CV-LEGACY-TAXONLY", payeeId: suppId, payeeName: "PH7I Supplier",
       transactionDate: "2026-11-22", referenceNo: "r", description: "x", status: "Draft",
       paymentMethod: "Cash", totalDebit: 1200, totalCredit: 1200, currency: { companyId: CO },
       lines: [
@@ -409,7 +415,7 @@ describe("Phase 7I - legacy OR/CV/PO tax/control-only payloads cannot bypass the
   test("PO: legacy Input-VAT fragment only -> 400, no orphan purchase_order_headers row", async () => {
     const before = await headerCount("purchase_order_headers");
     const res = await request(app).post("/api/purchase-orders").set("Authorization", `Bearer ${token}`).send({
-      voucherNo: "PH7I-PO-LEGACY-TAXONLY", supplierId: custId, supplierName: "PH7I Party",
+      voucherNo: "PH7I-PO-LEGACY-TAXONLY", supplierId: suppId, supplierName: "PH7I Supplier",
       transactionDate: "2026-11-22", referenceNo: "r", description: "x", status: "Draft",
       totalCredit: 1200, currency: { companyId: CO },
       lines: [legacyLine(inputVatId, "PH7I-IVAT", "Input VAT Receivable", 1200, 0)],
@@ -438,7 +444,7 @@ describe("Phase 7I - normal legacy VAT/EWT flows (no taxEntry) still succeed unc
 
   test("CV: Expense + legacy Input VAT + Cash -> 200, creates 0 structured tax entries", async () => {
     const res = await request(app).post("/api/cv").set("Authorization", `Bearer ${token}`).send({
-      voucherNo: "PH7I-CV-LEGACY-OK", payeeId: custId, payeeName: "PH7I Party",
+      voucherNo: "PH7I-CV-LEGACY-OK", payeeId: suppId, payeeName: "PH7I Supplier",
       transactionDate: "2026-11-22", referenceNo: "r", description: "x", status: "Draft",
       paymentMethod: "Cash", totalDebit: 11200, totalCredit: 11200, currency: { companyId: CO },
       lines: [
@@ -453,7 +459,7 @@ describe("Phase 7I - normal legacy VAT/EWT flows (no taxEntry) still succeed unc
 
   test("PO: Expense + legacy Input VAT + AP -> 200, creates 0 structured tax entries", async () => {
     const res = await request(app).post("/api/purchase-orders").set("Authorization", `Bearer ${token}`).send({
-      voucherNo: "PH7I-PO-LEGACY-OK", supplierId: custId, supplierName: "PH7I Party",
+      voucherNo: "PH7I-PO-LEGACY-OK", supplierId: suppId, supplierName: "PH7I Supplier",
       transactionDate: "2026-11-22", referenceNo: "r", description: "x", status: "Draft",
       totalCredit: 11200, currency: { companyId: CO },
       lines: [
@@ -544,7 +550,7 @@ describe("Phase 7I - modern structured tax entries: exactly once, treatment unch
 
   test("APV Input VAT -> exactly 1 INPUT_VAT structured entry", async () => {
     const res = await request(app).post("/api/apv").set("Authorization", `Bearer ${token}`).send({
-      voucherNo: "PH7I-MOD-APV-IVAT", supplierId: custId, supplierName: "PH7I Party",
+      voucherNo: "PH7I-MOD-APV-IVAT", supplierId: suppId, supplierName: "PH7I Supplier",
       transactionDate: "2026-11-22", referenceNo: "r", description: "x", status: "Draft",
       totalDebit: 11200, totalCredit: 11200, currency: { companyId: CO },
       lines: [
@@ -591,7 +597,7 @@ describe("Phase 7I - modern structured tax entries: exactly once, treatment unch
 
   test("APV EWT -> exactly 1 EWT entry, no duplication", async () => {
     const res = await request(app).post("/api/apv").set("Authorization", `Bearer ${token}`).send({
-      voucherNo: "PH7I-MOD-APV-EWT", supplierId: custId, supplierName: "PH7I Party",
+      voucherNo: "PH7I-MOD-APV-EWT", supplierId: suppId, supplierName: "PH7I Supplier",
       transactionDate: "2026-11-22", referenceNo: "r", description: "x", status: "Draft",
       atcCode: ATC, taxWithheldAmount: 1000, totalDebit: 10000, totalCredit: 10000, currency: { companyId: CO },
       lines: [

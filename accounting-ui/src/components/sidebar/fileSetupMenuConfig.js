@@ -14,6 +14,7 @@ import {
   FilePlus,
   Percent,
   Building,
+  Network,
   Boxes,
   Wallet,
   ClipboardList,
@@ -61,4 +62,5 @@ export const FILE_SETUP_MENU = [
   { id: "fixed-asset-setup", label: "Fixed Asset Setup", icon: Boxes, path: "/fixed-asset-setup" },
   { id: "prepaid-account-setup", label: "Prepaid Account Setup", icon: Wallet, path: "/prepaid-account-setup" },
   { id: "company-profile", label: "Company Profile", icon: Building, path: "/company-profile" },
+  { id: "branch-management", label: "Branches", icon: Network, path: "/branch-management" },
 ];

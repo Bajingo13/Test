@@ -1,3 +1,4 @@
+@import "./ReportFilterFields.css"; /* shared dark-mode filter-field readability */
 .tb-page {
 padding: 28px;
 background: var(--bg-page);
@@ -436,4 +437,96 @@ squeezing text.
 .tb-report-table {
 width: 100%;
 }
+}
+
+
+/* =====================================================================
+   Report UI pass (TC-REPORT-013) - scoped to .tb-page. Wide tables
+   scroll inside their report card instead of widening the whole page;
+   filter grids, action rows and headers shrink / wrap on narrow screens;
+   dark-mode primary buttons keep >= 4.5:1. Print is unchanged.
+   ===================================================================== */
+.tb-page {
+  contain: inline-size; /* table widths no longer push the app shell wider */
+}
+
+.tb-page .tb-report-card {
+  overflow-x: auto;
+}
+
+.tb-page .tb-filter-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.tb-page .tb-filter-grid > * {
+  min-width: 0;
+}
+
+.tb-page .tb-filter-grid input,
+.tb-page .tb-filter-grid select {
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.tb-page .rpf > .rpf-dates {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 240px));
+}
+
+.tb-page .tb-actions {
+  flex-wrap: wrap;
+}
+
+.tb-page .tb-actions button {
+  white-space: nowrap;
+}
+
+@media (max-width: 600px) {
+  .tb-page .tb-report-top {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 8px;
+  }
+}
+
+@media (max-width: 900px) {
+  .tb-page .tb-filter-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 600px) {
+  .tb-page .tb-filter-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+[data-theme="dark"] .tb-page .tb-actions .primary {
+  background: #2563eb; /* the light-theme accent: white text 5.2:1 (dark accent #3b82f6 is 3.7:1) */
+}
+
+@media print {
+  .tb-page {
+    contain: none;
+  }
+
+  .tb-page .tb-report-card {
+    overflow: visible;
+  }
+}
+
+/* Trial Balance Branch / Department and Status controls are informational:
+   transactions carry no branch / department tag, and the Trial Balance only
+   ever includes Posted transactions (trialBalanceDifferenceService). */
+.tb-page .tb-filter-grid select:disabled {
+  color: var(--text-primary);
+  -webkit-text-fill-color: var(--text-primary);
+  opacity: 1;
+  background: var(--bg-disabled);
+  cursor: not-allowed;
+}
+
+.tb-page .tb-filter-note {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-secondary);
 }

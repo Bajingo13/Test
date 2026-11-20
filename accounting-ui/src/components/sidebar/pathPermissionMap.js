@@ -12,6 +12,11 @@
 // so they're mapped below like every other real transaction module now.
 const PATH_PERMISSIONS = {
   "/coa": ["FILESETUP.COA", "VIEW"],
+  // Group Codes: the page's data comes from GET /api/group-codes, which is
+  // FILESETUP.GROUP_CODES / VIEW. Both route spellings are mapped (the menu
+  // links /group-code; /group-codes is the same page).
+  "/group-code": ["FILESETUP.GROUP_CODES", "VIEW"],
+  "/group-codes": ["FILESETUP.GROUP_CODES", "VIEW"],
   "/report-sections": ["FILESETUP.REPORT_SECTIONS", "VIEW"],
   "/general-libraries": ["FILESETUP.GENLIB", "VIEW"],
   "/beginning-balances/gl": ["FILESETUP.BEGINNING_BALANCES", "VIEW"],
@@ -24,6 +29,8 @@ const PATH_PERMISSIONS = {
   "/fixed-asset-setup": ["FILESETUP.FIXED_ASSETS", "VIEW"],
   "/prepaid-account-setup": ["FILESETUP.PREPAID_ACCOUNTS", "VIEW"],
   "/company-profile": ["FILESETUP.COMPANY_SETUP", "VIEW"],
+  // Company Branch Management: GET /api/company-branches is FILESETUP.BRANCHES / VIEW.
+  "/branch-management": ["FILESETUP.BRANCHES", "VIEW"],
   "/currency-file-setup": ["FILESETUP.CURRENCY_SETUP", "VIEW"],
   "/filesetup/print-templates/invoice": ["PRINT.DOCUMENT_TEMPLATES", "VIEW"],
   "/filesetup/print-templates/or": ["PRINT.DOCUMENT_TEMPLATES", "VIEW"],
@@ -70,6 +77,7 @@ const PATH_PERMISSIONS = {
   "/reports/ar-statement-of-accounts": ["REPORTS.AR", "VIEW"],
   "/reports/ar-billings-and-collections": ["REPORTS.AR", "VIEW"],
   "/reports/ar-overdue-accounts": ["REPORTS.AR", "VIEW"],
+  "/reports/ap-statement-of-accounts": ["REPORTS.AP", "VIEW"],
   "/reports/ap-payables-and-payments": ["REPORTS.AP", "VIEW"],
   "/reports/ap-overdue-accounts": ["REPORTS.AP", "VIEW"],
   "/reports/fixed-asset-register": ["REPORTS.FIXED_ASSETS", "VIEW"],
@@ -89,6 +97,9 @@ const PATH_PERMISSIONS = {
   "/admin/invitations": ["ADMIN.INVITATIONS", "VIEW"],
   "/admin/roles-permissions": ["ADMIN.ROLES_PERMISSIONS", "VIEW"],
   "/admin/access-restrictions": ["ADMIN.ACCESS_RESTRICTIONS", "VIEW"],
+  // Company Management: FILESETUP.COMPANIES / CREATE is granted to no role, so only
+  // the Super Admin (permission bypass) sees it - same check as /api/company-management.
+  "/company-management": ["FILESETUP.COMPANIES", "CREATE"],
   "/admin/permission-templates": ["ADMIN.ROLES_PERMISSIONS", "VIEW"],
   "/admin/accounting-period-locking": ["ACCOUNTING_PERIODS", "VIEW"],
   "/admin/audit-logs": ["ADMIN.AUDIT_LOGS", "VIEW"],

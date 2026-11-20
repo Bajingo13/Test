@@ -173,6 +173,7 @@ export default function GroupCodes() {
 
       if (!res.ok) {
         if (handleAuthError(res.status)) return;
+        if (res.status === 403) return; // the page shows its no-permission message
         alert(data.message || "Failed to load group codes.");
         return;
       }

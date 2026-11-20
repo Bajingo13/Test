@@ -1,3 +1,4 @@
+@import "./ReportFilterFields.css"; /* shared dark-mode filter-field readability */
 .aa-page {
   padding: 28px;
   background: var(--bg-page);
@@ -390,4 +391,86 @@
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
   }
+}
+
+
+/* =====================================================================
+   Report UI pass (TC-REPORT-013) - scoped to .aa-page. Wide tables
+   scroll inside their report card instead of widening the whole page;
+   filter grids, action rows and headers shrink / wrap on narrow screens;
+   dark-mode primary buttons keep >= 4.5:1. Print is unchanged.
+   ===================================================================== */
+.aa-page {
+  contain: inline-size; /* table widths no longer push the app shell wider */
+}
+
+.aa-page .aa-report-card {
+  overflow-x: auto;
+}
+
+.aa-page .aa-filter-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.aa-page .aa-filter-grid > * {
+  min-width: 0;
+}
+
+.aa-page .aa-filter-grid input,
+.aa-page .aa-filter-grid select {
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.aa-page .rpf > .rpf-dates {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 240px));
+}
+
+.aa-page .aa-actions {
+  flex-wrap: wrap;
+}
+
+.aa-page .aa-actions button {
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .aa-page .aa-filter-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 600px) {
+  .aa-page .aa-filter-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+[data-theme="dark"] .aa-page .aa-actions .primary {
+  background: #2563eb; /* the light-theme accent: white text 5.2:1 (dark accent #3b82f6 is 3.7:1) */
+}
+
+@media print {
+  .aa-page {
+    contain: none;
+  }
+
+  .aa-page .aa-report-card {
+    overflow: visible;
+  }
+}
+
+/* Inline validation message (replaces the native "Please select ..." alerts on
+   Account Analysis / Input VAT / Subsidiary Ledger / Prepaid Subsidiary).
+   Theme tokens, so it reads in both themes; wraps on phones. */
+.aa-page .aa-error {
+  margin: 14px 0 0;
+  padding: 10px 14px;
+  border: 1px solid var(--danger-text);
+  border-radius: 10px;
+  background: var(--danger-bg);
+  color: var(--danger-text);
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
 }

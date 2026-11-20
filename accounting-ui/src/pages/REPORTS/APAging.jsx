@@ -42,6 +42,8 @@ export default function APAging() {
   const [bucketTotals, setBucketTotals] = useState(null);
   const [loading, setLoading] = useState(false);
   const [generated, setGenerated] = useState(false);
+  // Generation failure message (replaces a native alert) - shown above the report.
+  const [reportError, setReportError] = useState("");
   const [runInfo, setRunInfo] = useState({ pageNo: 1, runDate: "", runTime: "" });
 
   useEffect(() => {
@@ -70,6 +72,7 @@ export default function APAging() {
   async function generateReport() {
     const applied = period.apply();
     if (!applied) return;
+    setReportError("");
     setLoading(true);
 
     const now = new Date();
@@ -88,14 +91,17 @@ export default function APAging() {
         credentials: "include",
         headers: authHeaders(),
       });
-      if (!res.ok) throw new Error("Failed to fetch AP Aging");
+      if (!res.ok) {
+        const failBody = await res.json().catch(() => ({}));
+        throw Object.assign(new Error("Failed to fetch AP Aging"), { userMessage: res.status === 400 || res.status === 403 ? failBody?.message : null });
+      }
 
       const data = await res.json();
       setRows(Array.isArray(data.rows) ? data.rows : []);
       setBucketTotals(data.bucketTotals || null);
     } catch (err) {
       console.error(err);
-      alert("Failed to generate AP Aging Report.");
+      setReportError(err.userMessage || "Failed to generate AP Aging Report.");
       setRows([]);
       setBucketTotals(null);
     } finally {
@@ -141,8 +147,8 @@ export default function APAging() {
           <ReportPeriodFilter period={period} idPrefix="apa" />
 
           <div>
-            <label>Supplier</label>
-            <select value={partyFilter} onChange={(e) => setPartyFilter(e.target.value)}>
+            <label htmlFor="apa-supplier">Supplier</label>
+            <select id="apa-supplier" value={partyFilter} onChange={(e) => setPartyFilter(e.target.value)}>
               <option value="">All Suppliers</option>
               {parties.map((p) => (
                 <option key={p.id} value={p.id}>{p.name}</option>
@@ -151,8 +157,8 @@ export default function APAging() {
           </div>
 
           <div>
-            <label>Currency</label>
-            <select value={currencyFilter} onChange={(e) => setCurrencyFilter(e.target.value)}>
+            <label htmlFor="apa-currency">Currency</label>
+            <select id="apa-currency" value={currencyFilter} onChange={(e) => setCurrencyFilter(e.target.value)}>
               <option value="">All Currencies</option>
               {currencies.map((c) => (
                 <option key={c.id} value={c.currencyCode}>{c.currencyCode}</option>
@@ -161,8 +167,8 @@ export default function APAging() {
           </div>
 
           <div>
-            <label>Aging Bucket</label>
-            <select value={bucketFilter} onChange={(e) => setBucketFilter(e.target.value)}>
+            <label htmlFor="apa-bucket">Aging Bucket</label>
+            <select id="apa-bucket" value={bucketFilter} onChange={(e) => setBucketFilter(e.target.value)}>
               <option value="">All Buckets</option>
               {Object.entries(BUCKET_LABELS).map(([key, label]) => (
                 <option key={key} value={key}>{label}</option>
@@ -171,8 +177,8 @@ export default function APAging() {
           </div>
 
           <div>
-            <label>Status</label>
-            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+            <label htmlFor="apa-status">Status</label>
+            <select id="apa-status" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
               <option value="OPEN">Open</option>
               <option value="PAID">Paid</option>
               <option value="ALL">All</option>
@@ -209,6 +215,12 @@ export default function APAging() {
           </button>
         </div>
       </div>
+
+      {reportError ? (
+        <div className="tb-company-message error" role="alert" id="apa-error">
+          {reportError}
+        </div>
+      ) : null}
 
       {generated && (
         <div className="tb-report-card">

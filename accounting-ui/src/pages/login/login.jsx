@@ -1,7 +1,19 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { apiPost } from "../../api";
+import { AUTH_NOTICE_KEY } from "../../utils/authSession";
 import "./login.css";
+
+// One-shot message left by a forced sign-out (e.g. the inactivity timeout).
+function takeAuthNotice() {
+  try {
+    const notice = sessionStorage.getItem(AUTH_NOTICE_KEY) || "";
+    sessionStorage.removeItem(AUTH_NOTICE_KEY);
+    return notice;
+  } catch {
+    return "";
+  }
+}
 
 export default function Login() {
   const navigate = useNavigate();
@@ -14,6 +26,8 @@ export default function Login() {
 
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [notice] = useState(takeAuthNotice);
+  const [formError, setFormError] = useState("");
   const [loginSuccessAnim, setLoginSuccessAnim] = useState(false);
 
   const [bubbleStates, setBubbleStates]= useState({
@@ -55,12 +69,13 @@ export default function Login() {
     e.preventDefault();
 
     if (!form.username.trim() || !form.password.trim()) {
-      alert("Please enter your username and password.");
+      setFormError("Please enter your username and password.");
       return;
     }
 
     try {
       setLoading(true);
+      setFormError("");
 
       const data = await apiPost("/api/login", {
         username: form.username,
@@ -77,7 +92,7 @@ export default function Login() {
       }, 900);
     } catch (error) {
       console.error("LOGIN ERROR:", error);
-      alert(
+      setFormError(
         error instanceof TypeError
           ? "Unable to connect to the server."
           : error.message || "Login failed"
@@ -105,6 +120,9 @@ export default function Login() {
 
             <h1>Sign in</h1>
             <p className="login-subtitle">Access your accounting system</p>
+
+            {notice ? <div className="login-notice" role="status">{notice}</div> : null}
+            {formError ? <div className="login-error" role="alert">{formError}</div> : null}
 
             <div className="login-field">
               <span className="field-icon">👤</span>

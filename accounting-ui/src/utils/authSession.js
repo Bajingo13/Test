@@ -46,7 +46,14 @@ let sessionExpiredHandled = false;
 // pattern working unchanged. A 403 (or any other status) returns false, so
 // the caller falls through to its normal error display instead of being
 // logged out - the fix for bug #2 above.
-export function handleAuthError(status) {
+// The message the Login page shows after a forced sign-out (no native alert).
+export const AUTH_NOTICE_KEY = "authNotice";
+export const SESSION_EXPIRED_MESSAGE = "Your session has expired due to inactivity. Please log in again.";
+const SESSION_ENDED_MESSAGE = "Your session has ended. Please log in again.";
+
+// `code` (optional) is the backend's reason - "SESSION_EXPIRED" for the
+// 15-minute inactivity timeout (middleware/authenticate.js).
+export function handleAuthError(status, code) {
   if (status !== 401) return false;
 
   if (sessionExpiredHandled) return true;
@@ -56,9 +63,24 @@ export function handleAuthError(status) {
   localStorage.removeItem(USER_KEY);
 
   if (window.location.pathname !== "/login") {
-    alert("Your session has expired. Please sign in again.");
+    try {
+      sessionStorage.setItem(AUTH_NOTICE_KEY, code === "SESSION_EXPIRED" ? SESSION_EXPIRED_MESSAGE : SESSION_ENDED_MESSAGE);
+    } catch {
+      // storage unavailable - the redirect still signs the user out
+    }
     window.location.href = "/login";
   }
 
   return true;
+}
+
+// Seconds-since-epoch expiry of the stored session token (null if none / unreadable).
+// Display logic only - the server is what enforces the expiry.
+export function tokenExpiry(token = getToken()) {
+  try {
+    const payload = JSON.parse(atob(String(token).split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
+    return Number(payload.exp) || null;
+  } catch {
+    return null;
+  }
 }

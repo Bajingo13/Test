@@ -70,8 +70,13 @@ exports.listBranches = async (req, res) => {
       const [rows] = await pool.execute("SELECT id, name, company_id, status FROM branches ORDER BY name");
       return res.json(rows);
     }
-    const { branches } = await UserAccessService.getUserAccessSummary(req.user.id);
-    res.json(branches);
+    // Same branch scope the server enforces when assigning (lib/branchAssignment.js):
+    // every branch of the caller's companies. Inactive branches stay listed (with
+    // status), exactly as before - assignment does not filter on status.
+    const companyIds = await UserAccessService.getAccessibleCompanyIds(req.user.id);
+    if (!companyIds.length) return res.json([]);
+    const [rows] = await pool.query("SELECT id, name, code, company_id, status FROM branches WHERE company_id IN (?) ORDER BY name", [companyIds]);
+    res.json(rows);
   } catch (err) {
     console.error("LIST BRANCHES ERROR:", err.message);
     res.status(500).json({ message: "Failed to load branches" });

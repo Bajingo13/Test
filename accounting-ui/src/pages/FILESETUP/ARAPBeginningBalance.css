@@ -104,6 +104,9 @@
 .arap-entry-table-wrap,
 .arap-table-wrap {
   overflow-x: auto;
+  /* TC-FS-012: the wide table scrolls inside the card; without this its
+     min-content width still widened the page (10px page scroll at 1440) */
+  contain: inline-size;
   border: 1px solid var(--border-color);
   border-radius: 12px;
 }
@@ -223,4 +226,13 @@ button.danger {
   .arap-grid {
     grid-template-columns: 1fr;
   }
+}
+
+/* TC-FS-012 narrow widths: the page never widens <main>; the search box fits a phone-width card. */
+.arap-page {
+  contain: inline-size;
+}
+
+.arap-search-input {
+  min-width: min(220px, 100%);
 }

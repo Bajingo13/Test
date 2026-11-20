@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
+import usePermissions from "../../hooks/usePermissions";
 import { matchesDateRange } from "../../utils/dateRangeFilter.mjs";
 import RecordViewModal from "../../components/RecordViewModal";
+import AutoResizeTextarea from "../../components/AutoResizeTextarea";
+import { sortAccountsByCode, toolbarState } from "./fileSetupRecords.mjs";
 import "./COA.css";
 import "../../components/RecurringTemplateModal.css";
 
@@ -41,6 +44,10 @@ const EMPTY_FORM = {
 };
 
 export default function COA() {
+  const { can } = usePermissions();
+  const canCreate = can("FILESETUP.COA", "CREATE");
+  const canEditPerm = can("FILESETUP.COA", "EDIT");
+  const canDeletePerm = can("FILESETUP.COA", "DELETE");
   const [accounts, setAccounts] = useState([]);
   const [groupCodeOptions, setGroupCodeOptions] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
@@ -86,6 +93,9 @@ export default function COA() {
 
       if (!res.ok) {
         if (handleAuthError(res.status)) return;
+        // Group codes only feed the account editor (COA CREATE / EDIT). A view-only
+        // user (ACCOUNTANT, R1) has no Group Codes VIEW - no alert for that.
+        if (res.status === 403) return;
         alert(data.message || "Failed to load group codes");
         return;
       }
@@ -148,8 +158,19 @@ export default function COA() {
     });
   }, [accounts, search, dateFrom, dateTo]);
 
+  // H9: the View dialog lists accounts in account-code order. Client-side
+  // only - the API order and the list Previous / Next walk are unchanged.
+  const viewAccounts = useMemo(() => sortAccountsByCode(filteredAccounts), [filteredAccounts]);
+
   const currentIndex = accounts.findIndex((item) => item.id === selectedId);
   const isEditing = mode === "add" || mode === "edit";
+  const toolbar = toolbarState({
+    index: currentIndex,
+    total: accounts.length,
+    hasRecord: Boolean(form.id),
+    isEditing,
+    busy: previewLoading,
+  });
 
   function loadAccount(account) {
     setSelectedId(account.id);
@@ -526,33 +547,41 @@ export default function COA() {
             </div>
 
             <div className="coa-toolbar">
-              <button className="btn btn-primary" onClick={handleAdd}>
-                Add
-              </button>
-              <button className="btn" onClick={handleEdit}>
-                Edit
-              </button>
-              <button className="btn btn-danger" onClick={handleDelete}>
-                Delete
-              </button>
-              <button className="btn" onClick={handleView}>
+              {canCreate ? (
+                <button type="button" className="btn btn-primary" onClick={handleAdd}>
+                  Add
+                </button>
+              ) : null}
+              {canEditPerm ? (
+                <button type="button" className="btn" onClick={handleEdit} disabled={!toolbar.canEdit}>
+                  Edit
+                </button>
+              ) : null}
+              {canDeletePerm ? (
+                <button type="button" className="btn btn-danger" onClick={handleDelete} disabled={!toolbar.canDelete}>
+                  Delete
+                </button>
+              ) : null}
+              <button type="button" className="btn" onClick={handleView}>
                 View
               </button>
-              <button className="btn" onClick={() => window.print()}>
+              <button type="button" className="btn" onClick={() => window.print()}>
                 Print
               </button>
-              <button className="btn" onClick={handlePrevious}>
+              <button type="button" className="btn" onClick={handlePrevious} disabled={!toolbar.canPrevious}>
                 Previous
               </button>
-              <button className="btn" onClick={handleNext}>
+              <button type="button" className="btn" onClick={handleNext} disabled={!toolbar.canNext}>
                 Next
               </button>
-              <button className="btn" onClick={downloadTemplate}>
+              <button type="button" className="btn" onClick={downloadTemplate}>
                 Generate Template
               </button>
-              <button className="btn" onClick={triggerImport} disabled={previewLoading}>
-                {previewLoading ? "Reading file..." : "Import"}
-              </button>
+              {canCreate ? (
+                <button type="button" className="btn" onClick={triggerImport} disabled={!toolbar.canImport}>
+                  {previewLoading ? "Reading file..." : "Import"}
+                </button>
+              ) : null}
               <input
                 type="file"
                 ref={importInputRef}
@@ -594,7 +623,7 @@ export default function COA() {
               { key: "accountClass", label: "Class" },
               { key: "date", label: "Date" },
             ]}
-            records={filteredAccounts}
+            records={viewAccounts}
             loading={loading}
             emptyMessage="No accounts found."
             selectedId={selectedId}
@@ -607,8 +636,12 @@ export default function COA() {
           <div className="coa-card">
             <div className="coa-grid">
               <div className="field">
-                <label>Code</label>
+                <label htmlFor="coa-code">
+                  Code <span className="fs-required" aria-hidden="true">*</span>
+                </label>
                 <input
+                  id="coa-code"
+                  aria-required="true"
                   value={form.code}
                   disabled={!isEditing}
                   onChange={(e) =>
@@ -618,8 +651,9 @@ export default function COA() {
               </div>
 
               <div className="field">
-                <label>Date</label>
+                <label htmlFor="coa-date">Date</label>
                 <input
+                  id="coa-date"
                   type="date"
                   value={form.date}
                   disabled={!isEditing}
@@ -630,8 +664,12 @@ export default function COA() {
               </div>
 
               <div className="field field-wide">
-                <label>Title</label>
-                <input
+                <label htmlFor="coa-title">
+                  Title <span className="fs-required" aria-hidden="true">*</span>
+                </label>
+                <AutoResizeTextarea
+                  id="coa-title"
+                  aria-required="true"
                   value={form.title}
                   disabled={!isEditing}
                   onChange={(e) =>
@@ -641,8 +679,9 @@ export default function COA() {
               </div>
 
               <div className="field">
-                <label>Class</label>
+                <label htmlFor="coa-class">Class</label>
                 <select
+                  id="coa-class"
                   value={form.accountClass}
                   disabled={!isEditing}
                   onChange={(e) =>
@@ -674,6 +713,7 @@ export default function COA() {
                       key={item}
                       type="button"
                       disabled={!isEditing}
+                      aria-pressed={checked}
                       className={
                         checked ? "validation-chip active" : "validation-chip"
                       }
@@ -687,8 +727,9 @@ export default function COA() {
             </div>
 
             <div className="section-block">
-              <h3>Description</h3>
+              <h3 id="coa-description-label">Description</h3>
               <textarea
+                aria-labelledby="coa-description-label"
                 rows="4"
                 value={form.description}
                 disabled={!isEditing}
@@ -714,6 +755,7 @@ export default function COA() {
 
               <div className="group-form">
                 <select
+                  aria-label="Group Code"
                   value={groupCode}
                   disabled={!isEditing}
                   onChange={(e) => setGroupCode(e.target.value)}
@@ -831,7 +873,7 @@ export default function COA() {
                   {previewResult.skipped?.length > 0 && (
                     <div className="coa-import-preview-section">
                       <h4>Skipped rows ({previewResult.skipped.length})</h4>
-                      <ul className="coa-import-preview-list">
+                      <ul className="coa-import-preview-list" tabIndex={0} aria-label="Skipped rows">
                         {previewResult.skipped.map((s, i) => (
                           <li key={i}>Row {s.row}: {s.reason}</li>
                         ))}
@@ -842,7 +884,7 @@ export default function COA() {
                   {previewResult.warnings?.length > 0 && (
                     <div className="coa-import-preview-section">
                       <h4>Warnings ({previewResult.warnings.length})</h4>
-                      <ul className="coa-import-preview-list">
+                      <ul className="coa-import-preview-list" tabIndex={0} aria-label="Warnings">
                         {previewResult.warnings.map((w, i) => (
                           <li key={i}>Row {w.row}: {w.message}</li>
                         ))}
@@ -859,7 +901,7 @@ export default function COA() {
                     {importResult.skipped?.length > 0 && (
                       <div className="coa-import-preview-section">
                         <h4>Skipped rows ({importResult.skipped.length})</h4>
-                        <ul className="coa-import-preview-list">
+                        <ul className="coa-import-preview-list" tabIndex={0} aria-label="Skipped rows">
                           {importResult.skipped.map((s, i) => (
                             <li key={i}>Row {s.row}: {s.reason}</li>
                           ))}
@@ -869,7 +911,7 @@ export default function COA() {
                     {importResult.warnings?.length > 0 && (
                       <div className="coa-import-preview-section">
                         <h4>Warnings ({importResult.warnings.length})</h4>
-                        <ul className="coa-import-preview-list">
+                        <ul className="coa-import-preview-list" tabIndex={0} aria-label="Warnings">
                           {importResult.warnings.map((w, i) => (
                             <li key={i}>Row {w.row}: {w.message}</li>
                           ))}

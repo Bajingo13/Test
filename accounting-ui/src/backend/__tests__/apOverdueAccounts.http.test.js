@@ -207,8 +207,8 @@ beforeAll(async () => {
   // unpaid - proves a beginning-balance item can become overdue too.
   await makeArapBeginningBalance(companyAId, suppA1Id, "APO Supplier A1", "2026-07-01", "2026-08-01", "Posted", 1500);
 
-  // ---- Debit/Credit Memos - must NEVER appear anywhere in the overdue
-  // report (AgingReportService's row source never joins memo_headers).
+  // ---- Debit/Credit Memos (45 days -> days31to60). P0 TC1-092b (2026-11-18): Debit/Credit Memos are standalone aging entries (header-only memos use the header-total convention), so they now appear here.
+  // Supplier convention: Debit Memo -250 (decreases AP), Credit Memo +100.
   await makeMemo(companyAId, "DEBIT", suppA1Id, "APO-DM-1", "2026-08-05", 250);
   await makeMemo(companyAId, "CREDIT", suppA1Id, "APO-CM-1", "2026-08-05", 100);
 
@@ -381,24 +381,27 @@ describe("GET /api/reports/ap-overdue-accounts", () => {
     expect(row.bucket).toBe("days31to60");
   });
 
-  test("24. Debit/Credit Memos never appear in the overdue report (inherited: AgingReportService's row source never joins memo_headers)", () => {
-    expect(findRow(report, "APO-DM-1")).toBeUndefined();
-    expect(findRow(report, "APO-CM-1")).toBeUndefined();
+  // P0 TC1-092b (2026-11-18): Debit/Credit Memos are standalone aging entries (header-only memos use the header-total convention), so they now appear here.
+  test("24. Debit/Credit Memos appear as standalone items: supplier DM -250, CM +100, aged from the memo date", () => {
+    expect(Number(findRow(report, "APO-DM-1").baseBalance)).toBe(-250);
+    expect(Number(findRow(report, "APO-CM-1").baseBalance)).toBe(100);
+    expect(findRow(report, "APO-CM-1").bucket).toBe("days31to60");
   });
 
   test("25. company isolation - Company B's overdue APV never leaks into Company A's report", () => {
     expect(findRow(report, "APO-B-APV-1")).toBeUndefined();
   });
 
-  test("26. supplier A1's summary row totals match the hand-computed sum (13 documents, 10700 total)", () => {
+  // P0 TC1-092b: + DM -250 and CM +100 (was 13 documents / 10700).
+  test("26. supplier A1's summary row totals match the hand-computed sum (15 documents, 10550 total)", () => {
     const p = findParty(report, suppA1Id);
     expect(p).toBeDefined();
-    expect(p.documentCount).toBe(13);
+    expect(p.documentCount).toBe(15);
     expect(Number(p.buckets.days1to30)).toBe(2500);
-    expect(Number(p.buckets.days31to60)).toBe(5500);
+    expect(Number(p.buckets.days31to60)).toBe(5350);
     expect(Number(p.buckets.days61to90)).toBe(1700);
     expect(Number(p.buckets.over90)).toBe(1000);
-    expect(Number(p.baseBalance)).toBe(10700);
+    expect(Number(p.baseBalance)).toBe(10550);
   });
 
   test("27. supplier A2's summary row (single 300 APV)", () => {
@@ -410,10 +413,10 @@ describe("GET /api/reports/ap-overdue-accounts", () => {
 
   test("28. grand total bucketTotals equal the sum across all suppliers in scope (A1 + A2)", () => {
     expect(Number(report.bucketTotals.base.days1to30)).toBe(2500);
-    expect(Number(report.bucketTotals.base.days31to60)).toBe(5800);
+    expect(Number(report.bucketTotals.base.days31to60)).toBe(5650); // P0 TC1-092b: - DM 250 + CM 100
     expect(Number(report.bucketTotals.base.days61to90)).toBe(1700);
     expect(Number(report.bucketTotals.base.over90)).toBe(1000);
-    expect(Number(report.bucketTotals.base.total)).toBe(11000);
+    expect(Number(report.bucketTotals.base.total)).toBe(10850);
   });
 
   test("29. single-supplier filter (partyId) narrows the report to exactly that supplier's overdue documents", async () => {
@@ -424,7 +427,7 @@ describe("GET /api/reports/ap-overdue-accounts", () => {
     expect(res.status).toBe(200);
     expect(res.body.parties).toHaveLength(1);
     expect(res.body.parties[0].partyId).toBe(suppA1Id);
-    expect(Number(res.body.parties[0].baseBalance)).toBe(10700);
+    expect(Number(res.body.parties[0].baseBalance)).toBe(10550); // P0 TC1-092b: memos included
   });
 
   test("30. empty result (a supplier with zero overdue documents) returns empty arrays, not an error", async () => {

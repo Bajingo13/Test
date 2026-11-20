@@ -7,6 +7,7 @@ const NumberingService = require("./recurringNumberingService");
 const TemplateService = require("./recurringTemplateService");
 const Resolver = require("./exchangeRateResolverService");
 const TransactionCurrencyService = require("./transactionCurrencyService");
+const ControlAmountService = require("./controlAmountService");
 const AccountingPeriodService = require("./accountingPeriodService");
 
 // Per-module insert shape, mirroring the exact column list the existing
@@ -311,6 +312,7 @@ async function processSchedule(scheduleId, { triggerType = "MANUAL", userId = nu
       moduleType,
       partyId: template.party_id,
       lines: lineRows,
+      companyId: await resolveTemplateCompanyId(template),
     });
 
     // Compute this occurrence's line amounts per amount_mode.
@@ -469,6 +471,18 @@ async function processSchedule(scheduleId, { triggerType = "MANUAL", userId = nu
       userId,
       lockNow: false,
     });
+
+    // P0 TC1-062: a generated APV / Invoice's opening balance is its
+    // authoritative AP / AR control amount (controlAmountService), not the
+    // header side total. Paid is always 0 for a freshly generated Draft.
+    if (moduleType === "apv" || moduleType === "invoice") {
+      const docType = moduleType === "invoice" ? "INV" : "APV";
+      const control = await ControlAmountService.getDocumentControlAmount(conn, docType, generatedId);
+      await conn.execute(
+        `UPDATE ${genCfg.headerTable} SET balance_amount = ?${currencyResult.isForeign ? ", foreign_balance_amount = ?" : ""} WHERE id = ?`,
+        currencyResult.isForeign ? [control.baseOriginal, control.foreignOriginal, generatedId] : [control.baseOriginal, generatedId]
+      );
+    }
 
     // 14. Save the occurrence record (DB-backstop UNIQUE constraint lives
     // here). This is the true cross-instance safety net: the FOR UPDATE

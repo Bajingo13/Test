@@ -4,9 +4,10 @@
 // and shows an access-denied message if not granted - this menu doesn't
 // filter itself by role/permission yet (that's Phase 6's sidebar-wide
 // permission filtering), it just makes these routes discoverable.
-import { Users, Mail, ShieldCheck, Lock, LayoutTemplate, CalendarClock, ScrollText } from "lucide-react";
+import { Users, Mail, ShieldCheck, Lock, LayoutTemplate, CalendarClock, ScrollText, Building2 } from "lucide-react";
 
 export const ADMINISTRATION_MENU = [
+  { id: "company-management", label: "Company Management", icon: Building2, path: "/company-management" },
   { id: "user-settings", label: "User Settings", icon: Users, path: "/admin/user-settings" },
   { id: "invitations", label: "Invitations", icon: Mail, path: "/admin/invitations" },
   { id: "roles-permissions", label: "Roles and Permissions", icon: ShieldCheck, path: "/admin/roles-permissions" },

@@ -1,0 +1,152 @@
+/* Company Branch Management - builds on FileSetupPages.css (fs-*). Theme tokens
+   only, so light and dark both read correctly. */
+
+.br-page .br-toolbar {
+  align-items: center;
+}
+
+.br-page .br-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.br-page .br-filters select,
+.br-page .br-readonly {
+  border: 1px solid var(--border-color-strong);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 14px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  max-width: 100%;
+}
+
+.br-page .br-readonly {
+  background: var(--bg-disabled, var(--bg-surface-muted));
+  color: var(--text-primary);
+}
+
+.br-page .fs-field input,
+.br-page .fs-field select,
+.br-page .fs-toolbar input {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+
+.br-page .fs-field input::placeholder,
+.br-page .fs-toolbar input::placeholder {
+  color: var(--text-secondary);
+  opacity: 1;
+}
+
+.br-page select option {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+
+.br-page .br-summary {
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.br-page .br-code {
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.br-page .br-contact {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.br-page .br-status {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.br-page .br-status--active {
+  background: var(--success-bg);
+  color: var(--success-text);
+  border-color: var(--success-text);
+}
+
+.br-page .br-status--inactive {
+  background: var(--neutral-bg);
+  color: var(--neutral-text);
+  border-color: var(--neutral-text);
+}
+
+/* an inactive row is identified by its badge; the row text stays fully readable */
+.br-page .br-row-inactive td:not(:nth-child(4)) {
+  color: var(--text-secondary);
+}
+
+.br-page .br-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.br-page .br-banner-success {
+  background: var(--success-bg);
+  color: var(--success-text);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+
+.br-page .br-form h2 {
+  margin-top: 0;
+}
+
+/* Company Profile -> Branches section */
+.br-panel .br-panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.br-panel .br-panel-head h2 {
+  margin: 0;
+}
+
+.br-panel .br-panel-link {
+  color: var(--accent-teal, var(--text-primary));
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.br-panel .br-panel-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.br-panel .br-panel-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.br-panel .br-panel-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}

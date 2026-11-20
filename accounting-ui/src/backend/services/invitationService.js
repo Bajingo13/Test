@@ -6,6 +6,7 @@ const { soleCompanyForAccess } = require("../lib/auditCompany");
 const EmailService = require("./emailService");
 const UserAccessService = require("./userAccessService");
 const TemplateService = require("./templateService");
+const BranchAssignment = require("../lib/branchAssignment");
 
 const DEFAULT_EXPIRY_DAYS = 7;
 const MIN_EXPIRY_DAYS = 1;
@@ -76,12 +77,18 @@ async function createInvitation({ email, fullName, roleId, companyIds, branchIds
 
   if (actingUser.roleCode !== "SUPER_ADMIN") {
     const accessibleCompanyIds = new Set(await UserAccessService.getAccessibleCompanyIds(actingUser.id));
-    const accessibleBranchIds = new Set(await UserAccessService.getAccessibleBranchIds(actingUser.id));
+    // branch scope = every branch of the inviter's companies (lib/branchAssignment.js)
+    const accessibleBranchIds = new Set(await BranchAssignment.branchIdsOfCompanies(accessibleCompanyIds));
     const outOfScopeCompany = companyIdList.find((id) => !accessibleCompanyIds.has(id));
     const outOfScopeBranch = branchIdList.find((id) => !accessibleBranchIds.has(id));
     if (outOfScopeCompany || outOfScopeBranch) {
       throw Object.assign(new Error("You can only assign companies/branches you yourself have access to."), { statusCode: 403 });
     }
+  }
+  // A branch assignment never crosses a company boundary (every inviter): each
+  // invited branch must belong to one of the invited companies.
+  if (await BranchAssignment.branchOutsideCompanies(branchIdList, companyIdList)) {
+    throw Object.assign(new Error(BranchAssignment.BRANCH_COMPANY_MISMATCH), { statusCode: 400 });
   }
 
   // A permission template is copied into the new user's overrides on

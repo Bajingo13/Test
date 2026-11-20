@@ -572,3 +572,27 @@
     align-items: flex-start;
   }
 }
+/* In-page sign-in messages (no native alerts): the inactivity / session-ended
+   notice left by a forced sign-out, and sign-in errors. The login page uses its
+   own fixed light palette in both themes, so these do too. */
+.login-notice,
+.login-error {
+  margin: -10px 0 18px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.login-notice {
+  background: #e0f2fe;
+  color: #075985;
+  border: 1px solid #7dd3fc;
+}
+
+.login-error {
+  background: #fee2e2;
+  color: #991b1b;
+  border: 1px solid #fca5a5;
+}

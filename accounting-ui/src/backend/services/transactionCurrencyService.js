@@ -429,7 +429,12 @@ function buildApplication({
 // from source of truth" pattern instead of trusting an incrementally
 // maintained running total, so it can never drift out of sync with the
 // applications actually on file (including after an edit-time reversal).
-async function getForeignPaymentState(conn, { transactionType, transactionId }) {
+// foreignOriginalOverride (P0 TC1-062): the APV / Invoice callers pass the
+// authoritative control-account foreign amount (controlAmountService) so a
+// document whose snapshot foreign_total includes its own EWT/CWT line is not
+// treated as owing that withholding. Beginning-balance callers keep the
+// snapshot total.
+async function getForeignPaymentState(conn, { transactionType, transactionId, foreignOriginalOverride = null }) {
   const snapshot = await getSnapshot(transactionType, transactionId);
   if (!snapshot || snapshot.currencyId === snapshot.baseCurrencyId) {
     return { hasForeignCurrency: false };
@@ -442,7 +447,7 @@ async function getForeignPaymentState(conn, { transactionType, transactionId }) 
     [transactionType, transactionId]
   );
 
-  const foreignOriginalAmount = roundMoney(snapshot.foreignTotal);
+  const foreignOriginalAmount = roundMoney(foreignOriginalOverride != null ? foreignOriginalOverride : snapshot.foreignTotal);
   const foreignPaidAmount = roundMoney(Number(sumRows[0].foreignPaid) || 0);
   const foreignBalanceAmount = roundMoney(Math.max(foreignOriginalAmount - foreignPaidAmount, 0));
 

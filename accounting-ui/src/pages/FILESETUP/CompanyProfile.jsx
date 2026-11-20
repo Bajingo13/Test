@@ -1,11 +1,16 @@
 import { useEffect, useState } from "react";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
+import usePermissions from "../../hooks/usePermissions";
+import CompanyBranchesPanel from "./CompanyBranchesPanel";
 import AutoResizeTextarea from "../../components/AutoResizeTextarea";
 import "./GroupCodes.css";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
 
 export default function CompanyProfile() {
+  const { can, loading: permsLoading } = usePermissions();
+  const canView = permsLoading || can("FILESETUP.COMPANY_SETUP", "VIEW");
+  const canConfigure = can("FILESETUP.COMPANY_SETUP", "CONFIGURE");
   const [form, setForm] = useState({
     payorName: "",
     payorTin: "",
@@ -23,6 +28,10 @@ export default function CompanyProfile() {
   });
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  // Optional ?companyId= (Company Management opens a specific company; a user with
+  // several companies can name one). The API checks the caller's access to it.
+  const companyId = new URLSearchParams(window.location.search).get("companyId") || "";
+  const companyQuery = companyId ? `?companyId=${encodeURIComponent(companyId)}` : "";
 
   useEffect(() => {
     loadProfile();
@@ -32,7 +41,7 @@ export default function CompanyProfile() {
     try {
       setLoading(true);
 
-      const res = await fetch(`${API_BASE}/api/company-profile`, {
+      const res = await fetch(`${API_BASE}/api/company-profile${companyQuery}`, {
         credentials: "include",
         headers: authHeaders(),
       });
@@ -40,6 +49,7 @@ export default function CompanyProfile() {
 
       if (!res.ok) {
         if (handleAuthError(res.status)) return;
+        if (res.status === 403) return; // the page shows its no-permission message
         alert(data.message || "Failed to load company profile.");
         return;
       }
@@ -84,7 +94,7 @@ export default function CompanyProfile() {
         method: "PUT",
         headers: { "Content-Type": "application/json", ...authHeaders() },
         credentials: "include",
-        body: JSON.stringify(form),
+        body: JSON.stringify(companyId ? { ...form, companyId: Number(companyId) } : form),
       });
 
       const data = await res.json();
@@ -102,6 +112,16 @@ export default function CompanyProfile() {
     } finally {
       setSaving(false);
     }
+  }
+
+  if (!canView) {
+    return (
+      <div className="group-page">
+        <div className="group-main">
+          <div className="group-card" role="alert">You do not have permission to view the Company Profile.</div>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -219,12 +239,16 @@ export default function CompanyProfile() {
                 placeholder="000100"
               />
 
-              <button className="primary-btn" type="button" onClick={handleSave} disabled={saving}>
-                {saving ? "Saving..." : "Save Company Profile"}
-              </button>
+              {canConfigure ? (
+                <button className="primary-btn" type="button" onClick={handleSave} disabled={saving}>
+                  {saving ? "Saving..." : "Save Company Profile"}
+                </button>
+              ) : null}
             </div>
           )}
         </section>
+
+        <CompanyBranchesPanel />
       </div>
     </div>
   );

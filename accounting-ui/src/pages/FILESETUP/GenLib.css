@@ -253,3 +253,213 @@
     flex-direction: column;
   }
 }
+/* =====================================================================
+   General Libraries UI/UX pass (H1-H4, H7, H8, H10, H11, H6 dialog).
+   Every rule is scoped to .gl-page: the generic rules above (.btn /
+   .field ...) are shared with other screens through the global bundle,
+   so they are left untouched.
+   ===================================================================== */
+
+/* H1: readable text in every field, both themes (typed values fell back to
+   black - 1.3:1 in dark mode); fields use the page font. */
+.gl-page .field input,
+.gl-page .field select,
+.gl-page .field textarea,
+.gl-page .rvm-filter select {
+  color: var(--text-primary);
+  font-family: inherit;
+}
+
+.gl-page .field input::placeholder,
+.gl-page .field textarea::placeholder {
+  color: var(--text-secondary);
+  opacity: 1;
+}
+
+.gl-page select option {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+
+/* H2: read-only (view mode) values stay fully readable; the disabled
+   background still marks them read-only, the browser's 70% opacity on
+   disabled selects is removed. */
+.gl-page .field input:disabled,
+.gl-page .field select:disabled,
+.gl-page .field textarea:disabled {
+  color: var(--text-primary);
+  -webkit-text-fill-color: var(--text-primary);
+  opacity: 1;
+}
+
+.gl-page .checkbox-wrap input:disabled + span {
+  color: var(--text-secondary);
+}
+
+/* H3: auto-growing Name / Address fields match the other fields. */
+.gl-page .field .auto-resize-textarea {
+  border-radius: 12px;
+  line-height: 1.4;
+  min-height: 46px;
+}
+
+.gl-page .field .auto-resize-textarea:disabled {
+  background: var(--bg-disabled);
+}
+
+/* H4: no horizontal overflow - fields and the header may shrink. */
+.gl-page,
+.gl-page .gl-layout,
+.gl-page .gl-main,
+.gl-page .gl-header > div,
+.gl-page .gl-top-grid > *,
+.gl-page .gl-grid > *,
+.gl-page .field,
+.gl-page .field input,
+.gl-page .field select,
+.gl-page .field textarea {
+  min-width: 0;
+}
+
+.gl-page .field textarea {
+  box-sizing: border-box;
+  max-width: 100%;
+}
+
+.gl-page .gl-toolbar {
+  min-width: 0;
+  max-width: 100%;
+}
+
+@media (max-width: 700px) {
+  .gl-page .gl-header {
+    padding: 16px;
+    gap: 12px;
+  }
+
+  .gl-page .gl-card,
+  .gl-page .tab-panel {
+    padding: 16px;
+  }
+
+  .gl-page .gl-toolbar {
+    gap: 6px;
+  }
+
+  .gl-page .gl-toolbar .btn {
+    padding: 8px 12px;
+  }
+}
+
+/* H10: required marker; disabled toolbar buttons look disabled. */
+.gl-page .fs-required {
+  color: var(--danger-text);
+  font-weight: 800;
+}
+
+.gl-page .gl-toolbar .btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.gl-page .gl-tab:focus-visible {
+  outline: 2px solid var(--accent-indigo);
+  outline-offset: 2px;
+}
+
+/* H8: ACTIVE / INACTIVE badge beside the Name label (display only). */
+.gl-page .gl-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.gl-page .gl-label-row label {
+  margin-bottom: 0;
+}
+
+.gl-page .gl-status-badge {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.gl-page .gl-status-badge--active {
+  background: var(--success-bg);
+  color: var(--success-text);
+  border-color: var(--success-text);
+}
+
+.gl-page .gl-status-badge--inactive {
+  background: var(--neutral-bg);
+  color: var(--neutral-text);
+  border-color: var(--neutral-text);
+}
+
+/* H7: Type / Status filters in the View dialog (the shared dialog styles
+   only date inputs). */
+.gl-page .rvm-filter select {
+  box-sizing: border-box;
+  height: 36px;
+  border: 1px solid var(--border-color-strong);
+  background: var(--bg-surface);
+  border-radius: 8px;
+  padding: 0 8px;
+  font-size: 13px;
+}
+
+/* H6: import preview / result dialog. Long lists scroll inside the dialog. */
+.gl-page .gl-import-modal {
+  width: min(720px, 96vw);
+}
+
+.gl-page .gl-import-section {
+  margin-top: 14px;
+}
+
+.gl-page .gl-import-section h4 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.gl-page .gl-import-list {
+  margin: 0;
+  padding-left: 18px;
+  max-height: 180px;
+  overflow-y: auto;
+  font-size: 13px;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.gl-page .gl-import-list li {
+  margin-bottom: 4px;
+}
+
+.gl-page .gl-import-list:focus-visible {
+  outline: 2px solid var(--accent-indigo);
+  outline-offset: 2px;
+}
+
+.gl-page .gl-import-summary {
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+/* H11: dark-mode details; import hint (shared .rtm-hint uses --text-muted,
+   overridden here only). */
+[data-theme="dark"] .gl-page .gl-mini-label {
+  color: var(--accent-indigo-hover);
+}
+
+.gl-page .rtm-hint {
+  color: var(--text-secondary);
+}

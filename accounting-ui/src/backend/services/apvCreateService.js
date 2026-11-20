@@ -15,6 +15,8 @@ const { loadVatControlAccountIds } = require("./vatControlAccounts");
 const { assertVoucherNoUnique, normalizeVoucherNo } = require("./voucherNumberService");
 const { assertRequiredTransactionLines } = require("./transactionLineValidation");
 const { assertWriteStatus } = require("./voidCancelService");
+const { updateApvPaymentStatus } = require("./paymentApplicationService");
+const { resolveTransactionParty } = require("./transactionPartyService");
 
 // The backend is the final authority on withholding tax figures - it never
 // trusts the client-submitted atcCode's rate/type or the client-submitted
@@ -130,6 +132,9 @@ async function createApvRecord(conn, { user, body, resolveCompanyId }) {
     ewt, lines: currencyResult.lines, existingAtcCode: null, expectedSide: "credit", moduleLabel: "APV",
   });
 
+  // P1: the APV's party must be a SUPPLIER of this company (server-enforced,
+  // Drafts included). RFP -> APV conversion passes the RFP's already-validated supplier.
+  await resolveTransactionParty(conn, { module: "APV", companyId, partyId: supplierId });
   const [result] = await conn.execute(
     `INSERT INTO apv_headers (
       company_id,
@@ -269,6 +274,11 @@ async function createApvRecord(conn, { user, body, resolveCompanyId }) {
     rateInfo: currencyResult.rateInfo, foreignTotals: currencyResult.foreignTotals, baseTotals: currencyResult.baseTotals,
     userId: user.id, lockNow: String(finalStatus).toUpperCase() === "POSTED",
   });
+
+  // P0 TC1-062: seed paid/balance/payment_status from the authoritative AP
+  // control amount (Gross - EWT for a withholding APV), now that the lines
+  // and tax entries exist - not from the gross credit total.
+  await updateApvPaymentStatus(conn, apvId);
 
   // module/entityType: "TRANSACTIONS"/"APV" - matches APV's own existing
   // Cancel/Void/Reverse/Delete audit events (see server.js) rather than a

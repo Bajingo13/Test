@@ -1,5 +1,6 @@
 const TransactionCurrencyService = require("./transactionCurrencyService");
 const FxAccountService = require("./fxAccountService");
+const ControlAmountService = require("./controlAmountService");
 const { roundMoney } = TransactionCurrencyService;
 
 // Extracted from server.js verbatim (Checkpoint 3B) so this logic is
@@ -25,32 +26,11 @@ async function resolveSettlementSourceRate(conn, sourceType, sourceId, originalR
 }
 
 async function updateInvoicePaymentStatus(conn, invoiceId) {
-  const [invoiceRows] = await conn.execute(
-    `SELECT
-       total_debit AS totalDebit,
-       total_credit AS totalCredit
-     FROM invoice_headers
-     WHERE id = ?`,
-    [invoiceId]
-  );
-
-  if (invoiceRows.length === 0) return;
-
-  const totalAmount = Math.max(
-    Number(invoiceRows[0].totalDebit || 0),
-    Number(invoiceRows[0].totalCredit || 0)
-  );
-
-  const [paymentRows] = await conn.execute(
-    `SELECT COALESCE(SUM(amount), 0) AS paidAmount
-     FROM transaction_applications
-     WHERE source_type = 'INV'
-       AND source_id = ?`,
-    [invoiceId]
-  );
-
-  const paidAmount = Number(paymentRows[0].paidAmount || 0);
-  const balanceAmount = Math.max(totalAmount - paidAmount, 0);
+  // P0 TC1-062 mirror: the receivable is the AR control amount (net of any
+  // customer withholding line), not max(total_debit, total_credit).
+  const live = await ControlAmountService.getDocumentBalance(conn, "INV", invoiceId);
+  if (!live) return;
+  const { totalAmount, paidAmount, balanceAmount } = live;
 
   // Checkpoint 3B (section 25): for a foreign-currency invoice, the
   // FOREIGN balance is the payment-status authority - "never mark Paid
@@ -60,6 +40,7 @@ async function updateInvoicePaymentStatus(conn, invoiceId) {
   const foreignState = await TransactionCurrencyService.getForeignPaymentState(conn, {
     transactionType: "INV",
     transactionId: invoiceId,
+    foreignOriginalOverride: live.foreignOriginal,
   });
 
   let paymentStatus = "Unpaid";
@@ -96,38 +77,19 @@ async function updateInvoicePaymentStatus(conn, invoiceId) {
 }
 
 async function updateApvPaymentStatus(conn, apvId) {
-  const [apvRows] = await conn.execute(
-    `SELECT
-       total_debit AS totalDebit,
-       total_credit AS totalCredit
-     FROM apv_headers
-     WHERE id = ?`,
-    [apvId]
-  );
-
-  if (apvRows.length === 0) return;
-
-  const totalAmount = Math.max(
-    Number(apvRows[0].totalDebit || 0),
-    Number(apvRows[0].totalCredit || 0)
-  );
-
-  const [paymentRows] = await conn.execute(
-    `SELECT COALESCE(SUM(amount), 0) AS paidAmount
-     FROM transaction_applications
-     WHERE source_type = 'APV'
-       AND source_id = ?`,
-    [apvId]
-  );
-
-  const paidAmount = Number(paymentRows[0].paidAmount || 0);
-  const balanceAmount = Math.max(totalAmount - paidAmount, 0);
+  // P0 TC1-062: the payable is the AP control amount (Gross - EWT for an APV
+  // that withholds), not max(total_debit, total_credit) - a CV paying the
+  // real payable must fully settle the APV.
+  const live = await ControlAmountService.getDocumentBalance(conn, "APV", apvId);
+  if (!live) return;
+  const { totalAmount, paidAmount, balanceAmount } = live;
 
   // See updateInvoicePaymentStatus above for why a foreign-currency APV
   // uses its FOREIGN balance as the payment-status authority instead.
   const foreignState = await TransactionCurrencyService.getForeignPaymentState(conn, {
     transactionType: "APV",
     transactionId: apvId,
+    foreignOriginalOverride: live.foreignOriginal,
   });
 
   let paymentStatus = "Unpaid";
@@ -290,6 +252,10 @@ async function applyInvoicePayment(conn, {
     [sourceId]
   );
   if (!invRows.length) throw new Error(`Invoice ${sourceId} was not found.`);
+  // P0 TC1-062 mirror: cap against the LIVE receivable (AR control amount -
+  // applications), never a stale stored balance or the gross debit total.
+  const liveInv = await ControlAmountService.getDocumentBalance(conn, "INV", sourceId);
+  invRows[0].balanceAmount = liveInv.balanceAmount;
   if (companyId && invRows[0].companyId !== companyId) {
     throw new Error(`Invoice ${sourceId} does not belong to this company - cross-company payment application is not allowed.`);
   }
@@ -299,7 +265,7 @@ async function applyInvoicePayment(conn, {
 
   let currentBalance;
   if (isForeign) {
-    const foreignState = await TransactionCurrencyService.getForeignPaymentState(conn, { transactionType: "INV", transactionId: sourceId });
+    const foreignState = await TransactionCurrencyService.getForeignPaymentState(conn, { transactionType: "INV", transactionId: sourceId, foreignOriginalOverride: liveInv.foreignOriginal });
     currentBalance = foreignState.foreignBalanceAmount;
   } else {
     currentBalance = Number(invRows[0].balanceAmount || 0);
@@ -493,6 +459,10 @@ async function applyApvPayment(conn, {
     [sourceId]
   );
   if (!apvRows.length) throw new Error(`APV ${sourceId} was not found.`);
+  // P0 TC1-062: cap against the LIVE payable (AP control amount -
+  // applications), never a stale stored balance or the gross credit total.
+  const liveApv = await ControlAmountService.getDocumentBalance(conn, "APV", sourceId);
+  apvRows[0].balanceAmount = liveApv.balanceAmount;
   if (companyId && apvRows[0].companyId !== companyId) {
     throw new Error(`APV ${sourceId} does not belong to this company - cross-company payment application is not allowed.`);
   }
@@ -503,7 +473,7 @@ async function applyApvPayment(conn, {
 
   let currentBalance;
   if (isForeign) {
-    const foreignState = await TransactionCurrencyService.getForeignPaymentState(conn, { transactionType: "APV", transactionId: sourceId });
+    const foreignState = await TransactionCurrencyService.getForeignPaymentState(conn, { transactionType: "APV", transactionId: sourceId, foreignOriginalOverride: liveApv.foreignOriginal });
     currentBalance = foreignState.foreignBalanceAmount;
   } else {
     currentBalance = Number(apvRows[0].balanceAmount || 0);

@@ -96,6 +96,7 @@ export default function ReportSections() {
 
       if (!res.ok) {
         if (handleAuthError(res.status)) return;
+        if (res.status === 403) return; // the page shows its no-permission message
         alert(data.message || "Failed to load report sections.");
         return;
       }

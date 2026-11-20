@@ -7,6 +7,7 @@ import {
   PRESETS,
   accessFromMe,
   activityVerb,
+  bankAccountsSearchable,
   canOpen,
   bucketLabel,
   cashOutlook,
@@ -14,6 +15,7 @@ import {
   formatCompact,
   formatDate,
   formatDateTime,
+  filterBankAccounts,
   formatMoney,
   hasSeriesData,
   moveItem,
@@ -107,7 +109,7 @@ function WidgetFrame({ widget, children, onRemove, onMoveUp, onMoveDown }) {
   return (
     <section className={`dashboard-widget ${widget.size}`} aria-label={widget.title}>
       <div className="widget-toolbar">
-        <div>
+        <div className="widget-title">
           <h3>{widget.title}</h3>
           <span>{widget.category}</span>
         </div>
@@ -138,6 +140,31 @@ function SectionGate({ state, onRetry, children }) {
     );
   }
   return <div className={state.stale ? "dash-stale" : undefined}>{children(state.data)}</div>;
+}
+
+// Height-capped list that scrolls inside its widget (cap set in Dashboard.css).
+// While the content is taller than the cap it is a labelled, keyboard-focusable
+// region, so rows below the fold can be reached with the arrow keys.
+function ScrollRegion({ label, className, children }) {
+  const ref = useRef(null);
+  const [overflowing, setOverflowing] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return undefined;
+    const check = () => setOverflowing(el.scrollHeight > el.clientHeight + 1);
+    check();
+    if (typeof ResizeObserver === "undefined") return undefined;
+    const observer = new ResizeObserver(check);
+    observer.observe(el);
+    for (const child of el.children) observer.observe(child);
+    return () => observer.disconnect();
+  });
+  const regionProps = overflowing ? { role: "region", "aria-label": label, tabIndex: 0 } : {};
+  return (
+    <div ref={ref} className={`dash-scroll-list ${className}`} {...regionProps}>
+      {children}
+    </div>
+  );
 }
 
 export default function Dashboard() {
@@ -322,7 +349,7 @@ export default function Dashboard() {
       <header className="dashboard-hero">
         <div className="hero-glow"></div>
 
-        <div>
+        <div className="dashboard-hero-text">
           <p className="dashboard-mini-label">AstreaBlue Accounting</p>
           <h1>DASHBOARD</h1>
 
@@ -773,35 +800,93 @@ function BankAccountsWidget({ st, currency, retry }) {
         c.accounts.length === 0 ? (
           <p className="dash-state">No bank accounts available.</p>
         ) : (
-          <div className="bank-list">
-            {c.accounts.map((a) => (
-              <div className="bank-item" key={a.id}>
-                <div>
-                  <strong>{a.name}</strong>
-                  <span>
-                    {" "}{[a.bankName, a.accountNoLast4 ? `••${a.accountNoLast4}` : null, a.accountType ? a.accountType.toLowerCase() : null, `GL ${a.coaCode}`]
-                      .filter(Boolean)
-                      .join(" · ")}
-                  </span>
-                </div>
-                <div className="bank-right">
-                  <strong className={a.balance < 0 ? "dash-negative" : undefined}>{formatMoney(a.balance, currency)}</strong>
-                  <span>
-                    {a.recon === null
-                      ? a.status
-                      : a.recon.inProgress
-                      ? `${a.recon.inProgress} reconciliation(s) in progress`
-                      : a.recon.lastFinalizedThrough
-                      ? `Reconciled through ${formatDate(a.recon.lastFinalizedThrough)}`
-                      : "Not reconciled yet"}
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
+          <BankAccountList accounts={c.accounts} currency={currency} />
         )
       }
     </SectionGate>
+  );
+}
+
+// Up to BANK_SEARCH_THRESHOLD accounts: the plain list. Above it: a search box
+// (filters the rows already loaded - no extra request), a count, and a
+// height-capped scrolling list.
+function BankAccountList({ accounts, currency }) {
+  const [query, setQuery] = useState("");
+  const inputRef = useRef(null);
+  if (!bankAccountsSearchable(accounts)) return <BankAccountRows accounts={accounts} currency={currency} />;
+
+  const shown = filterBankAccounts(accounts, query);
+  const typed = query.trim();
+  const clear = () => {
+    setQuery("");
+    inputRef.current?.focus();
+  };
+  return (
+    <div className="dash-list-panel">
+      <div className="dash-list-tools">
+        <label className="dash-visually-hidden" htmlFor="dash-bank-search">Search bank and cash accounts</label>
+        <input
+          id="dash-bank-search"
+          ref={inputRef}
+          type="search"
+          value={query}
+          placeholder="Search name, bank, code, last 4, GL"
+          autoComplete="off"
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape" && query) {
+              e.preventDefault();
+              setQuery("");
+            }
+          }}
+        />
+        {query ? <button type="button" onClick={clear}>Clear</button> : null}
+      </div>
+      <p className="dash-list-count" aria-live="polite">
+        Showing {shown.length} of {accounts.length} accounts
+      </p>
+      {shown.length === 0 ? (
+        <div className="dash-state dash-no-match">
+          <span>No accounts match “{typed}”.</span>
+          <button type="button" onClick={clear}>Clear</button>
+        </div>
+      ) : (
+        <ScrollRegion label="Bank and cash accounts list" className="dash-scroll-bank">
+          <BankAccountRows accounts={shown} currency={currency} />
+        </ScrollRegion>
+      )}
+    </div>
+  );
+}
+
+function BankAccountRows({ accounts, currency }) {
+  return (
+    <div className="bank-list">
+      {accounts.map((a) => (
+        <div className="bank-item" key={a.id}>
+          <div>
+            <strong>{a.name}</strong>
+            <span>
+              {" "}{[a.bankName, a.accountNoLast4 ? `••${a.accountNoLast4}` : null, a.accountType ? a.accountType.toLowerCase() : null, `GL ${a.coaCode}`]
+                .filter(Boolean)
+                .join(" · ")}
+            </span>
+          </div>
+          <div className="bank-right">
+            <strong className={a.balance < 0 ? "dash-negative" : undefined}>{formatMoney(a.balance, currency)}</strong>
+            <span>
+              {a.recon === null
+                ? a.status
+                : a.recon.inProgress
+                ? `${a.recon.inProgress} reconciliation(s) in progress`
+                : a.recon.lastFinalizedThrough
+                ? `Reconciled through ${formatDate(a.recon.lastFinalizedThrough)}`
+                : "Not reconciled yet"}
+            </span>
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -859,15 +944,21 @@ function AlertsWidget({ summary, request, navigate, retry, access }) {
   const failed = Object.values(summary.sections).some((s) => s.status === "error");
   return (
     <div className="alert-list">
-      {summary.alerts.map((alert, index) =>
-        canOpen(access, alert.link) ? (
-          <button key={index} type="button" className={`alert-item ${alert.level}`} onClick={() => navigate(alert.link)}>
-            {alert.text}
-          </button>
-        ) : (
-          <div key={index} className={`alert-item ${alert.level} dash-alert-static`}>{alert.text}</div>
-        )
-      )}
+      {summary.alerts.length ? (
+        <ScrollRegion label="Accounting alerts list" className="dash-scroll-alerts">
+          <div className="alert-list">
+            {summary.alerts.map((alert, index) =>
+              canOpen(access, alert.link) ? (
+                <button key={index} type="button" className={`alert-item ${alert.level}`} onClick={() => navigate(alert.link)}>
+                  {alert.text}
+                </button>
+              ) : (
+                <div key={index} className={`alert-item ${alert.level} dash-alert-static`}>{alert.text}</div>
+              )
+            )}
+          </div>
+        </ScrollRegion>
+      ) : null}
       {failed ? <p className="dash-state dash-error">Some data could not be loaded, so alerts may be incomplete.</p> : null}
       {!summary.alerts.length && !failed ? <p className="dash-state">No alerts for this period.</p> : null}
     </div>

@@ -12,6 +12,7 @@ const bcrypt = require("bcryptjs");
 const request = require("supertest");
 const app = require("../server");
 const pool = require("../db");
+const { withFixtureParty, cleanupFixtureParties } = require("../lib/testFixtureParty");
 const AgentActions = require("../services/BankReconAgentActions");
 const MatchService = require("../services/bankReconMatchService");
 const { MIGRATION_ORDER } = require("../scripts/migrationOrder");
@@ -34,9 +35,12 @@ const convs = [];
 
 const q = async (sql, params) => (await pool.query(sql, params))[0];
 const one = async (sql, params) => (await q(sql, params))[0];
-const api = (who, method, url, body) => {
+// P1 (2026-11-18): these documents are bank-movement fixtures that never sent a
+// party; the server now requires one (transactionPartyService), so a body with
+// no party gets its company's fixture customer / supplier (lib/testFixtureParty).
+const api = async (who, method, url, body) => {
   const r = request(app)[method](url).set({ Authorization: `Bearer ${tok[who]}` });
-  return body === undefined ? r : r.send(body);
+  return body === undefined ? r : r.send(await withFixtureParty(pool, method, url, body));
 };
 async function ai(who, action, ...args) {
   try {
@@ -101,6 +105,9 @@ beforeAll(async () => {
   }
   await makeUser("super", "SUPER_ADMIN");
   await makeUser("acctA", "ACCOUNTANT", [co.A]);
+  // R4 (maker-checker): finalize / reopen need REPORTS.BANK_RECONCILIATION / APPROVE,
+  // which ACCOUNTANT no longer holds - the reviewer finalizes.
+  await makeUser("adminA", "ADMIN", [co.A]);
   await makeUser("acctB", "ACCOUNTANT", [co.B]);
 
   // January: two checks written, only #1001 clears in January.
@@ -128,6 +135,7 @@ afterAll(async () => {
     await pool.query("DELETE FROM user_companies WHERE user_id IN (?)", [us]);
     await pool.query("DELETE FROM users WHERE id IN (?)", [us]);
     await pool.query("DELETE FROM bank_codes WHERE id IN (?)", [Object.values(bank)]);
+    await cleanupFixtureParties(pool, cos);
     await pool.query("DELETE FROM companies WHERE id IN (?)", [cos]);
     await pool.query("DELETE FROM chart_of_accounts WHERE code LIKE ?", [`${P}%`]);
   } finally {
@@ -203,7 +211,7 @@ describe("carry-forward: January to February", () => {
     expect((await importRows("acctA", s.feb, ["2096-01-15,Check 1001,,0001001,500.00,", "2096-01-31,Unknown deposit,,,,25.00"])).status).toBe(409);
     expect(await q("SELECT COUNT(*) n FROM bank_recon_statement_lines WHERE company_id = ? AND bank_account_id = ?", [co.A, bank.BK])).toEqual(before);
 
-    expect((await api("acctA", "post", `/api/bank-recon/sessions/${s.jan}/finalize`, { overrideReason: "test" })).status).toBe(200);
+    expect((await api("adminA", "post", `/api/bank-recon/sessions/${s.jan}/finalize`, { overrideReason: "test" })).status).toBe(200);
     // February ignored the carried deposit (above): it is resolved, so it
     // has left February's history; un-ignoring belongs to its own period.
     const deposit = lineByDesc(await statementLines("acctA", s.jan), "Unknown deposit");
@@ -212,7 +220,7 @@ describe("carry-forward: January to February", () => {
     expect((await api("acctA", "post", `/api/bank-recon/statement-lines/${deposit.id}/ignore`, { sessionId: s.feb })).status).toBe(404);
     // January is finalized: refused there too, until January is reopened
     expect((await api("acctA", "post", `/api/bank-recon/statement-lines/${deposit.id}/ignore`)).status).toBe(400);
-    expect((await api("acctA", "post", `/api/bank-recon/sessions/${s.jan}/reopen`, { reason: "un-ignore deposit" })).status).toBe(200);
+    expect((await api("adminA", "post", `/api/bank-recon/sessions/${s.jan}/reopen`, { reason: "un-ignore deposit" })).status).toBe(200);
     expect((await api("acctA", "post", `/api/bank-recon/statement-lines/${deposit.id}/ignore`, { sessionId: s.jan })).status).toBe(200);
     // unresolved again, so it is carried into February again
     expect(lineByDesc(await statementLines("acctA", s.feb), "Unknown deposit")).toMatchObject({ matchStatus: "UNMATCHED", carriedForward: 1 });

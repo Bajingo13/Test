@@ -33,6 +33,10 @@ export default function AccountAnalysis() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [generated, setGenerated] = useState(false);
+  // Generation failure message (replaces a native alert) - shown above the report.
+  const [reportError, setReportError] = useState("");
+  // Inline validation message (replaces a native alert) - shown above the report, announced by screen readers.
+  const [validationError, setValidationError] = useState("");
 
   // Company context. A drill-down (e.g. from Trial Balance) brings its
   // company in the URL (?companyId=); it is used only if it is one of this
@@ -156,9 +160,10 @@ export default function AccountAnalysis() {
     const finalCompanyId = companyOverride || companyId;
 
     if (!finalAccountCode) {
-      alert("Please select an account first.");
+      setValidationError("Please select an account first.");
       return;
     }
+    setValidationError("");
 
     const applied = linkSelection ? period.select(linkSelection) : period.apply();
     if (!applied) return;
@@ -169,6 +174,7 @@ export default function AccountAnalysis() {
     if (!query) return; // no company selected - nothing is requested
 
     const ticket = requestGuard.current.next();
+    setReportError("");
     setLoading(true);
 
     try {
@@ -196,7 +202,7 @@ export default function AccountAnalysis() {
     } catch (err) {
       if (!requestGuard.current.isCurrent(ticket)) return;
       console.error(err);
-      alert(err.userMessage || "Failed to generate Account Analysis. Please check backend/server.");
+      setReportError(err.userMessage || "Failed to generate Account Analysis. Please check backend/server.");
       setRows([]);
       setGenerated(true);
     } finally {
@@ -302,8 +308,8 @@ export default function AccountAnalysis() {
           <ReportPeriodFilter period={period} idPrefix="aa" />
 
           <div>
-            <label>Account</label>
-            <select
+            <label htmlFor="aa-account">Account</label>
+            <select id="aa-account"
               value={accountCode}
               onChange={(e) => setAccountCode(e.target.value)}
             >
@@ -389,7 +395,19 @@ export default function AccountAnalysis() {
             Export CSV
           </button>
         </div>
+
+        {validationError ? (
+          <p className="aa-error" role="alert" id="aa-validation">
+            {validationError}
+          </p>
+        ) : null}
       </div>
+
+      {reportError ? (
+        <div className="aa-error" role="alert" id="aa-error">
+          {reportError}
+        </div>
+      ) : null}
 
       {generated && (
         <div className="aa-report-card">

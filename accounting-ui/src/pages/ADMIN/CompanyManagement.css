@@ -1,0 +1,23 @@
+/* Company Management - builds on FileSetupPages.css (fs-*) and BranchManagement.css
+   (br-* badges, banners, readable fields). Theme tokens only. */
+
+.cm-page .cm-check label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-primary);
+  font-weight: 600;
+  margin-top: 28px;
+}
+
+.cm-page .cm-check input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent-teal, #0f766e);
+}
+
+.cm-page .cm-link {
+  color: var(--accent-teal, var(--text-primary));
+  font-weight: 700;
+  white-space: nowrap;
+}

@@ -90,6 +90,7 @@ export const REPORTS_MENU = [
         ],
       },
       { id: "ap-subsidiary-ledger", label: "Subsidiary Ledger Report", icon: BookOpen, path: "/reports/subsidiary-ledger" },
+      { id: "ap-statement-of-accounts", label: "Statement of Accounts", icon: Receipt, path: "/reports/ap-statement-of-accounts" },
       { id: "ap-payables-and-payments", label: "List of Payables and Payments", icon: CreditCard, path: "/reports/ap-payables-and-payments" },
       { id: "ap-overdue-accounts", label: "List of Overdue Accounts", icon: AlertCircle, path: "/reports/ap-overdue-accounts" },
     ],

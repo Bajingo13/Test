@@ -637,7 +637,8 @@ describe("Phase 7K.1 - APV with active CV / CV reversal", () => {
       lines: [gl(apId, "PH7K1-AP", 20000, 0), gl(cashId, "PH7K1-CASH", 0, 18000),
         { accountId: ewtPayId, accountCode: "PH7K1-EWTP", accountTitle: "Withholding Tax Payable", particulars: `EWT - ${ATC}`, genRef: "", genName: "", debit: 0, credit: 2000,
           taxEntry: { entryType: "EWT", accountId: ewtPayId, partyId: sup7d, partyName: "PH7K1 7D Supplier", partyTin: TIN7D, partyAddress: "M", transactionDate: D, atcCode: ATC, taxType: "EWT", taxableBase: 20000, withheldAmount: 2000 } }],
-      apvApplications: [{ sourceType: "APV", sourceId: apvId, amount: 20000 }],
+      // P0 TC1-062 (2026-11-18): the APV withheld EWT, so its payable is its AP control amount (Gross - EWT); an application can no longer exceed it. EWT report expectations unchanged.
+      apvApplications: [{ sourceType: "APV", sourceId: apvId, amount: 18000 }],
     });
     expect(cvRes.status).toBe(200);
 

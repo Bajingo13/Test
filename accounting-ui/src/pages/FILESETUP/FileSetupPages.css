@@ -32,6 +32,7 @@
 
 .fs-toolbar {
   display: flex;
+  flex-wrap: wrap; /* TC-FS-012: filters wrap instead of widening the page */
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 16px;
@@ -128,6 +129,11 @@
   font-size: 12px;
   font-weight: 600;
   color: var(--text-secondary);
+}
+
+/* TC-FS-012: the search-box width (.fs-toolbar input) must not apply to the date inputs */
+.fs-toolbar .fs-filter-date-label input {
+  width: auto;
 }
 
 .fs-filter-date-label input {
@@ -244,4 +250,28 @@
 .vat-rate-actions {
   display: flex;
   gap: 8px;
+}
+
+/* TC-FS-012 narrow widths: a wide table scrolls inside its card instead of
+   widening the whole page (the page root no longer passes the table's
+   min-content width up to <main>); headers wrap; form columns fit 390px. */
+.fs-page {
+  contain: inline-size;
+}
+
+.fs-card {
+  overflow-x: auto;
+}
+
+.fs-header {
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.fs-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+}
+
+.fs-toolbar input {
+  max-width: 100%;
 }

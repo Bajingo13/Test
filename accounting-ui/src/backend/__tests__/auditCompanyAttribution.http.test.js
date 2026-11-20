@@ -320,8 +320,18 @@ describe("invitations", () => {
   });
 
   test("a company plus a branch of another company stays NULL", async () => {
+    // Company Management: a branch can no longer be assigned outside the invited
+    // user's companies (lib/branchAssignment.js), so the old fixture - company A
+    // with a branch of company B - is now refused outright...
+    const crossing = await request(app).post("/api/invitations").set(auth("super")).send({
+      email: `${P}inv-branch-x@example.test`, fullName: "ACAT Branch", roleId: roles.ACCOUNTANT, companyIds: [co.A], branchIds: [br.B],
+    });
+    expect(crossing.status).toBe(400);
+    // ...and the attribution rule is checked with the valid two-company form of the
+    // same access (company A + company B with B's branch): it still spans two
+    // companies, so the event keeps company_id NULL.
     const res = await request(app).post("/api/invitations").set(auth("super")).send({
-      email: `${P}inv-branch@example.test`, fullName: "ACAT Branch", roleId: roles.ACCOUNTANT, companyIds: [co.A], branchIds: [br.B],
+      email: `${P}inv-branch@example.test`, fullName: "ACAT Branch", roleId: roles.ACCOUNTANT, companyIds: [co.A, co.B], branchIds: [br.B],
     });
     expect(res.status).toBe(201);
     expect((await audit("INVITATION", res.body.id, "USER_INVITED")).company_id).toBeNull();

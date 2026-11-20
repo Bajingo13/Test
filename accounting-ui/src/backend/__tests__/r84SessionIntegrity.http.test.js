@@ -14,6 +14,7 @@ const bcrypt = require("bcryptjs");
 const request = require("supertest");
 const app = require("../server");
 const pool = require("../db");
+const { withFixtureParty, cleanupFixtureParties } = require("../lib/testFixtureParty");
 const AgentActions = require("../services/BankReconAgentActions");
 const { MIGRATION_ORDER } = require("../scripts/migrationOrder");
 const { resolveDatabaseConfig } = require("../config/database");
@@ -36,9 +37,12 @@ const doc = {};
 
 const q = async (sql, params) => (await pool.query(sql, params))[0];
 const one = async (sql, params) => (await q(sql, params))[0];
-const api = (who, method, url, body) => {
+// P1 (2026-11-18): these documents are bank-movement fixtures that never sent a
+// party; the server now requires one (transactionPartyService), so a body with
+// no party gets its company's fixture customer / supplier (lib/testFixtureParty).
+const api = async (who, method, url, body) => {
   const r = request(app)[method](url).set({ Authorization: `Bearer ${tok[who]}` });
-  return body === undefined ? r : r.send(body);
+  return body === undefined ? r : r.send(await withFixtureParty(pool, method, url, body));
 };
 async function ai(who, action, ...args) {
   try {
@@ -80,6 +84,9 @@ beforeAll(async () => {
   }
   await makeUser("super", "SUPER_ADMIN");
   await makeUser("acctA", "ACCOUNTANT", [co.A]);
+  // R4 (maker-checker): finalize / reopen need REPORTS.BANK_RECONCILIATION / APPROVE,
+  // which ACCOUNTANT no longer holds - the reviewer finalizes.
+  await makeUser("adminA", "ADMIN", [co.A]);
   await makeUser("acctB", "ACCOUNTANT", [co.B]);
 });
 
@@ -102,6 +109,7 @@ afterAll(async () => {
     await pool.query("DELETE FROM user_companies WHERE user_id IN (?)", [us]);
     await pool.query("DELETE FROM users WHERE id IN (?)", [us]);
     await pool.query("DELETE FROM bank_codes WHERE id IN (?)", [Object.values(bank)]);
+    await cleanupFixtureParties(pool, cos);
     await pool.query("DELETE FROM companies WHERE id IN (?)", [cos]);
     await pool.query("DELETE FROM chart_of_accounts WHERE code LIKE ?", [`${P}%`]);
   } finally {
@@ -196,7 +204,7 @@ describe("opening balance", () => {
   });
 
   test("10/15. the previous FINALIZED session's ending balance is carried, with its source", async () => {
-    expect((await finalize("acctA", s.janA2)).status).toBe(200);
+    expect((await finalize("adminA", s.janA2)).status).toBe(200);
     const offer = await opening("acctA", { bankAccountId: bank.BK2, periodStart: "2095-02-01" });
     expect(offer.body).toMatchObject({ source: "CARRIED", amount: 1500, gapDays: 0, fromSession: { id: s.janA2, periodStart: "2095-01-01", periodEnd: "2095-01-31", endingBalance: 1500 } });
     // a different figure is refused; none (or the same) is accepted
@@ -218,7 +226,7 @@ describe("opening balance", () => {
   });
 
   test("14. a gap between periods carries explicitly, with the gap stated", async () => {
-    expect((await finalize("acctA", s.febA2)).status).toBe(200);
+    expect((await finalize("adminA", s.febA2)).status).toBe(200);
     const offer = await opening("acctA", { bankAccountId: bank.BK2, periodStart: "2095-05-01" });
     expect(offer.body).toMatchObject({ source: "CARRIED", amount: 1700, gapDays: 61, fromSession: { id: s.febA2 } });
     const res = await create("acctA", body("BK2", "2095-05-01", "2095-05-31"));
@@ -257,7 +265,7 @@ describe("carry-forward across a carried period", () => {
     const janSummary = (await api("acctA", "get", `/api/bank-recon/sessions/${s.jan3}/summary`)).body;
     expect(janSummary).toMatchObject({ bookBalance: -300, outstandingChecksTotal: 300, difference: 0 });
     const linesBefore = (await one("SELECT COUNT(*) n FROM bank_recon_statement_lines WHERE bank_account_id = ?", [bank.BK3])).n;
-    expect((await finalize("acctA", s.jan3)).status).toBe(200);
+    expect((await finalize("adminA", s.jan3)).status).toBe(200);
     expect((await one("SELECT COUNT(*) n FROM bank_recon_statement_lines WHERE bank_account_id = ?", [bank.BK3])).n).toBe(linesBefore);
 
     // February opens with January's ending balance and still lists the check

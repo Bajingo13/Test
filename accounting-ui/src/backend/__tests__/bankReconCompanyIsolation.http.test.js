@@ -275,6 +275,16 @@ describe("cross-company access is a 404 (Admin and Accountant)", () => {
   for (const who of ["adminA", "acctA"]) {
     test.each(CASES)(`${who === "adminA" ? "Company A Admin" : "20. Company A Accountant"}: %s -> 404`, async (label, method, url, body, kind) => {
       const res = await api(who, method, url(), body ? body() : undefined);
+      // R4 (maker-checker): approve / reject / post / finalize / reopen need
+      // REPORTS.BANK_RECONCILIATION / APPROVE, which ACCOUNTANT no longer holds.
+      // The permission check answers first with the same 403 for ANY id, so
+      // company B's records are still not revealed.
+      if (who === "acctA" && /^1[4-8]\. /.test(label)) {
+        expect(res.status).toBe(403);
+        const unknown = await api(who, method, url().replace(/\/(\d+)\//, "/999999999/"), body ? body() : undefined);
+        expect([unknown.status, unknown.body]).toEqual([403, res.body]);
+        return;
+      }
       expect(res.status).toBe(404);
       const unknownUrl = twin(kind);
       if (unknownUrl) {

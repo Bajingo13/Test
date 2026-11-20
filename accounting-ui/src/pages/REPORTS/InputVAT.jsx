@@ -22,6 +22,10 @@ export default function InputVAT() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [generated, setGenerated] = useState(false);
+  // Generation failure message (replaces a native alert) - shown above the report.
+  const [reportError, setReportError] = useState("");
+  // Inline validation message (replaces a native alert) - shown above the report, announced by screen readers.
+  const [validationError, setValidationError] = useState("");
 
   // Company context (same rule as Account Analysis, whose endpoint this
   // report reuses): a single-company user gets theirs; a Super Admin or
@@ -139,15 +143,17 @@ export default function InputVAT() {
     const applied = period.apply();
     if (!applied) return;
     if (!accountCode) {
-      alert("Please select the Input VAT account first.");
+      setValidationError("Please select the Input VAT account first.");
       return;
     }
+    setValidationError("");
 
     const { fromDate, toDate } = applied;
     const query = accountAnalysisQuery({ from: fromDate, to: toDate, accountCode, companyId });
     if (!query) return; // no company selected - nothing is requested
 
     const ticket = requestGuard.current.next();
+    setReportError("");
     setLoading(true);
 
     try {
@@ -175,7 +181,7 @@ export default function InputVAT() {
     } catch (err) {
       if (!requestGuard.current.isCurrent(ticket)) return;
       console.error(err);
-      alert(err.userMessage || "Failed to generate Input VAT Report. Please check backend/server.");
+      setReportError(err.userMessage || "Failed to generate Input VAT Report. Please check backend/server.");
       setRows([]);
       setGenerated(true);
     } finally {
@@ -196,8 +202,8 @@ export default function InputVAT() {
           <ReportPeriodFilter period={period} idPrefix="iv" />
 
           <div>
-            <label>Input VAT Account</label>
-            <select value={accountCode} onChange={(e) => setAccountCode(e.target.value)}>
+            <label htmlFor="ivat-account">Input VAT Account</label>
+            <select id="ivat-account" value={accountCode} onChange={(e) => setAccountCode(e.target.value)}>
               <option value="">Select Account</option>
               {accounts.map((acc) => (
                 <option key={acc.id} value={acc.code}>
@@ -269,7 +275,19 @@ export default function InputVAT() {
             Export CSV
           </button>
         </div>
+
+        {validationError ? (
+          <p className="aa-error" role="alert" id="ivat-validation">
+            {validationError}
+          </p>
+        ) : null}
       </div>
+
+      {reportError ? (
+        <div className="aa-error" role="alert" id="ivat-error">
+          {reportError}
+        </div>
+      ) : null}
 
       {generated && (
         <div className="aa-report-card">

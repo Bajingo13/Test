@@ -400,3 +400,8 @@
   margin: 6px 0;
   padding-left: 18px;
 }
+
+/* TC-FS-012 narrow widths: header actions wrap under the title. */
+.cs-header-actions {
+  flex-wrap: wrap;
+}

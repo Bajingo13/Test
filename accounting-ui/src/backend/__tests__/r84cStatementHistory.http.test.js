@@ -11,6 +11,7 @@ const bcrypt = require("bcryptjs");
 const request = require("supertest");
 const app = require("../server");
 const pool = require("../db");
+const { withFixtureParty, cleanupFixtureParties } = require("../lib/testFixtureParty");
 const AgentActions = require("../services/BankReconAgentActions");
 const { assertNotProductionDatabase } = require("../lib/testDatabaseGuard");
 
@@ -31,9 +32,12 @@ const doc = {};
 const s = {};
 
 const q = async (sql, params) => (await pool.query(sql, params))[0];
-const api = (who, method, url, body) => {
+// P1 (2026-11-18): these documents are bank-movement fixtures that never sent a
+// party; the server now requires one (transactionPartyService), so a body with
+// no party gets its company's fixture customer / supplier (lib/testFixtureParty).
+const api = async (who, method, url, body) => {
   const r = request(app)[method](url).set({ Authorization: `Bearer ${tok[who]}` });
-  return body === undefined ? r : r.send(body);
+  return body === undefined ? r : r.send(await withFixtureParty(pool, method, url, body));
 };
 async function ai(who, action, ...args) {
   try {
@@ -111,6 +115,9 @@ beforeAll(async () => {
   }
   await makeUser("super", "SUPER_ADMIN");
   await makeUser("acctA", "ACCOUNTANT", [co.A]);
+  // R4 (maker-checker): finalize needs REPORTS.BANK_RECONCILIATION / APPROVE,
+  // which ACCOUNTANT no longer holds - the reviewer finalizes.
+  await makeUser("adminA", "ADMIN", [co.A]);
   await makeUser("acctB", "ACCOUNTANT", [co.B]);
   await makeUser("acctAB", "ACCOUNTANT", [co.A, co.B]);
 
@@ -131,7 +138,7 @@ beforeAll(async () => {
   const jq = await queueOf("acctA", s.jan);
   for (const h of jq.highConfidence) expect((await api("acctA", "post", `/api/bank-recon/matches/${h.candidate.matchId}/confirm`)).status).toBe(200);
   expect((await api("acctA", "post", `/api/bank-recon/statement-lines/${await lineId("Mystery fee")}/ignore`)).status).toBe(200);
-  expect((await api("acctA", "post", `/api/bank-recon/sessions/${s.jan}/finalize`, { overrideReason: "R84C fixture" })).status).toBe(200);
+  expect((await api("adminA", "post", `/api/bank-recon/sessions/${s.jan}/finalize`, { overrideReason: "R84C fixture" })).status).toBe(200);
 
   // ---- February: a one-to-many deposit, an ambiguous deposit, an exception ----
   doc.f1 = await voucher("or", "A", { bank: s.bank, no: "OR-001", amount: 5000, date: "2097-02-08", party: "Alpha Trading" });
@@ -187,6 +194,7 @@ afterAll(async () => {
     await pool.query("DELETE FROM user_companies WHERE user_id IN (?)", [us]);
     await pool.query("DELETE FROM users WHERE id IN (?)", [us]);
     if (banks.length) await pool.query("DELETE FROM bank_codes WHERE id IN (?)", [banks]);
+    await cleanupFixtureParties(pool, cos);
     await pool.query("DELETE FROM companies WHERE id IN (?)", [cos]);
     await pool.query("DELETE FROM chart_of_accounts WHERE code LIKE ?", [`${P}%`]);
   } finally {

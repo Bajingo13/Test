@@ -26,7 +26,7 @@ export async function apiRequest(endpoint, options = {}) {
   // (see authSession.js/installAuthFetchGuard.js for the same rule applied
   // to every other fetch() call in the app).
   if (response.status === 401 && !endpoint.includes("/api/login")) {
-    handleAuthError(401);
+    handleAuthError(401, data?.code);
   }
 
   if (!response.ok) {

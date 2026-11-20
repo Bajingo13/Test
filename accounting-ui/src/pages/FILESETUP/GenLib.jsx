@@ -1,8 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { generateNextCode } from "../../utils/genLibCode";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
+import usePermissions from "../../hooks/usePermissions";
 import RecordViewModal from "../../components/RecordViewModal";
+import AutoResizeTextarea from "../../components/AutoResizeTextarea";
+import { filterGenLibRecords, statusBadge, toolbarState } from "./fileSetupRecords.mjs";
 import "./GenLib.css";
+import "../../components/RecurringTemplateModal.css";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
 
@@ -46,6 +50,10 @@ const EMPTY_FORM = {
 };
 
 export default function GenLib() {
+  const { can } = usePermissions();
+  const canCreate = can("FILESETUP.GENLIB", "CREATE");
+  const canEditPerm = can("FILESETUP.GENLIB", "EDIT");
+  const canDeletePerm = can("FILESETUP.GENLIB", "DELETE");
   const [records, setRecords] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [mode, setMode] = useState("view");
@@ -54,8 +62,20 @@ export default function GenLib() {
   const [showTable, setShowTable] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
   const [loading, setLoading] = useState(false);
-  const [importing, setImporting] = useState(false);
+  const [typeFilter, setTypeFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
   const importInputRef = useRef(null);
+
+  // Import is preview -> confirm (same flow as COA / Group Codes): choosing a
+  // file only calls the READ-ONLY preview endpoint. The File is held so
+  // "Confirm Import" resubmits the SAME file; the server re-parses and
+  // re-validates it before inserting (the preview is never trusted).
+  const [importFile, setImportFile] = useState(null);
+  const [importPreview, setImportPreview] = useState(null);
+  const [importPreviewLoading, setImportPreviewLoading] = useState(false);
+  const [importError, setImportError] = useState("");
+  const [importConfirming, setImportConfirming] = useState(false);
+  const [importResult, setImportResult] = useState(null);
 
   const isEditing = mode === "add" || mode === "edit";
 
@@ -97,27 +117,22 @@ export default function GenLib() {
     }
   }
 
-  const filteredRecords = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return records;
-
-    return records.filter((item) =>
-      [
-        item.code,
-        item.name,
-        item.type,
-        item.email,
-        item.mobile,
-        item.category,
-        item.status,
-      ]
-        .join(" ")
-        .toLowerCase()
-        .includes(q)
-    );
-  }, [records, search]);
+  // H7: search (code, name, type, email, mobile, telephone, TIN, category,
+  // status) plus exact Party Type / Status filters - all client-side.
+  const filteredRecords = useMemo(
+    () => filterGenLibRecords(records, { search, type: typeFilter, status: statusFilter }),
+    [records, search, typeFilter, statusFilter]
+  );
 
   const currentIndex = records.findIndex((item) => item.id === selectedId);
+  const toolbar = toolbarState({
+    index: currentIndex,
+    total: records.length,
+    hasRecord: Boolean(form.id),
+    isEditing,
+    busy: importPreviewLoading || importConfirming,
+  });
+  const badge = statusBadge(form.status);
 
   function loadRecord(record) {
     setSelectedId(record.id);
@@ -297,15 +312,56 @@ export default function GenLib() {
     importInputRef.current?.click();
   }
 
+  // Step 1: READ-ONLY preview - no database write happens here.
   async function handleImportFileChange(e) {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    setImporting(true);
+    setImportFile(file);
+    setImportPreview(null);
+    setImportResult(null);
+    setImportError("");
+    setImportPreviewLoading(true);
 
     try {
       const formData = new FormData();
       formData.append("file", file);
+
+      const res = await fetch(`${API_BASE}/api/genlib/import/preview`, {
+        method: "POST",
+        credentials: "include",
+        headers: authHeaders(),
+        body: formData,
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        if (handleAuthError(res.status)) return;
+        setImportError(data.message || "Failed to read the file.");
+        return;
+      }
+
+      setImportPreview(data);
+    } catch (error) {
+      console.error("GENLIB IMPORT PREVIEW ERROR:", error);
+      setImportError("Unable to read the file.");
+    } finally {
+      setImportPreviewLoading(false);
+      e.target.value = "";
+    }
+  }
+
+  // Step 2: only on the explicit "Confirm Import" click - resubmits the SAME
+  // file to the real import endpoint (the server re-validates against the
+  // current database and inserts in one transaction).
+  async function handleConfirmImport() {
+    if (!importFile) return;
+    setImportConfirming(true);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", importFile);
 
       const res = await fetch(`${API_BASE}/api/genlib/import`, {
         method: "POST",
@@ -318,33 +374,26 @@ export default function GenLib() {
 
       if (!res.ok) {
         if (handleAuthError(res.status)) return;
-        alert(data.message || "Failed to import file");
+        setImportResult({ success: false, message: data.message || "Failed to import file.", skipped: data.skipped, warnings: data.warnings });
         return;
       }
 
-      const lines = [`Imported ${data.imported} record(s).`];
-      if (data.skipped?.length) {
-        lines.push(
-          `Skipped ${data.skipped.length}:`,
-          ...data.skipped.map((s) => `  Row ${s.row}: ${s.reason}`)
-        );
-      }
-      if (data.warnings?.length) {
-        lines.push(
-          `Warnings (${data.warnings.length}):`,
-          ...data.warnings.map((w) => `  Row ${w.row}: ${w.message}`)
-        );
-      }
-      alert(lines.join("\n"));
-
+      setImportResult({ success: true, imported: data.imported, skipped: data.skipped, warnings: data.warnings });
       await loadRecords();
     } catch (error) {
       console.error("IMPORT GENLIB ERROR:", error);
-      alert("Unable to import file.");
+      setImportResult({ success: false, message: "Unable to import file." });
     } finally {
-      setImporting(false);
-      e.target.value = "";
+      setImportConfirming(false);
     }
+  }
+
+  function closeImport() {
+    if (importConfirming) return;
+    setImportFile(null);
+    setImportPreview(null);
+    setImportError("");
+    setImportResult(null);
   }
 
   return (
@@ -361,10 +410,11 @@ export default function GenLib() {
             </div>
 
             <div className="gl-toolbar">
-              <button className="btn btn-primary" onClick={handleAdd}>Add</button>
-              <button className="btn" onClick={handleEdit}>Edit</button>
-              <button className="btn btn-danger" onClick={handleDelete}>Delete</button>
+              {canCreate ? <button type="button" className="btn btn-primary" onClick={handleAdd}>Add</button> : null}
+              {canEditPerm ? <button type="button" className="btn" onClick={handleEdit} disabled={!toolbar.canEdit}>Edit</button> : null}
+              {canDeletePerm ? <button type="button" className="btn btn-danger" onClick={handleDelete} disabled={!toolbar.canDelete}>Delete</button> : null}
               <button
+                type="button"
                 className="btn"
                 onClick={() => {
                   setMode("view");
@@ -373,15 +423,17 @@ export default function GenLib() {
               >
                 View
               </button>
-              <button className="btn" onClick={() => window.print()}>Print</button>
-              <button className="btn" onClick={handlePrevious}>Previous</button>
-              <button className="btn" onClick={handleNext}>Next</button>
-              <button className="btn" onClick={downloadTemplate}>
+              <button type="button" className="btn" onClick={() => window.print()}>Print</button>
+              <button type="button" className="btn" onClick={handlePrevious} disabled={!toolbar.canPrevious}>Previous</button>
+              <button type="button" className="btn" onClick={handleNext} disabled={!toolbar.canNext}>Next</button>
+              <button type="button" className="btn" onClick={downloadTemplate}>
                 Generate Template
               </button>
-              <button className="btn" onClick={triggerImport} disabled={importing}>
-                {importing ? "Importing..." : "Import"}
-              </button>
+              {canCreate ? (
+                <button type="button" className="btn" onClick={triggerImport} disabled={!toolbar.canImport}>
+                  {importPreviewLoading ? "Reading file..." : "Import"}
+                </button>
+              ) : null}
               <input
                 type="file"
                 ref={importInputRef}
@@ -402,12 +454,46 @@ export default function GenLib() {
             subtitle="Select a record to open it."
             searchValue={search}
             onSearchChange={setSearch}
-            searchPlaceholder="Search code, name, type..."
+            searchPlaceholder="Search code, name, TIN, phone, email..."
+            filters={
+              <>
+                <label className="rvm-filter">
+                  Type
+                  <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} aria-label="Filter by party type">
+                    <option value="">All types</option>
+                    {PARTY_TYPES.map((item) => (
+                      <option key={item} value={item}>{item}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="rvm-filter">
+                  Status
+                  <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} aria-label="Filter by status">
+                    <option value="">All statuses</option>
+                    {STATUS_OPTIONS.map((item) => (
+                      <option key={item} value={item}>{item}</option>
+                    ))}
+                  </select>
+                </label>
+                {(typeFilter || statusFilter) && (
+                  <button type="button" className="rvm-filter-clear" onClick={() => { setTypeFilter(""); setStatusFilter(""); }}>
+                    Clear Filters
+                  </button>
+                )}
+              </>
+            }
             columns={[
               { key: "code", label: "Code" },
               { key: "name", label: "Name" },
               { key: "type", label: "Type" },
-              { key: "status", label: "Status" },
+              {
+                key: "status",
+                label: "Status",
+                render: (item) => {
+                  const b = statusBadge(item.status);
+                  return <span className={`gl-status-badge gl-status-badge--${b.tone}`}>{b.label}</span>;
+                },
+              },
               { key: "email", label: "Email" },
               { key: "mobile", label: "Mobile" },
             ]}
@@ -427,8 +513,12 @@ export default function GenLib() {
           <div className="gl-card">
             <div className="gl-top-grid">
               <div className="field">
-                <label>Code</label>
+                <label htmlFor="gl-code">
+                  Code <span className="fs-required" aria-hidden="true">*</span>
+                </label>
                 <input
+                  id="gl-code"
+                  aria-required="true"
                   value={form.code}
                   disabled={!isEditing}
                   onChange={(e) => updateField("code", e.target.value)}
@@ -436,8 +526,19 @@ export default function GenLib() {
               </div>
 
               <div className="field field-wide">
-                <label>Name</label>
-                <input
+                <div className="gl-label-row">
+                  <label htmlFor="gl-name">
+                    Name <span className="fs-required" aria-hidden="true">*</span>
+                  </label>
+                  {mode === "view" && form.id ? (
+                    <span className={`gl-status-badge gl-status-badge--${badge.tone}`} data-testid="gl-status-badge">
+                      {badge.label}
+                    </span>
+                  ) : null}
+                </div>
+                <AutoResizeTextarea
+                  id="gl-name"
+                  aria-required="true"
                   value={form.name}
                   disabled={!isEditing}
                   onChange={(e) => updateField("name", e.target.value)}
@@ -445,8 +546,12 @@ export default function GenLib() {
               </div>
 
               <div className="field">
-                <label>Type</label>
+                <label htmlFor="gl-type">
+                  Type <span className="fs-required" aria-hidden="true">*</span>
+                </label>
                 <select
+                  id="gl-type"
+                  aria-required="true"
                   value={form.type}
                   disabled={!isEditing}
                   onChange={(e) => updateField("type", e.target.value)}
@@ -458,36 +563,34 @@ export default function GenLib() {
               </div>
             </div>
 
-            <div className="gl-tabs">
-              <button
-                className={activeTab === "main" ? "gl-tab active" : "gl-tab"}
-                onClick={() => setActiveTab("main")}
-                type="button"
-              >
-                Main Info
-              </button>
-              <button
-                className={activeTab === "additional" ? "gl-tab active" : "gl-tab"}
-                onClick={() => setActiveTab("additional")}
-                type="button"
-              >
-                Additional Info
-              </button>
-              <button
-                className={activeTab === "billing" ? "gl-tab active" : "gl-tab"}
-                onClick={() => setActiveTab("billing")}
-                type="button"
-              >
-                Billing / Tax
-              </button>
+            <div className="gl-tabs" role="tablist" aria-label="Record details">
+              {[
+                ["main", "Main Info"],
+                ["additional", "Additional Info"],
+                ["billing", "Billing / Tax"],
+              ].map(([key, label]) => (
+                <button
+                  key={key}
+                  id={`gl-tab-${key}`}
+                  role="tab"
+                  aria-selected={activeTab === key}
+                  aria-controls={`gl-panel-${key}`}
+                  className={activeTab === key ? "gl-tab active" : "gl-tab"}
+                  onClick={() => setActiveTab(key)}
+                  type="button"
+                >
+                  {label}
+                </button>
+              ))}
             </div>
 
             {activeTab === "main" && (
-              <div className="tab-panel">
+              <div className="tab-panel" role="tabpanel" id="gl-panel-main" aria-labelledby="gl-tab-main">
                 <div className="gl-grid">
                   <div className="field">
-                    <label>Status</label>
+                    <label htmlFor="gl-status">Status</label>
                     <select
+                      id="gl-status"
                       value={form.status}
                       disabled={!isEditing}
                       onChange={(e) => updateField("status", e.target.value)}
@@ -499,8 +602,9 @@ export default function GenLib() {
                   </div>
 
                   <div className="field">
-                    <label>Start Date</label>
+                    <label htmlFor="gl-start-date">Start Date</label>
                     <input
+                      id="gl-start-date"
                       type="date"
                       value={form.startDate || ""}
                       disabled={!isEditing}
@@ -509,8 +613,9 @@ export default function GenLib() {
                   </div>
 
                   <div className="field field-span-2">
-                    <label>Address Line 1</label>
-                    <input
+                    <label htmlFor="gl-address1">Address Line 1</label>
+                    <AutoResizeTextarea
+                      id="gl-address1"
                       value={form.address1 || ""}
                       disabled={!isEditing}
                       onChange={(e) => updateField("address1", e.target.value)}
@@ -518,8 +623,9 @@ export default function GenLib() {
                   </div>
 
                   <div className="field field-span-2">
-                    <label>Address Line 2</label>
-                    <input
+                    <label htmlFor="gl-address2">Address Line 2</label>
+                    <AutoResizeTextarea
+                      id="gl-address2"
                       value={form.address2 || ""}
                       disabled={!isEditing}
                       onChange={(e) => updateField("address2", e.target.value)}
@@ -527,8 +633,9 @@ export default function GenLib() {
                   </div>
 
                   <div className="field field-span-2">
-                    <label>Address Line 3</label>
-                    <input
+                    <label htmlFor="gl-address3">Address Line 3</label>
+                    <AutoResizeTextarea
+                      id="gl-address3"
                       value={form.address3 || ""}
                       disabled={!isEditing}
                       onChange={(e) => updateField("address3", e.target.value)}
@@ -536,8 +643,9 @@ export default function GenLib() {
                   </div>
 
                   <div className="field">
-                    <label>Attention</label>
+                    <label htmlFor="gl-attention">Attention</label>
                     <input
+                      id="gl-attention"
                       value={form.attention || ""}
                       disabled={!isEditing}
                       onChange={(e) => updateField("attention", e.target.value)}
@@ -545,8 +653,9 @@ export default function GenLib() {
                   </div>
 
                   <div className="field">
-                    <label>Position</label>
+                    <label htmlFor="gl-position">Position</label>
                     <input
+                      id="gl-position"
                       value={form.position || ""}
                       disabled={!isEditing}
                       onChange={(e) => updateField("position", e.target.value)}
@@ -581,11 +690,12 @@ export default function GenLib() {
             )}
 
             {activeTab === "additional" && (
-              <div className="tab-panel">
+              <div className="tab-panel" role="tabpanel" id="gl-panel-additional" aria-labelledby="gl-tab-additional">
                 <div className="gl-grid">
                   <div className="field">
-                    <label>Telephone No.</label>
+                    <label htmlFor="gl-telephone">Telephone No.</label>
                     <input
+                      id="gl-telephone"
                       value={form.telephone || ""}
                       disabled={!isEditing}
                       onChange={(e) => updateField("telephone", e.target.value)}
@@ -593,8 +703,9 @@ export default function GenLib() {
                   </div>
 
                   <div className="field">
-                    <label>Fax No.</label>
+                    <label htmlFor="gl-fax">Fax No.</label>
                     <input
+                      id="gl-fax"
                       value={form.fax || ""}
                       disabled={!isEditing}
                       onChange={(e) => updateField("fax", e.target.value)}
@@ -602,8 +713,9 @@ export default function GenLib() {
                   </div>
 
                   <div className="field">
-                    <label>Mobile No.</label>
+                    <label htmlFor="gl-mobile">Mobile No.</label>
                     <input
+                      id="gl-mobile"
                       value={form.mobile || ""}
                       disabled={!isEditing}
                       onChange={(e) => updateField("mobile", e.target.value)}
@@ -611,8 +723,9 @@ export default function GenLib() {
                   </div>
 
                   <div className="field">
-                    <label>Email</label>
+                    <label htmlFor="gl-email">Email</label>
                     <input
+                      id="gl-email"
                       type="email"
                       value={form.email || ""}
                       disabled={!isEditing}
@@ -621,8 +734,9 @@ export default function GenLib() {
                   </div>
 
                   <div className="field">
-                    <label>Category</label>
+                    <label htmlFor="gl-category">Category</label>
                     <select
+                      id="gl-category"
                       value={form.category}
                       disabled={!isEditing}
                       onChange={(e) => updateField("category", e.target.value)}
@@ -634,8 +748,9 @@ export default function GenLib() {
                   </div>
 
                   <div className="field">
-                    <label>Branch Code</label>
+                    <label htmlFor="gl-branch-code">Branch Code</label>
                     <input
+                      id="gl-branch-code"
                       value={form.branchCode || ""}
                       disabled={!isEditing}
                       onChange={(e) => updateField("branchCode", e.target.value)}
@@ -643,8 +758,9 @@ export default function GenLib() {
                   </div>
 
                   <div className="field">
-                    <label>RDO Code</label>
+                    <label htmlFor="gl-rdo-code">RDO Code</label>
                     <input
+                      id="gl-rdo-code"
                       value={form.rdoCode || ""}
                       disabled={!isEditing}
                       onChange={(e) => updateField("rdoCode", e.target.value)}
@@ -652,8 +768,9 @@ export default function GenLib() {
                   </div>
 
                   <div className="field field-span-2">
-                    <label>Notes</label>
+                    <label htmlFor="gl-notes">Notes</label>
                     <textarea
+                      id="gl-notes"
                       rows="5"
                       value={form.notes || ""}
                       disabled={!isEditing}
@@ -665,11 +782,12 @@ export default function GenLib() {
             )}
 
             {activeTab === "billing" && (
-              <div className="tab-panel">
+              <div className="tab-panel" role="tabpanel" id="gl-panel-billing" aria-labelledby="gl-tab-billing">
                 <div className="gl-grid">
                   <div className="field">
-                    <label>TIN</label>
+                    <label htmlFor="gl-tin">TIN</label>
                     <input
+                      id="gl-tin"
                       value={form.tin || ""}
                       disabled={!isEditing}
                       onChange={(e) => updateField("tin", e.target.value)}
@@ -677,8 +795,9 @@ export default function GenLib() {
                   </div>
 
                   <div className="field">
-                    <label>ATC Code</label>
+                    <label htmlFor="gl-atc-code">ATC Code</label>
                     <input
+                      id="gl-atc-code"
                       value={form.atcCode || ""}
                       disabled={!isEditing}
                       onChange={(e) => updateField("atcCode", e.target.value)}
@@ -686,21 +805,12 @@ export default function GenLib() {
                   </div>
 
                   <div className="field">
-                    <label>EWT Code</label>
+                    <label htmlFor="gl-ewt-code">EWT Code</label>
                     <input
+                      id="gl-ewt-code"
                       value={form.ewtCode || ""}
                       disabled={!isEditing}
                       onChange={(e) => updateField("ewtCode", e.target.value)}
-                    />
-                  </div>
-
-                  <div className="field field-span-2">
-                    <label>Billing Notes</label>
-                    <textarea
-                      rows="5"
-                      value={form.notes || ""}
-                      disabled={!isEditing}
-                      onChange={(e) => updateField("notes", e.target.value)}
                     />
                   </div>
                 </div>
@@ -720,6 +830,132 @@ export default function GenLib() {
           </div>
         </section>
       </div>
+
+      {importFile && (
+        <div className="rtm-overlay" onClick={(e) => e.target === e.currentTarget && closeImport()}>
+          <div className="rtm-modal gl-import-modal" role="dialog" aria-modal="true" aria-labelledby="gl-import-title">
+            <div className="rtm-header">
+              <div>
+                <h2 id="gl-import-title">Import General Libraries</h2>
+                <p className="rtm-subtitle">{importFile.name}</p>
+              </div>
+              <button type="button" className="rtm-close" onClick={closeImport} disabled={importConfirming} aria-label="Close">
+                &times;
+              </button>
+            </div>
+
+            <div className="rtm-body">
+              {importPreviewLoading && <div className="rtm-loading">Reading file...</div>}
+
+              {!importPreviewLoading && importError && <div className="rtm-error-banner">{importError}</div>}
+
+              {!importPreviewLoading && !importError && importPreview && !importResult && (
+                <>
+                  <p>
+                    <strong>{importPreview.totalRows}</strong> row(s) detected &mdash;{" "}
+                    <strong>{importPreview.readyCount}</strong> ready to import,{" "}
+                    <strong>{importPreview.skipped?.length || 0}</strong> will be skipped
+                    {importPreview.warnings?.length ? (
+                      <>
+                        , <strong>{importPreview.warnings.length}</strong> warning(s)
+                      </>
+                    ) : null}
+                    .
+                  </p>
+                  <p className="rtm-hint">Nothing has been saved yet. Review the rows below, then confirm to import.</p>
+
+                  {importPreview.ready?.length > 0 && (
+                    <div className="gl-import-section">
+                      <h4>Ready to import ({importPreview.ready.length})</h4>
+                      <ul className="gl-import-list" tabIndex={0} aria-label="Ready to import">
+                        {importPreview.ready.map((r) => (
+                          <li key={r.row}>
+                            Row {r.row} | {r.code} | {r.name} ({r.type}, {r.status})
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  <GenLibImportIssues skipped={importPreview.skipped} warnings={importPreview.warnings} />
+                </>
+              )}
+
+              {importResult &&
+                (importResult.success ? (
+                  <>
+                    <p className="gl-import-summary">
+                      Imported: <strong>{importResult.imported}</strong> &nbsp;|&nbsp; Skipped:{" "}
+                      <strong>{importResult.skipped?.length || 0}</strong> &nbsp;|&nbsp; Warnings:{" "}
+                      <strong>{importResult.warnings?.length || 0}</strong>
+                    </p>
+                    <GenLibImportIssues skipped={importResult.skipped} warnings={importResult.warnings} />
+                  </>
+                ) : (
+                  <>
+                    <div className="rtm-error-banner">{importResult.message}</div>
+                    <GenLibImportIssues skipped={importResult.skipped} warnings={importResult.warnings} />
+                  </>
+                ))}
+            </div>
+
+            <div className="rtm-footer">
+              {!importResult ? (
+                <>
+                  <button type="button" className="rtm-btn-secondary" onClick={closeImport} disabled={importConfirming}>
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="rtm-btn-primary"
+                    onClick={handleConfirmImport}
+                    disabled={importPreviewLoading || !!importError || !importPreview || importPreview.readyCount === 0 || importConfirming}
+                  >
+                    {importConfirming ? "Importing..." : "Confirm Import"}
+                  </button>
+                </>
+              ) : (
+                <button type="button" className="rtm-btn-primary" onClick={closeImport}>
+                  Close
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
+  );
+}
+
+// Row-numbered skipped reasons ("Row X | Code | reason") + warnings, shared by
+// the preview and the result. Each list scrolls inside the dialog.
+function GenLibImportIssues({ skipped, warnings }) {
+  return (
+    <>
+      {skipped?.length > 0 && (
+        <div className="gl-import-section">
+          <h4>Skipped rows ({skipped.length})</h4>
+          <ul className="gl-import-list" tabIndex={0} aria-label="Skipped rows">
+            {skipped.map((s, i) => (
+              <li key={i}>
+                Row {s.row} | {s.code || "-"} | {s.reason}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {warnings?.length > 0 && (
+        <div className="gl-import-section">
+          <h4>Warnings ({warnings.length})</h4>
+          <ul className="gl-import-list" tabIndex={0} aria-label="Warnings">
+            {warnings.map((w, i) => (
+              <li key={i}>
+                Row {w.row}: {w.message}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </>
   );
 }

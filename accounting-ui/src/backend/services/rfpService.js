@@ -150,7 +150,11 @@ async function assertCanManage(header, user) {
 
 // Validates everything a create/edit writes, against the RFP's company.
 // Returns the normalized record; nothing is written here.
-async function validatePayload(db, { companyId, body, user }) {
+// currentSupplierId (P1 inactive-party rule, 2026-11-19): when editing an
+// existing RFP that already references a now-inactive supplier, keeping that
+// same supplier is still allowed; a new RFP, a changed supplier and a submit
+// (which re-validates the stored request) still need an ACTIVE supplier.
+async function validatePayload(db, { companyId, body, user, currentSupplierId = null }) {
   const rfpDate = parseDate(body.rfpDate, "RFP date");
   const requestedPaymentDate = parseDate(body.requestedPaymentDate, "Requested payment date");
   const purpose = requiredText(body.purpose, "Purpose", 5000);
@@ -206,7 +210,9 @@ async function validatePayload(db, { companyId, body, user }) {
   const supplier = suppliers[0];
   if (!supplier) throw httpError("Supplier not found for the selected company.", 400);
   if (String(supplier.party_type || "").toUpperCase() !== "SUPPLIER") throw httpError("The selected party is not a supplier.", 400);
-  if (String(supplier.status || "").toUpperCase() !== "ACTIVE") throw httpError("The selected supplier is not active.", 400);
+  if (String(supplier.status || "").toUpperCase() !== "ACTIVE" && !(currentSupplierId !== null && Number(currentSupplierId) === Number(supplier.id))) {
+    throw httpError("The selected supplier is not active.", 400);
+  }
 
   // Branch (optional): must belong to the company and, below Super Admin,
   // be one of the user's assigned branches (same rule as branchScope.js).
@@ -560,7 +566,7 @@ async function updateRfp({ id, body, user }) {
       throw httpError(`Only a DRAFT or RETURNED Request for Payment can be edited (this one is ${header.status}).`, 409);
     }
 
-    const data = await validatePayload(conn, { companyId: header.company_id, body, user });
+    const data = await validatePayload(conn, { companyId: header.company_id, body, user, currentSupplierId: header.supplier_id });
     const before = auditState(header, await readLines(conn, rfpId));
 
     await conn.execute(

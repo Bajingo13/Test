@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
+import usePermissions from "../../hooks/usePermissions";
 import AutoResizeTextarea from "../../components/AutoResizeTextarea";
 import "./GroupCodes.css";
 
@@ -21,6 +22,12 @@ const EMPTY_FORM = {
 };
 
 export default function PrepaidAccountSetup() {
+  const { can, loading: permsLoading } = usePermissions();
+  const canView = permsLoading || can("FILESETUP.PREPAID_ACCOUNTS", "VIEW");
+  const canCreate = can("FILESETUP.PREPAID_ACCOUNTS", "CREATE");
+  const canEditPerm = can("FILESETUP.PREPAID_ACCOUNTS", "EDIT");
+  const canDeletePerm = can("FILESETUP.PREPAID_ACCOUNTS", "DELETE");
+  const canWrite = canCreate || canEditPerm;
   const [records, setRecords] = useState([]);
   const [form, setForm] = useState(EMPTY_FORM);
   const [mode, setMode] = useState("add");
@@ -55,6 +62,7 @@ export default function PrepaidAccountSetup() {
 
       if (!res.ok) {
         if (handleAuthError(res.status)) return;
+        if (res.status === 403) return; // the page shows its no-permission message
         alert(data.message || "Failed to load prepaid accounts.");
         return;
       }
@@ -157,6 +165,16 @@ export default function PrepaidAccountSetup() {
     }
   }
 
+  if (!canView) {
+    return (
+      <div className="group-page">
+        <div className="group-main">
+          <div className="group-card" role="alert">You do not have permission to view Prepaid Accounts.</div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="group-page">
       <div className="group-header">
@@ -166,12 +184,15 @@ export default function PrepaidAccountSetup() {
           <p>Maintain prepaid expenses and their amortization terms.</p>
         </div>
 
-        <button type="button" onClick={handleNew}>
-          New Prepaid Account
-        </button>
+        {canCreate ? (
+          <button type="button" onClick={handleNew}>
+            New Prepaid Account
+          </button>
+        ) : null}
       </div>
 
       <div className="group-layout">
+        {canWrite && (mode === "add" ? canCreate : canEditPerm) ? (
         <section className="group-card">
           <h2>{mode === "add" ? "Add Prepaid Account" : "Edit Prepaid Account"}</h2>
 
@@ -251,6 +272,7 @@ export default function PrepaidAccountSetup() {
             </button>
           </div>
         </section>
+        ) : null}
 
         <section className="group-card">
           <div className="group-list-header">
@@ -271,7 +293,7 @@ export default function PrepaidAccountSetup() {
                   <th>Description</th>
                   <th>Party</th>
                   <th>Status</th>
-                  <th>Action</th>
+                  {canEditPerm || canDeletePerm ? <th>Action</th> : null}
                 </tr>
               </thead>
 
@@ -287,16 +309,20 @@ export default function PrepaidAccountSetup() {
                       <td>{item.description}</td>
                       <td>{item.partyName}</td>
                       <td>{item.status}</td>
-                      <td>
-                        <button type="button" onClick={() => handleEdit(item)}>Edit</button>
-                        <button
-                          type="button"
-                          className="danger-btn"
-                          onClick={() => handleDelete(item.id)}
-                        >
-                          Delete
-                        </button>
-                      </td>
+                      {canEditPerm || canDeletePerm ? (
+                        <td>
+                          {canEditPerm ? <button type="button" onClick={() => handleEdit(item)}>Edit</button> : null}
+                          {canDeletePerm ? (
+                            <button
+                              type="button"
+                              className="danger-btn"
+                              onClick={() => handleDelete(item.id)}
+                            >
+                              Delete
+                            </button>
+                          ) : null}
+                        </td>
+                      ) : null}
                     </tr>
                   ))
                 ) : (

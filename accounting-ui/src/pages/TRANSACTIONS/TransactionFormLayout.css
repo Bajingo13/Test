@@ -259,6 +259,14 @@
   vertical-align: middle;
 }
 
+/* P1 account-selector readability: the journal-entry grid's Account column
+   gets enough room for "CODE - ACCOUNT NAME" (the selected value wraps
+   beyond this - see SearchableAccountSelect.css) without widening the page. */
+.transaction-table th.transaction-account-col {
+  width: 30%;
+  min-width: 260px;
+}
+
 .transaction-table-input {
   width: 100%;
   height: 42px;

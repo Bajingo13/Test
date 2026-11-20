@@ -56,6 +56,12 @@ export default function SearchableAccountSelect({
   id,
   ariaLabel = "Account",
   className = "",
+  // P1 (accountant: "account names are difficult/impossible to read"): in the
+  // journal-entry grid the trigger cell is narrow, so a long "CODE - NAME"
+  // was clipped. When set, the selected label wraps onto as many lines as it
+  // needs (read-only auto-height textarea - same class, value, mouse and
+  // keyboard behavior as the single-line input).
+  wrapSelectedLabel = false,
 }) {
   const rootRef = useRef(null);
   const triggerRef = useRef(null);
@@ -72,6 +78,7 @@ export default function SearchableAccountSelect({
   // clipping ancestors the option list does.
   const [anchorRect, setAnchorRect] = useState(null);
 
+  const TriggerTag = wrapSelectedLabel ? "textarea" : "input";
   const shownLabel = selectedDisplayLabel({
     value,
     candidates: accounts,
@@ -231,11 +238,12 @@ export default function SearchableAccountSelect({
       aria-haspopup="listbox"
       aria-owns={listboxId}
     >
-      <input
+      <TriggerTag
         ref={triggerRef}
         id={id}
-        type="text"
-        className="transaction-table-input searchable-account-input"
+        {...(wrapSelectedLabel ? { rows: 1 } : { type: "text" })}
+        title={shownLabel || undefined}
+        className={`transaction-table-input searchable-account-input${wrapSelectedLabel ? " searchable-account-input-wrap" : ""}`}
         aria-label={ariaLabel}
         aria-autocomplete="list"
         aria-controls={listboxId}

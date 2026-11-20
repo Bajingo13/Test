@@ -154,3 +154,31 @@
     padding: 0;
   }
 }
+
+/* Responsive layout (integration audit): no page-level horizontal scroll.
+   The three filter columns took their contents' minimum width (the shared
+   period filter is ~325px), so at phone width they pushed the page wider, and
+   the actions row did not wrap. Same three columns on desktop, allowed to
+   shrink; one column on phones; the page root no longer passes a child's
+   min-content width up to <main>. */
+.bs-page {
+  contain: inline-size;
+}
+
+.bs-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+@media (max-width: 600px) {
+  .bs-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.bs-grid > * {
+  min-width: 0;
+}
+
+.bs-actions {
+  flex-wrap: wrap;
+}

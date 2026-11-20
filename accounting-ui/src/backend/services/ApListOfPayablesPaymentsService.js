@@ -1,5 +1,6 @@
 const pool = require("../db");
 const { postedOnlySql } = require("./reportRecognitionService");
+const ControlAmount = require("./controlAmountService");
 
 // AP List of Payables and Payments - a period, multi-supplier summary, the
 // AP structural mirror of AR Billings & Collections (ArBillingsCollections
@@ -8,7 +9,8 @@ const { postedOnlySql } = require("./reportRecognitionService");
 // per this task's own instruction not to assume the AR implementation can
 // simply be copied.
 //
-// PAYABLES: apv_headers.total_credit, transaction_date-ranged, filtered
+// PAYABLES: the APV's AP control amount (controlAmountService - P0 TC1-062;
+// previously apv_headers.total_credit), transaction_date-ranged, filtered
 // with the EXACT VOID/CANCELLED + reversal-JV exclusion
 // agingReportService.js's own AP branch already established (mirrored
 // verbatim below, not imported - AgingReportService's exported functions
@@ -73,8 +75,9 @@ async function fetchApvPayables(companyId, to) {
     `
     SELECT h.id, h.supplier_id AS party_id,
       DATE_FORMAT(h.transaction_date, '%Y-%m-%d') AS transaction_date,
-      h.total_credit AS amount
+      ${ControlAmount.baseOriginalExpr("APV", "h", "ca")} AS amount
     FROM apv_headers h
+    LEFT JOIN ${ControlAmount.aggregateSql("APV")} ca ON ca.doc_id = h.id
     WHERE h.transaction_date <= ? AND h.company_id = ?
       ${AP_REVERSAL_EXCLUSION_SQL}
     `,
@@ -132,11 +135,16 @@ async function fetchApBeginningPayments(companyId, to) {
 async function fetchSupplierMemos(companyId, to) {
   const [rows] = await pool.execute(
     `
-    SELECT id, party_id, memo_type,
-      DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transaction_date,
-      total_debit, total_credit
-    FROM memo_headers
-    WHERE party_type = 'SUPPLIER' AND transaction_date <= ? AND company_id = ? AND ${postedOnlySql()}
+    SELECT h.id, h.party_id, h.memo_type,
+      DATE_FORMAT(h.transaction_date, '%Y-%m-%d') AS transaction_date,
+      -- P0 TC1-092b: the memo's AP CONTROL-LINE amount (signed for AP:
+      -- Credit Memo +, Debit Memo -), split back into the existing
+      -- debit-memo / credit-memo columns.
+      CASE WHEN h.memo_type = 'DEBIT' THEN -${ControlAmount.memoSignedBaseExpr("AP", "h", "ma")} ELSE 0 END AS total_debit,
+      CASE WHEN h.memo_type = 'CREDIT' THEN ${ControlAmount.memoSignedBaseExpr("AP", "h", "ma")} ELSE 0 END AS total_credit
+    FROM memo_headers h
+    LEFT JOIN ${ControlAmount.memoAggregateSql("AP")} ma ON ma.doc_id = h.id
+    WHERE h.party_type = 'SUPPLIER' AND h.transaction_date <= ? AND h.company_id = ? AND ${postedOnlySql("h")}
     `,
     [to, companyId]
   );

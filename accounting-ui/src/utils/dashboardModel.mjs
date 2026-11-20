@@ -349,3 +349,28 @@ export function canOpen(access, path) {
   if (!rule) return false;
   return access.granted.has(`${rule[0]}.${rule[1]}`);
 }
+
+// ---------------------------------------------------------------------------
+// Bank & Cash Accounts list: client-side search over the summary rows already
+// on screen (no extra request). The search box appears only above the
+// threshold; at or below it the list is shown as is.
+
+export const BANK_SEARCH_THRESHOLD = 6;
+
+export function bankAccountsSearchable(accounts) {
+  return Array.isArray(accounts) && accounts.length > BANK_SEARCH_THRESHOLD;
+}
+
+const BANK_SEARCH_FIELDS = ["name", "bankName", "bankCode", "accountNoLast4", "coaCode", "coaTitle"];
+
+// Case-insensitive substring match on account name, bank name, bank code,
+// last 4 digits of the account number, GL code and GL title. A blank query
+// returns the list unchanged; the order is never changed.
+export function filterBankAccounts(accounts, query) {
+  const list = Array.isArray(accounts) ? accounts : [];
+  const q = String(query ?? "").trim().toLowerCase();
+  if (!q) return list;
+  return list.filter((a) =>
+    BANK_SEARCH_FIELDS.some((f) => a?.[f] !== null && a?.[f] !== undefined && String(a[f]).toLowerCase().includes(q))
+  );
+}

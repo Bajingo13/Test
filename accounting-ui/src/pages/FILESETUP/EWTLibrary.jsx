@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
+import usePermissions from "../../hooks/usePermissions";
 import { matchesDateRange } from "../../utils/dateRangeFilter.mjs";
 import AutoResizeTextarea from "../../components/AutoResizeTextarea";
 import "./FileSetupPages.css";
@@ -29,6 +30,8 @@ const DESCRIPTION_MAX_LEN = 255;
 const RATE_MAX_VALUE = 999.999;
 
 export default function EWTLibrary() {
+  const { can } = usePermissions();
+  const canConfigure = can("FILESETUP.TAX_SETUP", "CONFIGURE");
   const [records, setRecords] = useState([]);
   const [form, setForm] = useState(EMPTY_FORM);
   const [mode, setMode] = useState("add");
@@ -205,9 +208,11 @@ export default function EWTLibrary() {
           </p>
         </div>
 
-        <button className="fs-btn primary" onClick={handleNew}>
-          + Add EWT Code
-        </button>
+        {canConfigure ? (
+          <button className="fs-btn primary" onClick={handleNew}>
+            + Add EWT Code
+          </button>
+        ) : null}
       </div>
 
       <div className="fs-card">
@@ -256,7 +261,7 @@ export default function EWTLibrary() {
               <th>BIR Form</th>
               <th>Status</th>
               <th>Created</th>
-              <th>Action</th>
+              {canConfigure ? <th>Action</th> : null}
             </tr>
           </thead>
 
@@ -285,11 +290,13 @@ export default function EWTLibrary() {
                   <td>{item.birForm}</td>
                   <td>{item.status}</td>
                   <td>{item.createdAt ? String(item.createdAt).slice(0, 10) : "—"}</td>
-                  <td>
-                    <button className="fs-btn" onClick={() => handleEdit(item)}>
-                      Edit
-                    </button>
-                  </td>
+                  {canConfigure ? (
+                    <td>
+                      <button className="fs-btn" onClick={() => handleEdit(item)}>
+                        Edit
+                      </button>
+                    </td>
+                  ) : null}
                 </tr>
               ))
             )}
@@ -297,6 +304,7 @@ export default function EWTLibrary() {
         </table>
       </div>
 
+      {canConfigure ? (
       <div className="fs-card">
         <h2>{mode === "add" ? "Add EWT / ATC Code" : "Edit EWT / ATC Code"}</h2>
 
@@ -382,6 +390,7 @@ export default function EWTLibrary() {
           </button>
         </div>
       </div>
+      ) : null}
     </div>
   );
 }

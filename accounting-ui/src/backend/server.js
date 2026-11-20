@@ -11,6 +11,9 @@ const bcrypt = require("bcryptjs");
 const { authenticateToken } = require("./lib/auth");
 const { HttpError } = require("./lib/httpError");
 const { logAudit, requestMeta } = require("./lib/audit");
+// Authentication security: 15-minute inactivity sessions + failed-login alerts.
+const { signSessionToken, SESSION_IDLE_SECONDS } = require("./lib/sessionPolicy");
+const SecurityAlertService = require("./services/securityAlertService");
 const authorizePermission = require("./middleware/authorizePermission");
 
 // 20 attempts per 15 minutes per IP, on top of the per-account lockout
@@ -31,6 +34,7 @@ const { reportPeriodMiddleware, filterByDocumentPeriod } = require("./lib/report
 const GroupCodeClassification = require("./services/groupCodeClassification");
 const ReportSectionService = require("./services/reportSectionService");
 const ArStatementService = require("./services/ArStatementService");
+const ApStatementService = require("./services/ApStatementService");
 const ArBillingsCollectionsService = require("./services/ArBillingsCollectionsService");
 const ArOverdueAccountsService = require("./services/ArOverdueAccountsService");
 const ApListOfPayablesPaymentsService = require("./services/ApListOfPayablesPaymentsService");
@@ -217,6 +221,11 @@ app.post("/api/login", loginRateLimiter, async (req, res) => {
         user, ipAddress, userAgent,
       });
 
+      // 3rd consecutive failure -> one security email to the account's address
+      // (services/securityAlertService.js). Not awaited: the response below is the
+      // same generic 401 for every account and never waits for SMTP.
+      SecurityAlertService.handleFailedLogin(user, nextCount, { ipAddress, userAgent });
+
       return res.status(401).json({
         success: false,
         message: "Invalid username or password",
@@ -235,16 +244,9 @@ app.post("/api/login", loginRateLimiter, async (req, res) => {
       });
     }
 
-    const token = jwt.sign(
-      {
-        id: user.id,
-        username: user.username,
-        role: user.role,
-        tv: user.token_version ?? 0,
-      },
-      process.env.JWT_SECRET,
-      { expiresIn: "1d" }
-    );
+    // 15-minute inactivity session (lib/sessionPolicy.js); refreshed by
+    // POST /api/auth/keepalive while the user is active.
+    const token = signSessionToken(user);
 
     pool.execute(
       "UPDATE users SET last_login_at = NOW(), failed_login_count = 0, locked_until = NULL WHERE id = ?",
@@ -263,6 +265,7 @@ app.post("/api/login", loginRateLimiter, async (req, res) => {
       success: true,
       message: "Login successful",
       token,
+      expiresInSeconds: SESSION_IDLE_SECONDS,
       user: {
         id: user.id,
         username: user.username,
@@ -324,9 +327,27 @@ app.get("/api/genlib", authenticateToken, authorizePermission("FILESETUP.GENLIB"
   }
 });
 
+// P1 TC1-022: a General Library party must have a code, a name and a known
+// type - a blank-name party showed up as an empty option in every party and
+// Gen Ref picker and made Save Draft fail on any line that picked it. Omitted
+// optional fields are stored as NULL instead of failing with a 500.
+const GENLIB_PARTY_TYPES = ["CUSTOMER", "SUPPLIER", "EMPLOYEE", "AFFILIATE", "BRANCH", "OTHER"];
+const GENLIB_OPTIONAL_FIELDS = ["status", "startDate", "address1", "address2", "address3", "attention", "position", "telephone", "fax", "mobile", "tin", "email", "atcCode", "ewtCode", "category", "branchCode", "rdoCode", "notes"];
+function normalizeGenlibInput(body) {
+  const item = { ...(body || {}) };
+  const code = String(item.code ?? "").trim();
+  const name = String(item.name ?? "").trim();
+  const type = String(item.type ?? item.partyType ?? "").trim().toUpperCase();
+  if (!code) throw new HttpError(400, "Code is required.", "GENLIB_CODE_REQUIRED");
+  if (!name) throw new HttpError(400, "Name is required.", "GENLIB_NAME_REQUIRED");
+  if (!GENLIB_PARTY_TYPES.includes(type)) throw new HttpError(400, `Type must be one of: ${GENLIB_PARTY_TYPES.join(", ")}.`, "GENLIB_TYPE_INVALID");
+  for (const f of GENLIB_OPTIONAL_FIELDS) if (item[f] === undefined || item[f] === "") item[f] = f === "status" ? "ACTIVE" : null;
+  return { ...item, code, name, type };
+}
+
 app.post("/api/genlib", authenticateToken, authorizePermission("FILESETUP.GENLIB", "CREATE"), async (req, res) => {
   try {
-    const item = req.body;
+    const item = normalizeGenlibInput(req.body);
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, item.companyId);
 
     const [result] = await pool.execute(
@@ -373,6 +394,7 @@ app.post("/api/genlib", authenticateToken, authorizePermission("FILESETUP.GENLIB
   } catch (err) {
     console.error("CREATE GENLIB ERROR:", err);
 
+    if (err.statusCode) return res.status(err.statusCode).json({ message: err.message, code: err.code });
     if (err.code === "ER_DUP_ENTRY") {
       return res.status(400).json({ message: "Code already exists" });
     }
@@ -384,7 +406,7 @@ app.post("/api/genlib", authenticateToken, authorizePermission("FILESETUP.GENLIB
 app.put("/api/genlib/:id", authenticateToken, authorizePermission("FILESETUP.GENLIB", "EDIT"), async (req, res) => {
   try {
     const { id } = req.params;
-    const item = req.body;
+    const item = normalizeGenlibInput(req.body);
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, item.companyId);
 
     const [ownerRows] = await pool.execute("SELECT company_id FROM general_libraries WHERE id = ?", [id]);
@@ -453,6 +475,8 @@ app.put("/api/genlib/:id", authenticateToken, authorizePermission("FILESETUP.GEN
     });
   } catch (err) {
     console.error("UPDATE GENLIB ERROR:", err);
+    if (err.statusCode) return res.status(err.statusCode).json({ message: err.message, code: err.code });
+    if (err.code === "ER_DUP_ENTRY") return res.status(400).json({ message: "Code already exists" });
     res.status(500).json({ message: "Failed to update record" });
   }
 });
@@ -540,6 +564,54 @@ app.get("/api/genlib/template", authenticateToken, authorizePermission("FILESETU
   }
 });
 
+// General Libraries import: preview -> confirm (same flow as COA / Group
+// Codes). The preview only parses + validates (zero writes). Confirm
+// resubmits the SAME file to /api/genlib/import, which parses and validates
+// it again against the database as it is at that moment, then inserts every
+// ready row in one transaction. Both use the existing upload middleware and
+// FILESETUP.GENLIB CREATE permission.
+async function parseGenLibImportFile(req, res) {
+  if (!req.file) {
+    res.status(400).json({ message: "No file uploaded" });
+    return null;
+  }
+  const parsed = await GenLibImportService.parseAndValidateRows(req.file.buffer, req.file.originalname);
+  if (parsed.headers.length === 0) {
+    res.status(400).json({ message: "The file appears to be empty" });
+    return null;
+  }
+  if (parsed.missingRequiredColumns) {
+    res.status(400).json({ message: "Could not find required Code and Name columns in the file", headers: parsed.headers });
+    return null;
+  }
+  return parsed;
+}
+
+app.post(
+  "/api/genlib/import/preview",
+  authenticateToken,
+  authorizePermission("FILESETUP.GENLIB", "CREATE"),
+  handleUpload(templateImportUpload.single("file")),
+  async (req, res) => {
+    try {
+      const parsed = await parseGenLibImportFile(req, res);
+      if (!parsed) return;
+      const { ready, skipped, warnings } = parsed;
+      res.json({
+        success: true,
+        totalRows: ready.length + skipped.length,
+        readyCount: ready.length,
+        ready: ready.map((r) => ({ row: r.row, code: r.code, name: r.name, type: r.type, status: r.status })),
+        skipped,
+        warnings,
+      });
+    } catch (err) {
+      console.error("GENLIB IMPORT PREVIEW ERROR:", err);
+      res.status(500).json({ message: "Failed to read the file. Please check its format and try again." });
+    }
+  }
+);
+
 app.post(
   "/api/genlib/import",
   authenticateToken,
@@ -547,26 +619,29 @@ app.post(
   handleUpload(templateImportUpload.single("file")),
   async (req, res) => {
     try {
-      if (!req.file) {
-        return res.status(400).json({ message: "No file uploaded" });
-      }
-
-      const { headers, ready, skipped, warnings, missingRequiredColumns } =
-        await GenLibImportService.parseAndValidateRows(req.file.buffer, req.file.originalname);
-
-      if (headers.length === 0) {
-        return res.status(400).json({ message: "The file appears to be empty" });
-      }
-
-      if (missingRequiredColumns) {
-        return res.status(400).json({
-          message: "Could not find required Code and Name columns in the file",
-          headers,
-        });
-      }
+      const parsed = await parseGenLibImportFile(req, res);
+      if (!parsed) return;
+      const { ready, skipped, warnings } = parsed;
 
       const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.body?.companyId);
-      const imported = await GenLibImportService.insertGenLibRows(ready, companyId);
+      let imported;
+      try {
+        imported = await GenLibImportService.insertGenLibRows(ready, companyId);
+      } catch (insertErr) {
+        // insertGenLibRows already rolled back - zero rows from this request
+        // were committed. A duplicate here means another user created one of
+        // these codes after this request validated the file.
+        console.error("GENLIB IMPORT - BATCH INSERT FAILED, ROLLED BACK:", insertErr);
+        const concurrent = insertErr && insertErr.code === "ER_DUP_ENTRY";
+        return res.status(concurrent ? 409 : 500).json({
+          success: false,
+          message: concurrent
+            ? "Another user created one of these codes while the import was running. The import was rolled back and no records were imported. Please try again."
+            : "Import failed and was rolled back. No records were imported from this file. Please try again.",
+          skipped,
+          warnings,
+        });
+      }
 
       res.json({ success: true, imported, skipped, warnings });
     } catch (err) {
@@ -654,11 +729,68 @@ app.get("/api/coa", authenticateToken, authorizePermission("FILESETUP.COA", "VIE
   }
 });
 
+// TC-FS-001: server-side COA validation. The COA page already requires Code
+// and Title; the API accepted blank values (MySQL stores '' in NOT NULL
+// columns) and answered an invalid class / missing date with a 500. Same
+// rules as the page, enforced on the server: 400 with a clear message.
+const COA_CLASS_OPTIONS = ["ASSET", "LIABILITY", "EQUITY", "INCOME", "EXPENSE"];
+function validateCoaInput(body) {
+  const code = String(body?.code ?? "").trim();
+  const title = String(body?.title ?? "").trim();
+  const accountClass = String(body?.accountClass ?? "").trim().toUpperCase();
+  const date = String(body?.date ?? "").trim();
+  if (!code) throw new HttpError(400, "Code is required.", "COA_CODE_REQUIRED");
+  if (!title) throw new HttpError(400, "Title is required.", "COA_TITLE_REQUIRED");
+  if (!COA_CLASS_OPTIONS.includes(accountClass)) throw new HttpError(400, `Class must be one of: ${COA_CLASS_OPTIONS.join(", ")}.`, "COA_CLASS_INVALID");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new HttpError(400, "Date is required (YYYY-MM-DD).", "COA_DATE_REQUIRED");
+  return { code, title, accountClass, date };
+}
+
+// TC-FS-001: an account that is still referenced must not be deleted (same
+// rule as the Group Code delete guard below). Transaction / beginning-balance
+// lines reference accounts by account_id and/or account_code WITHOUT a
+// foreign key, so a delete used to orphan them silently; the few real FKs
+// (bank-recon adjustments, FX account settings) made it fail with a raw 500.
+const COA_REFERENCE_SOURCES = [
+  ["apv_lines", "account_id", "account_code"], ["cv_lines", "account_id", "account_code"],
+  ["invoice_lines", "account_id", "account_code"], ["or_lines", "account_id", "account_code"],
+  ["jv_lines", "account_id", "account_code"], ["memo_lines", "account_id", "account_code"],
+  ["petty_cash_lines", "account_id", "account_code"], ["purchase_order_lines", "account_id", "account_code"],
+  ["quotation_lines", "account_id", "account_code"], ["recurring_transaction_template_lines", "account_id", "account_code"],
+  ["arap_beginning_balance_lines", "account_id", "account_code"], ["gl_beginning_balance_lines", "account_id", "account_code"],
+  ["rfp_lines", "account_id", null], ["transaction_tax_entries", "account_id", null],
+  ["bank_codes", "coa_account_id", null], ["bank_recon_adjustments", "suggested_account_id", null],
+  ["prepaid_accounts", null, "account_code"], ["prepaid_accounts", null, "expense_account_code"],
+];
+async function countCoaReferences(account) {
+  const references = {};
+  for (const [table, idCol, codeCol] of COA_REFERENCE_SOURCES) {
+    const where = [idCol ? `${idCol} = ?` : null, codeCol ? `${codeCol} = ?` : null].filter(Boolean).join(" OR ");
+    const params = [idCol ? account.id : null, codeCol ? account.code : null].filter((v) => v !== null);
+    const [[row]] = await pool.execute(`SELECT COUNT(*) AS n FROM ${table} WHERE ${where}`, params);
+    const n = Number(row.n) || 0;
+    if (n) references[codeCol && !idCol ? `${table}.${codeCol}` : table] = n;
+  }
+  const [[fx]] = await pool.execute(
+    `SELECT COUNT(*) AS n FROM company_fx_accounts WHERE ? IN (realized_fx_gain_account_id, realized_fx_loss_account_id, unrealized_fx_gain_account_id, unrealized_fx_loss_account_id)`,
+    [account.id]
+  );
+  if (Number(fx.n)) references.company_fx_accounts = Number(fx.n);
+  return references;
+}
+
 app.post("/api/coa", authenticateToken, authorizePermission("FILESETUP.COA", "CREATE"), async (req, res) => {
+  let input;
+  try {
+    input = validateCoaInput(req.body);
+  } catch (err) {
+    return res.status(err.statusCode || 400).json({ message: err.message, code: err.code });
+  }
   const conn = await pool.getConnection();
 
   try {
-    const { code, date, title, accountClass, description, validations, groups } = req.body;
+    const { description, validations, groups } = req.body;
+    const { code, date, title, accountClass } = input;
 
     await conn.beginTransaction();
 
@@ -666,7 +798,7 @@ app.post("/api/coa", authenticateToken, authorizePermission("FILESETUP.COA", "CR
       `INSERT INTO chart_of_accounts 
         (code, account_date, title, account_class, description)
        VALUES (?, ?, ?, ?, ?)`,
-      [code, date, title, accountClass, description]
+      [code, date, title, accountClass, description ?? null]
     );
 
     const coaId = result.insertId;
@@ -709,11 +841,18 @@ app.post("/api/coa", authenticateToken, authorizePermission("FILESETUP.COA", "CR
 });
 
 app.put("/api/coa/:id", authenticateToken, authorizePermission("FILESETUP.COA", "EDIT"), async (req, res) => {
+  let input;
+  try {
+    input = validateCoaInput(req.body);
+  } catch (err) {
+    return res.status(err.statusCode || 400).json({ message: err.message, code: err.code });
+  }
   const conn = await pool.getConnection();
 
   try {
     const { id } = req.params;
-    const { code, date, title, accountClass, description, validations, groups } = req.body;
+    const { description, validations, groups } = req.body;
+    const { code, date, title, accountClass } = input;
 
     await conn.beginTransaction();
 
@@ -721,7 +860,7 @@ app.put("/api/coa/:id", authenticateToken, authorizePermission("FILESETUP.COA", 
       `UPDATE chart_of_accounts 
        SET code = ?, account_date = ?, title = ?, account_class = ?, description = ?
        WHERE id = ?`,
-      [code, date, title, accountClass, description, id]
+      [code, date, title, accountClass, description ?? null, id]
     );
 
     await conn.execute("DELETE FROM coa_validations WHERE coa_id = ?", [id]);
@@ -752,6 +891,9 @@ app.put("/api/coa/:id", authenticateToken, authorizePermission("FILESETUP.COA", 
   } catch (err) {
     await conn.rollback();
     console.error("UPDATE COA ERROR:", err);
+    if (err.code === "ER_DUP_ENTRY") {
+      return res.status(400).json({ message: "Account code already exists" });
+    }
     res.status(500).json({ message: "Failed to update account" });
   } finally {
     conn.release();
@@ -761,6 +903,19 @@ app.put("/api/coa/:id", authenticateToken, authorizePermission("FILESETUP.COA", 
 app.delete("/api/coa/:id", authenticateToken, authorizePermission("FILESETUP.COA", "DELETE"), async (req, res) => {
   try {
     const { id } = req.params;
+
+    const [accountRows] = await pool.execute("SELECT id, code FROM chart_of_accounts WHERE id = ?", [id]);
+    if (accountRows.length) {
+      const references = await countCoaReferences(accountRows[0]);
+      if (Object.keys(references).length) {
+        return res.status(409).json({
+          message: "This account cannot be deleted because it is used by transactions, beginning balances or other setup records.",
+          code: "COA_IN_USE",
+          error: "COA_IN_USE",
+          references,
+        });
+      }
+    }
 
     await pool.execute("DELETE FROM chart_of_accounts WHERE id = ?", [id]);
 
@@ -959,6 +1114,15 @@ app.get("/api/invoices", authenticateToken, authorizePermission("TRANSACTIONS.IN
   }
 });
 
+// P0 TC1-062: outstanding = authoritative AR / AP control amount (net of the
+// document's own withholding line) - paid, never the header side total.
+const ControlAmountService = require("./services/controlAmountService");
+const TransactionPartyService = require("./services/transactionPartyService");
+const INV_ORIGINAL_SQL = ControlAmountService.baseOriginalExpr("INV", "invoice_headers", "ca");
+const INV_FOREIGN_ORIGINAL_SQL = ControlAmountService.foreignOriginalExpr("INV", "ca", "snap");
+const APV_ORIGINAL_SQL = ControlAmountService.baseOriginalExpr("APV", "apv_headers", "ca");
+const APV_FOREIGN_ORIGINAL_SQL = ControlAmountService.foreignOriginalExpr("APV", "ca", "snap");
+
 app.get("/api/invoices/unpaid", authenticateToken, authorizePermission("TRANSACTIONS.INVOICE", "VIEW"), async (req, res) => {
   try {
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
@@ -989,21 +1153,22 @@ app.get("/api/invoices/unpaid", authenticateToken, authorizePermission("TRANSACT
         voucher_no AS voucherNo,
         customer_id AS customerId,
         customer_name AS customerName,
-        total_debit AS totalAmount,
+        ${INV_ORIGINAL_SQL} AS totalAmount,
         COALESCE(paid_amount, 0) AS paidAmount,
-        COALESCE(balance_amount, total_debit, 0) AS balanceAmount,
+        GREATEST(${INV_ORIGINAL_SQL} - COALESCE(paid_amount, 0), 0) AS balanceAmount,
         invoice_headers.currency_id AS currencyId,
         cur.currency_code AS currencyCode,
         cur.currency_symbol AS currencySymbol,
         snap.exchange_rate AS sourceExchangeRate,
-        snap.foreign_total AS foreignOriginalAmount,
+        ${INV_FOREIGN_ORIGINAL_SQL} AS foreignOriginalAmount,
         invoice_headers.foreign_paid_amount AS foreignPaidAmount,
         invoice_headers.foreign_balance_amount AS foreignBalanceAmount
       FROM invoice_headers
       LEFT JOIN currencies cur ON cur.id = invoice_headers.currency_id
       LEFT JOIN transaction_currency_snapshots snap ON snap.transaction_type = 'INV' AND snap.transaction_id = invoice_headers.id
+      LEFT JOIN ${ControlAmountService.aggregateSql("INV")} ca ON ca.doc_id = invoice_headers.id
       WHERE invoice_headers.company_id = ?
-        AND COALESCE(balance_amount, total_debit, 0) > 0
+        AND ${INV_ORIGINAL_SQL} - COALESCE(paid_amount, 0) > 0.005
         AND COALESCE(payment_status, 'Unpaid') != 'Paid'
         ${customerFilterInv}
 
@@ -1205,6 +1370,8 @@ app.post("/api/invoices", authenticateToken, authorizePermission("TRANSACTIONS.I
       ewt, lines: currencyResult.lines, existingAtcCode: null, expectedSide: "debit", moduleLabel: "Invoice",
     });
 
+    // P1: the INV party must be a CUSTOMER of this company (server-enforced, Drafts included).
+    await TransactionPartyService.resolveTransactionParty(conn, { module: "INV", companyId, partyId: customerId });
     const [result] = await conn.execute(
       `INSERT INTO invoice_headers (
         company_id,
@@ -1351,6 +1518,11 @@ app.post("/api/invoices", authenticateToken, authorizePermission("TRANSACTIONS.I
       userId: req.user.id, lockNow: String(finalStatus).toUpperCase() === "POSTED",
     });
 
+    // P0 TC1-062 mirror: seed paid/balance/payment_status from the
+    // authoritative AR control amount (net of customer withholding), the
+    // same way PUT /api/invoices already recomputes it after an edit.
+    await updateInvoicePaymentStatus(conn, invoiceId);
+
     // Mints this invoice's verification token + HMAC signature exactly
     // once, inside this same transaction - see invoiceVerificationService's
     // own header for why it is never regenerated afterward (reprints, PDF
@@ -1482,6 +1654,8 @@ app.put("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACTION
       ewt, lines: currencyResult.lines, existingAtcCode: ownerRows[0].atc_code, expectedSide: "debit", moduleLabel: "Invoice",
     });
 
+    // P1: the INV party must be a CUSTOMER of this company (server-enforced, Drafts included).
+    await TransactionPartyService.resolveTransactionParty(conn, { module: "INV", companyId, partyId: customerId, existing: { table: "invoice_headers", column: "customer_id", id } });
     await conn.execute(
       `UPDATE invoice_headers SET
         voucher_no = ?,
@@ -1860,6 +2034,12 @@ app.post("/api/or", authenticateToken, authorizePermission("TRANSACTIONS.OR", "C
     // Checkpoint 5 section 16/17).
     await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate, operation: "CREATE", user: req.user }, conn);
     assertRequiredTransactionLines(lines);
+    // P0 TC1-084 (Option A): a posted OR that moves the AR control account must be
+    // fully applied - there is no unapplied/advance-payment subledger.
+    await ControlAmountService.assertControlAmountFullyApplied(conn, {
+      type: "OR", lines, isPosting,
+      appliedTotal: (invoiceApplications || []).reduce((sum, a) => sum + (Number(a.amount) || 0), 0),
+    });
     const currencyResult = await TransactionCurrencyService.resolveTransactionCurrency({
       user: req.user, companyId, transactionType: "OR", transactionId: null, currencyPayload: currency,
       lines, grossAmount: Number(totalDebit) || 0, vatKeyword: "output vat", taxWithheldAmount: ewt.taxWithheldAmount,
@@ -1869,6 +2049,8 @@ app.post("/api/or", authenticateToken, authorizePermission("TRANSACTIONS.OR", "C
     // R9: one validated set of payment fields (method, bank account, check
     // or transfer details) - see paymentDetailsService.
     const payment = await PaymentDetails.resolvePaymentDetails(conn, req.body, { isPosting });
+    // P1: the OR party must be a CUSTOMER of this company (server-enforced, Drafts included).
+    await TransactionPartyService.resolveTransactionParty(conn, { module: "OR", companyId, partyId: customerId });
     const [result] = await conn.execute(
       `INSERT INTO or_headers(
         company_id,
@@ -2357,6 +2539,12 @@ app.put("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
     });
 
     assertRequiredTransactionLines(lines);
+    // P0 TC1-084 (Option A): a posted OR that moves the AR control account must be
+    // fully applied - there is no unapplied/advance-payment subledger.
+    await ControlAmountService.assertControlAmountFullyApplied(conn, {
+      type: "OR", lines, isPosting,
+      appliedTotal: (invoiceApplications || []).reduce((sum, a) => sum + (Number(a.amount) || 0), 0),
+    });
     const currencyResult = await TransactionCurrencyService.resolveTransactionCurrency({
       user: req.user, companyId, transactionType: "OR", transactionId: Number(id), currencyPayload: currency,
       lines, grossAmount: Number(totalDebit) || 0, vatKeyword: "output vat", taxWithheldAmount: ewt.taxWithheldAmount,
@@ -2367,6 +2555,8 @@ app.put("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
     // or transfer details) - see paymentDetailsService.
     const payment = await PaymentDetails.resolvePaymentDetails(conn, req.body, { isPosting });
     const paymentBefore = await PaymentDetails.loadPaymentDetails(conn, "or_headers", id);
+    // P1: the OR party must be a CUSTOMER of this company (server-enforced, Drafts included).
+    await TransactionPartyService.resolveTransactionParty(conn, { module: "OR", companyId, partyId: customerId, existing: { table: "or_headers", column: "customer_id", id } });
     await conn.execute(
       `UPDATE or_headers SET
          voucher_no = ?,
@@ -2775,19 +2965,20 @@ app.get("/api/apv/unpaid", authenticateToken, authorizePermission("TRANSACTIONS.
         voucher_no AS voucherNo,
         supplier_id AS supplierId,
         supplier_name AS supplierName,
-        total_credit AS totalAmount,
+        ${APV_ORIGINAL_SQL} AS totalAmount,
         COALESCE(paid_amount, 0) AS paidAmount,
-        COALESCE(balance_amount, total_credit, 0) AS balanceAmount,
+        GREATEST(${APV_ORIGINAL_SQL} - COALESCE(paid_amount, 0), 0) AS balanceAmount,
         apv_headers.currency_id AS currencyId,
         cur.currency_code AS currencyCode,
         cur.currency_symbol AS currencySymbol,
         snap.exchange_rate AS sourceExchangeRate,
-        snap.foreign_total AS foreignOriginalAmount,
+        ${APV_FOREIGN_ORIGINAL_SQL} AS foreignOriginalAmount,
         apv_headers.foreign_paid_amount AS foreignPaidAmount,
         apv_headers.foreign_balance_amount AS foreignBalanceAmount
       FROM apv_headers
       LEFT JOIN currencies cur ON cur.id = apv_headers.currency_id
       LEFT JOIN transaction_currency_snapshots snap ON snap.transaction_type = 'APV' AND snap.transaction_id = apv_headers.id
+      LEFT JOIN ${ControlAmountService.aggregateSql("APV")} ca ON ca.doc_id = apv_headers.id
       -- Payment eligibility = the AP Aging recognition rule: a Posted APV
       -- (Draft / Cancelled / Void are not payables), not reversed by a
       -- Posted APV_REVERSAL JV, with an outstanding balance (fully paid
@@ -2801,7 +2992,7 @@ app.get("/api/apv/unpaid", authenticateToken, authorizePermission("TRANSACTIONS.
              AND rev.source_reference_id = apv_headers.id
              AND UPPER(rev.status) = 'POSTED'
         )
-        AND COALESCE(balance_amount, total_credit, 0) > 0
+        AND ${APV_ORIGINAL_SQL} - COALESCE(paid_amount, 0) > 0.005
         AND COALESCE(payment_status, 'Unpaid') != 'Paid'
         ${supplierFilterApv}
 
@@ -3060,6 +3251,8 @@ app.put("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV
       ewt, lines: currencyResult.lines, existingAtcCode: ownerRows[0].atc_code, expectedSide: "credit", moduleLabel: "APV",
     });
 
+    // P1: the APV party must be a SUPPLIER of this company (server-enforced, Drafts included).
+    await TransactionPartyService.resolveTransactionParty(conn, { module: "APV", companyId, partyId: supplierId, existing: { table: "apv_headers", column: "supplier_id", id } });
     await conn.execute(
       `UPDATE apv_headers SET
         voucher_no = ?,
@@ -3872,6 +4065,8 @@ app.post("/api/purchase-orders", authenticateToken, authorizePermission("TRANSAC
       isPosting,
     });
 
+    // P1: the PO party must be a SUPPLIER of this company (server-enforced, Drafts included).
+    await TransactionPartyService.resolveTransactionParty(conn, { module: "PO", companyId, partyId: supplierId });
     const [result] = await conn.execute(
       `INSERT INTO purchase_order_headers (
         company_id,
@@ -4049,6 +4244,8 @@ app.put("/api/purchase-orders/:id", authenticateToken, authorizePermission("TRAN
       isPosting,
     });
 
+    // P1: the PO party must be a SUPPLIER of this company (server-enforced, Drafts included).
+    await TransactionPartyService.resolveTransactionParty(conn, { module: "PO", companyId, partyId: supplierId, existing: { table: "purchase_order_headers", column: "supplier_id", id } });
     await conn.execute(
       `UPDATE purchase_order_headers SET
         voucher_no = ?,
@@ -4372,6 +4569,8 @@ app.post("/api/quotations", authenticateToken, authorizePermission("TRANSACTIONS
     const quotationNo = await generateQuotationNo(conn, companyId);
     await assertVoucherNoUnique(conn, { module: "QUOTATION", companyId, voucherNo: quotationNo });
 
+    // P1: the QUOTATION party must be a CUSTOMER of this company (server-enforced, Drafts included).
+    await TransactionPartyService.resolveTransactionParty(conn, { module: "QUOTATION", companyId, partyId: customerId });
     const [result] = await conn.execute(
       `INSERT INTO quotation_headers (
         company_id,
@@ -4518,6 +4717,8 @@ app.put("/api/quotations/:id", authenticateToken, authorizePermission("TRANSACTI
 
     await conn.beginTransaction();
 
+    // P1: the QUOTATION party must be a CUSTOMER of this company (server-enforced, Drafts included).
+    await TransactionPartyService.resolveTransactionParty(conn, { module: "QUOTATION", companyId, partyId: customerId, existing: { table: "quotation_headers", column: "customer_id", id } });
     await conn.execute(
       `UPDATE quotation_headers SET
         customer_id = ?,
@@ -5090,6 +5291,20 @@ app.post("/api/posting/post", authenticateToken, authorizePermission("POSTING", 
         paymentBlockedCount += incomplete.length;
       }
 
+      // P0 TC1-084: a Draft OR / CV whose AR / AP control-account amount is
+      // not fully applied would post a GL movement no aging document
+      // carries - skipped and reported, exactly like the per-document rule
+      // (assertControlAmountFullyApplied) refuses it.
+      if (target.isPaymentDoc && draftIds.length) {
+        const [unappliedRows] = await conn.query(
+          `SELECT h.id FROM ${target.table} h WHERE h.id IN (?) AND ${ControlAmountService.unappliedControlPaymentSql(target.transactionType, "h")}`,
+          [draftIds]
+        );
+        const unapplied = unappliedRows.map((r) => r.id);
+        draftIds = draftIds.filter((did) => !unapplied.includes(did));
+        paymentBlockedCount += unapplied.length;
+      }
+
       const [result] = draftIds.length
         ? await conn.query(`UPDATE ${target.table} SET status = ? WHERE id IN (?) AND company_id = ?`, [target.status, draftIds, companyId])
         : [{ affectedRows: 0 }];
@@ -5383,6 +5598,12 @@ app.post("/api/cv", authenticateToken, authorizePermission("TRANSACTIONS.CV", "C
     await assertVoucherNoUnique(conn, { module: "CV", companyId, voucherNo });
     await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate, operation: "CREATE", user: req.user }, conn);
     assertRequiredTransactionLines(lines);
+    // P0 TC1-084 (Option A): a posted CV that moves the AP control account must be
+    // fully applied - there is no unapplied/advance-payment subledger.
+    await ControlAmountService.assertControlAmountFullyApplied(conn, {
+      type: "CV", lines, isPosting,
+      appliedTotal: (apvApplications || []).reduce((sum, a) => sum + (Number(a.amount) || 0), 0),
+    });
     const currencyResult = await TransactionCurrencyService.resolveTransactionCurrency({
       user: req.user, companyId, transactionType: "CV", transactionId: null, currencyPayload: currency,
       lines, grossAmount: Number(totalCredit) || 0, vatKeyword: "input vat", taxWithheldAmount: ewt.taxWithheldAmount,
@@ -5392,6 +5613,8 @@ app.post("/api/cv", authenticateToken, authorizePermission("TRANSACTIONS.CV", "C
     // R9: one validated set of payment fields (method, bank account, check
     // or transfer details) - see paymentDetailsService.
     const payment = await PaymentDetails.resolvePaymentDetails(conn, req.body, { isPosting });
+    // P1: the CV party must be a SUPPLIER of this company (server-enforced, Drafts included).
+    await TransactionPartyService.resolveTransactionParty(conn, { module: "CV", companyId, partyId: finalPayeeId });
     const [result] = await conn.execute(
       `INSERT INTO cv_headers(
         company_id,
@@ -5839,6 +6062,12 @@ app.put("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
     });
 
     assertRequiredTransactionLines(lines);
+    // P0 TC1-084 (Option A): a posted CV that moves the AP control account must be
+    // fully applied - there is no unapplied/advance-payment subledger.
+    await ControlAmountService.assertControlAmountFullyApplied(conn, {
+      type: "CV", lines, isPosting,
+      appliedTotal: (apvApplications || []).reduce((sum, a) => sum + (Number(a.amount) || 0), 0),
+    });
     const currencyResult = await TransactionCurrencyService.resolveTransactionCurrency({
       user: req.user, companyId, transactionType: "CV", transactionId: Number(id), currencyPayload: currency,
       lines, grossAmount: Number(totalCredit) || 0, vatKeyword: "input vat", taxWithheldAmount: ewt.taxWithheldAmount,
@@ -5849,6 +6078,8 @@ app.put("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
     // or transfer details) - see paymentDetailsService.
     const payment = await PaymentDetails.resolvePaymentDetails(conn, req.body, { isPosting });
     const paymentBefore = await PaymentDetails.loadPaymentDetails(conn, "cv_headers", id);
+    // P1: the CV party must be a SUPPLIER of this company (server-enforced, Drafts included).
+    await TransactionPartyService.resolveTransactionParty(conn, { module: "CV", companyId, partyId: finalPayeeId, existing: { table: "cv_headers", column: "payee_id", id } });
     await conn.execute(
       `UPDATE cv_headers SET
          voucher_no = ?,
@@ -7159,13 +7390,17 @@ function registerMemoRoutes(memoType, urlPrefix, permissionModule, label) {
       });
 
 
+      // P1: a memo's party must be a CUSTOMER or SUPPLIER of this company; its
+      // party_type comes from the library row (never the client) because it
+      // decides whether the memo is an AR or an AP entry.
+      const memoParty = await TransactionPartyService.resolveTransactionParty(conn, { module: memoType === "DEBIT" ? "DM" : "CM", companyId, partyId });
       const [result] = await conn.execute(
         `INSERT INTO memo_headers(
           company_id, voucher_no, memo_type, party_id, party_name, party_type, transaction_date, reference_no,
           description, remarks, total_debit, total_credit, status, source_type, source_id, created_by, posted_by, posted_at, currency_id
         ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         [
-          companyId, (normalizeVoucherNo(voucherNo) || ""), memoType, partyId ?? null, partyName || "", partyType || null,
+          companyId, (normalizeVoucherNo(voucherNo) || ""), memoType, partyId ?? null, partyName || "", memoParty.type,
           transactionDate || null, referenceNo || "", description || "", remarks || "",
           currencyResult.baseTotalDebit, currencyResult.baseTotalCredit, finalStatus,
           finalSourceType, finalSourceId, userId, isPosting ? userId : null, isPosting ? new Date() : null, currencyResult.currencyId,
@@ -7326,6 +7561,10 @@ function registerMemoRoutes(memoType, urlPrefix, permissionModule, label) {
       });
 
 
+      // P1: a memo's party must be a CUSTOMER or SUPPLIER of this company; its
+      // party_type comes from the library row (never the client) because it
+      // decides whether the memo is an AR or an AP entry.
+      const memoParty = await TransactionPartyService.resolveTransactionParty(conn, { module: memoType === "DEBIT" ? "DM" : "CM", companyId, partyId, existing: { table: "memo_headers", column: "party_id", id } });
       await conn.execute(
         `UPDATE memo_headers SET
           voucher_no = ?, party_id = ?, party_name = ?, party_type = ?, transaction_date = ?, reference_no = ?,
@@ -7333,7 +7572,7 @@ function registerMemoRoutes(memoType, urlPrefix, permissionModule, label) {
           source_type = ?, source_id = ?, posted_by = ?, posted_at = ?, currency_id = ?
         WHERE id = ? AND company_id = ? AND memo_type = ?`,
         [
-          (normalizeVoucherNo(voucherNo) || ""), partyId ?? null, partyName || "", partyType || null, transactionDate || null, referenceNo || "",
+          (normalizeVoucherNo(voucherNo) || ""), partyId ?? null, partyName || "", memoParty.type, transactionDate || null, referenceNo || "",
           description || "", remarks || "", currencyResult.baseTotalDebit, currencyResult.baseTotalCredit, finalStatus,
           finalSourceType, finalSourceId, nextPostedBy, nextPostedAt, currencyResult.currencyId, id, companyId, memoType,
         ]
@@ -7481,6 +7720,12 @@ app.use("/api/print-templates", require("./routes/printTemplate.routes"));
 app.use("/api/recurring-transactions", require("./routes/recurringTransactions.routes"));
 app.use("/api/fx-revaluation", require("./routes/fxRevaluation.routes"));
 app.use("/api/currencies", require("./routes/currency.routes"));
+// Company Branch Management (master data; FILESETUP.BRANCHES).
+app.use("/api/company-branches", require("./routes/companyBranches.routes"));
+// Company Management (Super Admin company creation; FILESETUP.COMPANIES / CREATE).
+app.use("/api/company-management", require("./routes/companyManagement.routes"));
+// Session keepalive for the inactivity timeout (lib/sessionPolicy.js).
+app.use("/api/auth", require("./routes/session.routes"));
 app.use("/api/exchange-rates", require("./routes/exchangeRate.routes"));
 app.use("/api/accounting-periods", require("./routes/accountingPeriods.routes"));
 app.use("/api/rfp", require("./routes/rfp.routes"));
@@ -9496,9 +9741,11 @@ app.get("/api/reports/subsidiary-ledger", authenticateToken, authorizePermission
           id, DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transaction_date,
           'INV' AS source_type, voucher_no AS reference_no, id AS transaction_id,
           COALESCE(description, '') AS particulars,
-          COALESCE(total_debit, 0) AS debit, 0 AS credit, 1 AS sort_order
+          -- P0 TC1-062 mirror: the invoice's AR control amount, not total_debit.
+          ${INV_ORIGINAL_SQL} AS debit, 0 AS credit, 1 AS sort_order
         FROM invoice_headers
-        WHERE customer_id = ? AND transaction_date BETWEEN ? AND ? AND company_id = ? AND ${postedOnlySql()}
+        LEFT JOIN ${ControlAmountService.aggregateSql("INV")} ca ON ca.doc_id = invoice_headers.id
+        WHERE customer_id = ? AND transaction_date BETWEEN ? AND ? AND company_id = ? AND ${postedOnlySql("invoice_headers")}
 
         UNION ALL
 
@@ -9506,9 +9753,11 @@ app.get("/api/reports/subsidiary-ledger", authenticateToken, authorizePermission
           id, DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transaction_date,
           'OR' AS source_type, voucher_no AS reference_no, id AS transaction_id,
           COALESCE(description, '') AS particulars,
-          0 AS debit, COALESCE(total_debit, 0) AS credit, 2 AS sort_order
+          -- P0: what the OR actually settled on the AR control account.
+          0 AS debit, ${ControlAmountService.paymentSettledExpr("OR", "or_headers.total_debit", "ca")} AS credit, 2 AS sort_order
         FROM or_headers
-        WHERE customer_id = ? AND transaction_date BETWEEN ? AND ? AND company_id = ? AND ${postedOnlySql()}
+        LEFT JOIN ${ControlAmountService.aggregateSql("OR")} ca ON ca.doc_id = or_headers.id
+        WHERE customer_id = ? AND transaction_date BETWEEN ? AND ? AND company_id = ? AND ${postedOnlySql("or_headers")}
 
         UNION ALL
 
@@ -9527,11 +9776,13 @@ app.get("/api/reports/subsidiary-ledger", authenticateToken, authorizePermission
           id, DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transaction_date,
           CONCAT(memo_type, ' MEMO') AS source_type, voucher_no AS reference_no, id AS transaction_id,
           COALESCE(description, '') AS particulars,
-          CASE WHEN memo_type = 'DEBIT' THEN COALESCE(total_debit, 0) ELSE 0 END AS debit,
-          CASE WHEN memo_type = 'CREDIT' THEN COALESCE(total_credit, 0) ELSE 0 END AS credit,
+          -- P0 TC1-092b: the memo's AR control-line amount (DM +, CM -).
+          GREATEST(${ControlAmountService.memoSignedBaseExpr("AR", "memo_headers", "ma")}, 0) AS debit,
+          GREATEST(-${ControlAmountService.memoSignedBaseExpr("AR", "memo_headers", "ma")}, 0) AS credit,
           3 AS sort_order
         FROM memo_headers
-        WHERE party_id = ? AND party_type = ? AND transaction_date BETWEEN ? AND ? AND company_id = ? AND ${postedOnlySql()}
+        LEFT JOIN ${ControlAmountService.memoAggregateSql("AR")} ma ON ma.doc_id = memo_headers.id
+        WHERE party_id = ? AND party_type = ? AND transaction_date BETWEEN ? AND ? AND company_id = ? AND ${postedOnlySql("memo_headers")}
       ) sl
       ORDER BY transaction_date, sort_order, id
       `
@@ -9544,9 +9795,11 @@ app.get("/api/reports/subsidiary-ledger", authenticateToken, authorizePermission
           id, DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transaction_date,
           'CV' AS source_type, voucher_no AS reference_no, id AS transaction_id,
           COALESCE(description, '') AS particulars,
-          COALESCE(total_credit, 0) AS debit, 0 AS credit, 2 AS sort_order
+          -- P0: what the CV actually settled on the AP control account.
+          ${ControlAmountService.paymentSettledExpr("CV", "cv_headers.total_credit", "ca")} AS debit, 0 AS credit, 2 AS sort_order
         FROM cv_headers
-        WHERE payee_id = ? AND transaction_date BETWEEN ? AND ? AND company_id = ? AND ${postedOnlySql()}
+        LEFT JOIN ${ControlAmountService.aggregateSql("CV")} ca ON ca.doc_id = cv_headers.id
+        WHERE payee_id = ? AND transaction_date BETWEEN ? AND ? AND company_id = ? AND ${postedOnlySql("cv_headers")}
 
         UNION ALL
 
@@ -9554,9 +9807,11 @@ app.get("/api/reports/subsidiary-ledger", authenticateToken, authorizePermission
           id, DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transaction_date,
           'APV' AS source_type, voucher_no AS reference_no, id AS transaction_id,
           COALESCE(description, '') AS particulars,
-          0 AS debit, COALESCE(total_credit, 0) AS credit, 1 AS sort_order
+          -- P0 TC1-062: the APV's AP control amount (Gross - EWT), not total_credit.
+          0 AS debit, ${APV_ORIGINAL_SQL} AS credit, 1 AS sort_order
         FROM apv_headers
-        WHERE supplier_id = ? AND transaction_date BETWEEN ? AND ? AND company_id = ? AND ${postedOnlySql()}
+        LEFT JOIN ${ControlAmountService.aggregateSql("APV")} ca ON ca.doc_id = apv_headers.id
+        WHERE supplier_id = ? AND transaction_date BETWEEN ? AND ? AND company_id = ? AND ${postedOnlySql("apv_headers")}
 
         UNION ALL
 
@@ -9575,11 +9830,13 @@ app.get("/api/reports/subsidiary-ledger", authenticateToken, authorizePermission
           id, DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transaction_date,
           CONCAT(memo_type, ' MEMO') AS source_type, voucher_no AS reference_no, id AS transaction_id,
           COALESCE(description, '') AS particulars,
-          CASE WHEN memo_type = 'DEBIT' THEN COALESCE(total_debit, 0) ELSE 0 END AS debit,
-          CASE WHEN memo_type = 'CREDIT' THEN COALESCE(total_credit, 0) ELSE 0 END AS credit,
+          -- P0 TC1-092b: the memo's AP control-line amount (CM +, DM -).
+          GREATEST(-${ControlAmountService.memoSignedBaseExpr("AP", "memo_headers", "ma")}, 0) AS debit,
+          GREATEST(${ControlAmountService.memoSignedBaseExpr("AP", "memo_headers", "ma")}, 0) AS credit,
           3 AS sort_order
         FROM memo_headers
-        WHERE party_id = ? AND party_type = ? AND transaction_date BETWEEN ? AND ? AND company_id = ? AND ${postedOnlySql()}
+        LEFT JOIN ${ControlAmountService.memoAggregateSql("AP")} ma ON ma.doc_id = memo_headers.id
+        WHERE party_id = ? AND party_type = ? AND transaction_date BETWEEN ? AND ? AND company_id = ? AND ${postedOnlySql("memo_headers")}
       ) sl
       ORDER BY transaction_date, sort_order, id
       `;
@@ -9595,14 +9852,34 @@ app.get("/api/reports/subsidiary-ledger", authenticateToken, authorizePermission
     // same debit/credit assignment works for both ledgers, only the
     // party_type filter ('CUSTOMER' vs 'SUPPLIER') differs, so a DM/CM
     // aimed at the other party type can never leak into this one.
-    const queryParams =
+    const paramsFor = (f, t) =>
       type === "AR"
-        ? [partyId, from, to, companyId, partyId, from, to, companyId, "AR", partyId, from, to, companyId, partyId, "CUSTOMER", from, to, companyId]
-        : [partyId, from, to, companyId, partyId, from, to, companyId, "AP", partyId, from, to, companyId, partyId, "SUPPLIER", from, to, companyId];
+        ? [partyId, f, t, companyId, partyId, f, t, companyId, "AR", partyId, f, t, companyId, partyId, "CUSTOMER", f, t, companyId]
+        : [partyId, f, t, companyId, partyId, f, t, companyId, "AP", partyId, f, t, companyId, partyId, "SUPPLIER", f, t, companyId];
 
-    const [rows] = await pool.execute(query, queryParams);
+    const [rows] = await pool.execute(query, paramsFor(from, to));
 
-    res.json(rows);
+    // Balance forward (TC-REPORT-005): everything dated before `from` -
+    // documents, memos and AR/AP beginning balances, through the same query
+    // and the same P0 control amounts - is carried in as an opening balance,
+    // so the running / ending balance agree with the Statement of Accounts,
+    // the aging and the GL for any period, not only one that starts before
+    // the party's first transaction. Shown as a single BALANCE FORWARD row
+    // (debit / credit 0) only when the opening balance is not zero.
+    let opening = 0;
+    if (typeof from === "string" && /^\d{4}-\d{2}-\d{2}$/.test(from)) {
+      const dayBefore = new Date(`${from}T00:00:00Z`);
+      dayBefore.setUTCDate(dayBefore.getUTCDate() - 1);
+      const [prior] = await pool.execute(query, paramsFor("1000-01-01", dayBefore.toISOString().slice(0, 10)));
+      opening = prior.length ? Number(prior[prior.length - 1].running_balance) || 0 : 0;
+    }
+    if (Math.abs(opening) < 0.005) return res.json(rows);
+
+    const money = (n) => (Math.round(n * 10000) / 10000).toFixed(4);
+    res.json([
+      { transaction_date: from, source_type: "BALANCE FORWARD", reference_no: "", transaction_id: null, particulars: "Balance forward", debit: "0.0000", credit: "0.0000", running_balance: money(opening) },
+      ...rows.map((r) => ({ ...r, running_balance: money(opening + (Number(r.running_balance) || 0)) })),
+    ]);
   } catch (err) {
     console.error("SUBSIDIARY LEDGER REPORT ERROR:", err.message);
     res.status(500).json({
@@ -9661,6 +9938,52 @@ app.get("/api/reports/ar-statement-of-accounts", authenticateToken, authorizePer
     console.error("AR STATEMENT OF ACCOUNTS REPORT ERROR:", err.message);
     res.status(500).json({
       message: "Failed to generate AR Statement of Accounts",
+      error: err.message,
+    });
+  }
+});
+
+// ====================== AP STATEMENT OF ACCOUNTS ======================
+// TC-REPORT-015: the supplier-side mirror of the AR Statement of Accounts
+// route above (same validation, same company / party ownership checks, same
+// response shape). Amounts follow the P0 rules via ApStatementService (APV at
+// its AP control amount, supplier DM -, CM +, CV payments -). Read-only.
+app.get("/api/reports/ap-statement-of-accounts", authenticateToken, authorizePermission("REPORTS.AP", "VIEW"), async (req, res) => {
+  try {
+    const { partyId, from, to } = req.query;
+
+    if (!partyId) {
+      return res.status(400).json({ message: "partyId is required" });
+    }
+
+    if (!from || !to) {
+      return res.status(400).json({ message: "from and to dates are required" });
+    }
+
+    const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+
+    const [partyRows] = await pool.execute(
+      "SELECT company_id, code, name FROM general_libraries WHERE id = ?",
+      [partyId]
+    );
+    if (!partyRows.length || partyRows[0].company_id !== companyId) {
+      return res.status(404).json({ message: "Party not found" });
+    }
+
+    const statement = await ApStatementService.getApStatementOfAccounts({ partyId, from, to, companyId });
+
+    res.json({
+      partyId: Number(partyId),
+      partyCode: partyRows[0].code,
+      partyName: partyRows[0].name,
+      from,
+      to,
+      ...statement,
+    });
+  } catch (err) {
+    console.error("AP STATEMENT OF ACCOUNTS REPORT ERROR:", err.message);
+    res.status(500).json({
+      message: "Failed to generate AP Statement of Accounts",
       error: err.message,
     });
   }

@@ -56,12 +56,9 @@ exports.acceptInvitation = async (req, res) => {
     const { token, password, acceptedTerms } = req.body;
     const result = await InvitationService.acceptInvitation({ token, password, acceptedTerms });
 
-    const jwt = require("jsonwebtoken");
-    const authToken = jwt.sign(
-      { id: result.userId, username: result.username, role: "user", tv: 0 },
-      process.env.JWT_SECRET,
-      { expiresIn: "1d" }
-    );
+    // Same 15-minute inactivity policy as every other session (lib/sessionPolicy.js).
+    const { signSessionToken } = require("../lib/sessionPolicy");
+    const authToken = signSessionToken({ id: result.userId, username: result.username, role: "user", token_version: 0 });
 
     const pool = require("../db");
     pool.execute("UPDATE users SET last_login_at = NOW() WHERE id = ?", [result.userId]).catch((err) => {

@@ -342,3 +342,197 @@ textarea {
 .coa-import-preview-list li {
   margin-bottom: 4px;
 }
+/* =====================================================================
+   COA UI/UX pass (H1-H4, H10-H12). Every rule is scoped to .coa-page:
+   the generic rules above (.btn / .field / textarea ...) are shared with
+   other screens through the global bundle, so they are left untouched.
+   ===================================================================== */
+
+/* H1: readable text in every field, both themes (no rule set a text colour,
+   so typed values fell back to black - 1.3:1 in dark mode). Fields also use
+   the page font (textareas defaulted to monospace). */
+.coa-page .field input,
+.coa-page .field select,
+.coa-page .field textarea,
+.coa-page .group-form select,
+.coa-page .coa-card textarea {
+  color: var(--text-primary);
+  font-family: inherit;
+}
+
+.coa-page .field input::placeholder,
+.coa-page .coa-card textarea::placeholder {
+  color: var(--text-secondary);
+  opacity: 1;
+}
+
+.coa-page select option {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+
+/* H2: read-only (view mode) values stay fully readable. The disabled
+   background still marks them as read-only; the browser's 70% opacity on
+   disabled selects / chips is removed. */
+.coa-page .field input:disabled,
+.coa-page .field select:disabled,
+.coa-page .field textarea:disabled,
+.coa-page .group-form select:disabled,
+.coa-page .coa-card textarea:disabled {
+  color: var(--text-primary);
+  -webkit-text-fill-color: var(--text-primary);
+  opacity: 1;
+}
+
+.coa-page .validation-chip:disabled {
+  opacity: 1;
+}
+
+/* Selected vs not selected is shown by more than colour: a check mark,
+   bolder text and an inset accent border. Labels are unchanged. */
+.coa-page .validation-chip.active {
+  font-weight: 800;
+  box-shadow: inset 0 0 0 1px var(--accent-indigo);
+}
+
+.coa-page .validation-chip.active::before {
+  content: "\2713\00a0";
+}
+
+.coa-page .validation-chip:not(.active):disabled {
+  color: var(--text-secondary);
+  background: var(--bg-disabled);
+}
+
+/* H3: the auto-growing Title matches the other fields. */
+.coa-page .field .auto-resize-textarea {
+  padding: 12px 14px;
+  border-radius: 12px;
+  line-height: 1.4;
+  min-height: 46px;
+}
+
+.coa-page .field .auto-resize-textarea:disabled {
+  background: var(--bg-disabled);
+}
+
+/* H4: no horizontal overflow - fields may shrink, the Description box keeps
+   its padding inside its width, Group Codes cells wrap. */
+.coa-page,
+.coa-page .coa-layout,
+.coa-page .coa-main-panel,
+.coa-page .coa-header > div,
+.coa-page .coa-grid > *,
+.coa-page .field,
+.coa-page .field input,
+.coa-page .field select,
+.coa-page .group-form > * {
+  min-width: 0;
+}
+
+.coa-page .coa-card textarea {
+  box-sizing: border-box;
+  max-width: 100%;
+}
+
+.coa-page .group-form select {
+  max-width: 100%;
+}
+
+.coa-page .coa-table th,
+.coa-page .coa-table td {
+  overflow-wrap: anywhere;
+}
+
+/* H10: required marker; disabled toolbar buttons look disabled. */
+.coa-page .fs-required {
+  color: var(--danger-text);
+  font-weight: 800;
+}
+
+.coa-page .coa-toolbar .btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.coa-page .coa-import-preview-list:focus-visible {
+  outline: 2px solid var(--accent-indigo);
+  outline-offset: 2px;
+}
+
+/* H12: denser form - the Group Code select gets the width, Insert Group
+   Code is a normal button, chips are tighter. */
+.coa-page .group-form {
+  grid-template-columns: minmax(0, 420px) auto;
+  justify-content: start;
+  align-items: center;
+}
+
+.coa-page .validation-chip {
+  padding: 8px 10px;
+  border-radius: 10px;
+}
+
+.coa-page .validation-grid {
+  gap: 8px;
+}
+
+@media (max-width: 900px) {
+  .coa-page .group-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .coa-page .group-form .btn {
+    justify-self: start;
+  }
+}
+
+@media (max-width: 640px) {
+  .coa-page .coa-header {
+    padding: 16px;
+    gap: 12px;
+  }
+
+  .coa-page .coa-header h1 {
+    font-size: 24px;
+  }
+
+  .coa-page .coa-subtext {
+    margin: 4px 0 0;
+  }
+
+  .coa-page .coa-toolbar {
+    gap: 6px;
+  }
+
+  .coa-page .coa-toolbar .btn {
+    padding: 8px 12px;
+  }
+
+  .coa-page .coa-card {
+    padding: 16px;
+  }
+
+  .coa-page .group-section {
+    padding: 14px;
+  }
+}
+
+/* H11: dark-mode details - mini label, selected-count pill, chips, import
+   hint (the shared .rtm-hint uses --text-muted; overridden here only). */
+[data-theme="dark"] .coa-page .coa-mini-label {
+  color: var(--accent-indigo-hover);
+}
+
+[data-theme="dark"] .coa-page .section-title-row span {
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .coa-page .validation-chip.active {
+  color: var(--text-primary);
+  border-color: var(--accent-indigo);
+}
+
+.coa-page .rtm-hint {
+  color: var(--text-secondary);
+}

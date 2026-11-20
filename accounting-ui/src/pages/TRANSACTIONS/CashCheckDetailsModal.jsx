@@ -171,7 +171,10 @@ export default function CashCheckDetailsModal({
             )}
 
             <div className="transaction-field">
-              <span className="transaction-label">{amountLabel}</span>
+              {/* P1 (accountant: "cannot enter the amount"): the amount is read-only by
+                  design (it comes from the voucher's bank line) - the label says so up
+                  front instead of only in the help text below. */}
+              <span className="transaction-label">{amountLabel} (calculated - not typed here)</span>
               <output className="transaction-input transaction-input-readonly" aria-live="polite" data-testid="payment-amount">
                 {formattedAmount}
               </output>

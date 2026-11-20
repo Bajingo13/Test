@@ -175,8 +175,8 @@ beforeAll(async () => {
   // unpaid - proves a beginning-balance item can become overdue too.
   await makeArBeginningBalance(companyAId, custA1Id, "AOA Customer A1", "2026-07-01", "2026-08-01", "Posted", 1500);
 
-  // ---- Debit/Credit Memos - must NEVER appear anywhere in the overdue
-  // report (AgingReportService's row source never joins memo_headers).
+  // ---- Debit/Credit Memos (45 days -> days31to60). P0 TC1-092b (2026-11-18): Debit/Credit Memos are standalone aging entries (header-only memos use the header-total convention), so they now appear here.
+  // Customer convention: Debit Memo +250, Credit Memo -100.
   await makeMemo(companyAId, "DEBIT", custA1Id, "AOA-DM-1", "2026-08-05", 250);
   await makeMemo(companyAId, "CREDIT", custA1Id, "AOA-CM-1", "2026-08-05", 100);
 
@@ -320,24 +320,27 @@ describe("GET /api/reports/ar-overdue-accounts", () => {
     expect(row.bucket).toBe("days31to60");
   });
 
-  test("19. Debit/Credit Memos never appear in the overdue report (inherited: AgingReportService's row source never joins memo_headers)", () => {
-    expect(findRow(report, "AOA-DM-1")).toBeUndefined();
-    expect(findRow(report, "AOA-CM-1")).toBeUndefined();
+  // P0 TC1-092b (2026-11-18): Debit/Credit Memos are standalone aging entries (header-only memos use the header-total convention), so they now appear here.
+  test("19. Debit/Credit Memos appear as standalone items: customer DM +250, CM -100, aged from the memo date", () => {
+    expect(Number(findRow(report, "AOA-DM-1").baseBalance)).toBe(250);
+    expect(Number(findRow(report, "AOA-CM-1").baseBalance)).toBe(-100);
+    expect(findRow(report, "AOA-DM-1").bucket).toBe("days31to60");
   });
 
   test("20. company isolation - Company B's overdue invoice never leaks into Company A's report", () => {
     expect(findRow(report, "AOA-B-INV-1")).toBeUndefined();
   });
 
-  test("21. customer A1's summary row totals match the hand-computed sum (11 documents, 10100 total)", () => {
+  // P0 TC1-092b: + DM 250 and CM -100 (was 11 documents / 10100).
+  test("21. customer A1's summary row totals match the hand-computed sum (13 documents, 10250 total)", () => {
     const p = findParty(report, custA1Id);
     expect(p).toBeDefined();
-    expect(p.documentCount).toBe(11);
+    expect(p.documentCount).toBe(13);
     expect(Number(p.buckets.days1to30)).toBe(2500);
-    expect(Number(p.buckets.days31to60)).toBe(4900);
+    expect(Number(p.buckets.days31to60)).toBe(5050);
     expect(Number(p.buckets.days61to90)).toBe(1700);
     expect(Number(p.buckets.over90)).toBe(1000);
-    expect(Number(p.baseBalance)).toBe(10100);
+    expect(Number(p.baseBalance)).toBe(10250);
   });
 
   test("22. customer A2's summary row (single 300 invoice)", () => {
@@ -349,10 +352,10 @@ describe("GET /api/reports/ar-overdue-accounts", () => {
 
   test("23. grand total bucketTotals equal the sum across all customers in scope (A1 + A2)", () => {
     expect(Number(report.bucketTotals.base.days1to30)).toBe(2500);
-    expect(Number(report.bucketTotals.base.days31to60)).toBe(5200);
+    expect(Number(report.bucketTotals.base.days31to60)).toBe(5350); // P0 TC1-092b: + DM 250 - CM 100
     expect(Number(report.bucketTotals.base.days61to90)).toBe(1700);
     expect(Number(report.bucketTotals.base.over90)).toBe(1000);
-    expect(Number(report.bucketTotals.base.total)).toBe(10400);
+    expect(Number(report.bucketTotals.base.total)).toBe(10550);
   });
 
   test("24. single-customer filter (partyId) narrows the report to exactly that customer's overdue documents", async () => {
@@ -363,7 +366,7 @@ describe("GET /api/reports/ar-overdue-accounts", () => {
     expect(res.status).toBe(200);
     expect(res.body.parties).toHaveLength(1);
     expect(res.body.parties[0].partyId).toBe(custA1Id);
-    expect(Number(res.body.parties[0].baseBalance)).toBe(10100);
+    expect(Number(res.body.parties[0].baseBalance)).toBe(10250); // P0 TC1-092b: memos included
   });
 
   test("25. empty result (a customer with zero overdue documents) returns empty arrays, not an error", async () => {

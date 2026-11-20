@@ -20,19 +20,37 @@ export default function PrepaidSubsidiary() {
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(false);
   const [generated, setGenerated] = useState(false);
+  // Generation failure message (replaces a native alert) - shown above the report.
+  const [reportError, setReportError] = useState("");
+  // Inline validation message (replaces a native alert) - shown above the report, announced by screen readers.
+  const [validationError, setValidationError] = useState("");
 
   useEffect(() => {
     loadPrepaidAccounts();
   }, []);
 
+  // The picker comes from the REPORT endpoints (REPORTS.FINANCIAL / VIEW, the
+  // permission this report already needs) - not the File Setup list, which
+  // requires FILESETUP.PREPAID_ACCOUNTS / VIEW and is administration. The
+  // active list and the lapsed list together are every prepaid account the
+  // prepaid reports cover (Cancelled ones are excluded, as in every other
+  // prepaid report). Newest first, as before.
   async function loadPrepaidAccounts() {
     try {
-      const res = await fetch(`${API_URL}/api/prepaid-accounts`, {
-        credentials: "include",
-        headers: authHeaders(),
-      });
-      const data = await res.json();
-      setPrepaidAccounts(Array.isArray(data) ? data : []);
+      const lists = await Promise.all(
+        ["/api/reports/prepaid-list", "/api/reports/lapsed-prepayments"].map(async (path) => {
+          const res = await fetch(`${API_URL}${path}`, {
+            credentials: "include",
+            headers: authHeaders(),
+          });
+          if (!res.ok) return [];
+          const data = await res.json();
+          return Array.isArray(data) ? data : [];
+        })
+      );
+      const byId = new Map();
+      for (const p of lists.flat()) byId.set(p.id, p);
+      setPrepaidAccounts([...byId.values()].sort((x, y) => Number(y.id) - Number(x.id)));
     } catch (err) {
       console.error("Failed to load prepaid accounts:", err);
     }
@@ -71,10 +89,12 @@ export default function PrepaidSubsidiary() {
     const applied = period.apply();
     if (!applied) return;
     if (!prepaidId) {
-      alert("Please select a prepaid account first.");
+      setValidationError("Please select a prepaid account first.");
       return;
     }
+    setValidationError("");
 
+    setReportError("");
     setLoading(true);
 
     try {
@@ -83,14 +103,17 @@ export default function PrepaidSubsidiary() {
         { credentials: "include", headers: authHeaders() }
       );
 
-      if (!res.ok) throw new Error("Failed to generate prepaid subsidiary report");
+      if (!res.ok) {
+        const failBody = await res.json().catch(() => ({}));
+        throw Object.assign(new Error("Failed to generate prepaid subsidiary report"), { userMessage: res.status === 400 || res.status === 403 ? failBody?.message : null });
+      }
 
       const data = await res.json();
       setReport(data);
       setGenerated(true);
     } catch (err) {
       console.error(err);
-      alert("Failed to generate Prepaid Subsidiary report. Please check backend/server.");
+      setReportError(err.userMessage || "Failed to generate Prepaid Subsidiary report. Please check backend/server.");
       setReport(null);
       setGenerated(true);
     } finally {
@@ -111,8 +134,8 @@ export default function PrepaidSubsidiary() {
           <ReportPeriodFilter period={period} idPrefix="pps" />
 
           <div>
-            <label>Prepaid Account</label>
-            <select value={prepaidId} onChange={(e) => setPrepaidId(e.target.value)}>
+            <label htmlFor="pps-account">Prepaid Account</label>
+            <select id="pps-account" value={prepaidId} onChange={(e) => setPrepaidId(e.target.value)}>
               <option value="">Select Prepaid Account</option>
               {prepaidAccounts.map((p) => (
                 <option key={p.id} value={p.id}>
@@ -146,7 +169,19 @@ export default function PrepaidSubsidiary() {
             Export CSV
           </button>
         </div>
+
+        {validationError ? (
+          <p className="aa-error" role="alert" id="pps-validation">
+            {validationError}
+          </p>
+        ) : null}
       </div>
+
+      {reportError ? (
+        <div className="aa-error" role="alert" id="pps-error">
+          {reportError}
+        </div>
+      ) : null}
 
       {generated && report && (
         <div className="aa-report-card">

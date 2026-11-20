@@ -1,0 +1,25 @@
+/* Shared report filter fields - dark-mode readability.
+   The report filter grids (General Ledger / Books / statements: .lgr-filter-grid;
+   Account Analysis / VAT / prepaid / withholding reports: .aa-filter-grid;
+   Trial Balance / aging: .tb-filter-grid; Income Statement: .is-grid) give their
+   inputs and selects the dark surface background but never set a text colour,
+   so in dark mode the typed value, the selected option and the date text fell
+   back to the browser's black - about 1.3:1 on the dark card.
+   Scoped to the dark theme only: light mode is unchanged. Imported first by each
+   report stylesheet, so a page's own :disabled / :focus rules still apply. */
+
+[data-theme="dark"] :is(.lgr-filter-grid, .aa-filter-grid, .tb-filter-grid, .is-grid) :is(input, select, textarea) {
+  color: var(--text-primary);
+  /* native date pickers, select popups and the calendar icon follow the theme */
+  color-scheme: dark;
+}
+
+[data-theme="dark"] :is(.lgr-filter-grid, .aa-filter-grid, .tb-filter-grid, .is-grid) :is(input, textarea)::placeholder {
+  color: var(--text-secondary);
+  opacity: 1;
+}
+
+[data-theme="dark"] :is(.lgr-filter-grid, .aa-filter-grid, .tb-filter-grid, .is-grid) select option {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}

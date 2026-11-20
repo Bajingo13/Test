@@ -1,3 +1,4 @@
+@import "./ReportFilterFields.css"; /* shared dark-mode filter-field readability */
 .is-page {
   padding: 28px;
   background: var(--bg-page);
@@ -223,4 +224,28 @@
   .is-grid {
     grid-template-columns: 1fr !important;
   }
+}
+
+/* Responsive layout (integration audit): no page-level horizontal scroll.
+   - The four filter columns had a 190px minimum each but only collapse to one
+     column at 900px, so ~900-1100px overflowed. Same four columns, now allowed
+     to shrink (identical on desktop, where each column is wider than 190px).
+   - The page root no longer passes a child's min-content width up to <main>
+     (it widened the page by ~15px at 390px). */
+.is-page {
+  contain: inline-size;
+}
+
+.is-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+}
+
+@media (max-width: 900px) {
+  .is-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+.is-grid > div {
+  min-width: 0;
 }

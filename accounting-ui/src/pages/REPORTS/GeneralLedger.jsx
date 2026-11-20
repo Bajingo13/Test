@@ -116,6 +116,8 @@ export default function GeneralLedger() {
   const [sections, setSections] = useState([]);
   const [loading, setLoading] = useState(false);
   const [generated, setGenerated] = useState(false);
+  // Generation failure message (replaces a native alert) - shown above the report.
+  const [reportError, setReportError] = useState("");
 
   useEffect(() => {
     loadAccounts();
@@ -138,6 +140,7 @@ export default function GeneralLedger() {
   async function generateReport() {
     const applied = period.apply();
     if (!applied) return;
+    setReportError("");
     setLoading(true);
     try {
       const params = new URLSearchParams(applied.params);
@@ -148,13 +151,16 @@ export default function GeneralLedger() {
         headers: authHeaders(),
       });
 
-      if (!res.ok) throw new Error("Failed to fetch general ledger");
+      if (!res.ok) {
+        const failBody = await res.json().catch(() => ({}));
+        throw Object.assign(new Error("Failed to fetch general ledger"), { userMessage: res.status === 400 || res.status === 403 ? failBody?.message : null });
+      }
 
       const rows = await res.json();
       setSections(groupByAccount(rows));
     } catch (err) {
       console.error(err);
-      alert("Failed to generate General Ledger. Please check the backend/server.");
+      setReportError(err.userMessage || "Failed to generate General Ledger. Please check the backend/server.");
       setSections([]);
     } finally {
       setGenerated(true);
@@ -246,8 +252,8 @@ export default function GeneralLedger() {
           <ReportPeriodFilter period={period} idPrefix="gl" />
 
           <div>
-            <label>Account (optional)</label>
-            <select value={accountCode} onChange={(e) => setAccountCode(e.target.value)}>
+            <label htmlFor="gl-account">Account (optional)</label>
+            <select id="gl-account" value={accountCode} onChange={(e) => setAccountCode(e.target.value)}>
               <option value="">All Accounts</option>
               {accounts.map((a) => (
                 <option key={a.id} value={a.code}>
@@ -286,6 +292,12 @@ export default function GeneralLedger() {
           </button>
         </div>
       </div>
+
+      {reportError ? (
+        <div className="lgr-error" role="alert" id="gl-error">
+          {reportError}
+        </div>
+      ) : null}
 
       {generated && (
         <div className="lgr-report-card">

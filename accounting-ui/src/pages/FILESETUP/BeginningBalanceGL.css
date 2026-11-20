@@ -210,3 +210,9 @@ input:focus {
     grid-template-columns: 1fr;
   }
 }
+
+/* TC-FS-012 narrow widths: the entry table scrolls inside its card instead of widening the page. */
+.glbb-page,
+.glbb-table-wrap {
+  contain: inline-size;
+}

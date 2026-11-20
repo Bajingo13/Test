@@ -296,3 +296,53 @@ describe("navigation permissions", () => {
     expectRoute("/api/invoices", "TRANSACTIONS.INVOICE", "CREATE");
   });
 });
+
+describe("Bank & Cash Accounts search", () => {
+  const acct = (over) => ({
+    id: 1, name: "Cash in Bank", bankName: "BDO Unibank", bankCode: "BDO-01", accountNoLast4: "4321",
+    coaCode: "1010", coaTitle: "Cash in Bank - BDO", accountType: "ASSET", status: "ACTIVE", balance: 0, recon: null, ...over,
+  });
+  const list = [
+    acct({ id: 1 }),
+    acct({ id: 2, name: "Payroll Account", bankName: "Metrobank", bankCode: "MBTC", accountNoLast4: "7788", coaCode: "1020", coaTitle: "Cash in Bank - Metrobank" }),
+    acct({ id: 3, name: "Petty Cash Fund", bankName: null, bankCode: "PCF", accountNoLast4: null, coaCode: "1001", coaTitle: "Petty Cash" }),
+  ];
+  const ids = (rows) => rows.map((r) => r.id);
+
+  test("the search box appears only above six accounts", () => {
+    expect(m.BANK_SEARCH_THRESHOLD).toBe(6);
+    expect(m.bankAccountsSearchable([])).toBe(false);
+    expect(m.bankAccountsSearchable(Array.from({ length: 6 }, (_, i) => acct({ id: i })))).toBe(false);
+    expect(m.bankAccountsSearchable(Array.from({ length: 7 }, (_, i) => acct({ id: i })))).toBe(true);
+    expect(m.bankAccountsSearchable(null)).toBe(false);
+  });
+
+  test("a blank query returns the list unchanged", () => {
+    expect(m.filterBankAccounts(list, "")).toBe(list);
+    expect(m.filterBankAccounts(list, "   ")).toBe(list);
+    expect(m.filterBankAccounts(list, undefined)).toBe(list);
+    expect(m.filterBankAccounts(null, "x")).toEqual([]);
+  });
+
+  test("matches each of the six fields", () => {
+    expect(ids(m.filterBankAccounts(list, "payroll"))).toEqual([2]); // account name
+    expect(ids(m.filterBankAccounts(list, "unibank"))).toEqual([1]); // bank name
+    expect(ids(m.filterBankAccounts(list, "mbtc"))).toEqual([2]); // bank code
+    expect(ids(m.filterBankAccounts(list, "7788"))).toEqual([2]); // last 4 digits
+    expect(ids(m.filterBankAccounts(list, "1001"))).toEqual([3]); // GL code
+    expect(ids(m.filterBankAccounts(list, "petty cash"))).toEqual([3]); // GL title (and name)
+    expect(ids(m.filterBankAccounts([acct({ id: 9, name: "X" })], "cash in bank - bdo"))).toEqual([9]); // GL title only
+  });
+
+  test("is case-insensitive, trims, keeps order and ignores missing fields", () => {
+    expect(ids(m.filterBankAccounts(list, "  METROBANK "))).toEqual([2]);
+    expect(ids(m.filterBankAccounts(list, "cAsH"))).toEqual([1, 2, 3]);
+    expect(ids(m.filterBankAccounts(list, "null"))).toEqual([]);
+    expect(m.filterBankAccounts(list, "no such account")).toEqual([]);
+  });
+
+  test("does not search the balance or other fields", () => {
+    expect(m.filterBankAccounts([acct({ balance: 98765 })], "98765")).toEqual([]);
+    expect(m.filterBankAccounts([acct({ accountType: "ASSET" })], "asset")).toEqual([]);
+  });
+});

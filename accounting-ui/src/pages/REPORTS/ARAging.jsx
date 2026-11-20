@@ -42,6 +42,8 @@ export default function ARAging() {
   const [bucketTotals, setBucketTotals] = useState(null);
   const [loading, setLoading] = useState(false);
   const [generated, setGenerated] = useState(false);
+  // Generation failure message (replaces a native alert) - shown above the report.
+  const [reportError, setReportError] = useState("");
   const [runInfo, setRunInfo] = useState({ pageNo: 1, runDate: "", runTime: "" });
 
   useEffect(() => {
@@ -70,6 +72,7 @@ export default function ARAging() {
   async function generateReport() {
     const applied = period.apply();
     if (!applied) return;
+    setReportError("");
     setLoading(true);
 
     const now = new Date();
@@ -88,14 +91,17 @@ export default function ARAging() {
         credentials: "include",
         headers: authHeaders(),
       });
-      if (!res.ok) throw new Error("Failed to fetch AR Aging");
+      if (!res.ok) {
+        const failBody = await res.json().catch(() => ({}));
+        throw Object.assign(new Error("Failed to fetch AR Aging"), { userMessage: res.status === 400 || res.status === 403 ? failBody?.message : null });
+      }
 
       const data = await res.json();
       setRows(Array.isArray(data.rows) ? data.rows : []);
       setBucketTotals(data.bucketTotals || null);
     } catch (err) {
       console.error(err);
-      alert("Failed to generate AR Aging Report.");
+      setReportError(err.userMessage || "Failed to generate AR Aging Report.");
       setRows([]);
       setBucketTotals(null);
     } finally {
@@ -141,8 +147,8 @@ export default function ARAging() {
           <ReportPeriodFilter period={period} idPrefix="ara" />
 
           <div>
-            <label>Customer</label>
-            <select value={partyFilter} onChange={(e) => setPartyFilter(e.target.value)}>
+            <label htmlFor="ara-customer">Customer</label>
+            <select id="ara-customer" value={partyFilter} onChange={(e) => setPartyFilter(e.target.value)}>
               <option value="">All Customers</option>
               {parties.map((p) => (
                 <option key={p.id} value={p.id}>{p.name}</option>
@@ -151,8 +157,8 @@ export default function ARAging() {
           </div>
 
           <div>
-            <label>Currency</label>
-            <select value={currencyFilter} onChange={(e) => setCurrencyFilter(e.target.value)}>
+            <label htmlFor="ara-currency">Currency</label>
+            <select id="ara-currency" value={currencyFilter} onChange={(e) => setCurrencyFilter(e.target.value)}>
               <option value="">All Currencies</option>
               {currencies.map((c) => (
                 <option key={c.id} value={c.currencyCode}>{c.currencyCode}</option>
@@ -161,8 +167,8 @@ export default function ARAging() {
           </div>
 
           <div>
-            <label>Aging Bucket</label>
-            <select value={bucketFilter} onChange={(e) => setBucketFilter(e.target.value)}>
+            <label htmlFor="ara-bucket">Aging Bucket</label>
+            <select id="ara-bucket" value={bucketFilter} onChange={(e) => setBucketFilter(e.target.value)}>
               <option value="">All Buckets</option>
               {Object.entries(BUCKET_LABELS).map(([key, label]) => (
                 <option key={key} value={key}>{label}</option>
@@ -171,8 +177,8 @@ export default function ARAging() {
           </div>
 
           <div>
-            <label>Status</label>
-            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+            <label htmlFor="ara-status">Status</label>
+            <select id="ara-status" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
               <option value="OPEN">Open</option>
               <option value="PAID">Paid</option>
               <option value="ALL">All</option>
@@ -209,6 +215,12 @@ export default function ARAging() {
           </button>
         </div>
       </div>
+
+      {reportError ? (
+        <div className="tb-company-message error" role="alert" id="ara-error">
+          {reportError}
+        </div>
+      ) : null}
 
       {generated && (
         <div className="tb-report-card">

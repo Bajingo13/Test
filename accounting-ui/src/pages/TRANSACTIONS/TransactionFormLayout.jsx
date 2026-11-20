@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import TransactionPrintOptionsModal from "../../components/TransactionPrintOptionsModal";
 import OrEmailModal from "./OrEmailModal";
@@ -285,6 +285,15 @@ export default function TransactionFormLayout({
   );
 
   const [error, setError] = useState("");
+  // P1 TC1-090b: Save Draft / Post must never look like "nothing happened".
+  // The error box sits under the journal-entry grid, below the fold on a
+  // long voucher, so every new message is scrolled into view (and announced).
+  const errorBoxRef = useRef(null);
+  useEffect(() => {
+    if (error && errorBoxRef.current && typeof errorBoxRef.current.scrollIntoView === "function") {
+      errorBoxRef.current.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+  }, [error]);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -619,7 +628,7 @@ export default function TransactionFormLayout({
   setTransactions(
     data.map((item) => ({
       id: item.id,
-      referenceNo: item.referenceNo || item.voucherNo,
+      ...apvNumberFields(item), // P1 TC1-086: number = voucher_no, reference kept separately
       date: item.transactionDate,
       party: item.customerName,
       // See the APV mapping above for why foreignTotal takes priority.
@@ -633,7 +642,7 @@ export default function TransactionFormLayout({
       currencyCode: item.currencyCode || null,
       form: {
         date: item.transactionDate,
-        referenceNo: item.referenceNo || item.voucherNo,
+        ...apvNumberFields(item), // P1 TC1-086: number = voucher_no, reference kept separately
         party: item.customerName,
         partyId: item.customerId,
         description: item.description,
@@ -649,7 +658,7 @@ if (code === "OR") {
   setTransactions(
     data.map((item) => ({
       id: item.id,
-      referenceNo: item.referenceNo || item.voucherNo,
+      ...apvNumberFields(item), // P1 TC1-086: number = voucher_no, reference kept separately
       date: item.transactionDate,
       party: item.customerName,
       amount: item.foreignTotal ?? (item.totalDebit || item.totalCredit),
@@ -658,7 +667,7 @@ if (code === "OR") {
       currencyCode: item.currencyCode || null,
       form: {
         date: item.transactionDate,
-        referenceNo: item.referenceNo || item.voucherNo,
+        ...apvNumberFields(item), // P1 TC1-086: number = voucher_no, reference kept separately
         party: item.customerName,
         partyId: item.customerId,
         description: item.description,
@@ -674,7 +683,7 @@ if (code === "OR") {
         setTransactions(
           data.map((item) => ({
             id: item.id,
-            referenceNo: item.referenceNo || item.voucherNo,
+            ...apvNumberFields(item), // P1 TC1-086: number = voucher_no, reference kept separately
             date: item.transactionDate,
             party: item.payeeName,
             amount: item.foreignTotal ?? (item.totalCredit || item.totalDebit),
@@ -683,7 +692,7 @@ if (code === "OR") {
             currencyCode: item.currencyCode || null,
             form: {
               date: item.transactionDate,
-              referenceNo: item.referenceNo || item.voucherNo,
+              ...apvNumberFields(item), // P1 TC1-086: number = voucher_no, reference kept separately
               party: item.payeeName,
               partyId: item.payeeId,
               description: item.description,
@@ -699,7 +708,7 @@ if (code === "OR") {
         setTransactions(
           data.map((item) => ({
             id: item.id,
-            referenceNo: item.referenceNo || item.voucherNo,
+            ...apvNumberFields(item), // P1 TC1-086: number = voucher_no, reference kept separately
             date: item.transactionDate,
             party: item.supplierName,
             amount: item.foreignTotal ?? (item.totalCredit || item.totalDebit),
@@ -708,7 +717,7 @@ if (code === "OR") {
             currencyCode: item.currencyCode || null,
             form: {
               date: item.transactionDate,
-              referenceNo: item.referenceNo || item.voucherNo,
+              ...apvNumberFields(item), // P1 TC1-086: number = voucher_no, reference kept separately
               party: item.supplierName,
               partyId: item.supplierId,
               description: item.description,
@@ -724,7 +733,7 @@ if (code === "OR") {
         setTransactions(
           data.map((item) => ({
             id: item.id,
-            referenceNo: item.referenceNo || item.voucherNo,
+            ...apvNumberFields(item), // P1 TC1-086: number = voucher_no, reference kept separately
             date: item.transactionDate,
             party: item.preparedFor,
             amount: item.foreignTotal ?? (item.totalDebit || item.totalCredit),
@@ -733,7 +742,7 @@ if (code === "OR") {
             currencyCode: item.currencyCode || null,
             form: {
               date: item.transactionDate,
-              referenceNo: item.referenceNo || item.voucherNo,
+              ...apvNumberFields(item), // P1 TC1-086: number = voucher_no, reference kept separately
               party: item.preparedFor,
               partyId: null,
               description: item.description,
@@ -756,7 +765,7 @@ if (code === "OR") {
         setTransactions(
           data.map((item) => ({
             id: item.id,
-            referenceNo: item.referenceNo || item.voucherNo,
+            ...apvNumberFields(item), // P1 TC1-086: number = voucher_no, reference kept separately
             date: item.transactionDate,
             party: item.payeeName,
             amount: item.foreignTotal ?? (item.totalDebit || item.totalCredit),
@@ -765,7 +774,7 @@ if (code === "OR") {
             currencyCode: item.currencyCode || null,
             form: {
               date: item.transactionDate,
-              referenceNo: item.referenceNo || item.voucherNo,
+              ...apvNumberFields(item), // P1 TC1-086: number = voucher_no, reference kept separately
               party: item.payeeName,
               partyId: item.payeeId,
               description: item.description,
@@ -781,7 +790,7 @@ if (code === "OR") {
         setTransactions(
           data.map((item) => ({
             id: item.id,
-            referenceNo: item.referenceNo || item.voucherNo,
+            ...apvNumberFields(item), // P1 TC1-086: number = voucher_no, reference kept separately
             date: item.transactionDate,
             party: item.partyName,
             amount: item.foreignTotal ?? (item.totalDebit || item.totalCredit),
@@ -790,7 +799,7 @@ if (code === "OR") {
             currencyCode: item.currencyCode || null,
             form: {
               date: item.transactionDate,
-              referenceNo: item.referenceNo || item.voucherNo,
+              ...apvNumberFields(item), // P1 TC1-086: number = voucher_no, reference kept separately
               party: item.partyName,
               partyId: item.partyId,
               description: item.description,
@@ -1502,7 +1511,7 @@ setError("");
       if (res.ok) {
         setForm({
   date: data.transactionDate,
-  ...(code === "APV" ? apvNumberFields(data) : { referenceNo: data.referenceNo || data.voucherNo }),
+  ...apvNumberFields(data), // P1 TC1-086: every module - number = voucher_no, supporting reference = reference_no
 
   party:
     code === "CV"
@@ -3140,7 +3149,7 @@ if (code === "OR") {
                 </div>
               ) : null}
 
-              {error ? <div className="transaction-error-box">{error}</div> : null}
+              {error ? <div className="transaction-error-box" role="alert" ref={errorBoxRef}>{error}</div> : null}
             </div>
 
             

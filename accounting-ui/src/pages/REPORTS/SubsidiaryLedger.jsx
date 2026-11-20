@@ -21,6 +21,10 @@ export default function SubsidiaryLedger() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [generated, setGenerated] = useState(false);
+  // Generation failure message (replaces a native alert) - shown above the report.
+  const [reportError, setReportError] = useState("");
+  // Inline validation message (replaces a native alert) - shown above the report, announced by screen readers.
+  const [validationError, setValidationError] = useState("");
 
   useEffect(() => {
     loadParties();
@@ -100,10 +104,12 @@ export default function SubsidiaryLedger() {
     const applied = period.apply();
     if (!applied) return;
     if (!partyId) {
-      alert(`Please select a ${ledgerType === "AR" ? "customer" : "supplier"} first.`);
+      setValidationError(`Please select a ${ledgerType === "AR" ? "customer" : "supplier"} first.`);
       return;
     }
+    setValidationError("");
 
+    setReportError("");
     setLoading(true);
 
     try {
@@ -112,14 +118,17 @@ export default function SubsidiaryLedger() {
         { credentials: "include", headers: authHeaders() }
       );
 
-      if (!res.ok) throw new Error("Failed to generate subsidiary ledger");
+      if (!res.ok) {
+        const failBody = await res.json().catch(() => ({}));
+        throw Object.assign(new Error("Failed to generate subsidiary ledger"), { userMessage: res.status === 400 || res.status === 403 ? failBody?.message : null });
+      }
 
       const data = await res.json();
       setRows(Array.isArray(data) ? data : []);
       setGenerated(true);
     } catch (err) {
       console.error(err);
-      alert("Failed to generate Subsidiary Ledger. Please check backend/server.");
+      setReportError(err.userMessage || "Failed to generate Subsidiary Ledger. Please check backend/server.");
       setRows([]);
       setGenerated(true);
     } finally {
@@ -138,8 +147,8 @@ export default function SubsidiaryLedger() {
 
         <div className="aa-filter-grid">
           <div>
-            <label>Ledger</label>
-            <select value={ledgerType} onChange={(e) => setLedgerType(e.target.value)}>
+            <label htmlFor="sl-ledger">Ledger</label>
+            <select id="sl-ledger" value={ledgerType} onChange={(e) => setLedgerType(e.target.value)}>
               <option value="AR">Accounts Receivable (AR)</option>
               <option value="AP">Accounts Payable (AP)</option>
             </select>
@@ -148,8 +157,8 @@ export default function SubsidiaryLedger() {
           <ReportPeriodFilter period={period} idPrefix="sl" />
 
           <div>
-            <label>{ledgerType === "AR" ? "Customer" : "Supplier"}</label>
-            <select value={partyId} onChange={(e) => setPartyId(e.target.value)}>
+            <label htmlFor="sl-party">{ledgerType === "AR" ? "Customer" : "Supplier"}</label>
+            <select id="sl-party" value={partyId} onChange={(e) => setPartyId(e.target.value)}>
               <option value="">Select {ledgerType === "AR" ? "Customer" : "Supplier"}</option>
               {filteredParties.map((p) => (
                 <option key={p.id} value={p.id}>
@@ -183,7 +192,19 @@ export default function SubsidiaryLedger() {
             Export CSV
           </button>
         </div>
+
+        {validationError ? (
+          <p className="aa-error" role="alert" id="sl-validation">
+            {validationError}
+          </p>
+        ) : null}
       </div>
+
+      {reportError ? (
+        <div className="aa-error" role="alert" id="sl-error">
+          {reportError}
+        </div>
+      ) : null}
 
       {generated && (
         <div className="aa-report-card">

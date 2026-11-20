@@ -9,6 +9,7 @@ const bcrypt = require("bcryptjs");
 const request = require("supertest");
 const app = require("../server");
 const pool = require("../db");
+const { withFixtureParty, cleanupFixtureParties } = require("../lib/testFixtureParty");
 const AgentActions = require("../services/BankReconAgentActions");
 const { LIMITS, depositPool, findDepositCombinations, classifyCombinations } = require("../services/depositCombinationService");
 const { assertNotProductionDatabase } = require("../lib/testDatabaseGuard");
@@ -27,9 +28,12 @@ const sessions = [];
 
 const q = async (sql, params) => (await pool.query(sql, params))[0];
 const one = async (sql, params) => (await q(sql, params))[0];
-const api = (who, method, url, body) => {
+// P1 (2026-11-18): these documents are bank-movement fixtures that never sent a
+// party; the server now requires one (transactionPartyService), so a body with
+// no party gets its company's fixture customer / supplier (lib/testFixtureParty).
+const api = async (who, method, url, body) => {
   const r = request(app)[method](url).set({ Authorization: `Bearer ${tok[who]}` });
-  return body === undefined ? r : r.send(body);
+  return body === undefined ? r : r.send(await withFixtureParty(pool, method, url, body));
 };
 async function ai(who, action, ...args) {
   try {
@@ -127,6 +131,9 @@ beforeAll(async () => {
   }
   await makeUser("super", "SUPER_ADMIN");
   await makeUser("acctA", "ACCOUNTANT", [co.A]);
+  // R4 (maker-checker): finalize needs REPORTS.BANK_RECONCILIATION / APPROVE,
+  // which ACCOUNTANT no longer holds - the reviewer finalizes.
+  await makeUser("adminA", "ADMIN", [co.A]);
   await makeUser("acctA2", "ACCOUNTANT", [co.A]);
   await makeUser("acctB", "ACCOUNTANT", [co.B]);
 });
@@ -148,6 +155,7 @@ afterAll(async () => {
     await pool.query("DELETE FROM user_companies WHERE user_id IN (?)", [us]);
     await pool.query("DELETE FROM users WHERE id IN (?)", [us]);
     if (banks.length) await pool.query("DELETE FROM bank_codes WHERE id IN (?)", [banks]);
+    await cleanupFixtureParties(pool, cos);
     await pool.query("DELETE FROM companies WHERE id IN (?)", [cos]);
     await pool.query("DELETE FROM chart_of_accounts WHERE code LIKE ?", [`${P}%`]);
   } finally {
@@ -561,7 +569,7 @@ describe("one deposit, several ORs (HTTP)", () => {
     expect((await importRows("acctA", sid, [`2097-03-10,Dep ${P}FN-1 ${P}FN-2,,,,1000.00`])).status).toBe(200);
     expect((await run("acctA", sid)).status).toBe(200);
     const g = itemFor(await queueOf("acctA", sid), `Dep ${P}FN-1 ${P}FN-2`).candidate;
-    expect((await api("acctA", "post", `/api/bank-recon/sessions/${sid}/finalize`, { overrideReason: "R84B test" })).status).toBe(200);
+    expect((await api("adminA", "post", `/api/bank-recon/sessions/${sid}/finalize`, { overrideReason: "R84B test" })).status).toBe(200);
     const res = await confirm("acctA", g.matchId, g.matchIds);
     expect(res.status).toBe(400);
     expect((await q("SELECT status FROM bank_recon_matches WHERE match_group = ?", [g.matchGroup])).every((r) => r.status === "PENDING")).toBe(true);

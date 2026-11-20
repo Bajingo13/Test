@@ -1,3 +1,4 @@
+@import "./ReportFilterFields.css"; /* shared dark-mode filter-field readability */
 .lgr-page {
   padding: 28px;
   background: var(--bg-page);
@@ -267,5 +268,93 @@
   .lgr-account-header {
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
+  }
+}
+
+
+/* =====================================================================
+   Report UI pass (TC-REPORT-013) - scoped to .lgr-page. Wide tables
+   scroll inside their report card instead of widening the whole page;
+   filter grids, action rows and headers shrink / wrap on narrow screens;
+   dark-mode primary buttons keep >= 4.5:1. Print is unchanged.
+   ===================================================================== */
+.lgr-page {
+  contain: inline-size; /* table widths no longer push the app shell wider */
+}
+
+.lgr-page .lgr-report-card {
+  overflow-x: auto;
+}
+
+.lgr-page .lgr-filter-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.lgr-page .lgr-filter-grid > * {
+  min-width: 0;
+}
+
+.lgr-page .lgr-filter-grid input,
+.lgr-page .lgr-filter-grid select {
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.lgr-page .rpf > .rpf-dates {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 240px));
+}
+
+.lgr-page .lgr-actions {
+  flex-wrap: wrap;
+}
+
+.lgr-page .lgr-actions button {
+  white-space: nowrap;
+}
+
+.lgr-page .lgr-summary-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.lgr-page .lgr-summary-item {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 900px) {
+  .lgr-page .lgr-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 480px) {
+  .lgr-page .lgr-summary-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 900px) {
+  .lgr-page .lgr-filter-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 600px) {
+  .lgr-page .lgr-filter-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+[data-theme="dark"] .lgr-page .lgr-actions .primary {
+  background: #2563eb; /* the light-theme accent: white text 5.2:1 (dark accent #3b82f6 is 3.7:1) */
+}
+
+@media print {
+  .lgr-page {
+    contain: none;
+  }
+
+  .lgr-page .lgr-report-card {
+    overflow: visible;
   }
 }

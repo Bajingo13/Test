@@ -19,7 +19,10 @@ let companyAId, companyBId, companyCId;
 let userAId, userBId, multiUserId, superUserId;
 let tokenA, tokenB, tokenMulti, tokenSuper;
 let arA, apA, revA;
-let custAId, suppAId;
+let custAId, suppAId, custBId, suppBId;
+// P1 (2026-11-18): each company's documents use THAT company's party - the
+// server now rejects another company's General Library party (transactionPartyService).
+const partyFor = (type, companyId) => (type === "CUSTOMER" ? (companyId === companyBId ? custBId : custAId) : (companyId === companyBId ? suppBId : suppAId));
 
 async function makeCompany(name) {
   const [r] = await pool.execute("INSERT INTO companies (name, status) VALUES (?, 'Active')", [name]);
@@ -65,7 +68,7 @@ const auth = (t) => ({ Authorization: `Bearer ${t}` });
 // "companyId is required - you have access to multiple companies" error.
 async function createDraftInvoice(token, { voucherNo, amount, companyId }) {
   const res = await request(app).post("/api/invoices").set(auth(token)).send({
-    voucherNo, customerId: custAId, customerName: "TestPP Customer", currency: { companyId },
+    voucherNo, customerId: partyFor("CUSTOMER", companyId), customerName: "TestPP Customer", currency: { companyId },
     transactionDate: "2026-09-15", totalDebit: amount, totalCredit: amount, status: "Draft",
     lines: [
       { accountId: arA, accountCode: "TESTPP-AR", accountTitle: "AR", particulars: "x", debit: amount, credit: 0 },
@@ -77,7 +80,7 @@ async function createDraftInvoice(token, { voucherNo, amount, companyId }) {
 }
 async function createDraftOr(token, { voucherNo, amount, companyId }) {
   const res = await request(app).post("/api/or").set(auth(token)).send({
-    voucherNo, customerId: custAId, customerName: "TestPP Customer", currency: { companyId },
+    voucherNo, customerId: partyFor("CUSTOMER", companyId), customerName: "TestPP Customer", currency: { companyId },
     transactionDate: "2026-09-15", totalDebit: amount, totalCredit: amount, status: "Draft",
     lines: [
       { accountId: apA, accountCode: "TESTPP-CASH", accountTitle: "Cash", particulars: "x", debit: amount, credit: 0 },
@@ -89,7 +92,7 @@ async function createDraftOr(token, { voucherNo, amount, companyId }) {
 }
 async function createDraftApv(token, { voucherNo, amount, companyId }) {
   const res = await request(app).post("/api/apv").set(auth(token)).send({
-    voucherNo, supplierId: suppAId, supplierName: "TestPP Supplier", currency: { companyId },
+    voucherNo, supplierId: partyFor("SUPPLIER", companyId), supplierName: "TestPP Supplier", currency: { companyId },
     transactionDate: "2026-09-15", totalDebit: amount, totalCredit: amount, status: "Draft",
     lines: [
       { accountId: revA, accountCode: "TESTPP-REV", accountTitle: "Expense", particulars: "x", debit: amount, credit: 0 },
@@ -101,7 +104,7 @@ async function createDraftApv(token, { voucherNo, amount, companyId }) {
 }
 async function createDraftCv(token, { voucherNo, amount, companyId }) {
   const res = await request(app).post("/api/cv").set(auth(token)).send({
-    voucherNo, payeeId: suppAId, payeeName: "TestPP Supplier", currency: { companyId },
+    voucherNo, payeeId: partyFor("SUPPLIER", companyId), payeeName: "TestPP Supplier", currency: { companyId },
     transactionDate: "2026-09-15", totalDebit: amount, totalCredit: amount, status: "Draft",
     lines: [
       { accountId: apA, accountCode: "TESTPP-AP", accountTitle: "AP", particulars: "x", debit: amount, credit: 0 },
@@ -113,7 +116,7 @@ async function createDraftCv(token, { voucherNo, amount, companyId }) {
 }
 async function createDraftPo(token, { voucherNo, amount, companyId }) {
   const res = await request(app).post("/api/purchase-orders").set(auth(token)).send({
-    voucherNo, supplierId: suppAId, supplierName: "TestPP Supplier", currency: { companyId },
+    voucherNo, supplierId: partyFor("SUPPLIER", companyId), supplierName: "TestPP Supplier", currency: { companyId },
     transactionDate: "2026-09-15", totalCredit: amount, status: "Draft",
     lines: [
       { accountId: revA, accountCode: "TESTPP-REV", accountTitle: "Expense", particulars: "x", debit: amount, credit: 0 },
@@ -151,10 +154,8 @@ beforeAll(async () => {
   custAId = await makeParty("TESTPP-CUST", "CUSTOMER", "TestPP Customer", companyAId);
   suppAId = await makeParty("TESTPP-SUPP", "SUPPLIER", "TestPP Supplier", companyAId);
   // Company B needs its own parties for its own Draft documents.
-  const custBId = await makeParty("TESTPP-CUST-B", "CUSTOMER", "TestPP Customer B", companyBId);
-  const suppBId = await makeParty("TESTPP-SUPP-B", "SUPPLIER", "TestPP Supplier B", companyBId);
-  void custBId;
-  void suppBId;
+  custBId = await makeParty("TESTPP-CUST-B", "CUSTOMER", "TestPP Customer B", companyBId);
+  suppBId = await makeParty("TESTPP-SUPP-B", "SUPPLIER", "TestPP Supplier B", companyBId);
 
   const CurrencyService = require("../services/currencyService");
   for (const [uid, cid] of [[userAId, companyAId], [userBId, companyBId]]) {

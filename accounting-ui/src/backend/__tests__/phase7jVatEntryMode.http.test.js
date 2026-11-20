@@ -17,7 +17,7 @@ jest.setTimeout(200000);
 
 let CO, userId, token;
 let arId, revId, ovatId, ivatId, expId, apId, ewtRcvId, ewtPayId;
-let custId;
+let custId, suppId;
 const ATC = "PH7J-WC010"; // 10% EWT fixture
 
 async function mkAcc(code, title, cls) {
@@ -49,8 +49,11 @@ beforeAll(async () => {
   apId = await mkAcc("PH7J-AP", "Accounts Payable", "LIABILITY");
   ewtRcvId = await mkAcc("PH7J-EWTR", "Creditable Withholding Tax Receivable", "ASSET");
   ewtPayId = await mkAcc("PH7J-EWTP", "Withholding Tax Payable", "LIABILITY");
-  const [p] = await pool.execute("INSERT INTO general_libraries (company_id, code, party_type, name, status, tin, address1) VALUES (?, 'PH7J-C', 'BOTH', 'PH7J Party', 'ACTIVE', '111-222-333-000', 'Manila')", [CO]);
+  const [p] = await pool.execute("INSERT INTO general_libraries (company_id, code, party_type, name, status, tin, address1) VALUES (?, 'PH7J-C', 'CUSTOMER', 'PH7J Party', 'ACTIVE', '111-222-333-000', 'Manila')", [CO]);
   custId = p.insertId;
+  // P1 (2026-11-18): APVs need a real SUPPLIER (server-side party rule); 'BOTH' is not an app party type.
+  const [sp] = await pool.execute("INSERT INTO general_libraries (company_id, code, party_type, name, status, tin, address1) VALUES (?, 'PH7J-S', 'SUPPLIER', 'PH7J Supplier', 'ACTIVE', '111-222-333-000', 'Manila')", [CO]);
+  suppId = sp.insertId;
   await pool.execute("INSERT INTO ewt_library (atc_code, description, rate, tax_type, status) VALUES (?, 'PH7J fixture', 10, 'EWT', 'ACTIVE')", [ATC]);
 });
 
@@ -259,7 +262,7 @@ describe("Phase 7J - treatment x mode", () => {
 describe("Phase 7J - APV Input VAT Exclusive", () => {
   test("EXCLUSIVE base 10,000 -> 1 INPUT_VAT entry, net 10,000 / VAT 1,200 / gross 11,200, mode EXCLUSIVE", async () => {
     const res = await request(app).post("/api/apv").set("Authorization", `Bearer ${token}`).send({
-      voucherNo: "PH7J-APV-EXC", supplierId: custId, supplierName: "PH7J Party",
+      voucherNo: "PH7J-APV-EXC", supplierId: suppId, supplierName: "PH7J Supplier",
       transactionDate: "2026-11-22", referenceNo: "r", description: "x", status: "Draft",
       totalDebit: 11200, totalCredit: 11200, currency: { companyId: CO },
       lines: [
@@ -317,7 +320,7 @@ describe("Phase 7J - EWT compatibility with EXCLUSIVE VAT", () => {
 
   test("APV EXCLUSIVE VAT + EWT: exactly 1 INPUT_VAT + 1 EWT, no duplication", async () => {
     const res = await request(app).post("/api/apv").set("Authorization", `Bearer ${token}`).send({
-      voucherNo: "PH7J-APV-EXC-EWT", supplierId: custId, supplierName: "PH7J Party",
+      voucherNo: "PH7J-APV-EXC-EWT", supplierId: suppId, supplierName: "PH7J Supplier",
       transactionDate: "2026-11-22", referenceNo: "r", description: "x", status: "Draft",
       atcCode: ATC, taxWithheldAmount: 1000, totalDebit: 11200, totalCredit: 11200, currency: { companyId: CO },
       lines: [

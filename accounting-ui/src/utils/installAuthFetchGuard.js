@@ -32,7 +32,9 @@ export function installAuthFetchGuard() {
     if (response.status === 401) {
       const url = typeof args[0] === "string" ? args[0] : args[0]?.url || "";
       if (!url.includes("/api/login")) {
-        handleAuthError(401);
+        // the reason (e.g. SESSION_EXPIRED) from a clone, so the caller's body is untouched
+        const code = await response.clone().json().then((d) => d?.code).catch(() => null);
+        handleAuthError(401, code);
       }
     }
 

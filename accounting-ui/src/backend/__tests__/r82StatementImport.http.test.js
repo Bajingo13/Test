@@ -10,6 +10,7 @@ const request = require("supertest");
 const ExcelJS = require("exceljs");
 const app = require("../server");
 const pool = require("../db");
+const { withFixtureParty, cleanupFixtureParties } = require("../lib/testFixtureParty");
 const Parser = require("../services/bankStatementParser");
 const { assertNotProductionDatabase } = require("../lib/testDatabaseGuard");
 
@@ -28,9 +29,12 @@ const sessions = [];
 
 const q = async (sql, params) => (await pool.query(sql, params))[0];
 const one = async (sql, params) => (await q(sql, params))[0];
-const api = (who, method, url, body) => {
+// P1 (2026-11-18): these documents are bank-movement fixtures that never sent a
+// party; the server now requires one (transactionPartyService), so a body with
+// no party gets its company's fixture customer / supplier (lib/testFixtureParty).
+const api = async (who, method, url, body) => {
   const r = request(app)[method](url).set({ Authorization: `Bearer ${tok[who]}` });
-  return body === undefined ? r : r.send(body);
+  return body === undefined ? r : r.send(await withFixtureParty(pool, method, url, body));
 };
 
 async function makeUser(tag, roleCode, companyIds = [], denies = []) {
@@ -119,6 +123,7 @@ afterAll(async () => {
     await pool.query("DELETE FROM user_companies WHERE user_id IN (?)", [us]);
     await pool.query("DELETE FROM users WHERE id IN (?)", [us]);
     await pool.query("DELETE FROM bank_codes WHERE id IN (?)", [Object.values(bank)]);
+    await cleanupFixtureParties(pool, cos);
     await pool.query("DELETE FROM companies WHERE id IN (?)", [cos]);
     await pool.query("DELETE FROM chart_of_accounts WHERE code LIKE ?", [`${P}%`]);
   } finally {

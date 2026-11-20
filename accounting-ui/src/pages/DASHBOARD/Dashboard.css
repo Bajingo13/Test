@@ -19,9 +19,18 @@
   border-radius: 22px;
   padding: 34px 36px;
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
+  align-items: flex-start;
   gap: 20px;
   box-shadow: 0 22px 55px rgba(11, 127, 171, 0.28);
+}
+
+.dashboard-hero-text {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 320px;
+  min-width: 0;
 }
 
 .hero-glow {
@@ -88,8 +97,11 @@
   position: relative;
   z-index: 2;
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 10px;
   align-items: flex-start;
+  max-width: 100%;
 }
 
 .dashboard-header-actions button {
@@ -100,6 +112,8 @@
   padding: 12px 18px;
   border-radius: 12px;
   font-weight: 900;
+  white-space: nowrap;
+  flex: 0 0 auto;
   cursor: pointer;
 }
 
@@ -223,7 +237,7 @@
 
 .dashboard-widget-grid {
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   grid-auto-flow: dense;
   gap: 18px;
   align-items: start;
@@ -233,6 +247,7 @@
   position: relative;
   padding: 20px;
   min-height: 185px;
+  min-width: 0;
   overflow: hidden;
   transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
@@ -273,9 +288,17 @@
   position: relative;
   z-index: 2;
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
-  gap: 14px;
+  align-items: flex-start;
+  gap: 10px 14px;
   margin-bottom: 18px;
+}
+
+.widget-title {
+  flex: 1 1 140px;
+  min-width: 0;
+  overflow-wrap: break-word;
 }
 
 .widget-toolbar h3 {
@@ -298,6 +321,8 @@
 
 .widget-controls {
   display: flex;
+  flex: 0 0 auto;
+  margin-left: auto;
   gap: 6px;
 }
 
@@ -419,6 +444,7 @@
   margin: 12px 0 6px;
   font-size: 33px;
   color: var(--text-primary);
+  overflow-wrap: anywhere;
 }
 
 .kpi-widget p,
@@ -665,7 +691,7 @@
 
 @media (max-width: 1100px) {
   .dashboard-widget-grid {
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .dashboard-widget.hero,
@@ -681,7 +707,7 @@
   }
 
   .ai-assistant {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -702,7 +728,7 @@
   .library-grid,
   .quick-actions,
   .ai-insight-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .dashboard-widget.hero,
@@ -712,8 +738,13 @@
     grid-column: span 1;
   }
 
+  .dashboard-hero {
+    flex-direction: row;
+    padding: 24px 20px;
+  }
+
   .dashboard-header-actions {
-    flex-direction: column;
+    justify-content: flex-start;
   }
 
   .bank-right {
@@ -1100,4 +1131,278 @@
 
 .alert-item.dash-alert-static {
   cursor: default;
+}
+
+/* Phones: the hero title and the large amounts must fit a narrow column
+   (otherwise they set the page's minimum width or get clipped). */
+@media (max-width: 480px) {
+  .dashboard-hero h1 {
+    font-size: 24px;
+  }
+
+  .kpi-widget h2,
+  .forecast-widget h2,
+  .smart-summary h2 {
+    font-size: 22px;
+  }
+
+  .ai-assistant-content h2 {
+    font-size: 22px;
+    overflow-wrap: break-word;
+  }
+
+  /* label / amount rows: the amount drops under its label instead of being clipped */
+  .status-list div {
+    flex-wrap: wrap;
+    gap: 4px 16px;
+  }
+}
+
+/* ---------------------------------------------------------------------
+   Long lists: Bank & Cash search, height-capped scrolling lists, focus
+   --------------------------------------------------------------------- */
+
+.dash-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.dash-list-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.dash-list-tools input {
+  flex: 1 1 160px;
+  min-width: 0;
+  border: 1px solid var(--text-secondary); /* >= 3:1 against the card */
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  border-radius: 10px;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 13px;
+}
+
+.dash-list-tools input::placeholder {
+  color: var(--text-secondary);
+  opacity: 1;
+}
+
+.dash-list-tools button {
+  border: 1px solid var(--border-color-strong);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  border-radius: 999px;
+  padding: 7px 13px;
+  font-weight: 800;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.dash-list-count {
+  margin: 8px 0 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.dash-no-match {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  overflow-wrap: anywhere;
+}
+
+.dash-scroll-list {
+  --dash-scroll-thumb: var(--text-secondary);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-radius: 12px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--dash-scroll-thumb) transparent;
+}
+
+.dash-scroll-list[tabindex] {
+  padding-right: 6px;
+}
+
+/* rows keep their full height; the list scrolls instead of squeezing them.
+   (the app's global `button { height: 42px }` clipped two-line alerts) */
+.dash-scroll-list .alert-item,
+.dash-scroll-list .bank-item {
+  flex-shrink: 0;
+}
+
+.dash-scroll-list .alert-item {
+  height: auto;
+}
+
+.dash-scroll-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.dash-scroll-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.dash-scroll-list::-webkit-scrollbar-thumb {
+  background: var(--dash-scroll-thumb);
+  border-radius: 999px;
+}
+
+.dash-scroll-bank {
+  max-height: 360px;
+}
+
+.dash-scroll-alerts {
+  max-height: 320px;
+}
+
+.dashboard-page button:focus-visible,
+.dashboard-page select:focus-visible,
+.dashboard-page input:focus-visible,
+.dash-scroll-list:focus-visible {
+  outline: 2px solid var(--accent-teal);
+  outline-offset: 2px;
+}
+
+/* inside a scroll container an outer ring would be clipped */
+.dash-scroll-list button:focus-visible {
+  outline-offset: -2px;
+}
+
+.dashboard-hero button:focus-visible,
+.dashboard-widget.hero button:focus-visible {
+  outline-color: #ffffff;
+}
+
+/* ---------------------------------------------------------------------
+   Dark mode (Dashboard only): theme surfaces for cards, deeper fixed teals
+   so white text keeps >= 4.5:1, toned-down glows
+   --------------------------------------------------------------------- */
+
+[data-theme="dark"] .dashboard-page {
+  background:
+    radial-gradient(circle at top left, rgba(19, 181, 200, 0.06), transparent 34%),
+    radial-gradient(circle at top right, rgba(99, 102, 241, 0.05), transparent 30%),
+    var(--bg-page);
+}
+
+[data-theme="dark"] .dashboard-hero {
+  background: linear-gradient(135deg, #071b3a, #0a4f6c 55%, #0a6688);
+  box-shadow: 0 22px 55px rgba(0, 0, 0, 0.3);
+}
+
+[data-theme="dark"] .hero-glow {
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.1), transparent 65%);
+}
+
+[data-theme="dark"] .dashboard-header-actions button {
+  background: rgba(7, 27, 58, 0.4);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+[data-theme="dark"] .dashboard-header-actions button:hover {
+  background: rgba(7, 27, 58, 0.6);
+}
+
+[data-theme="dark"] .widget-library,
+[data-theme="dark"] .dashboard-widget {
+  background: var(--bg-surface);
+  border-color: var(--border-color);
+}
+
+[data-theme="dark"] .dashboard-widget::before {
+  background: linear-gradient(135deg, rgba(19, 181, 200, 0.04), transparent 45%);
+}
+
+[data-theme="dark"] .dashboard-widget.hero {
+  background: linear-gradient(135deg, #0b1e3d, #0a4f6c);
+}
+
+[data-theme="dark"] .ai-orb {
+  box-shadow: 0 0 28px rgba(34, 211, 238, 0.2);
+}
+
+[data-theme="dark"] .widget-controls button {
+  background: var(--bg-surface-muted);
+  border-color: var(--border-color-strong);
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .widget-controls button:hover {
+  background: var(--accent-teal-bg);
+  color: var(--accent-teal-light);
+}
+
+[data-theme="dark"] .dash-presets button.active {
+  background: #0a6f96;
+  border-color: #0a6f96;
+  color: #ffffff;
+}
+
+[data-theme="dark"] .smart-item.warning {
+  background: var(--warning-bg);
+  border-color: rgba(251, 191, 36, 0.45);
+}
+
+[data-theme="dark"] .alert-item {
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .dash-scroll-list {
+  --dash-scroll-thumb: var(--text-muted);
+}
+
+[data-theme="dark"] .dash-list-tools input {
+  border-color: var(--text-muted);
+}
+
+/* ---------------------------------------------------------------------
+   Light mode contrast (Dashboard only). Same colours and gradients; only
+   enough adjustment to keep text >= 4.5:1 over the translucent card and the
+   bright end of the hero gradient.
+   --------------------------------------------------------------------- */
+
+/* secondary labels on the 82%-white card (over the page tint) */
+:root:not([data-theme="dark"]) .dashboard-widget:not(.hero) .widget-toolbar span,
+:root:not([data-theme="dark"]) .dash-table th,
+:root:not([data-theme="dark"]) .dash-list-count {
+  color: #5b6b80;
+}
+
+/* the global button.danger colour (--danger) is too light on the pink alert */
+:root:not([data-theme="dark"]) .alert-item.danger {
+  color: var(--danger-text);
+}
+
+/* hero: a fainter glow, and darkened glass buttons instead of whitened ones */
+:root:not([data-theme="dark"]) .hero-glow {
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.2), transparent 65%);
+}
+
+:root:not([data-theme="dark"]) .dashboard-header-actions button {
+  background: rgba(7, 27, 58, 0.4);
+}
+
+:root:not([data-theme="dark"]) .dashboard-header-actions button:hover {
+  background: rgba(7, 27, 58, 0.55);
+}
+
+/* phones: the tall, narrow hero puts its text over the bright half of the
+   gradient - same stops, the light end moved further out */
+@media (max-width: 700px) {
+  :root:not([data-theme="dark"]) .dashboard-hero {
+    background: linear-gradient(135deg, #071b3a, var(--accent-teal) 68%, var(--accent-teal-light));
+  }
 }

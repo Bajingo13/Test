@@ -9,6 +9,7 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  white-space: nowrap; /* "Print / Export" stays on one line on phones */
 }
 .rem-caret {
   font-size: 0.8em;

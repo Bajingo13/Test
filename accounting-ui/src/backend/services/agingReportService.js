@@ -1,6 +1,7 @@
 const pool = require("../db");
 const { filterByDocumentPeriod } = require("../lib/reportPeriod");
 const { postedOnlySql } = require("./reportRecognitionService");
+const ControlAmount = require("./controlAmountService");
 
 // Checkpoint 3E - Multi-Currency AR/AP Aging Reporting.
 //
@@ -41,6 +42,37 @@ function buildPaymentAggregateSql() {
   )`;
 }
 
+// P0 TC1-092b: Debit / Credit Memos are standalone party entries in aging,
+// the same convention the Statement of Accounts, AR/AP Subsidiary Ledger and
+// AP Payables & Payments already use (Debit Memo increases AR / decreases AP,
+// Credit Memo decreases AR / increases AP). The amount is the memo's AR / AP
+// CONTROL-LINE net (controlAmountService), signed for this ledger; a credit
+// item is a negative open item. Memos have no due date and no application
+// mechanism, so each ages from its memo date and is never auto-applied
+// (no FIFO). Posted only, like every other aging source.
+function memoBranchSql(ledger) {
+  return `
+      SELECT
+        CASE WHEN h.memo_type = 'DEBIT' THEN 'DM' ELSE 'CM' END AS source_type, h.id AS source_id,
+        h.party_id, h.party_name,
+        h.voucher_no AS reference_no,
+        DATE_FORMAT(h.transaction_date, '%Y-%m-%d') AS transaction_date,
+        DATE_FORMAT(h.transaction_date, '%Y-%m-%d') AS due_date,
+        ${ControlAmount.memoSignedBaseExpr(ledger, "h", "ma")} AS base_original,
+        h.currency_id, mcur.currency_code, mcur.currency_symbol,
+        msnap.exchange_rate AS historical_rate,
+        msnap.base_currency_id AS snap_base_currency_id,
+        ${ControlAmount.memoSignedForeignExpr(ledger, "h", "ma", "msnap")} AS foreign_original,
+        0 AS paid_base,
+        0 AS paid_foreign
+      FROM memo_headers h
+      LEFT JOIN currencies mcur ON mcur.id = h.currency_id
+      LEFT JOIN transaction_currency_snapshots msnap ON msnap.transaction_type = CONCAT('MEMO_', h.memo_type) AND msnap.transaction_id = h.id
+      LEFT JOIN ${ControlAmount.memoAggregateSql(ledger)} ma ON ma.doc_id = h.id
+      WHERE h.party_type = '${ledger === "AR" ? "CUSTOMER" : "SUPPLIER"}'
+        AND h.transaction_date <= ? AND h.company_id = ? AND ${postedOnlySql("h")}`;
+}
+
 async function fetchRawRows(type, asOfDate, companyId) {
   const pmtSql = buildPaymentAggregateSql();
 
@@ -54,16 +86,17 @@ async function fetchRawRows(type, asOfDate, companyId) {
           h.voucher_no AS reference_no,
           DATE_FORMAT(h.transaction_date, '%Y-%m-%d') AS transaction_date,
           DATE_FORMAT(h.due_date, '%Y-%m-%d') AS due_date,
-          h.total_debit AS base_original,
+          ${ControlAmount.baseOriginalExpr("INV", "h", "ca")} AS base_original,
           h.currency_id, cur.currency_code, cur.currency_symbol,
           snap.exchange_rate AS historical_rate,
           snap.base_currency_id AS snap_base_currency_id,
-          snap.foreign_total AS foreign_original,
+          ${ControlAmount.foreignOriginalExpr("INV", "ca", "snap")} AS foreign_original,
           COALESCE(pmt.paid_base, 0) AS paid_base,
           COALESCE(pmt.paid_foreign, 0) AS paid_foreign
         FROM invoice_headers h
         LEFT JOIN currencies cur ON cur.id = h.currency_id
         LEFT JOIN transaction_currency_snapshots snap ON snap.transaction_type = 'INV' AND snap.transaction_id = h.id
+        LEFT JOIN ${ControlAmount.aggregateSql("INV")} ca ON ca.doc_id = h.id
         LEFT JOIN ${pmtSql} pmt ON pmt.source_type = 'INV' AND pmt.source_id = h.id
         -- A receivable exists only once the invoice is financially
         -- recognized: the same Posted-only rule (reportRecognitionService)
@@ -95,10 +128,14 @@ async function fetchRawRows(type, asOfDate, companyId) {
         -- Posted beginning-balance header (LedgerReportService), so a Draft
         -- one is not yet a receivable either.
         WHERE h.balance_date <= ? AND h.company_id = ? AND ${postedOnlySql("h")}
+
+        UNION ALL
+
+        ${memoBranchSql("AR")}
       ) agg
       ORDER BY party_name ASC, due_date ASC
       `,
-      [asOfDate, asOfDate, companyId, asOfDate, asOfDate, companyId]
+      [asOfDate, asOfDate, companyId, asOfDate, asOfDate, companyId, asOfDate, companyId]
     );
     return rows;
   }
@@ -112,16 +149,17 @@ async function fetchRawRows(type, asOfDate, companyId) {
         h.voucher_no AS reference_no,
         DATE_FORMAT(h.transaction_date, '%Y-%m-%d') AS transaction_date,
         DATE_FORMAT(h.due_date, '%Y-%m-%d') AS due_date,
-        h.total_credit AS base_original,
+        ${ControlAmount.baseOriginalExpr("APV", "h", "ca")} AS base_original,
         h.currency_id, cur.currency_code, cur.currency_symbol,
         snap.exchange_rate AS historical_rate,
         snap.base_currency_id AS snap_base_currency_id,
-        snap.foreign_total AS foreign_original,
+        ${ControlAmount.foreignOriginalExpr("APV", "ca", "snap")} AS foreign_original,
         COALESCE(pmt.paid_base, 0) AS paid_base,
         COALESCE(pmt.paid_foreign, 0) AS paid_foreign
       FROM apv_headers h
       LEFT JOIN currencies cur ON cur.id = h.currency_id
       LEFT JOIN transaction_currency_snapshots snap ON snap.transaction_type = 'APV' AND snap.transaction_id = h.id
+      LEFT JOIN ${ControlAmount.aggregateSql("APV")} ca ON ca.doc_id = h.id
       LEFT JOIN ${pmtSql} pmt ON pmt.source_type = 'APV' AND pmt.source_id = h.id
       -- A payable exists only once the APV is financially recognized: the
       -- same Posted-only rule (reportRecognitionService) the ledger and
@@ -167,11 +205,15 @@ async function fetchRawRows(type, asOfDate, companyId) {
       -- Same rule for AP beginning balances: the ledger only recognizes a
       -- Posted beginning-balance header (LedgerReportService).
       WHERE h.balance_date <= ? AND h.company_id = ? AND ${postedOnlySql("h")}
+
+      UNION ALL
+
+      ${memoBranchSql("AP")}
     ) agg
     ORDER BY party_name ASC, due_date ASC
     `,
-    // pmt, APV date, company, reversal-JV date, pmt2, beginning-balance date, company
-    [asOfDate, asOfDate, companyId, asOfDate, asOfDate, asOfDate, companyId]
+    // pmt, APV date, company, reversal-JV date, pmt2, beginning-balance date, company, memo date, company
+    [asOfDate, asOfDate, companyId, asOfDate, asOfDate, asOfDate, companyId, asOfDate, companyId]
   );
   return rows;
 }
@@ -242,9 +284,10 @@ function applyFilters(rows, { currencyCode, partyId, status }) {
 
   const statusFilter = (status || "OPEN").toUpperCase();
   if (statusFilter === "OPEN") {
-    out = out.filter((r) => r.baseBalance > MONEY_EPSILON);
+    // P0 TC1-092b: a Credit Memo is a NEGATIVE open item - still open.
+    out = out.filter((r) => Math.abs(r.baseBalance) > MONEY_EPSILON);
   } else if (statusFilter === "PAID") {
-    out = out.filter((r) => r.baseBalance <= MONEY_EPSILON);
+    out = out.filter((r) => Math.abs(r.baseBalance) <= MONEY_EPSILON);
   }
   // 'ALL' -> no balance filter
 

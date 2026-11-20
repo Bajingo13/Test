@@ -156,6 +156,11 @@ async function createTemplate(input, userId, companyId = null) {
     schedule,
   });
 
+  // P1: the party must suit the transaction this template generates (same
+  // rule as a manual document); revalidated again at every generation.
+  const partyCompanyId = companyId ?? (await pool.execute("SELECT id FROM companies ORDER BY id LIMIT 1"))[0][0]?.id ?? null;
+  await ValidationService.assertTemplateParty(pool, { moduleType, companyId: partyCompanyId, partyId });
+
   const currencyPolicy = await validateCurrencyPolicy({ currencyId, ratePolicy, fixedRate, companyId });
 
   const conn = await pool.getConnection();

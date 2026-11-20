@@ -1,5 +1,6 @@
 const jwt = require("jsonwebtoken");
 const pool = require("../db");
+const { SESSION_EXPIRED_MESSAGE } = require("../lib/sessionPolicy");
 
 // Strict superset of the original lib/auth.js authenticateToken: still
 // verifies the JWT signature/expiry exactly as before, but additionally
@@ -18,6 +19,11 @@ async function authenticateToken(req, res, next) {
   }
 
   jwt.verify(token, process.env.JWT_SECRET, async (err, decoded) => {
+    if (err && err.name === "TokenExpiredError") {
+      // Inactivity timeout (lib/sessionPolicy.js): the session token expires 15
+      // minutes after it was last issued / refreshed - enforced here, server-side.
+      return res.status(401).json({ message: SESSION_EXPIRED_MESSAGE, code: "SESSION_EXPIRED" });
+    }
     if (err) {
       // System-wide auth audit: this used to be 403, which is indistinguishable
       // on the frontend from authorizePermission.js's genuine "you don't have

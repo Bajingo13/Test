@@ -78,6 +78,13 @@ const TEXT_FIELDS = [
 // missing or an unrecognized code -> skipped row; enum values are matched
 // case-insensitively; a code that already exists in general_libraries is
 // never overwritten by import, only reported back as skipped.
+//
+// Read-only: used by BOTH the preview and the confirm request. Confirm calls
+// it again on the resubmitted file, so it always validates against the
+// database as it is at write time (a preview result is never trusted).
+// general_libraries.code is UNIQUE across all companies and the column
+// collation is case-insensitive, so existing / in-file duplicates are
+// compared case-insensitively - exactly what the INSERT would reject.
 async function parseAndValidateRows(buffer, filename) {
   const { headers, dataRows } = await extractRows(buffer, filename);
 
@@ -92,12 +99,13 @@ async function parseAndValidateRows(buffer, filename) {
   }
 
   const [existingRows] = await pool.execute("SELECT code FROM general_libraries");
-  const existingCodes = new Set(existingRows.map((r) => String(r.code).trim()));
+  const codeKey = (c) => String(c).trim().toLowerCase();
+  const existingCodes = new Set(existingRows.map((r) => codeKey(r.code)));
 
   const ready = [];
   const skipped = [];
   const warnings = [];
-  const seenInFile = new Set();
+  const seenInFile = new Map(); // code key -> first row number that used it
 
   dataRows.forEach((rowValues, idx) => {
     const rowNum = idx + 2;
@@ -107,19 +115,24 @@ async function parseAndValidateRows(buffer, filename) {
     const name = get("name") != null ? String(get("name")).trim() : "";
 
     if (!code || !name) {
-      skipped.push({ row: rowNum, reason: "Missing required code or name" });
+      skipped.push({ row: rowNum, code, reason: "Missing required code or name" });
       return;
     }
 
-    if (existingCodes.has(code) || seenInFile.has(code)) {
-      skipped.push({ row: rowNum, reason: `Code "${code}" already exists` });
+    if (existingCodes.has(codeKey(code))) {
+      skipped.push({ row: rowNum, code, reason: `Code "${code}" already exists` });
+      return;
+    }
+
+    if (seenInFile.has(codeKey(code))) {
+      skipped.push({ row: rowNum, code, reason: `Code "${code}" is repeated in this file (first used on row ${seenInFile.get(codeKey(code))})` });
       return;
     }
 
     const rawType = get("type") != null ? String(get("type")).trim().toUpperCase() : "";
     const type = PARTY_TYPES.find((t) => t === rawType);
     if (!type) {
-      skipped.push({ row: rowNum, reason: `Type must be one of: ${PARTY_TYPES.join(", ")}` });
+      skipped.push({ row: rowNum, code, reason: `Type must be one of: ${PARTY_TYPES.join(", ")}` });
       return;
     }
 
@@ -141,6 +154,7 @@ async function parseAndValidateRows(buffer, filename) {
     }
 
     const record = {
+      row: rowNum,
       code,
       type,
       name,
@@ -155,56 +169,70 @@ async function parseAndValidateRows(buffer, filename) {
       record[field] = get(field) != null ? String(get(field)).trim() : "";
     }
 
-    seenInFile.add(code);
+    seenInFile.set(codeKey(code), rowNum);
     ready.push(record);
   });
 
   return { headers, mapping, ready, skipped, warnings };
 }
 
+// All ready rows in ONE transaction (same pattern as COA / Group Codes
+// import). Any DB error - including ER_DUP_ENTRY from a code another user
+// created after this request validated the file - rolls back the whole batch
+// (zero rows from this request remain) and is re-thrown. INSERT only.
 async function insertGenLibRows(rows, companyId) {
+  if (rows.length === 0) return 0;
+
+  const conn = await pool.getConnection();
   let imported = 0;
-
-  for (const item of rows) {
-    await pool.execute(
-      `INSERT INTO general_libraries (
-        company_id, code, party_type, name, status, start_date,
-        address1, address2, address3, attention, position,
-        telephone, fax, mobile, tin, email,
-        atc_code, ewt_code, category, branch_code, rdo_code,
-        notes, is_prospective, is_client
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        companyId,
-        item.code,
-        item.type,
-        item.name,
-        item.status,
-        item.startDate,
-        item.address1,
-        item.address2,
-        item.address3,
-        item.attention,
-        item.position,
-        item.telephone,
-        item.fax,
-        item.mobile,
-        item.tin,
-        item.email,
-        item.atcCode,
-        item.ewtCode,
-        item.category,
-        item.branchCode,
-        item.rdoCode,
-        item.notes,
-        item.isProspective ? 1 : 0,
-        item.isClient ? 1 : 0,
-      ]
-    );
-    imported++;
+  try {
+    await conn.beginTransaction();
+    for (const item of rows) {
+      await conn.execute(
+        `INSERT INTO general_libraries (
+          company_id, code, party_type, name, status, start_date,
+          address1, address2, address3, attention, position,
+          telephone, fax, mobile, tin, email,
+          atc_code, ewt_code, category, branch_code, rdo_code,
+          notes, is_prospective, is_client
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          companyId,
+          item.code,
+          item.type,
+          item.name,
+          item.status,
+          item.startDate,
+          item.address1,
+          item.address2,
+          item.address3,
+          item.attention,
+          item.position,
+          item.telephone,
+          item.fax,
+          item.mobile,
+          item.tin,
+          item.email,
+          item.atcCode,
+          item.ewtCode,
+          item.category,
+          item.branchCode,
+          item.rdoCode,
+          item.notes,
+          item.isProspective ? 1 : 0,
+          item.isClient ? 1 : 0,
+        ]
+      );
+      imported++;
+    }
+    await conn.commit();
+    return imported;
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
   }
-
-  return imported;
 }
 
 module.exports = {

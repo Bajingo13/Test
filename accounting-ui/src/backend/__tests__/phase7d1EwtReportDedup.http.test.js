@@ -220,7 +220,8 @@ describe("Phase 7D.1 - C: APV + related CV with the SAME EWT - no double count",
     // the report de-dup logic, not full double-entry realism).
     const cvRes = await createCv({
       voucherNo: "PH7D1-CV-C", payeeId: suppA2, payeeName: "PH7D1 Supplier Two", payeeTin: "222-222-222-000", date: "2026-07-10", amount: 20000, ewtAmount: 2000, atcCode: "PH7D1-ATC",
-      apvApplications: [{ sourceId: apvId, amount: 20000, applicationDate: "2026-07-10" }],
+      // P0 TC1-062 (2026-11-18): the APV withheld EWT, so its payable is its AP control amount (Gross - EWT); an application can no longer exceed it. EWT report expectations unchanged.
+      apvApplications: [{ sourceId: apvId, amount: 18000, applicationDate: "2026-07-10" }],
     });
     expect(cvRes.status).toBe(200);
 
@@ -257,12 +258,13 @@ describe("Phase 7D.1 - E: one APV + two single-APV CVs (installments) - both CVs
 
     const cv1 = await createCv({
       voucherNo: "PH7D1-CV-E1", payeeId: supp, payeeName: "PH7D1 Supplier Four", payeeTin: "555-555-555-000", date: "2026-07-12", amount: 10000, ewtAmount: 1000, atcCode: "PH7D1-ATC",
-      apvApplications: [{ sourceId: apvId, amount: 10000, applicationDate: "2026-07-12" }],
+      // P0 TC1-062 (2026-11-18): the APV withheld EWT, so its payable is its AP control amount (Gross - EWT); an application can no longer exceed it. EWT report expectations unchanged.
+      apvApplications: [{ sourceId: apvId, amount: 9000, applicationDate: "2026-07-12" }],
     });
     expect(cv1.status).toBe(200);
     const cv2 = await createCv({
       voucherNo: "PH7D1-CV-E2", payeeId: supp, payeeName: "PH7D1 Supplier Four", payeeTin: "555-555-555-000", date: "2026-07-20", amount: 10000, ewtAmount: 1000, atcCode: "PH7D1-ATC",
-      apvApplications: [{ sourceId: apvId, amount: 10000, applicationDate: "2026-07-20" }],
+      apvApplications: [{ sourceId: apvId, amount: 9000, applicationDate: "2026-07-20" }],
     });
     expect(cv2.status).toBe(200);
 
@@ -282,8 +284,9 @@ describe("Phase 7D.1 - F: one CV -> multiple APVs (ambiguous) - no fabricated al
     const cvRes = await createCv({
       voucherNo: "PH7D1-CV-F", payeeId: supp, payeeName: "PH7D1 Supplier Five", payeeTin: "666-666-666-000", date: "2026-08-15", amount: 40000, ewtAmount: 4000, atcCode: "PH7D1-ATC",
       apvApplications: [
-        { sourceId: apv1.body.id, amount: 20000, applicationDate: "2026-08-15" },
-        { sourceId: apv2.body.id, amount: 20000, applicationDate: "2026-08-15" },
+        // P0 TC1-062 (2026-11-18): the APV withheld EWT, so its payable is its AP control amount (Gross - EWT); an application can no longer exceed it. EWT report expectations unchanged.
+        { sourceId: apv1.body.id, amount: 18000, applicationDate: "2026-08-15" },
+        { sourceId: apv2.body.id, amount: 18000, applicationDate: "2026-08-15" },
       ],
     });
     expect(cvRes.status).toBe(200);
@@ -328,7 +331,8 @@ describe("Phase 7D.1 - I: date-range filtering across a period boundary", () => 
 
     const cvRes = await createCv({
       voucherNo: "PH7D1-CV-I", payeeId: supp, payeeName: "PH7D1 Supplier Six", payeeTin: "777-777-777-000", date: "2026-10-03", amount: 20000, ewtAmount: 2000, atcCode: "PH7D1-ATC",
-      apvApplications: [{ sourceId: apvId, amount: 20000, applicationDate: "2026-10-03" }],
+      // P0 TC1-062 (2026-11-18): the APV withheld EWT, so its payable is its AP control amount (Gross - EWT); an application can no longer exceed it. EWT report expectations unchanged.
+      apvApplications: [{ sourceId: apvId, amount: 18000, applicationDate: "2026-10-03" }],
     });
     expect(cvRes.status).toBe(200);
 
@@ -377,7 +381,8 @@ describe("Phase 7D.1 - K/L: no duplicate amount in either report for the same un
     const apvRes = await createApv(companyA, { voucherNo: "PH7D1-APV-KL", supplierId: supp, supplierName: "PH7D1 Supplier Eight", supplierTin: "999-999-999-000", date: "2026-11-05", gross: 20000, ewtAmount: 2000, atcCode: "PH7D1-ATC" });
     const cvRes = await createCv({
       voucherNo: "PH7D1-CV-KL", payeeId: supp, payeeName: "PH7D1 Supplier Eight", payeeTin: "999-999-999-000", date: "2026-11-12", amount: 20000, ewtAmount: 2000, atcCode: "PH7D1-ATC",
-      apvApplications: [{ sourceId: apvRes.body.id, amount: 20000, applicationDate: "2026-11-12" }],
+      // P0 TC1-062 (2026-11-18): the APV withheld EWT, so its payable is its AP control amount (Gross - EWT); an application can no longer exceed it. EWT report expectations unchanged.
+      apvApplications: [{ sourceId: apvRes.body.id, amount: 18000, applicationDate: "2026-11-12" }],
     });
     expect(cvRes.status).toBe(200);
 

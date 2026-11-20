@@ -31,6 +31,8 @@ export default function TrialBalance() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [generated, setGenerated] = useState(false);
+  // Generation failure message (replaces a native alert) - shown above the report.
+  const [reportError, setReportError] = useState("");
   const [runInfo, setRunInfo] = useState({
     pageNo: 1,
     runDate: "",
@@ -122,6 +124,7 @@ export default function TrialBalance() {
     if (!query) return; // no company selected - nothing is requested
 
     const ticket = requestGuard.current.next();
+    setReportError("");
     setLoading(true);
 
     const now = new Date();
@@ -159,7 +162,7 @@ export default function TrialBalance() {
     } catch (err) {
       if (!requestGuard.current.isCurrent(ticket)) return;
       console.error(err);
-      alert(err.userMessage || "Failed to generate Trial Balance. Please check the backend/server.");
+      setReportError(err.userMessage || "Failed to generate Trial Balance. Please check the backend/server.");
       setRows([]);
       setBalanceStatus(null);
     } finally {
@@ -311,20 +314,28 @@ export default function TrialBalance() {
             </select>
           </div>
 
+          {/* Informational only: posted transactions carry no branch / department
+              tag, and the Trial Balance includes Posted transactions only
+              (trialBalanceDifferenceService). Previously these selects looked
+              like filters but did nothing. */}
           <div>
-            <label>Branch / Department</label>
-            <select>
+            <label htmlFor="tb-branch">Branch / Department</label>
+            <select id="tb-branch" disabled aria-describedby="tb-branch-note">
               <option>All Branches</option>
             </select>
+            <p id="tb-branch-note" className="tb-filter-note">
+              Transactions are not tagged by branch or department, so the Trial Balance covers the whole company.
+            </p>
           </div>
 
           <div>
-            <label>Status</label>
-            <select>
-              <option>All</option>
+            <label htmlFor="tb-status">Status</label>
+            <select id="tb-status" disabled aria-describedby="tb-status-note">
               <option>Posted</option>
-              <option>Draft</option>
             </select>
+            <p id="tb-status-note" className="tb-filter-note">
+              Only posted transactions are included in the Trial Balance.
+            </p>
           </div>
         </div>
 
@@ -379,6 +390,12 @@ export default function TrialBalance() {
           </button>
         </div>
       </div>
+
+      {reportError ? (
+        <div className="tb-company-message error" role="alert" id="tb-error">
+          {reportError}
+        </div>
+      ) : null}
 
       {generated && (
         <div className="tb-report-card">

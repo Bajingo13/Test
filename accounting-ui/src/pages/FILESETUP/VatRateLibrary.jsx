@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
+import usePermissions from "../../hooks/usePermissions";
 import AutoResizeTextarea from "../../components/AutoResizeTextarea";
 import "./FileSetupPages.css";
 
@@ -44,6 +45,8 @@ const DESCRIPTION_MAX_LEN = 255;
 const RATE_MAX_VALUE = 999.999;
 
 export default function VatRateLibrary() {
+  const { can } = usePermissions();
+  const canConfigure = can("FILESETUP.TAX_SETUP", "CONFIGURE");
   const [records, setRecords] = useState([]);
   const [form, setForm] = useState(EMPTY_FORM);
   const [mode, setMode] = useState("add");
@@ -230,9 +233,11 @@ export default function VatRateLibrary() {
           <p>Maintain reference VAT codes and rates for Invoice/APV VAT entry. Semantic codes are recommended, e.g. STANDARD_VAT.</p>
         </div>
 
-        <button className="fs-btn primary" onClick={handleNew}>
-          + Add VAT Code
-        </button>
+        {canConfigure ? (
+          <button className="fs-btn primary" onClick={handleNew}>
+            + Add VAT Code
+          </button>
+        ) : null}
       </div>
 
       <div className="fs-card">
@@ -261,7 +266,7 @@ export default function VatRateLibrary() {
               <th>Rate (%)</th>
               <th>Status</th>
               <th>Updated</th>
-              <th>Action</th>
+              {canConfigure ? <th>Action</th> : null}
             </tr>
           </thead>
 
@@ -284,6 +289,7 @@ export default function VatRateLibrary() {
                   <td>{item.rate}%</td>
                   <td>{item.status}</td>
                   <td>{item.updatedAt ? String(item.updatedAt).slice(0, 10) : "—"}</td>
+                  {canConfigure ? (
                   <td className="vat-rate-actions">
                     <button className="fs-btn" onClick={() => handleEdit(item)}>
                       Edit
@@ -292,6 +298,7 @@ export default function VatRateLibrary() {
                       {item.status === "ACTIVE" ? "Deactivate" : "Activate"}
                     </button>
                   </td>
+                  ) : null}
                 </tr>
               ))
             )}
@@ -299,6 +306,7 @@ export default function VatRateLibrary() {
         </table>
       </div>
 
+      {canConfigure ? (
       <div className="fs-card">
         <h2>{mode === "add" ? "Add VAT Code" : "Edit VAT Code"}</h2>
 
@@ -390,6 +398,7 @@ export default function VatRateLibrary() {
           </button>
         </div>
       </div>
+      ) : null}
     </div>
   );
 }

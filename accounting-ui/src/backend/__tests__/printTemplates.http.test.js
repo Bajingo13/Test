@@ -374,6 +374,7 @@ describe("11-13: print-pipeline resolution order", () => {
         await pool.query("DELETE FROM invoice_lines WHERE invoice_id IN (SELECT id FROM invoice_headers WHERE company_id = ?)", [cleanCompanyId]);
         await pool.query("DELETE FROM transaction_currency_snapshots WHERE transaction_type = 'INV' AND transaction_id IN (SELECT id FROM invoice_headers WHERE company_id = ?)", [cleanCompanyId]);
         await pool.query("DELETE FROM invoice_headers WHERE company_id = ?", [cleanCompanyId]);
+        await pool.query("DELETE FROM general_libraries WHERE company_id = ?", [cleanCompanyId]);
         await pool.query("DELETE FROM currencies WHERE company_id = ?", [cleanCompanyId]);
       }
       if (cleanAdminId) {
@@ -388,12 +389,16 @@ describe("11-13: print-pipeline resolution order", () => {
     }
   });
 
+  // P1 (2026-11-18): the invoice's customer must belong to the invoice's own
+  // company (server-side party rule), so company C gets its own customer.
+  let cleanCustomerId = null;
   async function postedInvoiceFor(token, companyId, voucherNo) {
+    if (!cleanCustomerId) cleanCustomerId = await makeParty("TESTPTPL-CUST-C", "CUSTOMER", "TEST Print Templates Customer C", cleanCompanyId);
     const res = await request(app)
       .post("/api/invoices")
       .set("Authorization", `Bearer ${token}`)
       .send({
-        voucherNo, customerId: custAId, customerName: "x", transactionDate: "2026-08-01", dueDate: "2026-08-08",
+        voucherNo, customerId: companyId === cleanCompanyId ? cleanCustomerId : custAId, customerName: "x", transactionDate: "2026-08-01", dueDate: "2026-08-08",
         status: "Posted",
         lines: [
           { accountId: arA, accountCode: "TESTPTPLAR", accountTitle: "AR", particulars: "x", debit: 500, credit: 0 },

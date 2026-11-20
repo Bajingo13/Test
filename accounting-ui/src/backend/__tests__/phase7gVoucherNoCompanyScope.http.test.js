@@ -14,7 +14,7 @@ jest.setTimeout(180000);
 
 let A, B, userId, token;
 let accA1, accA2, accB1, accB2; // one debit + one credit account per company
-let custA, custB;
+let custA, custB, suppA, suppB;
 
 async function mkCompany(name) {
   const [r] = await pool.execute("INSERT INTO companies (name, status) VALUES (?, 'Active')", [name]);
@@ -54,10 +54,17 @@ beforeAll(async () => {
   accA2 = await mkAccount("PH7G-A-CR", "PH7G A Credit", "INCOME");
   accB1 = await mkAccount("PH7G-B-DR", "PH7G B Debit", "ASSET");
   accB2 = await mkAccount("PH7G-B-CR", "PH7G B Credit", "INCOME");
-  const [ca] = await pool.execute("INSERT INTO general_libraries (company_id, code, party_type, name, status) VALUES (?, 'PH7G-CA', 'BOTH', 'PH7G Cust A', 'ACTIVE')", [A]);
+  const [ca] = await pool.execute("INSERT INTO general_libraries (company_id, code, party_type, name, status) VALUES (?, 'PH7G-CA', 'CUSTOMER', 'PH7G Cust A', 'ACTIVE')", [A]);
   custA = ca.insertId;
-  const [cb] = await pool.execute("INSERT INTO general_libraries (company_id, code, party_type, name, status) VALUES (?, 'PH7G-CB', 'BOTH', 'PH7G Cust B', 'ACTIVE')", [B]);
+  const [cb] = await pool.execute("INSERT INTO general_libraries (company_id, code, party_type, name, status) VALUES (?, 'PH7G-CB', 'CUSTOMER', 'PH7G Cust B', 'ACTIVE')", [B]);
   custB = cb.insertId;
+  // P1 (2026-11-18): the server now requires a real CUSTOMER on AR documents
+  // and a real SUPPLIER on AP documents ('BOTH' is not a party type the app
+  // offers), so each company also gets a supplier for APV / CV / PO.
+  const [sa] = await pool.execute("INSERT INTO general_libraries (company_id, code, party_type, name, status) VALUES (?, 'PH7G-SA', 'SUPPLIER', 'PH7G Supp A', 'ACTIVE')", [A]);
+  suppA = sa.insertId;
+  const [sb] = await pool.execute("INSERT INTO general_libraries (company_id, code, party_type, name, status) VALUES (?, 'PH7G-SB', 'SUPPLIER', 'PH7G Supp B', 'ACTIVE')", [B]);
+  suppB = sb.insertId;
 });
 
 afterAll(async () => {
@@ -88,6 +95,8 @@ function build(module, { companyId, voucherNo, id }) {
   const crCode = companyId === A ? "PH7G-A-CR" : "PH7G-B-CR";
   const cust = companyId === A ? custA : custB;
   const custName = companyId === A ? "PH7G Cust A" : "PH7G Cust B";
+  const supp = companyId === A ? suppA : suppB;
+  const suppName = companyId === A ? "PH7G Supp A" : "PH7G Supp B";
   const lines = [
     { accountId: dr, accountCode: drCode, accountTitle: "DR", particulars: "x", genRef: "", genName: "", debit: 100, credit: 0 },
     { accountId: cr, accountCode: crCode, accountTitle: "CR", particulars: "x", genRef: "", genName: "", debit: 0, credit: 100 },
@@ -95,11 +104,11 @@ function build(module, { companyId, voucherNo, id }) {
   const common = { voucherNo, transactionDate: "2026-11-15", referenceNo: voucherNo, description: "ph7g", status: "Draft", lines, totalDebit: 100, totalCredit: 100, currency: { companyId } };
   const M = {
     INV: { url: "invoices", body: { ...common, customerId: cust, customerName: custName } },
-    APV: { url: "apv", body: { ...common, supplierId: cust, supplierName: custName } },
+    APV: { url: "apv", body: { ...common, supplierId: supp, supplierName: suppName } },
     OR: { url: "or", body: { ...common, customerId: cust, customerName: custName, receiptNo: voucherNo, paymentMethod: "Cash" } },
-    CV: { url: "cv", body: { ...common, payeeId: cust, payeeName: custName, paymentMethod: "Check" } },
+    CV: { url: "cv", body: { ...common, payeeId: supp, payeeName: suppName, paymentMethod: "Check" } },
     JV: { url: "jv", body: { ...common, preparedFor: custName } },
-    PO: { url: "purchase-orders", body: { ...common, supplierId: cust, supplierName: custName } },
+    PO: { url: "purchase-orders", body: { ...common, supplierId: supp, supplierName: suppName } },
     PCV: { url: "petty-cash", body: { ...common, payeeId: cust, payeeName: custName } },
     DM: { url: "debit-memos", body: { ...common, partyId: cust, partyName: custName, partyType: "CUSTOMER" } },
     CM: { url: "credit-memos", body: { ...common, partyId: cust, partyName: custName, partyType: "CUSTOMER" } },

@@ -92,13 +92,21 @@ export default function InviteUserModal({ open, onClose, onInvited, inviterRoleC
   const invitableRoles = roles.filter((r) => allowedRoleCodes.includes(r.code));
   const formReady = !lookupsLoading && !lookupError;
 
+  // A branch can only be assigned within the invited user's companies (enforced
+  // by the server): unticking a company also drops its branches.
+  const branchCompany = new Map(branches.map((b) => [b.id, Number(b.company_id)]));
+  const companyName = new Map(companies.map((c) => [c.id, c.name]));
+  const selectableBranches = branches.filter((b) => form.companyIds.includes(Number(b.company_id)));
+
   function toggleCompany(id) {
-    setForm((prev) => ({
-      ...prev,
-      companyIds: prev.companyIds.includes(id)
-        ? prev.companyIds.filter((c) => c !== id)
-        : [...prev.companyIds, id],
-    }));
+    setForm((prev) => {
+      const removing = prev.companyIds.includes(id);
+      return {
+        ...prev,
+        companyIds: removing ? prev.companyIds.filter((c) => c !== id) : [...prev.companyIds, id],
+        branchIds: removing ? prev.branchIds.filter((b) => branchCompany.get(b) !== id) : prev.branchIds,
+      };
+    });
   }
 
   function toggleBranch(id) {
@@ -230,13 +238,19 @@ export default function InviteUserModal({ open, onClose, onInvited, inviterRoleC
               <div className="ium-field">
                 <label>Branches</label>
                 <div className="ium-checkbox-group">
-                  {branches.map((b) => (
+                  {selectableBranches.map((b) => (
                     <label key={b.id} className="ium-checkbox">
                       <input type="checkbox" checked={form.branchIds.includes(b.id)} onChange={() => toggleBranch(b.id)} />
-                      <span>{b.name}</span>
+                      <span>
+                        {b.name}{b.code ? ` (${b.code})` : ""}
+                        {companies.length > 1 ? ` · ${companyName.get(Number(b.company_id)) || ""}` : ""}
+                        {String(b.status || "").toUpperCase() === "INACTIVE" ? " · inactive" : ""}
+                      </span>
                     </label>
                   ))}
-                  {branches.length === 0 && <p className="ium-muted">No branches available.</p>}
+                  {selectableBranches.length === 0 && (
+                    <p className="ium-muted">{branches.length === 0 ? "No branches available." : "Select a company to choose its branches."}</p>
+                  )}
                 </div>
               </div>
 

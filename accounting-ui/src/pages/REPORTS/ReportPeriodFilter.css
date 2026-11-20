@@ -11,7 +11,7 @@
   margin-bottom: 8px;
   font-size: 14px;
   font-weight: 600;
-  color: #111827;
+  color: var(--text-primary); /* was #111827 - unreadable in dark mode */
 }
 
 /* Report filter grids style every nested div and label, so these selectors
@@ -63,7 +63,7 @@
   margin-top: 8px;
   font-size: 13px;
   font-weight: 600;
-  color: #b91c1c;
+  color: var(--danger-text); /* was #b91c1c - too dark in dark mode */
 }
 
 .rpl {
@@ -79,14 +79,14 @@
 .rpl-primary {
   font-size: 14px;
   font-weight: 700;
-  color: #111827;
+  color: var(--text-primary); /* was #111827 - dark-on-dark in dark mode */
 }
 
 .rpl-secondary {
   margin-top: 2px;
   font-size: 12px;
   font-weight: 600;
-  color: #374151;
+  color: var(--neutral-text); /* #374151 in light mode (unchanged), light grey in dark */
 }
 
 @media print {

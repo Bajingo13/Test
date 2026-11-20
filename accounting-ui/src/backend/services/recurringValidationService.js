@@ -1,5 +1,25 @@
 const pool = require("../db");
 const { HttpError } = require("../lib/httpError");
+const { RECURRING_MODULES, resolveTransactionParty } = require("./transactionPartyService");
+
+// P1 (2026-11-19): a recurring template's party follows the SAME rule as the
+// transaction it generates (transactionPartyService): AR templates (invoice,
+// or) need a CUSTOMER, AP templates (apv, cv, po) a SUPPLIER, of the
+// template's company, ACTIVE. Checked when the template is saved AND again
+// every time an occurrence is generated - a party can be deactivated, retyped
+// or removed after the template was created. JV templates carry no party.
+async function assertTemplateParty(db, { moduleType, companyId, partyId, atGeneration = false }) {
+  const docModule = RECURRING_MODULES[moduleType];
+  if (!docModule) return null;
+  try {
+    return await resolveTransactionParty(db, { module: docModule, companyId, partyId });
+  } catch (err) {
+    if (!atGeneration || !(err instanceof HttpError)) throw err;
+    // generation-time: the stored template is no longer valid (422, like the
+    // other generation-time master-data checks), code kept for the caller
+    throw new HttpError(422, `This recurring template's party can no longer be used: ${err.message}`, err.code);
+  }
+}
 
 const SUPPORTED_MODULE_TYPES = ["invoice", "apv", "jv", "po", "or", "cv"];
 const MODULES_WITHOUT_PARTY = new Set(["jv"]);
@@ -86,19 +106,10 @@ function validateTemplateInput({ moduleType, templateName, partyId, lines, sched
 // stored template data can go stale between save and generation (party
 // deactivated, account deleted). Must run inside the generation
 // transaction (pass the active `conn`) so it sees a consistent snapshot.
-async function revalidateForGeneration(conn, { moduleType, partyId, lines }) {
-  if (!MODULES_WITHOUT_PARTY.has(moduleType) && partyId) {
-    const [partyRows] = await conn.execute(
-      "SELECT id, status FROM general_libraries WHERE id = ?",
-      [partyId]
-    );
-    if (partyRows.length === 0) {
-      throw new HttpError(422, "The customer/supplier on this template no longer exists.");
-    }
-    if (partyRows[0].status !== "ACTIVE") {
-      throw new HttpError(422, "The customer/supplier on this template is no longer active.");
-    }
-  }
+async function revalidateForGeneration(conn, { moduleType, partyId, lines, companyId }) {
+  // Party: present, of the template's company, right type, ACTIVE (was only
+  // "exists and ACTIVE", and skipped entirely when the template had no party).
+  await assertTemplateParty(conn, { moduleType, companyId, partyId, atGeneration: true });
 
   for (const line of lines) {
     const [acctRows] = await conn.execute(
@@ -123,5 +134,6 @@ module.exports = {
   SUPPORTED_AMOUNT_MODES,
   isBalanced,
   validateTemplateInput,
+  assertTemplateParty,
   revalidateForGeneration,
 };

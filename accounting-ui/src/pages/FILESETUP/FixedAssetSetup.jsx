@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
+import usePermissions from "../../hooks/usePermissions";
 import "./GroupCodes.css";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
@@ -22,6 +23,12 @@ const EMPTY_FORM = {
 };
 
 export default function FixedAssetSetup() {
+  const { can, loading: permsLoading } = usePermissions();
+  const canView = permsLoading || can("FILESETUP.FIXED_ASSETS", "VIEW");
+  const canCreate = can("FILESETUP.FIXED_ASSETS", "CREATE");
+  const canEditPerm = can("FILESETUP.FIXED_ASSETS", "EDIT");
+  const canDeletePerm = can("FILESETUP.FIXED_ASSETS", "DELETE");
+  const canWrite = canCreate || canEditPerm;
   const [records, setRecords] = useState([]);
   const [form, setForm] = useState(EMPTY_FORM);
   const [mode, setMode] = useState("add");
@@ -56,6 +63,7 @@ export default function FixedAssetSetup() {
 
       if (!res.ok) {
         if (handleAuthError(res.status)) return;
+        if (res.status === 403) return; // the page shows its no-permission message
         alert(data.message || "Failed to load fixed assets.");
         return;
       }
@@ -158,6 +166,16 @@ export default function FixedAssetSetup() {
     }
   }
 
+  if (!canView) {
+    return (
+      <div className="group-page">
+        <div className="group-main">
+          <div className="group-card" role="alert">You do not have permission to view Fixed Assets.</div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="group-page">
       <div className="group-header">
@@ -167,12 +185,15 @@ export default function FixedAssetSetup() {
           <p>Maintain your fixed asset register for depreciation reporting.</p>
         </div>
 
-        <button type="button" onClick={handleNew}>
-          New Fixed Asset
-        </button>
+        {canCreate ? (
+          <button type="button" onClick={handleNew}>
+            New Fixed Asset
+          </button>
+        ) : null}
       </div>
 
       <div className="group-layout">
+        {canWrite && (mode === "add" ? canCreate : canEditPerm) ? (
         <section className="group-card">
           <h2>{mode === "add" ? "Add Fixed Asset" : "Edit Fixed Asset"}</h2>
 
@@ -264,6 +285,7 @@ export default function FixedAssetSetup() {
             </button>
           </div>
         </section>
+        ) : null}
 
         <section className="group-card">
           <div className="group-list-header">
@@ -284,7 +306,7 @@ export default function FixedAssetSetup() {
                   <th>Asset Name</th>
                   <th>Category</th>
                   <th>Status</th>
-                  <th>Action</th>
+                  {canEditPerm || canDeletePerm ? <th>Action</th> : null}
                 </tr>
               </thead>
 
@@ -300,16 +322,20 @@ export default function FixedAssetSetup() {
                       <td>{item.assetName}</td>
                       <td>{item.category}</td>
                       <td>{item.status}</td>
-                      <td>
-                        <button type="button" onClick={() => handleEdit(item)}>Edit</button>
-                        <button
-                          type="button"
-                          className="danger-btn"
-                          onClick={() => handleDelete(item.id)}
-                        >
-                          Delete
-                        </button>
-                      </td>
+                      {canEditPerm || canDeletePerm ? (
+                        <td>
+                          {canEditPerm ? <button type="button" onClick={() => handleEdit(item)}>Edit</button> : null}
+                          {canDeletePerm ? (
+                            <button
+                              type="button"
+                              className="danger-btn"
+                              onClick={() => handleDelete(item.id)}
+                            >
+                              Delete
+                            </button>
+                          ) : null}
+                        </td>
+                      ) : null}
                     </tr>
                   ))
                 ) : (

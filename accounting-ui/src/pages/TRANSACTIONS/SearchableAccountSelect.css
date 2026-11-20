@@ -149,3 +149,22 @@
 .searchable-account-placeholder {
   color: var(--text-muted, #9ca3af);
 }
+
+/* P1 account-selector readability: the journal grid's selected account wraps
+   onto extra lines instead of being clipped (wrapSelectedLabel). field-sizing
+   grows the textarea with its content (Chrome/Edge); other browsers keep one
+   line plus the full label in the title tooltip. */
+.searchable-account .searchable-account-input.searchable-account-input-wrap {
+  display: block;
+  height: auto;
+  resize: none;
+  overflow: hidden;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  field-sizing: content;
+  min-height: 38px;
+  line-height: 1.35;
+  padding-top: 8px;
+  padding-bottom: 8px;
+  font-family: inherit;
+}

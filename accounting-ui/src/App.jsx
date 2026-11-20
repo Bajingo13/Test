@@ -3,6 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-route
 import { ThemeProvider } from "./context/ThemeContext";
 import ErrorBoundary from "./components/ErrorBoundary";
 import Sidebar from "./components/sidebar/sidebar";
+import SessionKeepAlive from "./components/SessionKeepAlive";
 import Dashboard from "./pages/DASHBOARD/dashboard";
 import COA from "./pages/FILESETUP/COA";
 import GenLib from "./pages/FILESETUP/GenLib";
@@ -14,6 +15,7 @@ import PendingInvitations from "./pages/ADMIN/PendingInvitations";
 import UserSettings from "./pages/ADMIN/UserSettings";
 import RolePermissionMatrix from "./pages/ADMIN/RolePermissionMatrix";
 import AccessRestrictions from "./pages/ADMIN/AccessRestrictions";
+import CompanyManagement from "./pages/ADMIN/CompanyManagement";
 import PermissionTemplateManager from "./pages/ADMIN/PermissionTemplateManager";
 import AccountingPeriodLocking from "./pages/ADMIN/AccountingPeriodLocking";
 import AuditLogs from "./pages/ADMIN/AuditLogs";
@@ -36,6 +38,7 @@ import VatRateLibrary from "./pages/FILESETUP/VatRateLibrary";
 import FixedAssetSetup from "./pages/FILESETUP/FixedAssetSetup";
 import PrepaidAccountSetup from "./pages/FILESETUP/PrepaidAccountSetup";
 import CompanyProfile from "./pages/FILESETUP/CompanyProfile";
+import BranchManagement from "./pages/FILESETUP/BranchManagement";
 import CurrencySetup from "./pages/FILESETUP/CurrencySetup";
 import PrintTemplateList from "./pages/FILESETUP/PrintTemplateList";
 import StandardInvoicePrintPage from "./features/invoicePrint/pages/StandardInvoicePrintPage";
@@ -102,6 +105,7 @@ import SummaryOfBooksByTotals from "./pages/REPORTS/SummaryOfBooksByTotals.jsx";
 import NetSummaryOfBooks from "./pages/REPORTS/NetSummaryOfBooks.jsx";
 import DailyCashPositionReport from "./pages/REPORTS/DailyCashPositionReport.jsx";
 import ArStatementOfAccounts from "./pages/REPORTS/ArStatementOfAccounts.jsx";
+import ApStatementOfAccounts from "./pages/REPORTS/ApStatementOfAccounts.jsx";
 import ArBillingsAndCollections from "./pages/REPORTS/ArBillingsAndCollections.jsx";
 import ArOverdueAccounts from "./pages/REPORTS/ArOverdueAccounts.jsx";
 import ApListOfPayablesAndPayments from "./pages/REPORTS/ApListOfPayablesAndPayments.jsx";
@@ -142,6 +146,8 @@ function AppLayout() {
       {!isLoginPage && !isPrintPage && !isVerifyPage && (
         <Sidebar sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen} />
       )}
+      {/* 15-minute inactivity timeout: keepalive on real activity, sign-out when expired */}
+      {!isLoginPage && !isPrintPage && !isVerifyPage && <SessionKeepAlive />}
 
       <main
         style={{
@@ -167,6 +173,7 @@ function AppLayout() {
           <Route path="/admin/user-settings" element={<UserSettings />} />
           <Route path="/admin/roles-permissions" element={<RolePermissionMatrix />} />
           <Route path="/admin/access-restrictions" element={<AccessRestrictions />} />
+          <Route path="/company-management" element={<CompanyManagement />} />
           <Route path="/admin/permission-templates" element={<PermissionTemplateManager />} />
           <Route path="/admin/accounting-period-locking" element={<AccountingPeriodLocking />} />
           <Route path="/admin/audit-logs" element={<AuditLogs />} />
@@ -191,6 +198,7 @@ function AppLayout() {
           <Route path="/fixed-asset-setup" element={<FixedAssetSetup />} />
           <Route path="/prepaid-account-setup" element={<PrepaidAccountSetup />} />
           <Route path="/company-profile" element={<CompanyProfile />} />
+          <Route path="/branch-management" element={<BranchManagement />} />
           <Route path="/currency-file-setup" element={<CurrencySetup />} />
           <Route path="/filesetup/print-templates/invoice" element={<PrintTemplateList moduleType="invoice" />} />
           <Route path="/filesetup/print-templates/or" element={<PrintTemplateList moduleType="or" />} />
@@ -255,6 +263,7 @@ function AppLayout() {
           <Route path="/reports/ar-statement-of-accounts" element={<ArStatementOfAccounts />} />
           <Route path="/reports/ar-billings-and-collections" element={<ArBillingsAndCollections />} />
           <Route path="/reports/ar-overdue-accounts" element={<ArOverdueAccounts />} />
+          <Route path="/reports/ap-statement-of-accounts" element={<ApStatementOfAccounts />} />
           <Route path="/reports/ap-payables-and-payments" element={<ApListOfPayablesAndPayments />} />
           <Route path="/reports/ap-overdue-accounts" element={<ApOverdueAccounts />} />
           <Route path="/reports/fixed-asset-lapsing" element={<FixedAssetLapsing />} />

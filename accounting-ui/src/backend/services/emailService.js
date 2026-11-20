@@ -113,4 +113,40 @@ async function sendDocumentEmail({ to, subject, text, html, attachments = [] }) 
   }
 }
 
-module.exports = { isConfigured, sendInvitationEmail, sendDocumentEmail };
+// Security alert after repeated failed logins (services/securityAlertService.js).
+// Contains NO password, hash, token, IP address or internal detail - only that
+// repeated unsuccessful attempts were detected and what the user should do.
+// Same contract as above: never throws; { delivered } | { delivered: false, reason }.
+function securityAlertContent({ fullName, attempts, occurredAt }) {
+  const when = (occurredAt instanceof Date ? occurredAt : new Date()).toUTCString();
+  const subject = "Security Alert: unsuccessful login attempts on your account";
+  const text = [
+    `Hello ${fullName || ""},`.trim(),
+    "",
+    `Security Alert: We detected ${attempts === 3 ? "three" : attempts} unsuccessful login attempts on your account (latest: ${when}).`,
+    "",
+    "If this was you, you can ignore this message - your password was not changed.",
+    "If this was not you, please secure your account: change your password and contact your administrator.",
+    "",
+    "This is an automated message from the Astrea accounting system.",
+  ].join("\n");
+  return { subject, text };
+}
+
+async function sendSecurityAlertEmail({ to, fullName, attempts, occurredAt }) {
+  const transporter = getTransporter();
+  if (!transporter) {
+    console.log("[emailService] SMTP not configured - security alert email not sent.");
+    return { delivered: false, reason: "SMTP_NOT_CONFIGURED" };
+  }
+  try {
+    const { subject, text } = securityAlertContent({ fullName, attempts, occurredAt });
+    await transporter.sendMail({ from: process.env.SMTP_FROM || process.env.SMTP_USER, to, subject, text });
+    return { delivered: true };
+  } catch (err) {
+    console.error("SEND SECURITY ALERT EMAIL ERROR:", err.message);
+    return { delivered: false, reason: "SEND_FAILED" };
+  }
+}
+
+module.exports = { isConfigured, sendInvitationEmail, sendDocumentEmail, sendSecurityAlertEmail, securityAlertContent };

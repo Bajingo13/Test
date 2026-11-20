@@ -30,6 +30,8 @@ export default function OutputVAT() {
   const [inclusionRule, setInclusionRule] = useState("");
   const [loading, setLoading] = useState(false);
   const [generated, setGenerated] = useState(false);
+  // Generation failure message (replaces a native alert) - shown above the report.
+  const [reportError, setReportError] = useState("");
 
   useEffect(() => {
     loadAccounts();
@@ -120,6 +122,7 @@ export default function OutputVAT() {
   async function generateReport() {
     const applied = period.apply();
     if (!applied) return;
+    setReportError("");
     setLoading(true);
     try {
       const params = new URLSearchParams(applied.params);
@@ -129,7 +132,10 @@ export default function OutputVAT() {
         headers: authHeaders(),
       });
 
-      if (!res.ok) throw new Error("Failed to generate Output VAT report");
+      if (!res.ok) {
+        const failBody = await res.json().catch(() => ({}));
+        throw Object.assign(new Error("Failed to generate Output VAT report"), { userMessage: res.status === 400 || res.status === 403 ? failBody?.message : null });
+      }
 
       const data = await res.json();
       setRows(Array.isArray(data.rows) ? data.rows : []);
@@ -138,7 +144,7 @@ export default function OutputVAT() {
       setGenerated(true);
     } catch (err) {
       console.error(err);
-      alert("Failed to generate Output VAT Report. Please check backend/server.");
+      setReportError(err.userMessage || "Failed to generate Output VAT Report. Please check backend/server.");
       setRows([]);
       setTotals(EMPTY_TOTALS);
       setGenerated(true);
@@ -160,8 +166,8 @@ export default function OutputVAT() {
           <ReportPeriodFilter period={period} idPrefix="ov" />
 
           <div>
-            <label>Output VAT Account (historical GL fallback)</label>
-            <select value={accountCode} onChange={(e) => setAccountCode(e.target.value)}>
+            <label htmlFor="ovat-account">Output VAT Account (historical GL fallback)</label>
+            <select id="ovat-account" value={accountCode} onChange={(e) => setAccountCode(e.target.value)}>
               <option value="">None (structured entries only)</option>
               {accounts.map((acc) => (
                 <option key={acc.id} value={acc.code}>
@@ -197,6 +203,12 @@ export default function OutputVAT() {
           </button>
         </div>
       </div>
+
+      {reportError ? (
+        <div className="aa-error" role="alert" id="ovat-error">
+          {reportError}
+        </div>
+      ) : null}
 
       {generated && (
         <div className="aa-report-card">

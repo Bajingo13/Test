@@ -228,6 +228,20 @@ const MIGRATION_ORDER = [
   // ACCOUNTANT (data only, INSERT IGNORE; ADMIN.AUDIT_LOGS unchanged). Must
   // run after user_access_control_migration.sql.
   "dashboard_activity_permission_migration.sql",
+  // Accountant RBAC corrections (File Setup audit R1-R4, data only):
+  // FILESETUP.COA / GENLIB / TAX_SETUP VIEW for ACCOUNTANT; ACCOUNTANT's
+  // REPORTS.BANK_RECONCILIATION / APPROVE set to granted = 0 (maker-checker).
+  // Must run after user_access_control_migration.sql.
+  "accountant_filesetup_view_bankrecon_approve_migration.sql",
+  // Company Branch Management: branches.address / telephone / email,
+  // UNIQUE (company_id, code), FILESETUP.BRANCHES permissions (ADMIN all,
+  // ACCOUNTANT VIEW). Master data only. Must run after
+  // user_access_control_migration.sql.
+  "branch_management_migration.sql",
+  // Company Management: FILESETUP.COMPANIES / CREATE (catalog row; granted to no
+  // role - Super Admin only by bypass; explicit 0 for ADMIN / ACCOUNTANT). Data
+  // only. Must run after user_access_control_migration.sql.
+  "company_management_migration.sql",
 ];
 
 module.exports = { MIGRATION_ORDER };
