@@ -1,5 +1,6 @@
 const path = require("path");
 const pool = require("../db");
+const { coaByCodeSql } = require("./coaLookupService"); // one COA row per code (Phase B branch-reused codes)
 const { logAudit } = require("../lib/audit");
 const { extractRowsFromXlsx, parseCsvRows } = require("./StatementImportService");
 const ValidationService = require("./beginningBalanceValidationService");
@@ -104,7 +105,7 @@ async function buildCurrencyContext(companyId) {
 }
 
 async function buildGLContext(companyId) {
-  const [accounts] = await pool.execute("SELECT id, code, title FROM chart_of_accounts");
+  const [accounts] = await pool.execute(`SELECT id, code, title FROM ${coaByCodeSql()} coa`);
   const accountsByCode = new Map();
   for (const a of accounts) {
     accountsByCode.set(ValidationService.normalizeCode(a.code), a);
@@ -130,7 +131,7 @@ async function buildPartyContext(partyType, coaValidationFlag, companyId) {
 
   const [accounts] = await pool.execute(
     `SELECT ca.id, ca.code, ca.title
-     FROM chart_of_accounts ca
+     FROM ${coaByCodeSql()} ca
      JOIN coa_validations cv ON cv.coa_id = ca.id
      WHERE cv.validation_name = ?`,
     [coaValidationFlag]

@@ -1,4 +1,5 @@
 const pool = require("../db");
+const { coaByCodeSql } = require("./coaLookupService"); // one COA row per code (Phase B branch-reused codes)
 const PermissionService = require("./permissionService");
 const CurrencyService = require("./currencyService");
 const FinancialStatementStructureService = require("./financialStatementStructureService");
@@ -203,7 +204,7 @@ async function cashSection(companyId, period, buckets, { reconAllowed }) {
   const [opening, rows, titles] = await Promise.all([
     LedgerReportService.getBeginningBalances({ before: period.from, accountCodes: codes, companyId }),
     movements,
-    pool.query("SELECT code, title, account_class FROM chart_of_accounts WHERE code IN (?)", [codes]).then(([r]) => r),
+    pool.query(`SELECT code, title, account_class FROM ${coaByCodeSql()} coa WHERE code IN (?)`, [codes]).then(([r]) => r),
   ]);
 
   const byCode = new Map(codes.map((c) => [c, { inflows: 0, outflows: 0 }]));

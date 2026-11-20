@@ -1,4 +1,5 @@
 const pool = require("../db");
+const { coaByCodeSql } = require("./coaLookupService"); // one COA row per code (Phase B branch-reused codes)
 const LedgerReportService = require("./LedgerReportService");
 const GCC = require("./groupCodeClassification");
 
@@ -134,7 +135,7 @@ async function fetchAmounts({ companyId, classes, filterKind, filterArgs }) {
       UPPER(ca.account_class) AS account_class,
       COALESCE(SUM(tx.debit), 0) AS total_debit,
       COALESCE(SUM(tx.credit), 0) AS total_credit
-    FROM chart_of_accounts ca
+    FROM ${coaByCodeSql()} ca
     LEFT JOIN (${unionSql}) tx
       ON TRIM(CAST(tx.account_code AS CHAR)) = TRIM(CAST(ca.code AS CHAR))
     WHERE UPPER(ca.account_class) IN (${ph})
@@ -160,7 +161,7 @@ async function fetchUnmappedCodes({ companyId, filterKind, filterArgs }) {
       COALESCE(SUM(tx.debit), 0) AS total_debit,
       COALESCE(SUM(tx.credit), 0) AS total_credit
     FROM (${unionSql}) tx
-    LEFT JOIN chart_of_accounts ca
+    LEFT JOIN ${coaByCodeSql()} ca
       ON TRIM(CAST(ca.code AS CHAR)) = TRIM(CAST(tx.account_code AS CHAR))
     WHERE ca.id IS NULL
       AND tx.account_code IS NOT NULL
@@ -190,7 +191,7 @@ async function fetchClassificationCandidates(classes) {
       agc.report_section AS report_section,
       agc.display_order AS display_order,
       UPPER(COALESCE(agc.status, '')) AS group_status
-    FROM chart_of_accounts ca
+    FROM ${coaByCodeSql()} ca
     LEFT JOIN coa_groups cg ON cg.coa_id = ca.id
     LEFT JOIN account_group_codes agc ON agc.group_code = cg.group_code
     WHERE UPPER(ca.account_class) IN (${ph})

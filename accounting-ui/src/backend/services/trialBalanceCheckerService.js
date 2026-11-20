@@ -1,4 +1,5 @@
 const pool = require("../db");
+const { coaByCodeSql } = require("./coaLookupService"); // one COA row per code (Phase B branch-reused codes)
 const { logAudit } = require("../lib/audit");
 const TrialBalanceDifferenceService = require("./trialBalanceDifferenceService");
 const ValidationService = require("./trialBalanceValidationService");
@@ -197,7 +198,7 @@ async function findInvalidAccounts({ from, to, companyId }) {
       FROM ${mod.linesTable} l
       JOIN ${mod.headerTable} h ON h.id = l.${mod.fk}
       LEFT JOIN chart_of_accounts byid ON byid.id = l.account_id
-      LEFT JOIN chart_of_accounts bycode ON TRIM(CAST(bycode.code AS CHAR)) = TRIM(CAST(l.account_code AS CHAR))
+      LEFT JOIN ${coaByCodeSql()} bycode ON TRIM(CAST(bycode.code AS CHAR)) = TRIM(CAST(l.account_code AS CHAR))
       ${dateSql}
       ${dateSql ? "AND" : "WHERE"} (l.account_id IS NOT NULL OR (l.account_code IS NOT NULL AND l.account_code != ''))
       `,
@@ -1022,7 +1023,7 @@ async function createAdjustmentDraft(findingId, { debitAccountCode, creditAccoun
   }
 
   const [accounts] = await pool.execute(
-    "SELECT id, code, title FROM chart_of_accounts WHERE code IN (?, ?)",
+    `SELECT id, code, title FROM ${coaByCodeSql()} coa WHERE code IN (?, ?)`,
     [debitAccountCode, creditAccountCode]
   );
   const byCode = new Map(accounts.map((a) => [String(a.code).trim(), a]));

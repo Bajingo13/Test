@@ -249,6 +249,11 @@ const MIGRATION_ORDER = [
   // REPORTS.ALL_BRANCHES / VIEW (ADMIN; ACCOUNTANT explicit 0). Must run after
   // branch_management_migration.sql.
   "multi_branch_foundation_migration.sql",
+  // Multi-Branch Foundation (Phase B): COA code unique per branch scope
+  // (generated branch_scope + UNIQUE (code, branch_scope); a branch may reuse
+  // another branch's code), General Library code unique per company. Indexes
+  // only - no row changes. Must run after multi_branch_foundation_migration.sql.
+  "multi_branch_phase_b_migration.sql",
 ];
 
 module.exports = { MIGRATION_ORDER };

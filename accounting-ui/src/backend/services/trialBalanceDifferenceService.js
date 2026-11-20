@@ -1,4 +1,5 @@
 const pool = require("../db");
+const { coaByCodeSql } = require("./coaLookupService"); // one COA row per code (Phase B branch-reused codes)
 const { postedOnlySql } = require("./reportRecognitionService");
 
 // CHECKPOINT 6A: this union previously covered only apv/cv/arap-beginning/
@@ -115,7 +116,7 @@ async function getTrialBalanceRows({ from, to, companyId }) {
       CASE WHEN SUM(tb.debit) - SUM(tb.credit) > 0 THEN SUM(tb.debit) - SUM(tb.credit) ELSE 0 END AS debit,
       CASE WHEN SUM(tb.credit) - SUM(tb.debit) > 0 THEN SUM(tb.credit) - SUM(tb.debit) ELSE 0 END AS credit
     FROM (${unionSql}) tb
-    LEFT JOIN chart_of_accounts c ON TRIM(CAST(c.code AS CHAR)) = TRIM(CAST(tb.account_code AS CHAR))
+    LEFT JOIN ${coaByCodeSql()} c ON TRIM(CAST(c.code AS CHAR)) = TRIM(CAST(tb.account_code AS CHAR))
     WHERE tb.account_code IS NOT NULL AND tb.account_code != ''
     GROUP BY tb.account_code, tb.account_name, c.account_class
     HAVING debit != 0 OR credit != 0

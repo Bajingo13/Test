@@ -74,6 +74,7 @@ const { findPostedReversalJv, buildReversalLine, buildReversalTaxEntry, reversal
 const { assertSameBranchApplication } = require("./services/branchApplicationGuard");
 const ReversalBranchService = require("./services/reversalBranchService");
 const BranchResolution = require("./lib/branchResolution");
+const { assertCoaCodeAllowed } = require("./services/coaLookupService");
 const InvoiceVerificationService = require("./services/invoiceVerificationService");
 
 console.log("ENV FILE:", require("path").resolve(".env"));
@@ -822,6 +823,8 @@ app.post("/api/coa", authenticateToken, authorizePermission("FILESETUP.COA", "CR
     const branchId = await BranchResolution.resolveBranchAnyCompany(req.user, req.body?.branchId);
 
     await conn.beginTransaction();
+    // Multi-Branch Phase B: shared / branch code rules (locking check in this txn).
+    await assertCoaCodeAllowed(conn, { code, branchId, accountClass });
 
     const [result] = await conn.execute(
       `INSERT INTO chart_of_accounts 
@@ -892,6 +895,7 @@ app.put("/api/coa/:id", authenticateToken, authorizePermission("FILESETUP.COA", 
       : (ownerRows[0]?.branch_id ?? null);
 
     await conn.beginTransaction();
+    await assertCoaCodeAllowed(conn, { code, branchId, accountClass, excludeId: Number(id) });
 
     await conn.execute(
       `UPDATE chart_of_accounts 

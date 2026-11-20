@@ -1,4 +1,5 @@
 const pool = require("../db");
+const { coaByCodeSql } = require("./coaLookupService"); // one COA row per code (Phase B branch-reused codes)
 const { postedOnlySql } = require("./reportRecognitionService");
 
 // Every transaction-line table that carries an account_code, unioned into one
@@ -162,7 +163,7 @@ async function getLedgerRows({ from, to, accountCodes, companyId }) {
         ORDER BY tx.transaction_date, tx.sort_order, tx.id
       ) AS running_balance
     FROM (${unionSql}) tx
-    LEFT JOIN chart_of_accounts ca
+    LEFT JOIN ${coaByCodeSql()} ca
       ON TRIM(CAST(ca.code AS CHAR)) = TRIM(CAST(tx.account_code AS CHAR))
     WHERE tx.account_code IS NOT NULL AND tx.account_code != ''
       ${filterSql}
@@ -250,7 +251,7 @@ async function getBookRows({ sourceTypes, from, to, companyId }) {
       tx.debit,
       tx.credit
     FROM (${unionSql}) tx
-    LEFT JOIN chart_of_accounts ca
+    LEFT JOIN ${coaByCodeSql()} ca
       ON TRIM(CAST(ca.code AS CHAR)) = TRIM(CAST(tx.account_code AS CHAR))
     WHERE tx.source_type IN (${placeholders})
     ORDER BY tx.transaction_date, tx.sort_order, tx.transaction_id, tx.id

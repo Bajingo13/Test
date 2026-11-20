@@ -1,4 +1,5 @@
 const pool = require("../db");
+const { coaByCodeSql } = require("./coaLookupService"); // one COA row per code (Phase B branch-reused codes)
 const LedgerReportService = require("./LedgerReportService");
 
 // Reports Batch 1: Income Statement, Balance Sheet, and Account Analysis
@@ -24,8 +25,11 @@ const LedgerReportService = require("./LedgerReportService");
 // convention the pre-existing query used. chart_of_accounts/coa_groups/
 // account_group_codes are intentionally NOT company-filtered - shared
 // catalog across companies, same as every other report in this file.
-async function getIncomeStatementRows({ companyId, from, to }) {
-  const unionSql = LedgerReportService.buildTransactionUnionSql("BETWEEN ? AND ?");
+// Multi-Branch Phase B: optional `branchSql` (lib/branchResolution.branchScopeSql
+// on header alias h) narrows the ledger to one branch or the consolidated
+// authorized branches. Omitted -> identical SQL to before.
+async function getIncomeStatementRows({ companyId, from, to, branchSql = "" }) {
+  const unionSql = LedgerReportService.buildTransactionUnionSql("BETWEEN ? AND ?", { branchSql });
   const unionParams = Array(9).fill([from, to, companyId]).flat();
 
   const [rows] = await pool.execute(
@@ -36,7 +40,7 @@ async function getIncomeStatementRows({ companyId, from, to }) {
       ca.title AS account_title,
       ca.account_class,
       COALESCE(SUM(tx.credit - tx.debit), 0) AS amount
-    FROM chart_of_accounts ca
+    FROM ${coaByCodeSql()} ca
     JOIN coa_groups cg ON cg.coa_id = ca.id
     JOIN account_group_codes ag ON ag.group_code = cg.group_code
     LEFT JOIN (${unionSql}) tx ON TRIM(tx.account_code) = TRIM(ca.code)
@@ -77,9 +81,9 @@ function resolveCurrentEarningsRange(to) {
 // (revenue rows positive, expense rows already negative under the
 // credit-minus-debit convention above) - this IS the P&L bottom line, not a
 // separate computation prone to drifting from the statement it summarizes.
-async function getCurrentYearEarnings({ companyId, to }) {
+async function getCurrentYearEarnings({ companyId, to, branchSql = "" }) {
   const { from, to: asOf } = resolveCurrentEarningsRange(to);
-  const rows = await getIncomeStatementRows({ companyId, from, to: asOf });
+  const rows = await getIncomeStatementRows({ companyId, from, to: asOf, branchSql });
   return rows.reduce((sum, r) => sum + Number(r.amount || 0), 0);
 }
 
@@ -89,8 +93,8 @@ async function getCurrentYearEarnings({ companyId, to }) {
 // the user to manually close every Revenue/Expense account into Retained
 // Earnings via a JV first. This is presentation-only: nothing is written to
 // the ledger, no JV is created, no account balance is mutated.
-async function getBalanceSheetRows({ companyId, to }) {
-  const unionSql = LedgerReportService.buildTransactionUnionSql("<= ?");
+async function getBalanceSheetRows({ companyId, to, branchSql = "" }) {
+  const unionSql = LedgerReportService.buildTransactionUnionSql("<= ?", { branchSql });
   const unionParams = Array(9).fill([to, companyId]).flat();
 
   const [rows] = await pool.execute(
@@ -105,7 +109,7 @@ async function getBalanceSheetRows({ companyId, to }) {
           THEN COALESCE(SUM(tx.debit - tx.credit), 0)
         ELSE COALESCE(SUM(tx.credit - tx.debit), 0)
       END AS amount
-    FROM chart_of_accounts ca
+    FROM ${coaByCodeSql()} ca
     JOIN coa_groups cg ON cg.coa_id = ca.id
     JOIN account_group_codes ag ON ag.group_code = cg.group_code
     LEFT JOIN (${unionSql}) tx ON TRIM(tx.account_code) = TRIM(ca.code)
@@ -128,7 +132,7 @@ async function getBalanceSheetRows({ companyId, to }) {
     unionParams
   );
 
-  const currentEarnings = await getCurrentYearEarnings({ companyId, to });
+  const currentEarnings = await getCurrentYearEarnings({ companyId, to, branchSql });
 
   return [
     ...rows,

@@ -1,4 +1,5 @@
 const pool = require("../db");
+const { coaByCodeSql } = require("./coaLookupService"); // one COA row per code (Phase B branch-reused codes)
 const { buildMultiSheetXlsxTemplate } = require("./TemplateExportService");
 const { TEMPLATE_VERSION } = require("./beginningBalanceImportService");
 
@@ -61,7 +62,7 @@ async function buildGLTemplate(format, companyId) {
   const companyName = await getCompanyName(companyId);
 
   const [accounts] = await pool.execute(
-    "SELECT code, title, account_class AS accountClass FROM chart_of_accounts ORDER BY code ASC"
+    `SELECT code, title, account_class AS accountClass FROM ${coaByCodeSql()} coa ORDER BY code ASC`
   );
 
   const currencies = await getCurrencies(companyId);
@@ -249,7 +250,7 @@ async function buildPartyTemplate(module, format, companyId) {
 
   const [accounts] = await pool.execute(
     `SELECT ca.code, ca.title
-     FROM chart_of_accounts ca
+     FROM ${coaByCodeSql()} ca
      JOIN coa_validations cv ON cv.coa_id = ca.id
      WHERE cv.validation_name = ?
      ORDER BY ca.code ASC`,
