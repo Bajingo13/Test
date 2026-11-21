@@ -5,6 +5,8 @@ import { matchesDateRange } from "../../utils/dateRangeFilter.mjs";
 import RecordViewModal from "../../components/RecordViewModal";
 import AutoResizeTextarea from "../../components/AutoResizeTextarea";
 import { sortAccountsByCode, toolbarState } from "./fileSetupRecords.mjs";
+import useAuthorizedBranches from "../../hooks/useAuthorizedBranches";
+import { ownershipLabel, ownershipOptions, ownershipValue, branchIdPayload } from "./branchOwnership.mjs";
 import "./COA.css";
 import "../../components/RecurringTemplateModal.css";
 
@@ -41,6 +43,7 @@ const EMPTY_FORM = {
   description: "",
   validations: [],
   groups: [],
+  branchId: null, // Multi-Branch: null = Shared account
 };
 
 export default function COA() {
@@ -48,6 +51,8 @@ export default function COA() {
   const canCreate = can("FILESETUP.COA", "CREATE");
   const canEditPerm = can("FILESETUP.COA", "EDIT");
   const canDeletePerm = can("FILESETUP.COA", "DELETE");
+  // Multi-Branch Phase C-2A: Shared vs branch-only accounts (server-enforced).
+  const { branches } = useAuthorizedBranches();
   const [accounts, setAccounts] = useState([]);
   const [groupCodeOptions, setGroupCodeOptions] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
@@ -160,7 +165,7 @@ export default function COA() {
 
   // H9: the View dialog lists accounts in account-code order. Client-side
   // only - the API order and the list Previous / Next walk are unchanged.
-  const viewAccounts = useMemo(() => sortAccountsByCode(filteredAccounts), [filteredAccounts]);
+  const viewAccounts = useMemo(() => sortAccountsByCode(filteredAccounts).map((a) => ({ ...a, branchName: ownershipLabel(a, branches) })), [filteredAccounts, branches]);
 
   const currentIndex = accounts.findIndex((item) => item.id === selectedId);
   const isEditing = mode === "add" || mode === "edit";
@@ -247,6 +252,7 @@ export default function COA() {
       { label: "Code", value: account.code },
       { label: "Title", value: account.title },
       { label: "Class", value: account.accountClass },
+      { label: "Branch", value: ownershipLabel(account, branches) },
       { label: "Date", value: account.date },
       { label: "Description", value: account.description, wide: true },
       {
@@ -292,6 +298,7 @@ export default function COA() {
         description: form.description,
         validations: form.validations,
         groups: form.groups,
+        branchId: branchIdPayload(ownershipValue(form)),
       };
 
       const url =
@@ -621,6 +628,7 @@ export default function COA() {
               { key: "code", label: "Code" },
               { key: "title", label: "Title" },
               { key: "accountClass", label: "Class" },
+              { key: "branchName", label: "Branch" },
               { key: "date", label: "Date" },
             ]}
             records={viewAccounts}
@@ -693,6 +701,20 @@ export default function COA() {
                 >
                   {CLASS_OPTIONS.map((item) => (
                     <option key={item}>{item}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="field">
+                <label htmlFor="coa-branch">Branch</label>
+                <select
+                  id="coa-branch"
+                  value={ownershipValue(form)}
+                  disabled={!isEditing}
+                  onChange={(e) => setForm((prev) => ({ ...prev, branchId: branchIdPayload(e.target.value) }))}
+                >
+                  {ownershipOptions(branches).map((o) => (
+                    <option key={o.value || "shared"} value={o.value}>{o.label}</option>
                   ))}
                 </select>
               </div>

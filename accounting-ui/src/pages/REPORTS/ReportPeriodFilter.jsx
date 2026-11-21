@@ -71,6 +71,25 @@ export default function ReportPeriodFilter({ period, idPrefix }) {
         )}
       </div>
 
+      {period.branchOptions?.length ? (
+        // Multi-Branch Phase C-2A: the branches the server says this user may
+        // report on (All Branches only for users allowed to consolidate). The
+        // server re-checks the branch on every report request.
+        <div className="rpf-branch">
+          <label htmlFor={`${idPrefix}-branch`}>Branch</label>
+          <select
+            id={`${idPrefix}-branch`}
+            value={period.branch}
+            onChange={(e) => period.setBranch(e.target.value)}
+            disabled={period.branchOptions.length === 1}
+          >
+            {period.branchOptions.map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
+        </div>
+      ) : null}
+
       {period.error ? (
         <div className="rpf-error" role="alert">
           {period.error}
@@ -89,6 +108,7 @@ export function ReportPeriodLabel({ period }) {
     <div className="rpl">
       <div className="rpl-primary">{primary}</div>
       {secondary ? <div className="rpl-secondary">{secondary}</div> : null}
+      {period?.branchLabel ? <div className="rpl-secondary rpl-branch">BRANCH: {period.branchLabel.toUpperCase()}</div> : null}
     </div>
   );
 }

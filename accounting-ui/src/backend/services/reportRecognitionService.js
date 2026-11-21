@@ -21,9 +21,18 @@
 // Purchase Order uses an unrelated Open/Closed lifecycle and was never
 // included in any financial report to begin with; this helper is not used
 // for PO anywhere.
+//
+// Multi-Branch Phase C-2A: inside a Reports request the recognized set is also
+// limited to the request's branch scope (lib/reportBranchContext - one branch,
+// or ALL authorized branches as one consolidated report). Outside a report
+// request there is no scope and the predicate is exactly the one above.
+const ReportBranchContext = require("../lib/reportBranchContext");
+
 function postedOnlySql(alias) {
   const prefix = alias ? `${alias}.` : "";
-  return `UPPER(${prefix}status) = 'POSTED'`;
+  const posted = `UPPER(${prefix}status) = 'POSTED'`;
+  const branch = ReportBranchContext.predicate(alias);
+  return branch ? `(${posted} AND ${branch})` : posted;
 }
 
 module.exports = { postedOnlySql };

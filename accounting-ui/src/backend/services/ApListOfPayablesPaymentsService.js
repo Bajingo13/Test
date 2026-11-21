@@ -43,7 +43,9 @@ const ControlAmount = require("./controlAmountService");
 // The same APV recognition as agingReportService.js's AP branch: Posted only
 // (Draft / Cancelled / Void APVs are not payables - decided 2026-11-10) and
 // not reversed by a Posted APV_REVERSAL JV.
-const AP_REVERSAL_EXCLUSION_SQL = `
+// Multi-Branch Phase C-2A: built per call (not once at load) so postedOnlySql()
+// can apply the report request's branch scope.
+const apReversalExclusionSql = () => `
   AND ${postedOnlySql("h")}
   AND NOT EXISTS (
     SELECT 1 FROM jv_headers rev
@@ -79,7 +81,7 @@ async function fetchApvPayables(companyId, to) {
     FROM apv_headers h
     LEFT JOIN ${ControlAmount.aggregateSql("APV")} ca ON ca.doc_id = h.id
     WHERE h.transaction_date <= ? AND h.company_id = ?
-      ${AP_REVERSAL_EXCLUSION_SQL}
+      ${apReversalExclusionSql()}
     `,
     [to, companyId]
   );

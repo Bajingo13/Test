@@ -19,7 +19,9 @@ const ControlAmount = require("./controlAmountService");
 // via postedOnlySql(), exactly like every other report: Draft / Cancelled /
 // Void documents never appear. ArStatementService.js is not modified.
 
-const AP_UNION_SQL = `
+// Multi-Branch Phase C-2A: built per call (not once at load) so postedOnlySql()
+// can apply the report request's branch scope.
+const apUnionSql = () => `
   SELECT
     id, DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transaction_date,
     'APV' AS source_type, voucher_no AS reference_no, id AS transaction_id,
@@ -82,7 +84,7 @@ function paramsFor(partyId, companyId, dateParams) {
 // Sum of credit - debit across the 4 AP sources for everything dated
 // strictly before `before`.
 async function getApBeginningBalance({ partyId, before, companyId }) {
-  const unionSql = AP_UNION_SQL.replace(/\{DATE_FILTER\}/g, "< ?");
+  const unionSql = apUnionSql().replace(/\{DATE_FILTER\}/g, "< ?");
   const [rows] = await pool.execute(
     `SELECT SUM(tx.credit - tx.debit) AS balance FROM (${unionSql}) tx`,
     paramsFor(partyId, companyId, [before])
@@ -91,7 +93,7 @@ async function getApBeginningBalance({ partyId, before, companyId }) {
 }
 
 async function getApStatementRows({ partyId, from, to, companyId, beginningBalance }) {
-  const unionSql = AP_UNION_SQL.replace(/\{DATE_FILTER\}/g, "BETWEEN ? AND ?");
+  const unionSql = apUnionSql().replace(/\{DATE_FILTER\}/g, "BETWEEN ? AND ?");
   const [rows] = await pool.execute(
     `
     SELECT
@@ -123,4 +125,4 @@ async function getApStatementOfAccounts({ partyId, from, to, companyId }) {
   return { beginningBalance, rows, endingBalance };
 }
 
-module.exports = { getApStatementOfAccounts, AP_UNION_SQL };
+module.exports = { getApStatementOfAccounts, get AP_UNION_SQL() { return apUnionSql(); } };

@@ -59,6 +59,23 @@
   box-sizing: border-box;
 }
 
+/* Multi-Branch Phase C-2A: Branch selector, same field style as the dates. */
+.rpf > .rpf-branch {
+  display: grid;
+  grid-template-columns: minmax(180px, 240px);
+  margin-top: 12px;
+}
+
+.rpf-branch label {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.rpf-branch select {
+  width: 100%;
+  box-sizing: border-box;
+}
+
 .rpf-error {
   margin-top: 8px;
   font-size: 13px;

@@ -27,7 +27,9 @@ const ControlAmount = require("./controlAmountService");
 // "allocated" from an "unallocated" payment, matching the existing
 // Subsidiary Ledger precedent exactly.
 
-const AR_UNION_SQL = `
+// Multi-Branch Phase C-2A: built per call (not once at load) so postedOnlySql()
+// can apply the report request's branch scope.
+const arUnionSql = () => `
   SELECT
     id, DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transaction_date,
     'INV' AS source_type, voucher_no AS reference_no, id AS transaction_id,
@@ -95,7 +97,7 @@ function paramsFor(partyId, companyId, dateParams) {
 // strictly before `before` - the party-scoped analog of
 // LedgerReportService.getBeginningBalances.
 async function getArBeginningBalance({ partyId, before, companyId }) {
-  const unionSql = AR_UNION_SQL.replace(/\{DATE_FILTER\}/g, "< ?");
+  const unionSql = arUnionSql().replace(/\{DATE_FILTER\}/g, "< ?");
   const [rows] = await pool.execute(
     `SELECT SUM(tx.debit - tx.credit) AS balance FROM (${unionSql}) tx`,
     paramsFor(partyId, companyId, [before])
@@ -107,7 +109,7 @@ async function getArBeginningBalance({ partyId, before, companyId }) {
 // `beginningBalance` so the displayed running_balance is a true
 // carried-forward figure, not a window starting at 0.
 async function getArStatementRows({ partyId, from, to, companyId, beginningBalance }) {
-  const unionSql = AR_UNION_SQL.replace(/\{DATE_FILTER\}/g, "BETWEEN ? AND ?");
+  const unionSql = arUnionSql().replace(/\{DATE_FILTER\}/g, "BETWEEN ? AND ?");
   const [rows] = await pool.execute(
     `
     SELECT

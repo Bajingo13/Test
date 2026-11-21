@@ -5,6 +5,8 @@ import usePermissions from "../../hooks/usePermissions";
 import RecordViewModal from "../../components/RecordViewModal";
 import AutoResizeTextarea from "../../components/AutoResizeTextarea";
 import { filterGenLibRecords, statusBadge, toolbarState } from "./fileSetupRecords.mjs";
+import useAuthorizedBranches from "../../hooks/useAuthorizedBranches";
+import { ownershipLabel, ownershipOptions, ownershipValue, branchIdPayload } from "./branchOwnership.mjs";
 import "./GenLib.css";
 import "../../components/RecurringTemplateModal.css";
 
@@ -47,6 +49,8 @@ const EMPTY_FORM = {
   notes: "",
   isProspective: false,
   isClient: true,
+  // Multi-Branch: null = Shared party (not the BIR "Branch Code" above).
+  branchId: null,
 };
 
 export default function GenLib() {
@@ -54,6 +58,8 @@ export default function GenLib() {
   const canCreate = can("FILESETUP.GENLIB", "CREATE");
   const canEditPerm = can("FILESETUP.GENLIB", "EDIT");
   const canDeletePerm = can("FILESETUP.GENLIB", "DELETE");
+  // Multi-Branch Phase C-2A: Shared vs branch-only parties (server-enforced).
+  const { branches } = useAuthorizedBranches();
   const [records, setRecords] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [mode, setMode] = useState("view");
@@ -147,6 +153,7 @@ export default function GenLib() {
       { label: "Code", value: record.code },
       { label: "Name", value: record.name },
       { label: "Type", value: record.type },
+      { label: "Branch", value: ownershipLabel(record, branches) },
       { label: "Status", value: record.status },
       { label: "Start Date", value: record.startDate },
       { label: "Category", value: record.category },
@@ -486,6 +493,7 @@ export default function GenLib() {
               { key: "code", label: "Code" },
               { key: "name", label: "Name" },
               { key: "type", label: "Type" },
+              { key: "branchName", label: "Branch" },
               {
                 key: "status",
                 label: "Status",
@@ -497,7 +505,7 @@ export default function GenLib() {
               { key: "email", label: "Email" },
               { key: "mobile", label: "Mobile" },
             ]}
-            records={filteredRecords}
+            records={filteredRecords.map((r) => ({ ...r, branchName: ownershipLabel(r, branches) }))}
             loading={loading}
             emptyMessage="No matching records."
             selectedId={selectedId}
@@ -558,6 +566,20 @@ export default function GenLib() {
                 >
                   {PARTY_TYPES.map((item) => (
                     <option key={item}>{item}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="field">
+                <label htmlFor="gl-owning-branch">Owning Branch</label>
+                <select
+                  id="gl-owning-branch"
+                  value={ownershipValue(form)}
+                  disabled={!isEditing}
+                  onChange={(e) => updateField("branchId", branchIdPayload(e.target.value))}
+                >
+                  {ownershipOptions(branches).map((o) => (
+                    <option key={o.value || "shared"} value={o.value}>{o.label}</option>
                   ))}
                 </select>
               </div>

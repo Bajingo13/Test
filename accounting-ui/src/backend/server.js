@@ -7787,6 +7787,8 @@ app.use("/api/beginning-balances", require("./routes/beginningBalanceImport.rout
 // Global report date standard: dateMode=range|asof is validated and translated
 // here, ahead of every /api/reports route. See lib/reportPeriod.js.
 app.use("/api/reports", reportPeriodMiddleware);
+// Multi-Branch Phase C-2A: one branch / All Branches scope for every report.
+app.use("/api/reports", require("./lib/reportBranchContext").middleware);
 
 app.use("/api/reports/trial-balance-checker", require("./routes/trialBalanceChecker.routes"));
 app.use("/api", require("./routes/roles.routes"));

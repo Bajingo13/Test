@@ -91,9 +91,11 @@ export function reportPeriodText(period) {
 }
 
 // The label as a list of lines, for reports that render lines from a model.
+// Multi-Branch Phase C-2A: a branch-scoped snapshot (see reportBranch.mjs
+// withBranch) adds a BRANCH line; without one the list is exactly as before.
 export function reportPeriodLineList(period) {
   const { primary, secondary } = reportPeriodLines(period);
-  return [primary, secondary].filter(Boolean);
+  return [primary, secondary, period?.branchLabel ? `BRANCH: ${String(period.branchLabel).toUpperCase()}` : ""].filter(Boolean);
 }
 
 // The selection a drill-down link stands for: a link opened from an AS OF
