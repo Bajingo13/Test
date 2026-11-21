@@ -355,11 +355,10 @@ describe("payment application: open items + same-branch rule", () => {
     expect(Number(a.paid_amount)).toBe(10000);
   });
 
-  // Documents an EXISTING gap in collaborator-owned invoice code (not changed in
-  // Phase A): the legacy lookup offers Draft / Void invoices that still carry a
-  // balance. test.failing passes while the gap exists and fails once it is
-  // fixed - then turn it into a normal test.
-  test.failing("KNOWN GAP (invoice code, not changed): legacy GET /api/invoices/unpaid excludes Draft / Void invoices", async () => {
+  // Was a test.failing in Phase A documenting the gap (the legacy lookup offered
+  // Draft / Void invoices that still carried a balance). Fixed in Phase C-1, so
+  // it is now an ordinary test.
+  test("Phase C-1 fix: legacy GET /api/invoices/unpaid excludes Draft / Void invoices", async () => {
     const res = await get("adminA", `/api/invoices/unpaid?companyId=${co.A}&customerId=${customerA}`);
     expect(res.status).toBe(200);
     const listed = res.body.map((r) => r.id);

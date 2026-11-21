@@ -391,6 +391,12 @@ describe("APV / JV / PO period enforcement", () => {
 
 describe("CRITICAL: OR settlement of a closed-period Invoice", () => {
   test("an OR dated in OPEN August CAN settle the July invoice (payment period governs, not source period)", async () => {
+    // Only a Posted invoice is payable (Phase C-1). The shared July fixture is
+    // Draft on purpose (the edit/delete period tests need it), so it is Posted
+    // for this payment only and restored afterwards - the same pattern this
+    // file already uses for the AR aging check.
+    await pool.execute("UPDATE invoice_headers SET status = 'Posted' WHERE id = ?", [julyInvoiceId]);
+    try {
     const res = await request(app).post("/api/or").set("Authorization", `Bearer ${tokenA}`).send({
       voucherNo: "TEST5-OR-AUG1", customerId: custAId, customerName: "x", transactionDate: "2026-08-12",
       totalDebit: 400, totalCredit: 400, status: "Posted",
@@ -412,6 +418,9 @@ describe("CRITICAL: OR settlement of a closed-period Invoice", () => {
     await pool.query("DELETE FROM or_lines WHERE or_id = ?", [res.body.id]);
     await pool.query("DELETE FROM or_headers WHERE id = ?", [res.body.id]);
     await pool.query("UPDATE invoice_headers SET paid_amount = 0, balance_amount = total_debit, payment_status = 'Unpaid' WHERE id = ?", [julyInvoiceId]);
+    } finally {
+      await pool.execute("UPDATE invoice_headers SET status = 'Draft' WHERE id = ?", [julyInvoiceId]);
+    }
   });
 
   test("an OR dated in CLOSED July itself is rejected outright, regardless of what it would settle", async () => {

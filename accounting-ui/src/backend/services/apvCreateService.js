@@ -17,6 +17,8 @@ const { assertRequiredTransactionLines } = require("./transactionLineValidation"
 const { assertWriteStatus } = require("./voidCancelService");
 const { updateApvPaymentStatus } = require("./paymentApplicationService");
 const { resolveTransactionParty } = require("./transactionPartyService");
+// Multi-Branch Phase C-1: the APV is branch-owned (lazy: avoids a require cycle).
+const txBranch = () => require("./transactionBranchEnforcement");
 
 // The backend is the final authority on withholding tax figures - it never
 // trusts the client-submitted atcCode's rate/type or the client-submitted
@@ -84,7 +86,9 @@ async function resolveApvTaxWithholding(conn, { atcCode, lines, totalCredit, cli
 // called at the same point the route always resolved the company, so the
 // route keeps its exact validation order; the RFP conversion passes the
 // RFP's stored company instead.
-async function createApvRecord(conn, { user, body, resolveCompanyId }) {
+// `branchId` (optional): a FIXED branch from the source document (RFP -> APV
+// conversion) - used instead of anything in `body`, never overridable.
+async function createApvRecord(conn, { user, body, resolveCompanyId, branchId: fixedBranchId }) {
   const {
     voucherNo,
     supplierId,
@@ -135,6 +139,7 @@ async function createApvRecord(conn, { user, body, resolveCompanyId }) {
   // P1: the APV's party must be a SUPPLIER of this company (server-enforced,
   // Drafts included). RFP -> APV conversion passes the RFP's already-validated supplier.
   await resolveTransactionParty(conn, { module: "APV", companyId, partyId: supplierId });
+  const txBranchId = await txBranch().prepareCreate(conn, user, { companyId, body, partyIds: [supplierId], forcedBranchId: fixedBranchId });
   const [result] = await conn.execute(
     `INSERT INTO apv_headers (
       company_id,
@@ -189,6 +194,7 @@ async function createApvRecord(conn, { user, body, resolveCompanyId }) {
   );
 
   const apvId = result.insertId;
+  await txBranch().assign(conn, "apv_headers", apvId, txBranchId);
 
   if (sourcePoId) {
     await conn.execute(

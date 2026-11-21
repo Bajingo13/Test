@@ -73,9 +73,11 @@ async function auditRowsFor(module, entityId, action) {
 }
 
 async function createInvoice(token, { voucherNo, customerId, customerName, amount }) {
+  // Posted: only a Posted invoice is payable (Phase C-1 assertInvoicePayable,
+  // the same rule assertApvPayable applies to APVs).
   const res = await request(app).post("/api/invoices").set(auth(token)).send({
     voucherNo, customerId, customerName, transactionDate: "2026-09-01",
-    totalDebit: amount, totalCredit: amount, status: "Draft",
+    totalDebit: amount, totalCredit: amount, status: "Posted",
     lines: [
       { accountId: arA, accountCode: "TESTPA-AR", accountTitle: "AR", particulars: "x", debit: amount, credit: 0 },
       { accountId: revA, accountCode: "TESTPA-REV", accountTitle: "Rev", particulars: "x", debit: 0, credit: amount },

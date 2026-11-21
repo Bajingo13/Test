@@ -167,7 +167,7 @@ async function applyInvoicePayment(conn, {
 
   if (sourceType === "AR_BEGINNING") {
     const [rows] = await conn.execute(
-      `SELECT COALESCE(l.balance_amount, l.debit, 0) AS balanceAmount, h.company_id AS companyId
+      `SELECT COALESCE(l.balance_amount, l.debit, 0) AS balanceAmount, h.company_id AS companyId, h.status AS headerStatus, l.party_id AS partyId
        FROM arap_beginning_balance_lines l
        JOIN arap_beginning_balance_headers h ON h.id = l.header_id
        WHERE l.id = ? FOR UPDATE`,
@@ -177,6 +177,7 @@ async function applyInvoicePayment(conn, {
     if (companyId && rows[0].companyId !== companyId) {
       throw new Error(`AR beginning balance ${sourceId} does not belong to this company - cross-company payment application is not allowed.`);
     }
+    await assertInvoicePayable(conn, { label: `AR beginning balance ${sourceId}`, status: rows[0].headerStatus, balanceAmount: rows[0].balanceAmount, partyId: rows[0].partyId, appliedType, appliedId });
 
     const sourceSnapshot = await TransactionCurrencyService.getSnapshot("AR_BEGINNING", sourceId);
     const isForeign = !!sourceSnapshot && sourceSnapshot.currencyId !== sourceSnapshot.baseCurrencyId;
@@ -251,7 +252,7 @@ async function applyInvoicePayment(conn, {
   // applications against the same invoice so the balance check below can't
   // race.
   const [invRows] = await conn.execute(
-    "SELECT COALESCE(balance_amount, total_debit, 0) AS balanceAmount, company_id AS companyId FROM invoice_headers WHERE id = ? FOR UPDATE",
+    "SELECT COALESCE(balance_amount, total_debit, 0) AS balanceAmount, company_id AS companyId, status, customer_id AS partyId, voucher_no AS voucherNo FROM invoice_headers WHERE id = ? FOR UPDATE",
     [sourceId]
   );
   if (!invRows.length) throw new Error(`Invoice ${sourceId} was not found.`);
@@ -262,6 +263,7 @@ async function applyInvoicePayment(conn, {
   if (companyId && invRows[0].companyId !== companyId) {
     throw new Error(`Invoice ${sourceId} does not belong to this company - cross-company payment application is not allowed.`);
   }
+  await assertInvoicePayable(conn, { label: `Invoice ${invRows[0].voucherNo || sourceId}`, status: invRows[0].status, balanceAmount: invRows[0].balanceAmount, partyId: invRows[0].partyId, appliedType, appliedId });
 
   const sourceSnapshot = await TransactionCurrencyService.getSnapshot("INV", sourceId);
   const isForeign = !!sourceSnapshot && sourceSnapshot.currencyId !== sourceSnapshot.baseCurrencyId;
@@ -333,6 +335,33 @@ function notPayable(message) {
   err.statusCode = 400;
   err.code = "APV_NOT_PAYABLE";
   return err;
+}
+
+// Phase C-1: the invoice / AR beginning-balance mirror of assertApvPayable.
+// Payable = Posted (Draft / Void / Cancelled are not receivables) and owed by
+// the paying OR's customer. Fully paid / over-application, company and branch
+// are refused by the existing caps, company checks and branchApplicationGuard.
+// Reads are LOCKING only (no snapshot - see branchApplicationGuard).
+function invoiceNotPayable(message) {
+  const err = new Error(message);
+  err.statusCode = 400;
+  err.code = "INVOICE_NOT_PAYABLE";
+  return err;
+}
+
+async function assertInvoicePayable(conn, { label, status, balanceAmount, partyId, appliedType, appliedId }) {
+  if (String(status || "").toUpperCase() !== "POSTED") {
+    throw invoiceNotPayable(`${label} is not Posted (status: ${status || "unknown"}) and cannot be paid.`);
+  }
+  // Fully paid / over-applied: refused by the existing balance cap below
+  // ("cannot exceed invoice balance of 0.00") - kept as the single message.
+  if (String(appliedType || "").toUpperCase() === "OR" && appliedId && partyId !== null && partyId !== undefined) {
+    const [orRows] = await conn.execute("SELECT customer_id FROM or_headers WHERE id = ? FOR UPDATE", [appliedId]);
+    const payer = orRows[0]?.customer_id;
+    if (payer !== null && payer !== undefined && Number(payer) !== Number(partyId)) {
+      throw invoiceNotPayable(`${label} belongs to another customer.`);
+    }
+  }
 }
 
 async function assertApvPayable(conn, apvId, apv) {
@@ -645,6 +674,7 @@ async function applyForeignSettlementToLines(conn, {
 }
 
 module.exports = {
+  assertInvoicePayable,
   updateInvoicePaymentStatus,
   updateApvPaymentStatus,
   applyInvoicePayment,

@@ -101,6 +101,10 @@ app.use(cors({
 }));
 
 app.use(express.json());
+// Multi-Branch Phase C-1: transactions are branch-owned. /api/<module>/:id is
+// isolated by branch before the module routes run (services/transactionBranchEnforcement).
+const TxBranch = require("./services/transactionBranchEnforcement");
+TxBranch.registerIsolation(app);
 
 app.get("/health", (req, res) => {
   res.json({ status: "ok" });
@@ -1147,7 +1151,7 @@ app.get("/api/invoices", authenticateToken, authorizePermission("TRANSACTIONS.IN
       FROM invoice_headers
       LEFT JOIN currencies cur ON cur.id = invoice_headers.currency_id
       LEFT JOIN transaction_currency_snapshots snap ON snap.transaction_type = 'INV' AND snap.transaction_id = invoice_headers.id
-      WHERE invoice_headers.company_id = ?
+      WHERE invoice_headers.company_id = ? AND ${await TxBranch.visibleSql(req.user, companyId, "invoice_headers")}
       ORDER BY invoice_headers.id DESC
     `, [companyId]);
 
@@ -1211,7 +1215,8 @@ app.get("/api/invoices/unpaid", authenticateToken, authorizePermission("TRANSACT
       LEFT JOIN currencies cur ON cur.id = invoice_headers.currency_id
       LEFT JOIN transaction_currency_snapshots snap ON snap.transaction_type = 'INV' AND snap.transaction_id = invoice_headers.id
       LEFT JOIN ${ControlAmountService.aggregateSql("INV")} ca ON ca.doc_id = invoice_headers.id
-      WHERE invoice_headers.company_id = ?
+      WHERE invoice_headers.company_id = ? AND ${await TxBranch.visibleSql(req.user, companyId, "invoice_headers")}
+        AND ${postedOnlySql("invoice_headers")} -- Phase C-1: Draft / Void / Cancelled are not payable
         AND ${INV_ORIGINAL_SQL} - COALESCE(paid_amount, 0) > 0.005
         AND COALESCE(payment_status, 'Unpaid') != 'Paid'
         ${customerFilterInv}
@@ -1239,7 +1244,8 @@ app.get("/api/invoices/unpaid", authenticateToken, authorizePermission("TRANSACT
       LEFT JOIN currencies bbcur ON bbcur.id = l.currency_id
       LEFT JOIN transaction_currency_snapshots bbsnap ON bbsnap.transaction_type = 'AR_BEGINNING' AND bbsnap.transaction_id = l.id
       WHERE h.balance_type = 'AR'
-        AND h.company_id = ?
+        AND h.company_id = ? AND ${await TxBranch.visibleSql(req.user, companyId, "h")}
+        AND ${postedOnlySql("h")} -- Phase C-1: only Posted AR beginning balances are payable
         AND COALESCE(l.balance_amount, l.debit, 0) > 0
         AND COALESCE(l.status, 'Unpaid') != 'Paid'
         ${customerFilterBb}
@@ -1416,6 +1422,7 @@ app.post("/api/invoices", authenticateToken, authorizePermission("TRANSACTIONS.I
 
     // P1: the INV party must be a CUSTOMER of this company (server-enforced, Drafts included).
     await TransactionPartyService.resolveTransactionParty(conn, { module: "INV", companyId, partyId: customerId });
+    const txBranchId = await TxBranch.prepareCreate(conn, req.user, { companyId, body: req.body, partyIds: [customerId] }); // Phase C-1
     const [result] = await conn.execute(
       `INSERT INTO invoice_headers (
         company_id,
@@ -1475,6 +1482,7 @@ app.post("/api/invoices", authenticateToken, authorizePermission("TRANSACTIONS.I
     );
 
     const invoiceId = result.insertId;
+    await TxBranch.assign(conn, "invoice_headers", invoiceId, txBranchId);
 
     // Phase 7C: each client line may carry an optional `taxEntry` object
     // (from the Input/Output VAT or EWT popup) - it survives
@@ -1700,6 +1708,7 @@ app.put("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACTION
 
     // P1: the INV party must be a CUSTOMER of this company (server-enforced, Drafts included).
     await TransactionPartyService.resolveTransactionParty(conn, { module: "INV", companyId, partyId: customerId, existing: { table: "invoice_headers", column: "customer_id", id } });
+    await TxBranch.enforceUpdate(conn, req.user, { table: "invoice_headers", id, companyId, body: req.body, partyIds: [customerId], status: req.body?.status }); // Phase C-1
     await conn.execute(
       `UPDATE invoice_headers SET
         voucher_no = ?,
@@ -2017,7 +2026,7 @@ app.get("/api/or", authenticateToken, authorizePermission("TRANSACTIONS.OR", "VI
       FROM or_headers
       LEFT JOIN currencies cur ON cur.id = or_headers.currency_id
       LEFT JOIN transaction_currency_snapshots snap ON snap.transaction_type = 'OR' AND snap.transaction_id = or_headers.id
-      WHERE or_headers.company_id = ?
+      WHERE or_headers.company_id = ? AND ${await TxBranch.visibleSql(req.user, companyId, "or_headers")}
       ORDER BY or_headers.id DESC
     `, [companyId]);
 
@@ -2095,6 +2104,7 @@ app.post("/api/or", authenticateToken, authorizePermission("TRANSACTIONS.OR", "C
     const payment = await PaymentDetails.resolvePaymentDetails(conn, req.body, { isPosting });
     // P1: the OR party must be a CUSTOMER of this company (server-enforced, Drafts included).
     await TransactionPartyService.resolveTransactionParty(conn, { module: "OR", companyId, partyId: customerId });
+    const txBranchId = await TxBranch.prepareCreate(conn, req.user, { companyId, body: req.body, partyIds: [customerId] }); // Phase C-1
     const [result] = await conn.execute(
       `INSERT INTO or_headers(
         company_id,
@@ -2150,6 +2160,7 @@ app.post("/api/or", authenticateToken, authorizePermission("TRANSACTIONS.OR", "C
     );
 
     const orId = result.insertId;
+    await TxBranch.assign(conn, "or_headers", orId, txBranchId);
 
     for (const line of currencyResult.lines) {
       await conn.execute(
@@ -2601,6 +2612,7 @@ app.put("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
     const paymentBefore = await PaymentDetails.loadPaymentDetails(conn, "or_headers", id);
     // P1: the OR party must be a CUSTOMER of this company (server-enforced, Drafts included).
     await TransactionPartyService.resolveTransactionParty(conn, { module: "OR", companyId, partyId: customerId, existing: { table: "or_headers", column: "customer_id", id } });
+    await TxBranch.enforceUpdate(conn, req.user, { table: "or_headers", id, companyId, body: req.body, partyIds: [customerId], status: req.body?.status }); // Phase C-1
     await conn.execute(
       `UPDATE or_headers SET
          voucher_no = ?,
@@ -2968,7 +2980,7 @@ app.get("/api/apv", authenticateToken, authorizePermission("TRANSACTIONS.APV", "
       FROM apv_headers
       LEFT JOIN currencies cur ON cur.id = apv_headers.currency_id
       LEFT JOIN transaction_currency_snapshots snap ON snap.transaction_type = 'APV' AND snap.transaction_id = apv_headers.id
-      WHERE apv_headers.company_id = ?
+      WHERE apv_headers.company_id = ? AND ${await TxBranch.visibleSql(req.user, companyId, "apv_headers")}
       ORDER BY apv_headers.id DESC
     `, [companyId]);
 
@@ -3027,7 +3039,7 @@ app.get("/api/apv/unpaid", authenticateToken, authorizePermission("TRANSACTIONS.
       -- (Draft / Cancelled / Void are not payables), not reversed by a
       -- Posted APV_REVERSAL JV, with an outstanding balance (fully paid
       -- ones drop out; partially paid ones stay with their remaining balance).
-      WHERE apv_headers.company_id = ?
+      WHERE apv_headers.company_id = ? AND ${await TxBranch.visibleSql(req.user, companyId, "apv_headers")}
         AND ${postedOnlySql("apv_headers")}
         AND NOT EXISTS (
           SELECT 1 FROM jv_headers rev
@@ -3063,7 +3075,7 @@ app.get("/api/apv/unpaid", authenticateToken, authorizePermission("TRANSACTIONS.
       LEFT JOIN currencies bbcur ON bbcur.id = l.currency_id
       LEFT JOIN transaction_currency_snapshots bbsnap ON bbsnap.transaction_type = 'AP_BEGINNING' AND bbsnap.transaction_id = l.id
       WHERE h.balance_type = 'AP'
-        AND h.company_id = ?
+        AND h.company_id = ? AND ${await TxBranch.visibleSql(req.user, companyId, "h")}
         AND ${postedOnlySql("h")}
         AND COALESCE(l.balance_amount, l.credit, 0) > 0
         AND COALESCE(l.status, 'Unpaid') != 'Paid'
@@ -3297,6 +3309,7 @@ app.put("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV
 
     // P1: the APV party must be a SUPPLIER of this company (server-enforced, Drafts included).
     await TransactionPartyService.resolveTransactionParty(conn, { module: "APV", companyId, partyId: supplierId, existing: { table: "apv_headers", column: "supplier_id", id } });
+    await TxBranch.enforceUpdate(conn, req.user, { table: "apv_headers", id, companyId, body: req.body, partyIds: [supplierId], status: req.body?.status }); // Phase C-1
     await conn.execute(
       `UPDATE apv_headers SET
         voucher_no = ?,
@@ -3934,7 +3947,7 @@ app.get("/api/purchase-orders", authenticateToken, authorizePermission("TRANSACT
       FROM purchase_order_headers
       LEFT JOIN currencies cur ON cur.id = purchase_order_headers.currency_id
       LEFT JOIN transaction_currency_snapshots snap ON snap.transaction_type = 'PO' AND snap.transaction_id = purchase_order_headers.id
-      WHERE purchase_order_headers.company_id = ?
+      WHERE purchase_order_headers.company_id = ? AND ${await TxBranch.visibleSql(req.user, companyId, "purchase_order_headers")}
       ORDER BY purchase_order_headers.id DESC
     `, [companyId]);
 
@@ -3977,6 +3990,7 @@ app.get("/api/purchase-orders/open", authenticateToken, authorizePermission("TRA
       FROM purchase_order_headers
       WHERE status = 'Open'
         AND company_id = ?
+        AND ${await TxBranch.visibleSql(req.user, companyId, "purchase_order_headers")}
         ${filter}
       ORDER BY id DESC
       `,
@@ -4114,6 +4128,7 @@ app.post("/api/purchase-orders", authenticateToken, authorizePermission("TRANSAC
 
     // P1: the PO party must be a SUPPLIER of this company (server-enforced, Drafts included).
     await TransactionPartyService.resolveTransactionParty(conn, { module: "PO", companyId, partyId: supplierId });
+    const txBranchId = await TxBranch.prepareCreate(conn, req.user, { companyId, body: req.body, partyIds: [supplierId] }); // Phase C-1
     const [result] = await conn.execute(
       `INSERT INTO purchase_order_headers (
         company_id,
@@ -4158,6 +4173,7 @@ app.post("/api/purchase-orders", authenticateToken, authorizePermission("TRANSAC
     );
 
     const poId = result.insertId;
+    await TxBranch.assign(conn, "purchase_order_headers", poId, txBranchId);
 
     for (const line of currencyResult.lines) {
       await conn.execute(
@@ -4293,6 +4309,7 @@ app.put("/api/purchase-orders/:id", authenticateToken, authorizePermission("TRAN
 
     // P1: the PO party must be a SUPPLIER of this company (server-enforced, Drafts included).
     await TransactionPartyService.resolveTransactionParty(conn, { module: "PO", companyId, partyId: supplierId, existing: { table: "purchase_order_headers", column: "supplier_id", id } });
+    await TxBranch.enforceUpdate(conn, req.user, { table: "purchase_order_headers", id, companyId, body: req.body, partyIds: [supplierId], status: req.body?.status }); // Phase C-1
     await conn.execute(
       `UPDATE purchase_order_headers SET
         voucher_no = ?,
@@ -4513,7 +4530,7 @@ app.get("/api/quotations", authenticateToken, authorizePermission("TRANSACTIONS.
         created_at AS createdAt,
         updated_at AS updatedAt
       FROM quotation_headers
-      WHERE company_id = ?
+      WHERE company_id = ? AND ${await TxBranch.visibleSql(req.user, companyId, "quotation_headers")}
       ORDER BY id DESC
     `, [companyId]);
 
@@ -4618,6 +4635,7 @@ app.post("/api/quotations", authenticateToken, authorizePermission("TRANSACTIONS
 
     // P1: the QUOTATION party must be a CUSTOMER of this company (server-enforced, Drafts included).
     await TransactionPartyService.resolveTransactionParty(conn, { module: "QUOTATION", companyId, partyId: customerId });
+    const txBranchId = await TxBranch.prepareCreate(conn, req.user, { companyId, body: req.body, partyIds: [customerId] }); // Phase C-1
     const [result] = await conn.execute(
       `INSERT INTO quotation_headers (
         company_id,
@@ -4648,6 +4666,7 @@ app.post("/api/quotations", authenticateToken, authorizePermission("TRANSACTIONS
     );
 
     const quotationId = result.insertId;
+    await TxBranch.assign(conn, "quotation_headers", quotationId, txBranchId);
 
     let sortOrder = 0;
     for (const line of lines || []) {
@@ -4766,6 +4785,7 @@ app.put("/api/quotations/:id", authenticateToken, authorizePermission("TRANSACTI
 
     // P1: the QUOTATION party must be a CUSTOMER of this company (server-enforced, Drafts included).
     await TransactionPartyService.resolveTransactionParty(conn, { module: "QUOTATION", companyId, partyId: customerId, existing: { table: "quotation_headers", column: "customer_id", id } });
+    await TxBranch.enforceUpdate(conn, req.user, { table: "quotation_headers", id, companyId, body: req.body, partyIds: [customerId], status: req.body?.status }); // Phase C-1
     await conn.execute(
       `UPDATE quotation_headers SET
         customer_id = ?,
@@ -5084,6 +5104,7 @@ app.post("/api/quotations/:id/convert-to-invoice", authenticateToken, authorizeP
     );
 
     const invoiceId = result.insertId;
+    await TxBranch.assign(conn, "invoice_headers", invoiceId, await TxBranch.resolveCreateBranch(conn, req.user, { companyId, forcedBranchId: quotation.branch_id ?? undefined })); // Phase C-1: inherits the quotation's branch
 
     await conn.execute(
       `INSERT INTO invoice_lines (
@@ -5589,7 +5610,7 @@ app.get("/api/cv", authenticateToken, authorizePermission("TRANSACTIONS.CV", "VI
       FROM cv_headers
       LEFT JOIN currencies cur ON cur.id = cv_headers.currency_id
       LEFT JOIN transaction_currency_snapshots snap ON snap.transaction_type = 'CV' AND snap.transaction_id = cv_headers.id
-      WHERE cv_headers.company_id = ?
+      WHERE cv_headers.company_id = ? AND ${await TxBranch.visibleSql(req.user, companyId, "cv_headers")}
       ORDER BY cv_headers.id DESC
     `, [companyId]);
 
@@ -5664,6 +5685,7 @@ app.post("/api/cv", authenticateToken, authorizePermission("TRANSACTIONS.CV", "C
     const payment = await PaymentDetails.resolvePaymentDetails(conn, req.body, { isPosting });
     // P1: the CV party must be a SUPPLIER of this company (server-enforced, Drafts included).
     await TransactionPartyService.resolveTransactionParty(conn, { module: "CV", companyId, partyId: finalPayeeId });
+    const txBranchId = await TxBranch.prepareCreate(conn, req.user, { companyId, body: req.body, partyIds: [finalPayeeId] }); // Phase C-1
     const [result] = await conn.execute(
       `INSERT INTO cv_headers(
         company_id,
@@ -5719,6 +5741,7 @@ app.post("/api/cv", authenticateToken, authorizePermission("TRANSACTIONS.CV", "C
     );
 
     const cvId = result.insertId;
+    await TxBranch.assign(conn, "cv_headers", cvId, txBranchId);
 
     for (const line of currencyResult.lines) {
       await conn.execute(
@@ -6129,6 +6152,7 @@ app.put("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
     const paymentBefore = await PaymentDetails.loadPaymentDetails(conn, "cv_headers", id);
     // P1: the CV party must be a SUPPLIER of this company (server-enforced, Drafts included).
     await TransactionPartyService.resolveTransactionParty(conn, { module: "CV", companyId, partyId: finalPayeeId, existing: { table: "cv_headers", column: "payee_id", id } });
+    await TxBranch.enforceUpdate(conn, req.user, { table: "cv_headers", id, companyId, body: req.body, partyIds: [finalPayeeId], status: req.body?.status }); // Phase C-1
     await conn.execute(
       `UPDATE cv_headers SET
          voucher_no = ?,
@@ -6534,7 +6558,7 @@ app.get("/api/jv", authenticateToken, authorizePermission("TRANSACTIONS.JV", "VI
       FROM jv_headers
       LEFT JOIN currencies cur ON cur.id = jv_headers.currency_id
       LEFT JOIN transaction_currency_snapshots snap ON snap.transaction_type = 'JV' AND snap.transaction_id = jv_headers.id
-      WHERE jv_headers.company_id = ?
+      WHERE jv_headers.company_id = ? AND ${await TxBranch.visibleSql(req.user, companyId, "jv_headers")}
       ORDER BY jv_headers.id DESC
     `, [companyId]);
 
@@ -6575,6 +6599,7 @@ app.post("/api/jv", authenticateToken, authorizePermission("TRANSACTIONS.JV", "C
     await conn.beginTransaction();
 
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
+    const txBranchId = await TxBranch.prepareCreate(conn, req.user, { companyId, body: req.body, partyIds: [] }); // Phase C-1
     await assertVoucherNoUnique(conn, { module: "JV", companyId, voucherNo });
     await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate, operation: "CREATE", user: req.user }, conn);
     const currencyResult = await TransactionCurrencyService.resolveTransactionCurrency({
@@ -6619,6 +6644,7 @@ app.post("/api/jv", authenticateToken, authorizePermission("TRANSACTIONS.JV", "C
     );
 
     const jvId = result.insertId;
+    await TxBranch.assign(conn, "jv_headers", jvId, txBranchId);
 
     for (const line of currencyResult.lines) {
       await conn.execute(
@@ -6777,6 +6803,7 @@ app.put("/api/jv/:id", authenticateToken, authorizePermission("TRANSACTIONS.JV",
     } = req.body;
 
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
+    await TxBranch.enforceUpdate(conn, req.user, { table: "jv_headers", id, companyId, body: req.body, partyIds: [], status: req.body?.status }); // Phase C-1
     await assertVoucherNoUnique(conn, { module: "JV", companyId, voucherNo, excludeId: id });
 
     const [existing] = await conn.execute(
@@ -7028,7 +7055,7 @@ app.get("/api/petty-cash", authenticateToken, authorizePermission("TRANSACTIONS.
       FROM petty_cash_headers
       LEFT JOIN currencies cur ON cur.id = petty_cash_headers.currency_id
       LEFT JOIN transaction_currency_snapshots snap ON snap.transaction_type = 'PETTY_CASH' AND snap.transaction_id = petty_cash_headers.id
-      WHERE petty_cash_headers.company_id = ?
+      WHERE petty_cash_headers.company_id = ? AND ${await TxBranch.visibleSql(req.user, companyId, "petty_cash_headers")}
       ORDER BY petty_cash_headers.id DESC
     `, [companyId]);
 
@@ -7066,6 +7093,7 @@ app.post("/api/petty-cash", authenticateToken, authorizePermission("TRANSACTIONS
     await conn.beginTransaction();
 
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
+    const txBranchId = await TxBranch.prepareCreate(conn, req.user, { companyId, body: req.body, partyIds: [req.body?.payeeId] }); // Phase C-1
     await assertVoucherNoUnique(conn, { module: "PCV", companyId, voucherNo });
     await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate, operation: "CREATE", user: req.user }, conn);
     const currencyResult = await TransactionCurrencyService.resolveTransactionCurrency({
@@ -7087,6 +7115,7 @@ app.post("/api/petty-cash", authenticateToken, authorizePermission("TRANSACTIONS
     );
 
     const pettyCashId = result.insertId;
+    await TxBranch.assign(conn, "petty_cash_headers", pettyCashId, txBranchId);
 
     for (const line of currencyResult.lines) {
       await conn.execute(
@@ -7187,6 +7216,7 @@ app.put("/api/petty-cash/:id", authenticateToken, authorizePermission("TRANSACTI
     const { voucherNo, payeeId, payeeName, transactionDate, referenceNo, description, remarks, status, lines = [], currency } = req.body;
 
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
+    await TxBranch.enforceUpdate(conn, req.user, { table: "petty_cash_headers", id, companyId, body: req.body, partyIds: [req.body?.payeeId], status: req.body?.status }); // Phase C-1
     await assertVoucherNoUnique(conn, { module: "PCV", companyId, voucherNo, excludeId: id });
 
     const [existing] = await conn.execute(
@@ -7387,7 +7417,7 @@ function registerMemoRoutes(memoType, urlPrefix, permissionModule, label) {
         FROM memo_headers
         LEFT JOIN currencies cur ON cur.id = memo_headers.currency_id
         LEFT JOIN transaction_currency_snapshots snap ON snap.transaction_type = ? AND snap.transaction_id = memo_headers.id
-        WHERE memo_headers.company_id = ? AND memo_headers.memo_type = ?
+        WHERE memo_headers.company_id = ? AND memo_headers.memo_type = ? AND ${await TxBranch.visibleSql(req.user, companyId, "memo_headers")}
         ORDER BY memo_headers.id DESC
       `, [`MEMO_${memoType}`, companyId, memoType]);
 
@@ -7443,6 +7473,7 @@ function registerMemoRoutes(memoType, urlPrefix, permissionModule, label) {
       // party_type comes from the library row (never the client) because it
       // decides whether the memo is an AR or an AP entry.
       const memoParty = await TransactionPartyService.resolveTransactionParty(conn, { module: memoType === "DEBIT" ? "DM" : "CM", companyId, partyId });
+      const txBranchId = await TxBranch.prepareCreate(conn, req.user, { companyId, body: req.body, partyIds: [req.body?.partyId] }); // Phase C-1
       const [result] = await conn.execute(
         `INSERT INTO memo_headers(
           company_id, voucher_no, memo_type, party_id, party_name, party_type, transaction_date, reference_no,
@@ -7457,6 +7488,7 @@ function registerMemoRoutes(memoType, urlPrefix, permissionModule, label) {
       );
 
       const memoId = result.insertId;
+      await TxBranch.assign(conn, "memo_headers", memoId, txBranchId);
 
       for (const line of currencyResult.lines) {
         await conn.execute(
@@ -7561,6 +7593,7 @@ function registerMemoRoutes(memoType, urlPrefix, permissionModule, label) {
       } = req.body;
 
       const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, currency?.companyId);
+      await TxBranch.enforceUpdate(conn, req.user, { table: "memo_headers", id, companyId, body: req.body, partyIds: [req.body?.partyId], status: req.body?.status }); // Phase C-1
       await assertVoucherNoUnique(conn, { module: memoType === "DEBIT" ? "DM" : "CM", companyId, voucherNo, excludeId: id });
 
       const [existing] = await conn.execute(

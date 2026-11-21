@@ -92,8 +92,27 @@ async function createApv(token, { voucherNo, amount, status = "Draft" }) {
   return res.body.id;
 }
 
+// Same as createCvApplying below: these delete-guard tests need a DRAFT invoice
+// that already carries a payment application (data that predates the Phase C-1
+// save-time rule that only a Posted invoice is payable). The target invoices
+// are made Posted for the OR save only and put back to their original status,
+// so the delete guard is still exercised against a Draft invoice with an
+// application. orApplyingRequest is the plain save (no status adjustment).
 async function createOrApplying(token, { voucherNo, amount, invoiceApplications, status = "Draft" }) {
-  const res = await request(app).post("/api/or").set(auth(token)).send({
+  const invIds = invoiceApplications.filter((a) => a.sourceType !== "AR_BEGINNING").map((a) => a.sourceId ?? a.invoiceId);
+  const [orig] = invIds.length ? await pool.query("SELECT id, status FROM invoice_headers WHERE id IN (?)", [invIds]) : [[]];
+  if (invIds.length) await pool.query("UPDATE invoice_headers SET status = 'Posted' WHERE id IN (?)", [invIds]);
+  try {
+    const res = await orApplyingRequest(token, { voucherNo, amount, invoiceApplications, status });
+    expect(res.status).toBe(200);
+    return res.body.id;
+  } finally {
+    for (const r of orig) await pool.execute("UPDATE invoice_headers SET status = ? WHERE id = ?", [r.status, r.id]);
+  }
+}
+
+function orApplyingRequest(token, { voucherNo, amount, invoiceApplications, status = "Draft" }) {
+  return request(app).post("/api/or").set(auth(token)).send({
     voucherNo, customerId: custAId, customerName: "TestDI Customer",
     transactionDate: "2026-09-11", totalDebit: amount, totalCredit: amount, status,
     lines: [
@@ -102,8 +121,6 @@ async function createOrApplying(token, { voucherNo, amount, invoiceApplications,
     ],
     invoiceApplications,
   });
-  expect(res.status).toBe(200);
-  return res.body.id;
 }
 
 // These tests need a DRAFT APV that already carries a payment application
@@ -276,21 +293,29 @@ describe("APV DELETE - active-application guard", () => {
 });
 
 describe("Posted OR/CV applications against Draft Invoice/APV also block deletion", () => {
-  test("9. Posted OR application against a Draft Invoice blocks deletion", async () => {
+  // Phase C-1: this used to prove that a Posted OR application against a Draft
+  // Invoice blocks the invoice delete. That state can no longer be created - a
+  // Draft invoice is not payable - so the test now proves the rule itself, and
+  // that the untouched Draft invoice then deletes normally. The delete guard for
+  // a Draft invoice that already carries a (legacy) application is still
+  // covered by tests 2/3/4, 15 and 16a.
+  test("9. A Draft invoice cannot be paid by a Posted OR: rejected, no application, invoice untouched and still deletable", async () => {
     const invId = await createInvoice(tokenA, { voucherNo: "TESTDI-INV-9", amount: 1000 });
-    await createOrApplying(tokenA, {
+    const res = await orApplyingRequest(tokenA, {
       voucherNo: "TESTDI-OR-9", amount: 400, status: "Posted",
       invoiceApplications: [{ sourceId: invId, amount: 400, applicationDate: "2026-09-11" }],
     });
-    // Confirms the exact integrity scenario from the investigation: the
-    // invoice itself is still Draft (not blocked by the Posted-immutability
-    // guard) even though the OR that settled it is already Posted.
-    const [[invRow]] = await pool.query("SELECT status FROM invoice_headers WHERE id = ?", [invId]);
-    expect(invRow.status).toBe("Draft");
+    expect(res.status).toBe(400);
+    expect(res.body.message).toMatch(/is not Posted \(status: Draft\)/);
+    const [[orRow]] = await pool.query("SELECT COUNT(*) n FROM or_headers WHERE voucher_no = 'TESTDI-OR-9'");
+    expect(Number(orRow.n)).toBe(0); // the whole OR save rolled back
+    const [[appRow]] = await pool.query("SELECT COUNT(*) n FROM transaction_applications WHERE source_type='INV' AND source_id=?", [invId]);
+    expect(Number(appRow.n)).toBe(0);
+    const [[invRow]] = await pool.query("SELECT status, COALESCE(paid_amount, 0) AS paid FROM invoice_headers WHERE id = ?", [invId]);
+    expect([invRow.status, Number(invRow.paid)]).toEqual(["Draft", 0]);
 
-    const res = await request(app).delete(`/api/invoices/${invId}`).set(auth(tokenA)).query({ companyId: companyAId });
-    expect(res.status).toBe(409);
-    expect(res.body.code).toBe("INVOICE_HAS_ACTIVE_PAYMENTS");
+    const del = await request(app).delete(`/api/invoices/${invId}`).set(auth(tokenA)).query({ companyId: companyAId });
+    expect(del.status).toBe(200);
   });
 
   test("10. Posted CV application against a Draft APV blocks deletion", async () => {

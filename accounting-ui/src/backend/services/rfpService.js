@@ -1022,8 +1022,15 @@ async function convertRfp({ id, body, user }) {
       header.remarks ? `RFP remarks: ${header.remarks}` : null,
     ].filter(Boolean).join("\n");
 
+    // Multi-Branch Phase C-1: an RFP of a branch the user may not see does not
+    // exist for them (same 404 as an unknown RFP); the APV inherits the RFP's
+    // branch - fixed, never taken from the request.
+    if ((await require("./transactionBranchEnforcement").canSee(user, header.company_id, header.branch_id, conn)) === false) {
+      throw httpError(NOT_FOUND, 404);
+    }
     const apv = await createApvRecord(conn, {
       user,
+      branchId: header.branch_id ?? undefined,
       body: {
         voucherNo,
         supplierId: header.supplier_id,
