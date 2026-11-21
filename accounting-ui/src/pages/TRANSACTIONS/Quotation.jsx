@@ -3,6 +3,9 @@ import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
 import "./TransactionFormLayout.css";
 import "./Quotation.css";
+// Multi-Branch Phase C-2B (same rules as TransactionFormLayout; server-validated).
+import useAuthorizedBranches from "../../hooks/useAuthorizedBranches";
+import { activeBranches, defaultTransactionBranch, branchFieldMode, visibleInBranch, branchName } from "./transactionBranch.mjs";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
 
@@ -78,6 +81,16 @@ export default function Quotation() {
   const [customers, setCustomers] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [selected, setSelected] = useState(null);
+  const { branches: userBranches } = useAuthorizedBranches();
+  const [branchId, setBranchId] = useState("");
+  const [branchError, setBranchError] = useState("");
+  const quotationBranchId = selected?.id ? (selected.branchId ?? selected.branch_id ?? "") : branchId;
+  const quotationBranchMode = selected?.id ? (quotationBranchId ? "locked" : "none") : branchFieldMode(userBranches);
+  useEffect(() => {
+    if (selected?.id || branchId) return;
+    const preset = defaultTransactionBranch(userBranches);
+    if (preset) setBranchId(preset);
+  }, [userBranches, selected, branchId]);
 
   const [form, setForm] = useState(emptyForm);
   const [lines, setLines] = useState([createItemLine()]);
@@ -152,6 +165,8 @@ export default function Quotation() {
 
   function handleAddNew() {
     setSelected(null);
+    setBranchId("");
+    setBranchError("");
     setForm(emptyForm);
     setLines([createItemLine()]);
     setMode("form");
@@ -252,11 +267,18 @@ export default function Quotation() {
       alert(error);
       return;
     }
+    if (!selected?.id && quotationBranchMode === "choose" && !branchId) {
+      setBranchError("Select the branch this quotation belongs to.");
+      return;
+    }
+    setBranchError("");
 
     setSaving(true);
 
     try {
       const payload = {
+        // Multi-Branch: a new quotation states its branch; an existing one keeps it.
+        branchId: !selected?.id && branchId ? Number(branchId) : undefined,
         customerId: form.customerId,
         customerName: form.customerName,
         customerAddress: form.customerAddress,
@@ -297,6 +319,10 @@ export default function Quotation() {
 
       if (!res.ok) {
         if (handleAuthError(res.status)) return;
+        if (/^(BRANCH_|PARTY_BRANCH|PARTY_NOT_FOUND)/.test(String(data.code || ""))) {
+          setBranchError(data.message);
+          return;
+        }
         alert(data.message || "Failed to save Quotation.");
         return;
       }
@@ -661,6 +687,7 @@ export default function Quotation() {
                       <th>Quotation No.</th>
                       <th>Date</th>
                       <th>Expiration</th>
+                      {userBranches.length ? <th>Branch</th> : null}
                       <th>Customer</th>
                       <th className="text-right">Amount</th>
                       <th>Status</th>
@@ -671,7 +698,7 @@ export default function Quotation() {
                   <tbody>
                     {quotations.length === 0 ? (
                       <tr>
-                        <td colSpan="7" className="transaction-empty">
+                        <td colSpan={userBranches.length ? 8 : 7} className="transaction-empty">
                           No quotations yet. Click Add Quotation to create one.
                         </td>
                       </tr>
@@ -681,6 +708,7 @@ export default function Quotation() {
                           <td>{q.quotationNo}</td>
                           <td>{q.quotationDate}</td>
                           <td>{q.expirationDate || "-"}</td>
+                          {userBranches.length ? <td>{branchName(q.branchId ?? q.branch_id, userBranches) || "—"}</td> : null}
                           <td>{q.customerName}</td>
                           <td className="text-right">₱ {formatMoney(q.totalAmount)}</td>
                           <td>
@@ -755,6 +783,20 @@ export default function Quotation() {
 
             <div className="transaction-card">
               <div className="transaction-grid">
+                {quotationBranchMode !== "none" ? (
+                  <div className="transaction-field">
+                    <label className="transaction-label" htmlFor="quotation-branch">Branch</label>
+                    {quotationBranchMode === "choose" ? (
+                      <select id="quotation-branch" className="transaction-input" value={branchId} onChange={(e) => { setBranchId(e.target.value); setBranchError(""); const c = customers.find((x) => String(x.id) === String(form.customerId)); if (c && !visibleInBranch(c, e.target.value)) handlePartyChange(""); }}>
+                        <option value="">Select branch...</option>
+                        {activeBranches(userBranches).map((b) => <option key={b.id} value={String(b.id)}>{b.name || b.code}</option>)}
+                      </select>
+                    ) : (
+                      <input id="quotation-branch" type="text" className="transaction-input" value={branchName(quotationBranchId, userBranches)} readOnly />
+                    )}
+                    {branchError ? <div className="transaction-error-box" role="alert">{branchError}</div> : null}
+                  </div>
+                ) : null}
                 <div className="transaction-field">
                   <label className="transaction-label">Customer</label>
                   <select
@@ -764,7 +806,7 @@ export default function Quotation() {
                     disabled={selected?.status === "Converted"}
                   >
                     <option value="">Select customer</option>
-                    {customers.map((c) => (
+                    {customers.filter((c) => visibleInBranch(c, quotationBranchId)).map((c) => (
                       <option key={c.id} value={c.id}>
                         {c.code} - {c.name}
                       </option>

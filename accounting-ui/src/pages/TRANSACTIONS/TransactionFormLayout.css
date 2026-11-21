@@ -52,7 +52,9 @@
 
 .transaction-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  /* min(230px, 100%): a single column narrower than 230px on a phone-width
+     screen instead of a fixed 230px track that overflows the card */
+  grid-template-columns: repeat(auto-fit, minmax(min(230px, 100%), 1fr));
   gap: 16px;
 }
 
@@ -217,9 +219,14 @@
   color: var(--text-primary);
 }
 
+/* width: 0 + min-width: 100% fills the card without contributing the table's
+   1000px intrinsic width: <main> is a flex item without min-width: 0, so the
+   wide table would otherwise widen the whole page instead of scrolling here
+   (same containment as .rfp-table-wrap). */
 .transaction-table-container {
   overflow-x: auto;
-  width: 100%;
+  width: 0;
+  min-width: 100%;
   border: 1px solid var(--border-color);
   border-radius: 12px;
 }
@@ -453,6 +460,23 @@
   max-width: 280px;
 }
 
+/* phone width: a percentage width makes inputs / selects compressible, so
+   their intrinsic width (search box, date filter, party field + add button)
+   no longer widens the whole page past the screen */
+@media (max-width: 640px) {
+  .transaction-page .transaction-input {
+    width: 100%;
+    min-width: 0;
+  }
+
+  /* a date input is not compressible like a text box: width 0 +
+     min-width 100% fills the field without contributing its intrinsic width */
+  .transaction-page .transaction-field > input[type="date"].transaction-input {
+    width: 0;
+    min-width: 100%;
+  }
+}
+
 /* Phase 5: shared date-range filter - same visual language as the
    search/status controls already in this toolbar, not a new pattern. */
 .transaction-date-filter-label {
@@ -466,6 +490,22 @@
 
 .transaction-date-filter-label .transaction-input {
   max-width: 160px;
+}
+
+/* phone width: each date filter takes its own row; width: 0 + flex: 1 lets
+   the date input (not compressible like a text box) fill that row instead
+   of keeping its intrinsic width */
+@media (max-width: 640px) {
+  .transaction-date-filter-label {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
+  .transaction-date-filter-label .transaction-input {
+    width: 0;
+    flex: 1 1 0;
+    max-width: none;
+  }
 }
 
 .transaction-empty {
@@ -1096,6 +1136,14 @@
   grid-column: span 2;
 }
 
+/* phone width: the grid is one column - span it rather than forcing an
+   implicit second column that overflows the card */
+@media (max-width: 640px) {
+  .transaction-field-wide {
+    grid-column: 1 / -1;
+  }
+}
+
 .tax-entry-modal {
   width: min(680px, 94vw);
   max-height: 90vh;
@@ -1234,8 +1282,16 @@
   width: 100%;
 }
 
+/* minmax(0, 1fr): a plain 1fr track keeps an automatic minimum, so the
+   Currency select's longest option ("PHP — Philippine Peso (Base)") would
+   set the column width and push the form wider than a narrow screen. */
 .transaction-summary-grid {
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.transaction-summary-grid > .transaction-field,
+.transaction-summary-grid .transaction-input {
+  min-width: 0;
 }
 
 /* Phase 7F: CurrencySummary's `compact` mode (rate meta/Refresh/Override,
@@ -1258,6 +1314,6 @@
 
 @media (max-width: 640px) {
   .transaction-summary-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 }

@@ -36,6 +36,10 @@ import {
 import { applyApvTaxBalancing } from "./apvJournalBalance.mjs";
 import { hasSettlementSourceApplications, settlementTaxWarning } from "./legacyTaxEntryPolicy.mjs";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
+// Multi-Branch Phase C-2B: transaction branch + branch-aware pickers + payment
+// application from the AP / AR amount field (rules in transactionBranch.mjs).
+import useAuthorizedBranches from "../../hooks/useAuthorizedBranches";
+import { activeBranches, defaultTransactionBranch, branchFieldMode, visibleInBranch, branchName, ownershipSuffix, applicationTrigger, applicationAmountError } from "./transactionBranch.mjs";
 import "./TransactionFormLayout.css";
 
 const CURRENCY_MODULE_KEY = "FILESETUP.CURRENCY_SETUP";
@@ -142,6 +146,26 @@ export default function TransactionFormLayout({
 
   const [accountOptions, setAccountOptions] = useState([]);
   const [partyOptions, setPartyOptions] = useState([]);
+  // Multi-Branch Phase C-2B. The server validates the branch, every account,
+  // party and payment application on save; this only drives what is offered.
+  const { branches: userBranches } = useAuthorizedBranches();
+  const [branchId, setBranchId] = useState("");
+  const [applicationError, setApplicationError] = useState("");
+  const applicationLineRef = useRef(null);
+  const suppressApplicationFocusRef = useRef(null);
+  const isExistingRecord = !!selectedTransaction?.id;
+  const txBranchId = isExistingRecord ? (selectedTransaction?.branchId ?? "") : branchId;
+  const txBranchMode = isExistingRecord ? (selectedTransaction?.branchId ? "locked" : "none") : branchFieldMode(userBranches);
+  const branchAccountOptions = useMemo(
+    () => accountOptions.filter((a) => visibleInBranch(a, txBranchId)).map((a) => ({ ...a, title: `${a.title}${ownershipSuffix(a, userBranches)}` })),
+    [accountOptions, txBranchId, userBranches]
+  );
+  const branchPartyOptions = useMemo(() => partyOptions.filter((p) => visibleInBranch(p, txBranchId)), [partyOptions, txBranchId]);
+  useEffect(() => {
+    if (isExistingRecord || branchId) return;
+    const preset = defaultTransactionBranch(userBranches);
+    if (preset) setBranchId(preset);
+  }, [userBranches, isExistingRecord, branchId]);
   const [unpaidApvs, setUnpaidApvs] = useState([]);
   const [showApvModal, setShowApvModal] = useState(false);
   const [apvApplications, setApvApplications] = useState([]);
@@ -595,7 +619,7 @@ export default function TransactionFormLayout({
       if (code === "APV") {
         setTransactions(
           data.map((item) => ({
-            id: item.id,
+            id: item.id, branchId: item.branchId ?? null,
             referenceNo: apvNumberFields(item).referenceNo,
             date: item.transactionDate,
             party: item.supplierName,
@@ -627,7 +651,7 @@ export default function TransactionFormLayout({
       if (code === "INV") {
   setTransactions(
     data.map((item) => ({
-      id: item.id,
+      id: item.id, branchId: item.branchId ?? null,
       ...apvNumberFields(item), // P1 TC1-086: number = voucher_no, reference kept separately
       date: item.transactionDate,
       party: item.customerName,
@@ -657,7 +681,7 @@ export default function TransactionFormLayout({
 if (code === "OR") {
   setTransactions(
     data.map((item) => ({
-      id: item.id,
+      id: item.id, branchId: item.branchId ?? null,
       ...apvNumberFields(item), // P1 TC1-086: number = voucher_no, reference kept separately
       date: item.transactionDate,
       party: item.customerName,
@@ -682,7 +706,7 @@ if (code === "OR") {
       if (code === "CV") {
         setTransactions(
           data.map((item) => ({
-            id: item.id,
+            id: item.id, branchId: item.branchId ?? null,
             ...apvNumberFields(item), // P1 TC1-086: number = voucher_no, reference kept separately
             date: item.transactionDate,
             party: item.payeeName,
@@ -707,7 +731,7 @@ if (code === "OR") {
       if (code === "PO") {
         setTransactions(
           data.map((item) => ({
-            id: item.id,
+            id: item.id, branchId: item.branchId ?? null,
             ...apvNumberFields(item), // P1 TC1-086: number = voucher_no, reference kept separately
             date: item.transactionDate,
             party: item.supplierName,
@@ -732,7 +756,7 @@ if (code === "OR") {
       if (code === "JV") {
         setTransactions(
           data.map((item) => ({
-            id: item.id,
+            id: item.id, branchId: item.branchId ?? null,
             ...apvNumberFields(item), // P1 TC1-086: number = voucher_no, reference kept separately
             date: item.transactionDate,
             party: item.preparedFor,
@@ -764,7 +788,7 @@ if (code === "OR") {
       if (code === "PCV") {
         setTransactions(
           data.map((item) => ({
-            id: item.id,
+            id: item.id, branchId: item.branchId ?? null,
             ...apvNumberFields(item), // P1 TC1-086: number = voucher_no, reference kept separately
             date: item.transactionDate,
             party: item.payeeName,
@@ -789,7 +813,7 @@ if (code === "OR") {
       if (code === "DM" || code === "CM") {
         setTransactions(
           data.map((item) => ({
-            id: item.id,
+            id: item.id, branchId: item.branchId ?? null,
             ...apvNumberFields(item), // P1 TC1-086: number = voucher_no, reference kept separately
             date: item.transactionDate,
             party: item.partyName,
@@ -827,6 +851,7 @@ if (code === "OR") {
     } else if (supplierName) {
       query.append("supplierName", supplierName);
     }
+    if (txBranchId) query.append("branchId", txBranchId);
 
     const res = await fetch(
       `${API_BASE}/api/apv/unpaid?${query.toString()}`,
@@ -840,7 +865,7 @@ if (code === "OR") {
 
     if (!res.ok) {
       if (handleAuthError(res.status)) return;
-      alert(data.message || "Failed to load unpaid APV records");
+      setError(data.message || "Failed to load unpaid APV records");
       return;
     }
 
@@ -862,6 +887,7 @@ if (code === "OR") {
     } else if (customerName) {
       query.append("customerName", customerName);
     }
+    if (txBranchId) query.append("branchId", txBranchId);
 
     const res = await fetch(
       `${API_BASE}/api/invoices/unpaid?${query.toString()}`,
@@ -1336,6 +1362,8 @@ if (code === "OR") {
     );
 
     setSelectedTransaction(null);
+    setBranchId("");
+    setApplicationError("");
 
 setApvApplications([]);
 setUnpaidApvs([]);
@@ -2055,9 +2083,64 @@ if (code === "OR" || code === "CV") {
     setLines((prev) => prev.filter((line) => line.id !== id));
   }
 
+  // Multi-Branch Phase C-2B: changing the branch of a NEW transaction drops a
+  // party / account / payment application that does not belong to it.
+  function handleBranchChange(value) {
+    setBranchId(value);
+    const chosenParty = partyOptions.find((p) => String(p.id) === String(form.partyId));
+    if (chosenParty && !visibleInBranch(chosenParty, value)) setForm((prev) => ({ ...prev, party: "", partyId: null }));
+    setLines((prev) => prev.map((l) => {
+      const acct = accountOptions.find((a) => String(a.id) === String(l.accountId));
+      return acct && !visibleInBranch(acct, value) ? { ...l, accountId: "" } : l;
+    }));
+    setApvApplications([]);
+    setInvoiceApplications([]);
+  }
+
+  // The payment-application selector opens from the amount field itself:
+  // CV -> Accounts Payable DEBIT -> unpaid APVs; OR -> Accounts Receivable
+  // CREDIT -> unpaid Invoices (selected supplier / customer + branch). Apply
+  // fills the line and returns to the voucher; posting is a separate step.
+  // After Cancel the same field can be typed into without reopening it.
+  async function handleAmountFocus(line, side) {
+    if (formMode === "view") return;
+    const kind = applicationTrigger({ code, side, isControlLine: isAPorARAccount(line.accountId) });
+    if (!kind || suppressApplicationFocusRef.current === line.id) return;
+    if (!form.partyId && !String(form.party || "").trim()) {
+      setError(`Select the ${partyLabel.toLowerCase()} first - the documents to apply are listed for that ${partyLabel.toLowerCase()}.`);
+      return;
+    }
+    if (!selectedTransaction?.id && branchFieldMode(userBranches) === "choose" && !branchId) {
+      setError("Select the branch first - only that branch's documents can be applied.");
+      return;
+    }
+    setError("");
+    setApplicationError("");
+    applicationLineRef.current = line.id;
+    if (kind === "APV") {
+      await loadUnpaidApvs();
+      setShowApvModal(true);
+    } else {
+      await loadUnpaidInvoices();
+      setShowInvoiceModal(true);
+    }
+  }
+
+  function handleAmountBlur(line) {
+    if (suppressApplicationFocusRef.current === line.id) suppressApplicationFocusRef.current = null;
+  }
+
+  function closeApplicationModal() {
+    suppressApplicationFocusRef.current = applicationLineRef.current;
+    setApplicationError("");
+    setShowApvModal(false);
+    setShowInvoiceModal(false);
+  }
+
   function validate() {
   if (!form.date) return "Date is required.";
   if (!form.referenceNo.trim()) return "Reference number is required.";
+  if (!selectedTransaction?.id && branchFieldMode(userBranches) === "choose" && !branchId) return "Select the branch this transaction belongs to.";
   if (!form.party.trim()) return `${partyLabel} is required.`;
 
   for (const line of lines) {
@@ -2330,28 +2413,12 @@ if (code === "OR" || code === "CV") {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingAutoPost, lines]);
 
+  // Multi-Branch Phase C-2B: the APV / Invoice to settle is chosen while the
+  // AP / AR amount is entered (handleAmountFocus); Post only validates and
+  // posts what was prepared (the server re-checks every application).
   async function handlePostTransactionClick() {
-  const hasAPorARLine = lines.some((line) =>
-    isAPorARAccount(line.accountId)
-  );
-
-  // Check Voucher: apply payment to APV
-  if (code === "CV" && hasAPorARLine) {
-    await loadUnpaidApvs();
-    setShowApvModal(true);
-    return;
+    handleSave("Posted");
   }
-
-  // Official Receipt: apply payment to Invoice
-  if (code === "OR" && hasAPorARLine) {
-    await loadUnpaidInvoices();
-    setShowInvoiceModal(true);
-    return;
-  }
-
-  // APV and Invoice post normally
-  handleSave("Posted");
-}
 
   async function handleSave(status) {
     if (moduleConfigError) {
@@ -2374,6 +2441,9 @@ if (code === "OR" || code === "CV") {
 
       const payload = {
         voucherNo: updatedForm.referenceNo,
+        // Multi-Branch: a new transaction states its branch (re-validated by the
+        // server); an existing one keeps its branch, so nothing is sent.
+        branchId: !selectedTransaction?.id && branchId ? Number(branchId) : undefined,
 
         supplierId: updatedForm.partyId || null,
         supplierName: updatedForm.party,
@@ -2517,7 +2587,7 @@ if (code === "OR" || code === "CV") {
         // R9: payment-details problems (method, check / transfer fields,
         // bank account) are shown in the form error box, next to Payment
         // Details, instead of a browser alert.
-        if (/^(INVALID_PAYMENT_METHOD|PAYMENT_|INVALID_BANK_ACCOUNT|BANK_ACCOUNT_)/.test(String(data.code || ""))) {
+        if (/^(INVALID_PAYMENT_METHOD|PAYMENT_|INVALID_BANK_ACCOUNT|BANK_ACCOUNT_|BRANCH_|ACCOUNT_BRANCH|ACCOUNT_NOT_FOUND|PARTY_BRANCH|PARTY_NOT_FOUND|APV_NOT_PAYABLE|INVOICE_NOT_PAYABLE|APPLICATION_EXCEEDS_BALANCE)/.test(String(data.code || ""))) {
           setError(data.message);
           return;
         }
@@ -2673,6 +2743,7 @@ if (code === "OR") {
                       <th className="transaction-sortable-th" onClick={() => handleSortClick("date")}>
                         Date{sortIndicator("date")}
                       </th>
+                      {userBranches.length ? <th>Branch</th> : null}
                       <th className="transaction-sortable-th" onClick={() => handleSortClick("party")}>
                         {partyLabel}{sortIndicator("party")}
                       </th>
@@ -2689,13 +2760,13 @@ if (code === "OR") {
                   <tbody>
                     {transactions.length === 0 ? (
                       <tr>
-                        <td colSpan="6" className="transaction-empty">
+                        <td colSpan={userBranches.length ? 7 : 6} className="transaction-empty">
                           No transactions yet. Click Add {code} to create one.
                         </td>
                       </tr>
                     ) : sortedTransactions.length === 0 ? (
                       <tr>
-                        <td colSpan="6" className="transaction-empty">
+                        <td colSpan={userBranches.length ? 7 : 6} className="transaction-empty">
                           No transactions found.
                         </td>
                       </tr>
@@ -2709,6 +2780,7 @@ if (code === "OR") {
                             )}
                           </td>
                           <td>{transaction.date}</td>
+                          {userBranches.length ? <td>{branchName(transaction.branchId, userBranches) || "—"}</td> : null}
                           <td>{transaction.party}</td>
                           <td className="text-right">
                             {transaction.currencySymbol || baseCurrency?.currencySymbol || "₱"}{" "}
@@ -2881,7 +2953,8 @@ if (code === "OR") {
                   form={form}
                   updateForm={updateForm}
                   handlePartyChange={handlePartyChange}
-                  partyOptions={partyOptions}
+                  partyOptions={branchPartyOptions}
+                  branchField={{ mode: txBranchMode, options: activeBranches(userBranches), value: String(txBranchId || ""), label: branchName(txBranchId, userBranches), onChange: handleBranchChange }}
                   showPartyModal={showPartyModal}
                   setShowPartyModal={setShowPartyModal}
                   handlePartyCreated={handlePartyCreated}
@@ -2941,7 +3014,8 @@ if (code === "OR") {
                 form={form}
                 updateForm={updateForm}
                 handlePartyChange={handlePartyChange}
-                partyOptions={partyOptions}
+                partyOptions={branchPartyOptions}
+                branchField={{ mode: txBranchMode, options: activeBranches(userBranches), value: String(txBranchId || ""), label: branchName(txBranchId, userBranches), onChange: handleBranchChange }}
                 showPartyModal={showPartyModal}
                 setShowPartyModal={setShowPartyModal}
                 handlePartyCreated={handlePartyCreated}
@@ -3130,8 +3204,10 @@ if (code === "OR") {
                 <table className="transaction-table">
                   <AccountingEntriesGrid
                     lines={lines}
-                    accountOptions={accountOptions}
-                    partyOptions={partyOptions}
+                    accountOptions={branchAccountOptions}
+                    partyOptions={branchPartyOptions}
+                    onAmountFocus={handleAmountFocus}
+                    onAmountBlur={handleAmountBlur}
                     updateLine={updateLine}
                     removeLine={handleRemoveTaxAwareLine}
                     isAPorARAccount={isAPorARAccount}
@@ -3162,11 +3238,13 @@ if (code === "OR") {
                     <div>
                       <h2>Outstanding APV</h2>
                       <p>Select APV records to apply this Check Voucher payment.</p>
+                      <p className="apv-modal-context">{partyLabel}: <strong>{form.party || "—"}</strong>{txBranchId ? <> · Branch: <strong>{branchName(txBranchId, userBranches)}</strong></> : null}</p>
+                      {applicationError ? <div className="transaction-error-box" role="alert">{applicationError}</div> : null}
                     </div>
                     <button
                       type="button"
                       className="apv-modal-close"
-                      onClick={() => setShowApvModal(false)}
+                      onClick={closeApplicationModal}
                       aria-label="Close"
                     >
                       ×
@@ -3179,6 +3257,7 @@ if (code === "OR") {
                         <tr>
                           <th>Apply</th>
                           <th>APV No.</th>
+                          <th>Date</th>
                           <th>Supplier</th>
                           <th>Source Rate</th>
                           <th className="text-right">Original</th>
@@ -3191,7 +3270,7 @@ if (code === "OR") {
                       <tbody>
                         {unpaidApvs.length === 0 ? (
   <tr>
-    <td colSpan="8" className="no-apv-message">
+    <td colSpan="9" className="no-apv-message">
       No Payables Have Been Setup
     </td>
   </tr>
@@ -3229,6 +3308,7 @@ if (code === "OR") {
                                   />
                                 </td>
                                 <td>{apv.voucherNo}</td>
+                                <td>{apv.transactionDate || "—"}</td>
                                 <td>{apv.supplierName}</td>
                                 <td>{isForeign ? Number(apv.sourceExchangeRate).toFixed(6) : "—"}</td>
                                 <td className="text-right">{symbol} {formatMoney(displayOriginal)}</td>
@@ -3285,7 +3365,7 @@ if (code === "OR") {
                     <button
                       type="button"
                       className="transaction-secondary-button"
-                      onClick={() => setShowApvModal(false)}
+                      onClick={closeApplicationModal}
                     >
                       Cancel
                     </button>
@@ -3293,22 +3373,15 @@ if (code === "OR") {
   type="button"
   className="transaction-primary-button"
   onClick={() => {
-    if (unpaidApvs.length === 0) {
-      setShowApvModal(false);
-      handleSave("Posted");
-      return;
-    }
-
-    // Section 15: a clear confirmation summary before posting any
-    // different-rate (non-zero FX) settlement - never required for a
-    // same-rate application, matching current UX for the ordinary case.
+    // Phase C-2B: Apply fills the line and returns to the voucher - no auto-post.
+    const problem = applicationAmountError(apvApplications, formatMoney);
+    if (problem) { setApplicationError(problem); return; }
     if (!confirmFxSettlement(apvApplications, "PAYABLE")) return;
-
+    setApplicationError("");
     applySelectedApvsToLines();
-    setPendingAutoPost(true);
   }}
 >
-  Done
+  Apply
 </button>
                   </div>
                 </div>
@@ -3324,11 +3397,13 @@ if (code === "OR") {
                     <div>
                       <h2>Outstanding Invoice</h2>
                       <p>Select Invoice records to apply this Official Receipt payment.</p>
+                      <p className="apv-modal-context">{partyLabel}: <strong>{form.party || "—"}</strong>{txBranchId ? <> · Branch: <strong>{branchName(txBranchId, userBranches)}</strong></> : null}</p>
+                      {applicationError ? <div className="transaction-error-box" role="alert">{applicationError}</div> : null}
                     </div>
                     <button
                       type="button"
                       className="apv-modal-close"
-                      onClick={() => setShowInvoiceModal(false)}
+                      onClick={closeApplicationModal}
                       aria-label="Close"
                     >
                       ×
@@ -3341,6 +3416,7 @@ if (code === "OR") {
                         <tr>
                           <th>Apply</th>
                           <th>Invoice No.</th>
+                          <th>Date</th>
                           <th>Customer</th>
                           <th>Source Rate</th>
                           <th className="text-right">Original</th>
@@ -3353,7 +3429,7 @@ if (code === "OR") {
                       <tbody>
                         {unpaidInvoices.length === 0 ? (
   <tr>
-    <td colSpan="8" className="no-apv-message">
+    <td colSpan="9" className="no-apv-message">
       No Outstanding Invoices
     </td>
   </tr>
@@ -3391,6 +3467,7 @@ if (code === "OR") {
                                   />
                                 </td>
                                 <td>{invoice.voucherNo}</td>
+                                <td>{invoice.transactionDate || "—"}</td>
                                 <td>{invoice.customerName}</td>
                                 <td>{isForeign ? Number(invoice.sourceExchangeRate).toFixed(6) : "—"}</td>
                                 <td className="text-right">{symbol} {formatMoney(displayOriginal)}</td>
@@ -3446,7 +3523,7 @@ if (code === "OR") {
                     <button
                       type="button"
                       className="transaction-secondary-button"
-                      onClick={() => setShowInvoiceModal(false)}
+                      onClick={closeApplicationModal}
                     >
                       Cancel
                     </button>
@@ -3454,19 +3531,15 @@ if (code === "OR") {
   type="button"
   className="transaction-primary-button"
   onClick={() => {
-    if (unpaidInvoices.length === 0) {
-      setShowInvoiceModal(false);
-      handleSave("Posted");
-      return;
-    }
-
+    // Phase C-2B: Apply fills the line and returns to the voucher - no auto-post.
+    const problem = applicationAmountError(invoiceApplications, formatMoney);
+    if (problem) { setApplicationError(problem); return; }
     if (!confirmFxSettlement(invoiceApplications, "RECEIVABLE")) return;
-
+    setApplicationError("");
     applySelectedInvoicesToLines();
-    setPendingAutoPost(true);
   }}
 >
-  Done
+  Apply
 </button>
                   </div>
                 </div>

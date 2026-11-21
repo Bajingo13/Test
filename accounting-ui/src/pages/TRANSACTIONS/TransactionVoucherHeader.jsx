@@ -31,6 +31,9 @@ export default function TransactionVoucherHeader({
   // outside that set passes nothing here and renders exactly as before,
   // unchanged.
   hideDateAndReference = false,
+  // Multi-Branch Phase C-2B: { mode: "none" | "auto" | "choose" | "locked",
+  // options, value, label, onChange } from TransactionFormLayout.
+  branchField = null,
 }) {
   // Phase 7B: a genuine document-like read-only presentation (label/value),
   // not the same inputs with `disabled` - see the Phase 7B spec's "target
@@ -43,6 +46,7 @@ export default function TransactionVoucherHeader({
         <div className="transaction-view-grid">
           {!hideDateAndReference && <ViewField label="Date" value={form.date} />}
           {!hideDateAndReference && <ViewField label="Reference No." value={form.referenceNo} />}
+          {branchField?.label ? <ViewField label="Branch" value={branchField.label} /> : null}
           <ViewField label={partyLabel} value={form.party} />
           <ViewField
             label={showReceiptNo ? "Receipt No." : "Transaction Type"}
@@ -81,6 +85,27 @@ export default function TransactionVoucherHeader({
             />
           </div>
         )}
+
+        {branchField && branchField.mode !== "none" ? (
+          <div className="transaction-field">
+            <label className="transaction-label" htmlFor={`${code}-branch`}>Branch</label>
+            {branchField.mode === "choose" ? (
+              <select
+                id={`${code}-branch`}
+                value={branchField.value}
+                onChange={(e) => branchField.onChange(e.target.value)}
+                className="transaction-input"
+              >
+                <option value="">Select branch...</option>
+                {branchField.options.map((b) => (
+                  <option key={b.id} value={String(b.id)}>{b.name || b.code}</option>
+                ))}
+              </select>
+            ) : (
+              <input id={`${code}-branch`} type="text" value={branchField.label} readOnly className="transaction-input" />
+            )}
+          </div>
+        ) : null}
 
         <div className="transaction-field">
           <label className="transaction-label">{partyLabel}</label>

@@ -1124,8 +1124,7 @@ app.get("/api/invoices", authenticateToken, authorizePermission("TRANSACTIONS.IN
   try {
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
     const [rows] = await pool.execute(`
-      SELECT
-        invoice_headers.id AS id,
+      SELECT invoice_headers.branch_id AS branchId,         invoice_headers.id AS id,
         voucher_no AS voucherNo,
         customer_id AS customerId,
         customer_name AS customerName,
@@ -1174,6 +1173,10 @@ const APV_FOREIGN_ORIGINAL_SQL = ControlAmountService.foreignOriginalExpr("APV",
 app.get("/api/invoices/unpaid", authenticateToken, authorizePermission("TRANSACTIONS.INVOICE", "VIEW"), async (req, res) => {
   try {
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+    // Multi-Branch Phase C-2B: the transaction's branch (the amount-field
+    // modal) - validated server-side; another branch / company is refused.
+    const lookupBranchId = await BranchResolution.resolveBranch(req.user, companyId, req.query.branchId, { required: false });
+    const lookupBranchSql = (alias) => (lookupBranchId ? `AND ${alias}.branch_id = ${Number(lookupBranchId)}` : "");
     const { customerId, customerName } = req.query;
 
     const params = [companyId];
@@ -1197,6 +1200,7 @@ app.get("/api/invoices/unpaid", authenticateToken, authorizePermission("TRANSACT
       `
       SELECT
         invoice_headers.id AS id,
+        DATE_FORMAT(invoice_headers.transaction_date, '%Y-%m-%d') AS transactionDate,
         'INV' AS sourceType,
         voucher_no AS voucherNo,
         customer_id AS customerId,
@@ -1220,11 +1224,13 @@ app.get("/api/invoices/unpaid", authenticateToken, authorizePermission("TRANSACT
         AND ${INV_ORIGINAL_SQL} - COALESCE(paid_amount, 0) > 0.005
         AND COALESCE(payment_status, 'Unpaid') != 'Paid'
         ${customerFilterInv}
+        ${lookupBranchSql("invoice_headers")}
 
       UNION ALL
 
       SELECT
         l.id,
+        DATE_FORMAT(h.balance_date, '%Y-%m-%d') AS transactionDate,
         'AR_BEGINNING' AS sourceType,
         l.reference_no AS voucherNo,
         l.party_id AS customerId,
@@ -1249,6 +1255,7 @@ app.get("/api/invoices/unpaid", authenticateToken, authorizePermission("TRANSACT
         AND COALESCE(l.balance_amount, l.debit, 0) > 0
         AND COALESCE(l.status, 'Unpaid') != 'Paid'
         ${customerFilterBb}
+        ${lookupBranchSql("h")}
 
       ORDER BY voucherNo DESC
       `,
@@ -1257,6 +1264,8 @@ app.get("/api/invoices/unpaid", authenticateToken, authorizePermission("TRANSACT
 
     res.json(rows);
   } catch (err) {
+    // A refused company / branch keeps its own status (Phase C-2B: the branch filter).
+    if (err.statusCode && err.statusCode < 500) return res.status(err.statusCode).json({ message: err.message, ...(err.code ? { code: err.code } : {}) });
     console.error("GET UNPAID INVOICE/AR BEGINNING ERROR:", err);
     res.status(500).json({ message: "Failed to load outstanding receivables" });
   }
@@ -1268,8 +1277,7 @@ app.get("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACTION
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
     const [headers] = await pool.execute(
-      `SELECT
-        id,
+      `SELECT invoice_headers.branch_id AS branchId,         id,
         voucher_no AS voucherNo,
         customer_id AS customerId,
         customer_name AS customerName,
@@ -2001,8 +2009,7 @@ app.get("/api/or", authenticateToken, authorizePermission("TRANSACTIONS.OR", "VI
   try {
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
     const [rows] = await pool.execute(`
-      SELECT
-        or_headers.id AS id,
+      SELECT or_headers.branch_id AS branchId,         or_headers.id AS id,
         voucher_no AS voucherNo,
         customer_id AS customerId,
         customer_name AS customerName,
@@ -2306,8 +2313,7 @@ app.get("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
     const [headers] = await pool.execute(
-      `SELECT
-        id,
+      `SELECT or_headers.branch_id AS branchId,         id,
         voucher_no AS voucherNo,
         customer_id AS customerId,
         customer_name AS customerName,
@@ -2955,8 +2961,7 @@ app.get("/api/apv", authenticateToken, authorizePermission("TRANSACTIONS.APV", "
   try {
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
     const [rows] = await pool.execute(`
-      SELECT
-        apv_headers.id AS id,
+      SELECT apv_headers.branch_id AS branchId,         apv_headers.id AS id,
         voucher_no AS voucherNo,
         supplier_id AS supplierId,
         supplier_name AS supplierName,
@@ -2994,6 +2999,10 @@ app.get("/api/apv", authenticateToken, authorizePermission("TRANSACTIONS.APV", "
 app.get("/api/apv/unpaid", authenticateToken, authorizePermission("TRANSACTIONS.APV", "VIEW"), async (req, res) => {
   try {
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+    // Multi-Branch Phase C-2B: the transaction's branch (the amount-field
+    // modal) - validated server-side; another branch / company is refused.
+    const lookupBranchId = await BranchResolution.resolveBranch(req.user, companyId, req.query.branchId, { required: false });
+    const lookupBranchSql = (alias) => (lookupBranchId ? `AND ${alias}.branch_id = ${Number(lookupBranchId)}` : "");
     const { supplierId, supplierName } = req.query;
 
     const params = [companyId];
@@ -3017,6 +3026,7 @@ app.get("/api/apv/unpaid", authenticateToken, authorizePermission("TRANSACTIONS.
       `
       SELECT
         apv_headers.id AS id,
+        DATE_FORMAT(apv_headers.transaction_date, '%Y-%m-%d') AS transactionDate,
         'APV' AS sourceType,
         voucher_no AS voucherNo,
         supplier_id AS supplierId,
@@ -3051,11 +3061,13 @@ app.get("/api/apv/unpaid", authenticateToken, authorizePermission("TRANSACTIONS.
         AND ${APV_ORIGINAL_SQL} - COALESCE(paid_amount, 0) > 0.005
         AND COALESCE(payment_status, 'Unpaid') != 'Paid'
         ${supplierFilterApv}
+        ${lookupBranchSql("apv_headers")}
 
       UNION ALL
 
       SELECT
         l.id,
+        DATE_FORMAT(h.balance_date, '%Y-%m-%d') AS transactionDate,
         'AP_BEGINNING' AS sourceType,
         l.reference_no AS voucherNo,
         l.party_id AS supplierId,
@@ -3080,6 +3092,7 @@ app.get("/api/apv/unpaid", authenticateToken, authorizePermission("TRANSACTIONS.
         AND COALESCE(l.balance_amount, l.credit, 0) > 0
         AND COALESCE(l.status, 'Unpaid') != 'Paid'
         ${supplierFilterBb}
+        ${lookupBranchSql("h")}
 
       ORDER BY voucherNo DESC
       `,
@@ -3090,7 +3103,7 @@ app.get("/api/apv/unpaid", authenticateToken, authorizePermission("TRANSACTIONS.
   } catch (err) {
     // An access refusal from the company check (e.g. another company's
     // companyId -> 403) keeps its own status instead of becoming a 500.
-    if (err.statusCode && err.statusCode < 500) return res.status(err.statusCode).json({ message: err.message });
+    if (err.statusCode && err.statusCode < 500) return res.status(err.statusCode).json({ message: err.message, ...(err.code ? { code: err.code } : {}) });
     console.error("GET UNPAID APV/AP BEGINNING ERROR:", err);
     res.status(500).json({ message: "Failed to load outstanding payables" });
   }
@@ -3102,8 +3115,7 @@ app.get("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
     const [headers] = await pool.execute(
-      `SELECT
-        id,
+      `SELECT apv_headers.branch_id AS branchId,         id,
         voucher_no AS voucherNo,
         supplier_id AS supplierId,
         supplier_name AS supplierName,
@@ -3926,8 +3938,7 @@ app.get("/api/purchase-orders", authenticateToken, authorizePermission("TRANSACT
   try {
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
     const [rows] = await pool.execute(`
-      SELECT
-        purchase_order_headers.id AS id,
+      SELECT purchase_order_headers.branch_id AS branchId,         purchase_order_headers.id AS id,
         voucher_no AS voucherNo,
         supplier_id AS supplierId,
         supplier_name AS supplierName,
@@ -4010,8 +4021,7 @@ app.get("/api/purchase-orders/:id", authenticateToken, authorizePermission("TRAN
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
     const [headers] = await pool.execute(
-      `SELECT
-        id,
+      `SELECT purchase_order_headers.branch_id AS branchId,         id,
         voucher_no AS voucherNo,
         supplier_id AS supplierId,
         supplier_name AS supplierName,
@@ -4514,8 +4524,7 @@ app.get("/api/quotations", authenticateToken, authorizePermission("TRANSACTIONS.
     // Phase 7H: company-scoped, same pattern as every other transaction list.
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
     const [rows] = await pool.execute(`
-      SELECT
-        id,
+      SELECT quotation_headers.branch_id AS branchId,         id,
         quotation_no AS quotationNo,
         customer_id AS customerId,
         customer_name AS customerName,
@@ -4549,8 +4558,7 @@ app.get("/api/quotations/:id", authenticateToken, authorizePermission("TRANSACTI
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
     const [headers] = await pool.execute(
-      `SELECT
-        id,
+      `SELECT quotation_headers.branch_id AS branchId,         id,
         quotation_no AS quotationNo,
         customer_id AS customerId,
         customer_name AS customerName,
@@ -5586,8 +5594,7 @@ app.get("/api/cv", authenticateToken, authorizePermission("TRANSACTIONS.CV", "VI
   try {
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
     const [rows] = await pool.execute(`
-      SELECT
-        cv_headers.id AS id,
+      SELECT cv_headers.branch_id AS branchId,         cv_headers.id AS id,
         voucher_no AS voucherNo,
         payee_id AS payeeId,
         payee_name AS payeeName,
@@ -5881,8 +5888,7 @@ app.get("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
     const [headers] = await pool.execute(
-      `SELECT
-        id,
+      `SELECT cv_headers.branch_id AS branchId,         id,
         voucher_no AS voucherNo,
         payee_id AS payeeId,
         payee_name AS payeeName,
@@ -6541,8 +6547,7 @@ app.get("/api/jv", authenticateToken, authorizePermission("TRANSACTIONS.JV", "VI
   try {
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
     const [rows] = await pool.execute(`
-      SELECT
-        jv_headers.id AS id,
+      SELECT jv_headers.branch_id AS branchId,         jv_headers.id AS id,
         voucher_no AS voucherNo,
         DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate,
         reference_no AS referenceNo,
@@ -6729,8 +6734,7 @@ app.get("/api/jv/:id", authenticateToken, authorizePermission("TRANSACTIONS.JV",
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
     const [headers] = await pool.execute(
-      `SELECT
-        id,
+      `SELECT jv_headers.branch_id AS branchId,         id,
         voucher_no AS voucherNo,
         DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate,
         reference_no AS referenceNo,
@@ -7037,8 +7041,7 @@ app.get("/api/petty-cash", authenticateToken, authorizePermission("TRANSACTIONS.
   try {
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
     const [rows] = await pool.execute(`
-      SELECT
-        petty_cash_headers.id AS id,
+      SELECT petty_cash_headers.branch_id AS branchId,         petty_cash_headers.id AS id,
         voucher_no AS voucherNo,
         payee_id AS payeeId,
         payee_name AS payeeName,
@@ -7174,8 +7177,7 @@ app.get("/api/petty-cash/:id", authenticateToken, authorizePermission("TRANSACTI
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
     const [headers] = await pool.execute(
-      `SELECT
-        id, voucher_no AS voucherNo, payee_id AS payeeId, payee_name AS payeeName,
+      `SELECT petty_cash_headers.branch_id AS branchId,         id, voucher_no AS voucherNo, payee_id AS payeeId, payee_name AS payeeName,
         DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate,
         reference_no AS referenceNo, description, remarks,
         total_debit AS totalDebit, total_credit AS totalCredit, status, currency_id AS currencyId
@@ -7396,8 +7398,7 @@ function registerMemoRoutes(memoType, urlPrefix, permissionModule, label) {
     try {
       const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
       const [rows] = await pool.execute(`
-        SELECT
-          memo_headers.id AS id,
+        SELECT memo_headers.branch_id AS branchId,           memo_headers.id AS id,
           voucher_no AS voucherNo,
           party_id AS partyId,
           party_name AS partyName,
@@ -7547,8 +7548,7 @@ function registerMemoRoutes(memoType, urlPrefix, permissionModule, label) {
       const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
       const [headers] = await pool.execute(
-        `SELECT
-          id, voucher_no AS voucherNo, party_id AS partyId, party_name AS partyName, party_type AS partyType,
+        `SELECT memo_headers.branch_id AS branchId,           id, voucher_no AS voucherNo, party_id AS partyId, party_name AS partyName, party_type AS partyType,
           DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate,
           reference_no AS referenceNo, description, remarks,
           total_debit AS totalDebit, total_credit AS totalCredit, status,

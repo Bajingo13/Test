@@ -201,7 +201,7 @@ async function applyInvoicePayment(conn, {
     });
 
     if (application.foreignAmountApplied - currentBalance > 0.01) {
-      throw new Error(`Payment amount cannot exceed AR beginning balance of ${currentBalance.toFixed(2)}.`);
+      throw exceedsBalance(`Payment amount cannot exceed AR beginning balance of ${currentBalance.toFixed(2)}.`);
     }
 
     let fxAccount = null;
@@ -287,7 +287,7 @@ async function applyInvoicePayment(conn, {
   });
 
   if (application.foreignAmountApplied - currentBalance > 0.01) {
-    throw new Error(`Payment amount cannot exceed invoice balance of ${currentBalance.toFixed(2)}.`);
+    throw exceedsBalance(`Payment amount cannot exceed invoice balance of ${currentBalance.toFixed(2)}.`);
   }
 
   // Checkpoint 3FX: resolve the configured FX account for THIS
@@ -342,6 +342,15 @@ function notPayable(message) {
 // the paying OR's customer. Fully paid / over-application, company and branch
 // are refused by the existing caps, company checks and branchApplicationGuard.
 // Reads are LOCKING only (no snapshot - see branchApplicationGuard).
+// Phase C-2B: an over-application is a 400 (the request is invalid), with a
+// code the entry screens show in-page - previously a plain Error (500).
+function exceedsBalance(message) {
+  const err = new Error(message);
+  err.statusCode = 400;
+  err.code = "APPLICATION_EXCEEDS_BALANCE";
+  return err;
+}
+
 function invoiceNotPayable(message) {
   const err = new Error(message);
   err.statusCode = 400;
@@ -444,7 +453,7 @@ async function applyApvPayment(conn, {
     });
 
     if (application.foreignAmountApplied - currentBalance > 0.01) {
-      throw new Error(`Payment amount cannot exceed AP beginning balance of ${currentBalance.toFixed(2)}.`);
+      throw exceedsBalance(`Payment amount cannot exceed AP beginning balance of ${currentBalance.toFixed(2)}.`);
     }
 
     let fxAccount = null;
@@ -500,6 +509,21 @@ async function applyApvPayment(conn, {
     throw new Error(`APV ${sourceId} does not belong to this company - cross-company payment application is not allowed.`);
   }
   await assertApvPayable(conn, sourceId, apvRows[0]);
+  // Phase C-2B: the APV must be owed to the paying CV's payee (mirror of the
+  // invoice-side customer check). Locking reads only - see
+  // branchApplicationGuard; the APV row is already locked above (the
+  // existing row-lock statement is kept verbatim).
+  const [apvSupplierRows] = String(appliedType || "").toUpperCase() === "CV" && appliedId
+    ? await conn.execute("SELECT supplier_id FROM apv_headers WHERE id = ? FOR UPDATE", [sourceId])
+    : [[]];
+  const apvSupplier = apvSupplierRows[0]?.supplier_id;
+  if (apvSupplier !== null && apvSupplier !== undefined) {
+    const [cvRows] = await conn.execute("SELECT payee_id FROM cv_headers WHERE id = ? FOR UPDATE", [appliedId]);
+    const payee = cvRows[0]?.payee_id;
+    if (payee !== null && payee !== undefined && Number(payee) !== Number(apvSupplier)) {
+      throw notPayable(`APV ${apvRows[0].voucherNo || sourceId} belongs to another supplier.`);
+    }
+  }
 
   const sourceSnapshot = await TransactionCurrencyService.getSnapshot("APV", sourceId);
   const isForeign = !!sourceSnapshot && sourceSnapshot.currencyId !== sourceSnapshot.baseCurrencyId;
@@ -523,7 +547,7 @@ async function applyApvPayment(conn, {
   });
 
   if (application.foreignAmountApplied - currentBalance > 0.01) {
-    throw new Error(`Payment amount cannot exceed APV balance of ${currentBalance.toFixed(2)}.`);
+    throw exceedsBalance(`Payment amount cannot exceed APV balance of ${currentBalance.toFixed(2)}.`);
   }
 
   // See applyInvoicePayment above - only required when actually posting.

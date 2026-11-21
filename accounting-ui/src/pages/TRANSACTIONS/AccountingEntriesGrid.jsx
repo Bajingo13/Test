@@ -27,6 +27,10 @@ export default function AccountingEntriesGrid({
   viewOnly = false,
   onEditTaxDetails,
   onViewTaxDetails,
+  // Multi-Branch Phase C-2B: the AP / AR amount field opens the payment-
+  // application selector (TransactionFormLayout decides which line / side).
+  onAmountFocus,
+  onAmountBlur,
 }) {
   // Phase 7B (spec section 22): static rows, no Account/Gen Ref selects, no
   // Remove column - the posted/saved journal entries presented as a plain
@@ -193,6 +197,8 @@ export default function AccountingEntriesGrid({
                 onChange={(e) =>
                   updateLine(line.id, "debit", e.target.value)
                 }
+                onFocus={() => onAmountFocus && onAmountFocus(line, "debit")}
+                onBlur={() => onAmountBlur && onAmountBlur(line)}
                 placeholder="0.00"
                 className="transaction-table-input transaction-table-input-right"
               />
@@ -207,6 +213,8 @@ export default function AccountingEntriesGrid({
                 onChange={(e) =>
                   updateLine(line.id, "credit", e.target.value)
                 }
+                onFocus={() => onAmountFocus && onAmountFocus(line, "credit")}
+                onBlur={() => onAmountBlur && onAmountBlur(line)}
                 placeholder="0.00"
                 className="transaction-table-input transaction-table-input-right"
               />

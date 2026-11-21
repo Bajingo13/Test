@@ -186,3 +186,28 @@
     grid-template-columns: 1fr 1fr;
   }
 }
+
+/* phone width: the account label wraps above a compressible select instead
+   of a single nowrap row that widens the whole page past the screen */
+@media (max-width: 640px) {
+  .quo-account-row {
+    flex-wrap: wrap;
+  }
+
+  .quo-account-label {
+    white-space: normal;
+  }
+
+  .quo-account-select {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .quo-item-main {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .quo-item-main > * {
+    min-width: 0;
+  }
+}
