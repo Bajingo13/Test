@@ -65,11 +65,18 @@
   margin-bottom: 16px;
 }
 
+/* width: 0 + min-width: 100% (Multi-Branch Phase C-3, with the new Branch
+   column): the wrapper fills the page without contributing the table's
+   intrinsic width - <main> is a flex item without min-width: 0, so the wide
+   table would otherwise widen the whole page instead of scrolling here
+   (same containment as .rfp-table-wrap / .transaction-table-container). */
 .rtx-table-wrapper {
   background: var(--bg-surface);
   border-radius: 14px;
   box-shadow: 0 4px 16px rgba(var(--shadow-rgb), 0.06);
   overflow-x: auto;
+  width: 0;
+  min-width: 100%;
 }
 
 .rtx-table {
@@ -157,6 +164,13 @@
 
 @media (max-width: 900px) {
   .rtx-summary-cards {
-    grid-template-columns: repeat(2, 1fr);
+    /* minmax(0, 1fr): a long uppercase card label ("NEEDS REVIEW") wraps
+       instead of setting the column width past a phone-width screen */
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .rtx-card {
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
 }

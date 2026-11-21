@@ -6,7 +6,8 @@ const TransactionPrintDataService = require("./transactionPrintDataService");
 // value can't reach the shared list query.
 const ALLOWED_GROUPINGS = ["number", "date", "party"];
 
-async function getInvoiceListPrintViewModel({ companyId, from, to, grouping }) {
+// Multi-Branch Phase C-3: branchScope = the caller's authorized branches.
+async function getInvoiceListPrintViewModel({ companyId, from, to, grouping, branchScope = null }) {
   const safeGrouping = ALLOWED_GROUPINGS.includes(grouping) ? grouping : "number";
 
   const result = await TransactionPrintDataService.getTransactionList("invoice", {
@@ -14,6 +15,7 @@ async function getInvoiceListPrintViewModel({ companyId, from, to, grouping }) {
     to: to || null,
     grouping: safeGrouping,
     companyId,
+    branchScope,
   });
 
   return {

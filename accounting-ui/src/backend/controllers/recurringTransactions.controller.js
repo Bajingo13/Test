@@ -5,6 +5,9 @@ const TemplateService = require("../services/recurringTemplateService");
 const GenerationService = require("../services/recurringGenerationService");
 const DateService = require("../services/recurringDateService");
 const CurrencyService = require("../services/currencyService");
+// Multi-Branch Phase C-3: templates of a branch the user cannot access do not
+// exist for that user (same 404 as an unknown / another company's template).
+const TransactionBranchEnforcement = require("../services/transactionBranchEnforcement");
 
 // Checkpoint 3F: Railway Cron Job entry point - see routes.js comment.
 // Not gated by authenticateToken (no interactive user); gated instead by
@@ -33,14 +36,17 @@ exports.runDue = async (req, res) => {
 // Joins through the template to verify company ownership before handing
 // back a schedule id - every caller below acts on that id without a
 // second ownership check, so this is the one place isolation must hold.
-async function resolveScheduleId(templateId, companyId) {
+async function resolveScheduleId(templateId, companyId, user = null) {
   const [rows] = await pool.execute(
-    `SELECT s.id FROM recurring_transaction_schedules s
+    `SELECT s.id, t.branch_id AS branchId FROM recurring_transaction_schedules s
      JOIN recurring_transaction_templates t ON t.id = s.template_id
      WHERE s.template_id = ? AND t.company_id = ?`,
     [templateId, companyId]
   );
   if (rows.length === 0) throw new HttpError(404, "Recurring schedule not found for this template.");
+  if (user && (await TransactionBranchEnforcement.canSee(user, companyId, rows[0].branchId)) !== true) {
+    throw new HttpError(404, "Recurring schedule not found for this template.");
+  }
   return rows[0].id;
 }
 
@@ -48,18 +54,18 @@ exports.createFromTransaction = async (req, res) => {
   try {
     const { moduleType, id } = req.params;
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
-    const bootstrap = await TemplateService.createTemplateFromTransaction(moduleType, id, req.user.id, companyId);
+    const bootstrap = await TemplateService.createTemplateFromTransaction(moduleType, id, req.user.id, companyId, req.user);
     res.json(bootstrap);
   } catch (err) {
     console.error("CREATE RECURRING FROM TRANSACTION ERROR:", err);
-    res.status(err.statusCode || 500).json({ message: err.message || "Failed to prepare recurring template." });
+    res.status(err.statusCode || 500).json({ ...(err.statusCode && err.code ? { code: err.code } : {}), message: err.message || "Failed to prepare recurring template." });
   }
 };
 
 exports.create = async (req, res) => {
   try {
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.body.companyId);
-    const result = await TemplateService.createTemplate(req.body, req.user.id, companyId);
+    const result = await TemplateService.createTemplate(req.body, req.user.id, companyId, req.user);
 
     await logAudit(pool, {
       module: "RECURRING.TRANSACTIONS",
@@ -67,7 +73,7 @@ exports.create = async (req, res) => {
       entityId: result.templateId,
       action: "TEMPLATE_CREATED",
       description: `Recurring template #${result.templateId} created for ${req.body.moduleType} (${req.body.templateName})`,
-      afterData: { moduleType: req.body.moduleType, templateName: req.body.templateName, schedule: req.body.schedule },
+      afterData: { moduleType: req.body.moduleType, templateName: req.body.templateName, schedule: req.body.schedule, branchId: result.branchId ?? null },
       user: req.user,
       // The company createTemplate() stored on the template row.
       companyId,
@@ -77,7 +83,7 @@ exports.create = async (req, res) => {
     res.status(201).json(result);
   } catch (err) {
     console.error("CREATE RECURRING TEMPLATE ERROR:", err);
-    res.status(err.statusCode || 500).json({ message: err.message || "Failed to create recurring template." });
+    res.status(err.statusCode || 500).json({ ...(err.statusCode && err.code ? { code: err.code } : {}), message: err.message || "Failed to create recurring template." });
   }
 };
 
@@ -85,7 +91,10 @@ exports.list = async (req, res) => {
   try {
     const { moduleType, status } = req.query;
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
-    const rows = await TemplateService.listTemplates({ moduleType, status, companyId });
+    const rows = await TemplateService.listTemplates({
+      moduleType, status, companyId,
+      visibilitySql: await TransactionBranchEnforcement.visibleSql(req.user, companyId, "t"),
+    });
     res.json(rows);
   } catch (err) {
     console.error("LIST RECURRING TEMPLATES ERROR:", err);
@@ -96,11 +105,11 @@ exports.list = async (req, res) => {
 exports.getOne = async (req, res) => {
   try {
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
-    const result = await TemplateService.getTemplateById(req.params.id, companyId);
+    const result = await TemplateService.getTemplateById(req.params.id, companyId, { user: req.user });
     res.json(result);
   } catch (err) {
     console.error("GET RECURRING TEMPLATE ERROR:", err);
-    res.status(err.statusCode || 500).json({ message: err.message || "Failed to load recurring template." });
+    res.status(err.statusCode || 500).json({ ...(err.statusCode && err.code ? { code: err.code } : {}), message: err.message || "Failed to load recurring template." });
   }
 };
 
@@ -112,6 +121,20 @@ exports.update = async (req, res) => {
   try {
     const { templateName, descriptionTemplate, amountMode, amountConfig, dueDateRule } = req.body;
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.body.companyId);
+    // Phase C-3: visible to this user (else 404), and the branch is fixed once
+    // set. A legacy template without a branch may be given one (validated for
+    // this user exactly like a new template, party / accounts included).
+    const { template: current, lines: currentLines } = await TemplateService.getTemplateById(req.params.id, companyId, { user: req.user });
+    const branchRequested = req.body.branchId !== undefined && req.body.branchId !== null && req.body.branchId !== "";
+    if (branchRequested && current.branch_id !== null && Number(req.body.branchId) !== Number(current.branch_id)) {
+      throw new HttpError(409, "A recurring template's branch cannot be changed.", "BRANCH_CHANGE_NOT_ALLOWED");
+    }
+    if (branchRequested && current.branch_id === null) {
+      const assigned = await TemplateService.resolveTemplateBranch(pool, req.user, {
+        companyId, requestedBranchId: req.body.branchId, partyId: current.party_id, lines: currentLines,
+      });
+      await pool.execute("UPDATE recurring_transaction_templates SET branch_id = ? WHERE id = ? AND company_id = ? AND branch_id IS NULL", [assigned, req.params.id, companyId]);
+    }
     const [result] = await pool.execute(
       `UPDATE recurring_transaction_templates
        SET template_name = COALESCE(?, template_name),
@@ -146,14 +169,14 @@ exports.update = async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     console.error("UPDATE RECURRING TEMPLATE ERROR:", err);
-    res.status(err.statusCode || 500).json({ message: err.message || "Failed to update recurring template." });
+    res.status(err.statusCode || 500).json({ ...(err.statusCode && err.code ? { code: err.code } : {}), message: err.message || "Failed to update recurring template." });
   }
 };
 
 exports.pause = async (req, res) => {
   try {
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.body?.companyId);
-    const scheduleId = await resolveScheduleId(req.params.id, companyId);
+    const scheduleId = await resolveScheduleId(req.params.id, companyId, req.user);
     await TemplateService.setPaused(scheduleId, true, req.user.id);
     await logAudit(pool, {
       module: "RECURRING.TRANSACTIONS", entityType: "RECURRING_TEMPLATE", entityId: Number(req.params.id),
@@ -163,14 +186,14 @@ exports.pause = async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     console.error("PAUSE RECURRING ERROR:", err);
-    res.status(err.statusCode || 500).json({ message: err.message || "Failed to pause recurring schedule." });
+    res.status(err.statusCode || 500).json({ ...(err.statusCode && err.code ? { code: err.code } : {}), message: err.message || "Failed to pause recurring schedule." });
   }
 };
 
 exports.resume = async (req, res) => {
   try {
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.body?.companyId);
-    const scheduleId = await resolveScheduleId(req.params.id, companyId);
+    const scheduleId = await resolveScheduleId(req.params.id, companyId, req.user);
     const { catchUpPolicy } = req.body || {};
     const result = await TemplateService.resumeSchedule(scheduleId, { catchUpPolicy: catchUpPolicy || null, userId: req.user.id });
 
@@ -189,14 +212,14 @@ exports.resume = async (req, res) => {
     res.json({ success: true, ...result });
   } catch (err) {
     console.error("RESUME RECURRING ERROR:", err);
-    res.status(err.statusCode || 500).json({ message: err.message || "Failed to resume recurring schedule." });
+    res.status(err.statusCode || 500).json({ ...(err.statusCode && err.code ? { code: err.code } : {}), message: err.message || "Failed to resume recurring schedule." });
   }
 };
 
 exports.stop = async (req, res) => {
   try {
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.body?.companyId);
-    const scheduleId = await resolveScheduleId(req.params.id, companyId);
+    const scheduleId = await resolveScheduleId(req.params.id, companyId, req.user);
     await TemplateService.stopSchedule(scheduleId, req.user.id);
     await logAudit(pool, {
       module: "RECURRING.TRANSACTIONS", entityType: "RECURRING_TEMPLATE", entityId: Number(req.params.id),
@@ -206,7 +229,7 @@ exports.stop = async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     console.error("STOP RECURRING ERROR:", err);
-    res.status(err.statusCode || 500).json({ message: err.message || "Failed to stop recurring schedule." });
+    res.status(err.statusCode || 500).json({ ...(err.statusCode && err.code ? { code: err.code } : {}), message: err.message || "Failed to stop recurring schedule." });
   }
 };
 
@@ -216,7 +239,7 @@ exports.stop = async (req, res) => {
 exports.generate = async (req, res) => {
   try {
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.body?.companyId);
-    const scheduleId = await resolveScheduleId(req.params.id, companyId);
+    const scheduleId = await resolveScheduleId(req.params.id, companyId, req.user);
     // approvedRate: section 25's manual-review workflow - a human supplies
     // the rate to approve for THIS occurrence only, never persisted onto
     // the template itself.
@@ -228,14 +251,14 @@ exports.generate = async (req, res) => {
     // reasonCode (NO_APPROVED_RATE / CURRENCY_INACTIVE / ...) lets the
     // frontend distinguish "show a Review Rate action" from a generic
     // error, without parsing the message string.
-    res.status(err.statusCode || 500).json({ message: err.message || "Failed to generate the recurring transaction.", reasonCode: err.reasonCode || null });
+    res.status(err.statusCode || 500).json({ ...(err.statusCode && err.code ? { code: err.code } : {}), message: err.message || "Failed to generate the recurring transaction.", reasonCode: err.reasonCode || null });
   }
 };
 
 exports.skip = async (req, res) => {
   try {
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.body?.companyId);
-    const scheduleId = await resolveScheduleId(req.params.id, companyId);
+    const scheduleId = await resolveScheduleId(req.params.id, companyId, req.user);
     const [scheduleRows] = await pool.execute("SELECT next_run_date FROM recurring_transaction_schedules WHERE id = ?", [scheduleId]);
     if (scheduleRows.length === 0) throw new HttpError(404, "Recurring schedule not found.");
     const occurrenceDate = DateService.toISODate(DateService.toDT(scheduleRows[0].next_run_date));
@@ -252,19 +275,19 @@ exports.skip = async (req, res) => {
     res.json({ success: true, skippedDate: occurrenceDate, ...result });
   } catch (err) {
     console.error("SKIP RECURRING ERROR:", err);
-    res.status(err.statusCode || 500).json({ message: err.message || "Failed to skip occurrence." });
+    res.status(err.statusCode || 500).json({ ...(err.statusCode && err.code ? { code: err.code } : {}), message: err.message || "Failed to skip occurrence." });
   }
 };
 
 exports.history = async (req, res) => {
   try {
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
-    const scheduleId = await resolveScheduleId(req.params.id, companyId);
+    const scheduleId = await resolveScheduleId(req.params.id, companyId, req.user);
     const rows = await TemplateService.getHistory(scheduleId);
     res.json(rows);
   } catch (err) {
     console.error("RECURRING HISTORY ERROR:", err);
-    res.status(err.statusCode || 500).json({ message: err.message || "Failed to load history." });
+    res.status(err.statusCode || 500).json({ ...(err.statusCode && err.code ? { code: err.code } : {}), message: err.message || "Failed to load history." });
   }
 };
 
@@ -300,14 +323,14 @@ exports.previewSchedule = async (req, res) => {
     res.json({ dates });
   } catch (err) {
     console.error("PREVIEW SCHEDULE ERROR:", err);
-    res.status(err.statusCode || 500).json({ message: err.message || "Failed to preview schedule." });
+    res.status(err.statusCode || 500).json({ ...(err.statusCode && err.code ? { code: err.code } : {}), message: err.message || "Failed to preview schedule." });
   }
 };
 
 exports.preview = async (req, res) => {
   try {
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
-    const { template, lines, schedule } = await TemplateService.getTemplateById(req.params.id, companyId);
+    const { template, lines, schedule } = await TemplateService.getTemplateById(req.params.id, companyId, { user: req.user });
     if (!schedule) throw new HttpError(404, "Recurring schedule not found.");
     const count = Math.min(Number(req.query.count) || 5, 24);
     const dates = DateService.previewOccurrences(schedule, count);
@@ -348,6 +371,6 @@ exports.preview = async (req, res) => {
     res.json({ dates, currencyPreview, moduleType: template.module_type, isPaused: !!schedule.is_paused });
   } catch (err) {
     console.error("PREVIEW RECURRING ERROR:", err);
-    res.status(err.statusCode || 500).json({ message: err.message || "Failed to preview occurrences." });
+    res.status(err.statusCode || 500).json({ ...(err.statusCode && err.code ? { code: err.code } : {}), message: err.message || "Failed to preview occurrences." });
   }
 };

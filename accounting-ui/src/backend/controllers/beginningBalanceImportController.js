@@ -20,7 +20,10 @@ exports.getTemplate = async (req, res) => {
   try {
     const format = req.query.format === "csv" ? "csv" : "xlsx";
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
-    const output = await TemplateService.buildTemplate(module, format, companyId);
+    // Multi-Branch Phase C-3: the template's reference sheets list only the
+    // accounts / parties usable in the (validated) branch, and say which
+    // branch the file is for.
+    const output = await TemplateService.buildTemplate(module, format, companyId, { user: req.user, requestedBranchId: req.query.branchId });
     const filenameBase = `${module.toUpperCase()}_Beginning_Balance_Template`;
 
     if (format === "csv") {
@@ -37,7 +40,7 @@ exports.getTemplate = async (req, res) => {
     }
   } catch (err) {
     console.error("BEGINNING BALANCE TEMPLATE ERROR:", err);
-    res.status(err.statusCode || 500).json({ message: err.message || "Failed to generate template" });
+    res.status(err.statusCode || 500).json({ message: err.message || "Failed to generate template", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   }
 };
 
@@ -58,6 +61,7 @@ exports.previewImport = async (req, res) => {
       filename: req.file.originalname,
       duplicateMode,
       user: req.user,
+      branchId: req.body.branchId, // Phase C-3 - resolved and validated server-side
     });
 
     res.json({ success: true, ...result });
@@ -65,7 +69,7 @@ exports.previewImport = async (req, res) => {
     console.error("BEGINNING BALANCE PREVIEW ERROR:", err);
     res
       .status(err.statusCode || 500)
-      .json({ message: err.message || "Failed to preview import", headers: err.headers });
+      .json({ message: err.message || "Failed to preview import", headers: err.headers, ...(err.statusCode && err.code ? { code: err.code } : {}) });
   }
 };
 
@@ -79,7 +83,7 @@ exports.commitImport = async (req, res) => {
       return res.status(400).json({ message: "batchId is required" });
     }
 
-    const result = await ImportService.commitImport({ module, batchId, user: req.user });
+    const result = await ImportService.commitImport({ module, batchId, user: req.user, branchId: req.body.branchId });
     res.json(result);
   } catch (err) {
     console.error("BEGINNING BALANCE COMMIT ERROR:", err);

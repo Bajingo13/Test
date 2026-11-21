@@ -9,6 +9,8 @@ const CurrencyService = require("./currencyService");
 const TransactionCurrencyService = require("./transactionCurrencyService");
 const BeginningBalanceCurrencyService = require("./beginningBalanceCurrencyService");
 const AccountingPeriodService = require("./accountingPeriodService");
+// Multi-Branch Phase C-3: an import belongs to ONE resolved branch.
+const BBBranch = require("./beginningBalanceBranchService");
 
 const TEMPLATE_VERSION = "1.0";
 
@@ -26,6 +28,7 @@ const GL_FIELD_ALIASES = {
   department: ["department", "dept"],
   project: ["project"],
   remarks: ["remarks", "notes"],
+  branchCode: ["branch code", "branch"],
 };
 
 // AR and AP share the exact same column shape - the only difference is
@@ -46,6 +49,7 @@ const PARTY_FIELD_ALIASES = {
   openingRate: ["opening exchange rate", "opening rate", "exchange rate"],
   rateDate: ["rate date"],
   referenceNo: ["reference number", "reference no", "reference"],
+  branchCode: ["branch code", "branch"],
 };
 
 function normalizeHeaderKey(header) {
@@ -104,8 +108,24 @@ async function buildCurrencyContext(companyId) {
   return { currenciesByCode, baseCurrencyCode, baseCurrencyId };
 }
 
-async function buildGLContext(companyId) {
-  const [accounts] = await pool.execute(`SELECT id, code, title FROM ${coaByCodeSql()} coa`);
+// Phase C-3: accounts usable in the import's branch - shared accounts plus
+// the branch's own (a code is unique within that set); a company without
+// branches sees shared accounts only (never another company's branch-only
+// accounts). Without a branch argument the original lookup is kept.
+function branchAccountsSql(branchId) {
+  if (branchId === undefined) return { sql: `${coaByCodeSql()}`, params: [] };
+  return branchId === null
+    ? { sql: "(SELECT * FROM chart_of_accounts WHERE branch_id IS NULL)", params: [] }
+    : { sql: "(SELECT * FROM chart_of_accounts WHERE branch_id IS NULL OR branch_id = ?)", params: [branchId] };
+}
+function branchPartySql(branchId) {
+  if (branchId === undefined) return { sql: "", params: [] };
+  return branchId === null ? { sql: " AND branch_id IS NULL", params: [] } : { sql: " AND (branch_id IS NULL OR branch_id = ?)", params: [branchId] };
+}
+
+async function buildGLContext(companyId, branchId) {
+  const coa = branchAccountsSql(branchId);
+  const [accounts] = await pool.execute(`SELECT id, code, title FROM ${coa.sql} coa`, coa.params);
   const accountsByCode = new Map();
   for (const a of accounts) {
     accountsByCode.set(ValidationService.normalizeCode(a.code), a);
@@ -119,22 +139,24 @@ async function buildGLContext(companyId) {
 // the same flags already used elsewhere in this app (coa_validations),
 // more precise than the manual entry page's "title contains receivable/
 // payable" heuristic, which is left untouched for the manual page itself.
-async function buildPartyContext(partyType, coaValidationFlag, companyId) {
+async function buildPartyContext(partyType, coaValidationFlag, companyId, branchId) {
+  const partyScope = branchPartySql(branchId);
   const [parties] = await pool.execute(
-    "SELECT id, code, name FROM general_libraries WHERE party_type = ? AND company_id = ?",
-    [partyType, companyId]
+    `SELECT id, code, name FROM general_libraries WHERE party_type = ? AND company_id = ?${partyScope.sql}`,
+    [partyType, companyId, ...partyScope.params]
   );
   const partiesByCode = new Map();
   for (const p of parties) {
     partiesByCode.set(ValidationService.normalizeCode(p.code), p);
   }
 
+  const coa = branchAccountsSql(branchId);
   const [accounts] = await pool.execute(
     `SELECT ca.id, ca.code, ca.title
-     FROM ${coaByCodeSql()} ca
+     FROM ${coa.sql} ca
      JOIN coa_validations cv ON cv.coa_id = ca.id
      WHERE cv.validation_name = ?`,
-    [coaValidationFlag]
+    [...coa.params, coaValidationFlag]
   );
   const accountsByCode = new Map();
   for (const a of accounts) {
@@ -148,11 +170,16 @@ async function buildPartyContext(partyType, coaValidationFlag, companyId) {
 // Detects rows that would collide with an EXISTING (already-committed) DB
 // record - distinct from findInFileDuplicates, which only looks within the
 // uploaded file itself.
-async function findExistingGLDuplicates(resolvedRows) {
+// Phase C-3: "already exists" = the same account + date in the SAME
+// company and branch (Branch A and Branch B each keep their own opening
+// balance for an account; another company's rows are never consulted).
+async function findExistingGLDuplicates(resolvedRows, { companyId, branchId = null } = {}) {
   const [existing] = await pool.execute(
     `SELECT l.account_code AS accountCode, DATE_FORMAT(h.balance_date, '%Y-%m-%d') AS balanceDate
      FROM gl_beginning_balance_lines l
-     JOIN gl_beginning_balance_headers h ON h.id = l.header_id`
+     JOIN gl_beginning_balance_headers h ON h.id = l.header_id
+     WHERE h.company_id = ? AND h.branch_id <=> ?`,
+    [companyId, branchId]
   );
 
   const existingKeys = new Set(
@@ -169,13 +196,15 @@ async function findExistingGLDuplicates(resolvedRows) {
 // numbering domains, matching normal accounting convention). Rows with no
 // Document Number are never flagged as existing-duplicates - uniqueness
 // only applies "where required" per the rule, i.e. when actually provided.
-async function findExistingARAPDuplicates(resolvedRows, balanceType) {
+// Phase C-3: scoped to the company - a document number stays unique across
+// the company's branches (never silently recorded twice in A and B).
+async function findExistingARAPDuplicates(resolvedRows, balanceType, { companyId } = {}) {
   const [existing] = await pool.execute(
     `SELECT l.invoice_no AS documentNumber
      FROM arap_beginning_balance_lines l
      JOIN arap_beginning_balance_headers h ON h.id = l.header_id
-     WHERE h.balance_type = ? AND l.invoice_no IS NOT NULL AND l.invoice_no != ''`,
-    [balanceType]
+     WHERE h.balance_type = ? AND h.company_id = ? AND l.invoice_no IS NOT NULL AND l.invoice_no != ''`,
+    [balanceType, companyId]
   );
 
   const existingDocNumbers = new Set(existing.map((r) => String(r.documentNumber).trim().toLowerCase()));
@@ -204,12 +233,12 @@ const MODULE_CONFIG = {
     fieldAliases: PARTY_FIELD_ALIASES,
     requiredColumns: ["partyCode", "accountCode", "balanceDate", "dueDate", "originalAmount"],
     validate: ValidationService.validateARRow,
-    buildContext: (companyId) => buildPartyContext("CUSTOMER", "AR CODE", companyId),
+    buildContext: (companyId, branchId) => buildPartyContext("CUSTOMER", "AR CODE", companyId, branchId),
     duplicateKeyFn: (r) => (r.documentNumber ? r.documentNumber.toLowerCase() : null),
     duplicateLabel: "Document Number",
     duplicateExistingMessage: "An AR beginning balance with this Document Number already exists in the system.",
     duplicateInFileMessage: "This Document Number appears more than once in the uploaded file.",
-    findExistingDuplicates: (rows) => findExistingARAPDuplicates(rows, "AR"),
+    findExistingDuplicates: (rows, scope) => findExistingARAPDuplicates(rows, "AR", scope),
     hasBalanceCheck: false,
     foreignTotalFields: ["originalAmount"],
   },
@@ -217,27 +246,52 @@ const MODULE_CONFIG = {
     fieldAliases: PARTY_FIELD_ALIASES,
     requiredColumns: ["partyCode", "accountCode", "balanceDate", "dueDate", "originalAmount"],
     validate: ValidationService.validateAPRow,
-    buildContext: (companyId) => buildPartyContext("SUPPLIER", "AP CODE", companyId),
+    buildContext: (companyId, branchId) => buildPartyContext("SUPPLIER", "AP CODE", companyId, branchId),
     duplicateKeyFn: (r) => (r.documentNumber ? r.documentNumber.toLowerCase() : null),
     duplicateLabel: "Document Number",
     duplicateExistingMessage: "An AP beginning balance with this Document Number already exists in the system.",
     duplicateInFileMessage: "This Document Number appears more than once in the uploaded file.",
-    findExistingDuplicates: (rows) => findExistingARAPDuplicates(rows, "AP"),
+    findExistingDuplicates: (rows, scope) => findExistingARAPDuplicates(rows, "AP", scope),
     hasBalanceCheck: false,
     foreignTotalFields: ["originalAmount"],
   },
 };
 
-async function validateAndScoreRows(module, dataRows, mapping, companyId) {
+// Phase C-3: an optional Branch Code column must name the import's branch -
+// a file row can never be filed under another branch than the one chosen.
+function branchCodeErrors(raw, branch) {
+  const code = String(raw?.branchCode ?? "").trim();
+  if (!code) return [];
+  if (branch && String(branch.code || "").trim().toUpperCase() === code.toUpperCase()) return [];
+  return [{
+    column: "Branch Code",
+    value: code,
+    message: branch
+      ? `Branch Code "${code}" does not match the selected branch (${branch.code}). Import each branch's balances separately.`
+      : `Branch Code "${code}" cannot be used: this company has no branches.`,
+  }];
+}
+
+async function loadBranch(branchId) {
+  if (branchId === null || branchId === undefined) return null;
+  const [[b]] = await pool.execute("SELECT id, code, name FROM branches WHERE id = ?", [branchId]);
+  return b || null;
+}
+
+async function validateAndScoreRows(module, dataRows, mapping, companyId, branch = null) {
   const cfg = MODULE_CONFIG[module];
-  const context = await cfg.buildContext(companyId);
+  const branchId = branch ? Number(branch.id) : null;
+  const context = await cfg.buildContext(companyId, branchId);
 
   const parsedRows = dataRows.map((rowValues) => rowValuesToObject(rowValues, mapping));
 
   const inFileDuplicateRowIdx = ValidationService.findInFileDuplicates(parsedRows, cfg.duplicateKeyFn);
 
-  const results = parsedRows.map((row) => cfg.validate(row, context));
-  const existingDuplicateFlags = await cfg.findExistingDuplicates(results.map((r) => r.resolved));
+  const results = parsedRows.map((row) => {
+    const result = cfg.validate(row, context);
+    return { ...result, errors: [...result.errors, ...branchCodeErrors(row, branch)] };
+  });
+  const existingDuplicateFlags = await cfg.findExistingDuplicates(results.map((r) => r.resolved), { companyId, branchId });
 
   return results.map((result, idx) => {
     const errors = [...result.errors];
@@ -267,19 +321,24 @@ async function validateAndScoreRows(module, dataRows, mapping, companyId) {
       warnings,
       // Store the field-mapped object, not the raw positional cell array -
       // commit re-validates by feeding this back into the same validator.
-      raw: parsedRows[idx],
+      // __scope (Phase C-3): the company + branch this batch was previewed
+      // for - commit refuses to file it anywhere else.
+      raw: { ...parsedRows[idx], __scope: { companyId: Number(companyId), branchId } },
       resolved: result.resolved,
     };
   });
 }
 
-async function previewImport({ module, buffer, filename, duplicateMode, user, companyId: requestedCompanyId }) {
+async function previewImport({ module, buffer, filename, duplicateMode, user, companyId: requestedCompanyId, branchId: requestedBranchId }) {
   const cfg = MODULE_CONFIG[module];
   if (!cfg) {
     throw Object.assign(new Error(`Unsupported module "${module}"`), { statusCode: 400 });
   }
 
   const companyId = await CurrencyService.resolveCompanyIdForWrite(user, requestedCompanyId);
+  // Phase C-3: authorized, active branch of this company (or NULL for a
+  // company without branches) - resolved before the file is even read.
+  const branch = await loadBranch(await BBBranch.resolveBeginningBalanceBranch(pool, user, { companyId, requestedBranchId }));
 
   const { headers, dataRows } = await extractRows(buffer, filename);
 
@@ -297,7 +356,7 @@ async function previewImport({ module, buffer, filename, duplicateMode, user, co
     );
   }
 
-  const scoredRows = await validateAndScoreRows(module, dataRows, mapping, companyId);
+  const scoredRows = await validateAndScoreRows(module, dataRows, mapping, companyId, branch);
 
   const validRows = scoredRows.filter((r) => r.status === "VALID" || r.status === "WARNING");
   const balanceSummary = cfg.hasBalanceCheck
@@ -372,6 +431,7 @@ async function previewImport({ module, buffer, filename, duplicateMode, user, co
 
   return {
     batchId,
+    branch: branch ? { id: Number(branch.id), code: branch.code, name: branch.name } : null,
     summary,
     rows: scoredRows.map((r) => ({
       rowNumber: r.rowNumber,
@@ -389,21 +449,19 @@ async function previewImport({ module, buffer, filename, duplicateMode, user, co
 // handler uses, plus a matching arap_payment_schedules row (schedule dates
 // beginning balances need one to appear consistently with manually-entered
 // ones in reports/aging that join through it).
-async function findOrCreateARAPHeader(conn, { balanceType, balanceDate, companyId }) {
-  const [existing] = await conn.execute(
-    `SELECT id FROM arap_beginning_balance_headers WHERE balance_type = ? AND balance_date = ? AND company_id = ? LIMIT 1`,
-    [balanceType, balanceDate, companyId]
-  );
-
-  if (existing.length > 0) return existing[0].id;
-
-  const [result] = await conn.execute(
-    `INSERT INTO arap_beginning_balance_headers (company_id, balance_type, balance_date, currency_code, currency_name, remarks, status)
-     VALUES (?, ?, ?, 'PHP', 'PHILIPPINE PESO', ?, 'Posted')`,
-    [companyId, balanceType, balanceDate, `Imported ${new Date().toISOString().slice(0, 10)}`]
-  );
-
-  return result.insertId;
+// Phase C-3: Company + Branch + type + date (+ the import's PHP header
+// currency) - see beginningBalanceBranchService.findOrCreateARAPHeader.
+async function findOrCreateARAPHeader(conn, { balanceType, balanceDate, companyId, branchId = null }) {
+  return BBBranch.findOrCreateARAPHeader(conn, {
+    companyId,
+    branchId,
+    balanceType,
+    balanceDate,
+    currencyCode: "PHP",
+    currencyName: "PHILIPPINE PESO",
+    remarks: `Imported ${new Date().toISOString().slice(0, 10)}`,
+    status: "Posted",
+  });
 }
 
 async function insertARAPLine(conn, headerId, row, isAR, { user, companyId, txnType }) {
@@ -488,7 +546,7 @@ async function insertARAPLine(conn, headerId, row, isAR, { user, companyId, txnT
   );
 }
 
-async function commitImport({ module, batchId, user, companyId: requestedCompanyId }) {
+async function commitImport({ module, batchId, user, companyId: requestedCompanyId, branchId: requestedBranchId }) {
   const cfg = MODULE_CONFIG[module];
   if (!cfg) {
     throw Object.assign(new Error(`Unsupported module "${module}"`), { statusCode: 400 });
@@ -517,15 +575,31 @@ async function commitImport({ module, batchId, user, companyId: requestedCompany
     [batchId]
   );
 
+  // Phase C-3: the batch is filed only in the company + branch it was
+  // previewed for. Another company's batch answers like a missing one; the
+  // branch is re-resolved for THIS user (authority / ACTIVE re-checked).
+  const storedScope = storedRows[0]?.raw_data?.__scope || null;
+  if (storedScope && Number(storedScope.companyId) !== Number(companyId)) {
+    throw Object.assign(new Error("Import batch not found"), { statusCode: 404 });
+  }
+  const scopeRequested = requestedBranchId !== undefined && requestedBranchId !== null && requestedBranchId !== ""
+    ? requestedBranchId
+    : storedScope?.branchId ?? undefined;
+  const branchId = await BBBranch.resolveBeginningBalanceBranch(pool, user, { companyId, requestedBranchId: scopeRequested });
+  if (storedScope && (storedScope.branchId ?? null) !== (branchId ?? null)) {
+    throw Object.assign(new Error("This import was previewed for a different branch. Re-run Preview for the branch you want to import into."), { statusCode: 409, code: "IMPORT_BRANCH_MISMATCH" });
+  }
+  const branch = await loadBranch(branchId);
+
   // Re-validate against FRESH context - do not trust preview's stored
   // status, since master data (accounts/parties/currencies) may have
   // changed since.
-  const context = await cfg.buildContext(companyId);
+  const context = await cfg.buildContext(companyId, branchId);
 
   const revalidated = storedRows.map((stored) => {
     const raw = stored.raw_data; // mysql2 already parses JSON columns
     const result = cfg.validate(raw, context);
-    return { rowNum: stored.row_num, errors: result.errors, warnings: result.warnings, resolved: result.resolved };
+    return { rowNum: stored.row_num, errors: [...result.errors, ...branchCodeErrors(raw, branch)], warnings: result.warnings, resolved: result.resolved };
   });
 
   const insertable = revalidated.filter((r) => r.errors.length === 0);
@@ -538,7 +612,7 @@ async function commitImport({ module, batchId, user, companyId: requestedCompany
     insertable.map((r) => r.resolved),
     cfg.duplicateKeyFn
   );
-  const existingDuplicateFlags = await cfg.findExistingDuplicates(insertable.map((r) => r.resolved));
+  const existingDuplicateFlags = await cfg.findExistingDuplicates(insertable.map((r) => r.resolved), { companyId, branchId });
 
   const toInsert = [];
   const skippedDuplicates = [];
@@ -577,9 +651,11 @@ async function commitImport({ module, batchId, user, companyId: requestedCompany
 
   const conn = await pool.getConnection();
   let imported = 0;
+  const lockKind = module === "gl" ? "gl" : "arap";
 
   try {
     await conn.beginTransaction();
+    await BBBranch.acquireHeaderLock(conn, lockKind, companyId);
 
     // Checkpoint 5 section 26: validate EVERY distinct row date against
     // period lock before inserting anything - one closed-period row blocks
@@ -602,6 +678,7 @@ async function commitImport({ module, batchId, user, companyId: requestedCompany
             balanceDate: dateKey,
             title: `Imported ${new Date().toISOString().slice(0, 10)}`,
             companyId,
+            branchId,
           });
           headerCache.set(dateKey, headerId);
         }
@@ -638,7 +715,7 @@ async function commitImport({ module, batchId, user, companyId: requestedCompany
       for (const row of toInsert) {
         const dateKey = row.resolved.balanceDate;
         if (!headerCache.has(dateKey)) {
-          const headerId = await findOrCreateARAPHeader(conn, { balanceType, balanceDate: dateKey, companyId });
+          const headerId = await findOrCreateARAPHeader(conn, { balanceType, balanceDate: dateKey, companyId, branchId });
           headerCache.set(dateKey, headerId);
         }
 
@@ -659,7 +736,7 @@ async function commitImport({ module, batchId, user, companyId: requestedCompany
       companyId,
       action: "COMMIT",
       description: `${module.toUpperCase()} beginning balance import committed: ${imported} row(s) imported, ${skippedDuplicates.length} skipped as duplicates, from file "${batch.file_name || "unknown"}"`,
-      afterData: { imported, skippedDuplicates: skippedDuplicates.length, templateVersion: TEMPLATE_VERSION },
+      afterData: { imported, skippedDuplicates: skippedDuplicates.length, templateVersion: TEMPLATE_VERSION, branchId },
       user,
     });
 
@@ -668,12 +745,14 @@ async function commitImport({ module, batchId, user, companyId: requestedCompany
     await conn.rollback();
     throw err;
   } finally {
+    await BBBranch.releaseHeaderLock(conn, lockKind, companyId);
     conn.release();
   }
 
   return {
     success: true,
     batchId,
+    branchId,
     imported,
     skippedDuplicates: skippedDuplicates.length,
   };

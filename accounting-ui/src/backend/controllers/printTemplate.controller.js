@@ -4,6 +4,9 @@ const Service = require("../services/printTemplateService");
 const CurrencyService = require("../services/currencyService");
 const DataService = require("../services/transactionPrintDataService");
 const { HttpError } = require("../lib/httpError");
+// Multi-Branch Phase C-3: a preview loads a real transaction - same branch
+// isolation as printing it.
+const TransactionBranchEnforcement = require("../services/transactionBranchEnforcement");
 
 async function resolveCompanyId(req) {
   return CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId || req.body?.companyId);
@@ -147,7 +150,8 @@ exports.preview = async (req, res) => {
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.body?.companyId);
 
     const normalizedConfig = Service.mergeAndValidateConfig(moduleType, config);
-    const result = await DataService.getTransactionDocument(moduleType, transactionId, { withEntries: false, companyId });
+    const branchScope = await TransactionBranchEnforcement.printScope(req.user, companyId);
+    const result = await DataService.getTransactionDocument(moduleType, transactionId, { withEntries: false, companyId, branchScope });
 
     result.templateConfig = normalizedConfig;
     result.templateMeta = { source: "preview", templateId: null, templateName: null };

@@ -2,6 +2,8 @@ const pool = require("../db");
 const { coaByCodeSql } = require("./coaLookupService"); // one COA row per code (Phase B branch-reused codes)
 const { buildMultiSheetXlsxTemplate } = require("./TemplateExportService");
 const { TEMPLATE_VERSION } = require("./beginningBalanceImportService");
+// Multi-Branch Phase C-3: a template is for one resolved branch.
+const BBBranch = require("./beginningBalanceBranchService");
 
 // Company-scoped (Checkpoint: Companies Contact/BIR Fields) - previously
 // read the single global company_profile row (LIMIT 1, no companyId at
@@ -16,10 +18,11 @@ async function getCompanyName(companyId) {
   }
 }
 
-function generatedMeta(module, companyName) {
+function generatedMeta(module, companyName, branch = null) {
   const now = new Date();
   return [
     `Company: ${companyName}`,
+    ...(branch ? [`Branch: ${branch.code} - ${branch.name}`] : []),
     `Module: ${module.toUpperCase()}_BEGINNING_BALANCE`,
     `Template Version: ${TEMPLATE_VERSION}`,
     `Generated: ${now.toISOString().slice(0, 19).replace("T", " ")}`,
@@ -58,11 +61,20 @@ function buildCsvTemplate(columns, sampleRow) {
   return rows.map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(",")).join("\n");
 }
 
-async function buildGLTemplate(format, companyId) {
+// Accounts usable in the template's branch (shared + the branch's own; a
+// company without branches: shared only). No branch argument: original list.
+function scopedCoaSql(scope) {
+  if (!scope) return { sql: coaByCodeSql(), params: [] };
+  return scope.branch
+    ? { sql: "(SELECT * FROM chart_of_accounts WHERE branch_id IS NULL OR branch_id = ?)", params: [scope.branch.id] }
+    : { sql: "(SELECT * FROM chart_of_accounts WHERE branch_id IS NULL)", params: [] };
+}
+
+async function buildGLTemplate(format, companyId, scope = null) {
   const companyName = await getCompanyName(companyId);
 
   const [accounts] = await pool.execute(
-    `SELECT code, title, account_class AS accountClass FROM ${coaByCodeSql()} coa ORDER BY code ASC`
+    `SELECT code, title, account_class AS accountClass FROM ${scopedCoaSql(scope).sql} coa ORDER BY code ASC`, scopedCoaSql(scope).params
   );
 
   const currencies = await getCurrencies(companyId);
@@ -114,7 +126,7 @@ async function buildGLTemplate(format, companyId) {
         type: "instructions",
         name: "Instructions",
         title: "GL Beginning Balance Import - Instructions",
-        meta: generatedMeta("gl", companyName),
+        meta: generatedMeta("gl", companyName, scope?.branch),
         sections: [
           {
             heading: "Required Columns",
@@ -234,7 +246,7 @@ const PARTY_COLUMNS = [
 // AR and AP templates are structurally identical - only the party type
 // (Customer/Supplier), the COA validation flag (AR CODE/AP CODE), and
 // labels differ, so one function builds both.
-async function buildPartyTemplate(module, format, companyId) {
+async function buildPartyTemplate(module, format, companyId, scope = null) {
   const isAR = module === "ar";
   const partyLabel = isAR ? "Customer" : "Supplier";
   const partyType = isAR ? "CUSTOMER" : "SUPPLIER";
@@ -243,18 +255,20 @@ async function buildPartyTemplate(module, format, companyId) {
 
   const companyName = await getCompanyName(companyId);
 
+  const partyBranchSql = !scope ? "" : scope.branch ? " AND (branch_id IS NULL OR branch_id = ?)" : " AND branch_id IS NULL";
   const [parties] = await pool.execute(
-    "SELECT code, name FROM general_libraries WHERE party_type = ? AND company_id = ? ORDER BY code ASC",
-    [partyType, companyId]
+    `SELECT code, name FROM general_libraries WHERE party_type = ? AND company_id = ?${partyBranchSql} ORDER BY code ASC`,
+    [partyType, companyId, ...(scope?.branch ? [scope.branch.id] : [])]
   );
 
+  const coa = scopedCoaSql(scope);
   const [accounts] = await pool.execute(
     `SELECT ca.code, ca.title
-     FROM ${coaByCodeSql()} ca
+     FROM ${coa.sql} ca
      JOIN coa_validations cv ON cv.coa_id = ca.id
      WHERE cv.validation_name = ?
      ORDER BY ca.code ASC`,
-    [coaFlag]
+    [...coa.params, coaFlag]
   );
 
   const currencies = await getCurrencies(companyId);
@@ -315,7 +329,7 @@ async function buildPartyTemplate(module, format, companyId) {
         type: "instructions",
         name: "Instructions",
         title: `${docPrefix} Beginning Balance Import - Instructions`,
-        meta: generatedMeta(module, companyName),
+        meta: generatedMeta(module, companyName, scope?.branch),
         sections: [
           {
             heading: "Required Columns",
@@ -401,9 +415,17 @@ async function buildPartyTemplate(module, format, companyId) {
   return buffer;
 }
 
-async function buildTemplate(module, format, companyId) {
-  if (module === "gl") return buildGLTemplate(format, companyId);
-  if (module === "ar" || module === "ap") return buildPartyTemplate(module, format, companyId);
+// { user, requestedBranchId }: resolved exactly like a save (authority,
+// company, ACTIVE; one authorized branch -> automatic; several -> required).
+async function buildTemplate(module, format, companyId, { user = null, requestedBranchId } = {}) {
+  let scope = null;
+  if (user) {
+    const branchId = await BBBranch.resolveBeginningBalanceBranch(pool, user, { companyId, requestedBranchId });
+    const [[branch]] = branchId ? await pool.execute("SELECT id, code, name FROM branches WHERE id = ?", [branchId]) : [[null]];
+    scope = { branch: branch || null };
+  }
+  if (module === "gl") return buildGLTemplate(format, companyId, scope);
+  if (module === "ar" || module === "ap") return buildPartyTemplate(module, format, companyId, scope);
   throw Object.assign(new Error(`Template for module "${module}" is not available yet`), { statusCode: 400 });
 }
 

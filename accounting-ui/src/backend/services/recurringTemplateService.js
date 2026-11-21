@@ -2,6 +2,10 @@ const pool = require("../db");
 const { HttpError } = require("../lib/httpError");
 const DateService = require("./recurringDateService");
 const ValidationService = require("./recurringValidationService");
+// Multi-Branch Phase C-3: a template belongs to one branch; what it
+// generates stays in that branch.
+const TransactionBranchEnforcement = require("./transactionBranchEnforcement");
+const RECURRING_BRANCH_MESSAGE = "Select the branch this recurring template belongs to.";
 
 // Per-module table/column shape needed to bootstrap a template from an
 // existing saved transaction. Same MODULE_CONFIG-driven pattern proven in
@@ -57,18 +61,22 @@ const SOURCE_MODULE_CONFIG = {
   },
 };
 
-async function createTemplateFromTransaction(moduleType, transactionId, userId, companyId) {
+async function createTemplateFromTransaction(moduleType, transactionId, userId, companyId, user = null) {
   const cfg = SOURCE_MODULE_CONFIG[moduleType];
   if (!cfg) throw new HttpError(400, `Recurring templates from an existing transaction aren't supported yet for: ${moduleType}`);
 
   const partyIdExpr = cfg.partyIdCol ? `${cfg.partyIdCol} AS partyId` : "NULL AS partyId";
   const [headers] = await pool.execute(
-    `SELECT ${partyIdExpr}, ${cfg.partyNameCol} AS partyName, description, currency_id AS currencyId
+    `SELECT ${partyIdExpr}, ${cfg.partyNameCol} AS partyName, description, currency_id AS currencyId, branch_id AS branchId
      FROM ${cfg.headerTable} WHERE id = ? AND company_id = ?`,
     [transactionId, companyId]
   );
   if (headers.length === 0) throw new HttpError(404, "Source transaction not found.");
   const header = headers[0];
+  // Phase C-3: another branch's transaction answers exactly like a missing one.
+  if (user && (await TransactionBranchEnforcement.canSee(user, companyId, header.branchId)) !== true) {
+    throw new HttpError(404, "Source transaction not found.");
+  }
 
   const [lineRows] = await pool.execute(
     `SELECT account_id AS accountId, account_code AS accountCode, account_title AS accountTitle,
@@ -87,6 +95,8 @@ async function createTemplateFromTransaction(moduleType, transactionId, userId, 
     // defaulting to base currency and relying on the user to remember to
     // change it.
     sourceCurrencyId: header.currencyId || null,
+    // Phase C-3: the template inherits the source transaction's branch.
+    sourceBranchId: header.branchId ?? null,
     lines: lineRows.map((l) => ({
       accountId: l.accountId,
       accountCode: l.accountCode,
@@ -145,7 +155,28 @@ async function validateCurrencyPolicy({ currencyId, ratePolicy, fixedRate, compa
   return { currencyId, ratePolicy: policy, fixedRate: null };
 }
 
-async function createTemplate(input, userId, companyId = null) {
+// Phase C-3: the template's branch is resolved server-side for `user`
+// (exactly like a manual transaction: authority, company, ACTIVE; one
+// authorized branch -> automatic; several -> BRANCH_REQUIRED) and its party /
+// accounts must be shared or that branch's own.
+async function resolveTemplateBranch(db, user, { companyId, requestedBranchId, partyId, lines }) {
+  let branchId;
+  try {
+    branchId = await TransactionBranchEnforcement.resolveCreateBranch(db, user, { companyId, requestedBranchId });
+  } catch (err) {
+    if (err.code === "BRANCH_REQUIRED") throw new HttpError(400, RECURRING_BRANCH_MESSAGE, "BRANCH_REQUIRED");
+    throw err;
+  }
+  await TransactionBranchEnforcement.validateReferences(db, {
+    companyId,
+    branchId,
+    partyIds: partyId ? [partyId] : [],
+    lines: (lines || []).map((l) => ({ accountId: l.accountId ?? l.account_id, genRef: l.genRef ?? l.gen_ref })),
+  });
+  return branchId;
+}
+
+async function createTemplate(input, userId, companyId = null, user = null) {
   const { moduleType, templateName, partyId, partyName, descriptionTemplate, currency, currencyId, ratePolicy, fixedRate, amountMode, amountConfig, dueDateRule, lines, schedule } = input;
 
   ValidationService.validateTemplateInput({
@@ -163,6 +194,10 @@ async function createTemplate(input, userId, companyId = null) {
 
   const currencyPolicy = await validateCurrencyPolicy({ currencyId, ratePolicy, fixedRate, companyId });
 
+  const branchId = user && companyId
+    ? await resolveTemplateBranch(pool, user, { companyId, requestedBranchId: input.branchId, partyId, lines })
+    : null;
+
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
@@ -173,14 +208,14 @@ async function createTemplate(input, userId, companyId = null) {
     // instead of guessing "the first company in the table".
     const [templateResult] = await conn.execute(
       `INSERT INTO recurring_transaction_templates
-        (module_type, template_name, party_id, party_name, description_template, currency, amount_mode, amount_config, due_date_rule, status, created_by, updated_by, currency_id, rate_policy, fixed_rate, company_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?, ?, ?, ?)`,
+        (module_type, template_name, party_id, party_name, description_template, currency, amount_mode, amount_config, due_date_rule, status, created_by, updated_by, currency_id, rate_policy, fixed_rate, company_id, branch_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?, ?, ?, ?, ?)`,
       [
         moduleType, templateName, partyId || null, partyName || null, descriptionTemplate || null,
         currency || "PHP", amountMode || "FIXED", JSON.stringify(amountConfig || {}),
         JSON.stringify(dueDateRule || { mode: "SAME_AS_TRANSACTION_DATE" }),
         userId, userId,
-        currencyPolicy.currencyId, currencyPolicy.ratePolicy, currencyPolicy.fixedRate, companyId,
+        currencyPolicy.currencyId, currencyPolicy.ratePolicy, currencyPolicy.fixedRate, companyId, branchId,
       ]
     );
     const templateId = templateResult.insertId;
@@ -233,7 +268,7 @@ async function createTemplate(input, userId, companyId = null) {
     );
 
     await conn.commit();
-    return { templateId, scheduleId: scheduleResult.insertId, nextRunDate: firstRunDate };
+    return { templateId, scheduleId: scheduleResult.insertId, nextRunDate: firstRunDate, branchId };
   } catch (err) {
     await conn.rollback();
     throw err;
@@ -277,10 +312,14 @@ function parseScheduleRow(row) {
   };
 }
 
-async function getTemplateById(id, companyId) {
+async function getTemplateById(id, companyId, { user = null } = {}) {
   const [templates] = await pool.execute("SELECT * FROM recurring_transaction_templates WHERE id = ? AND company_id = ?", [id, companyId]);
   if (templates.length === 0) throw new HttpError(404, "Recurring template not found.");
   const template = templates[0];
+  // Phase C-3: another branch's template answers exactly like a missing one.
+  if (user && (await TransactionBranchEnforcement.canSee(user, companyId, template.branch_id)) !== true) {
+    throw new HttpError(404, "Recurring template not found.");
+  }
   template.amount_config = parseJsonColumn(template.amount_config, {});
   template.due_date_rule = parseJsonColumn(template.due_date_rule, {});
 
@@ -298,9 +337,10 @@ async function getTemplateById(id, companyId) {
   return { template, lines, schedule };
 }
 
-async function listTemplates({ moduleType, status, companyId } = {}) {
+async function listTemplates({ moduleType, status, companyId, visibilitySql = "1 = 1" } = {}) {
   const params = [companyId];
-  let where = "WHERE t.company_id = ?";
+  // Phase C-3: visibilitySql = the caller's branch predicate on alias t.
+  let where = `WHERE t.company_id = ? AND ${visibilitySql}`;
   if (moduleType) {
     where += " AND t.module_type = ?";
     params.push(moduleType);
@@ -320,7 +360,7 @@ async function listTemplates({ moduleType, status, companyId } = {}) {
     `SELECT
       t.id, t.module_type, t.template_name, t.party_name, t.status,
       t.currency_id, cur.currency_code AS currencyCode, t.rate_policy, t.fixed_rate,
-      t.created_by, t.created_at,
+      t.created_by, t.created_at, t.branch_id, br.name AS branch_name,
       s.id AS scheduleId, s.frequency, s.start_date, s.end_date,
       s.next_run_date, s.last_run_date, s.generated_count, s.max_occurrences,
       s.is_active, s.is_paused,
@@ -328,6 +368,7 @@ async function listTemplates({ moduleType, status, companyId } = {}) {
     FROM recurring_transaction_templates t
     LEFT JOIN recurring_transaction_schedules s ON s.template_id = t.id
     LEFT JOIN currencies cur ON cur.id = t.currency_id
+    LEFT JOIN branches br ON br.id = t.branch_id
     LEFT JOIN recurring_transaction_occurrences lo ON lo.id = (
       SELECT id FROM recurring_transaction_occurrences
       WHERE schedule_id = s.id ORDER BY id DESC LIMIT 1
@@ -535,6 +576,7 @@ async function getHistory(scheduleId) {
 }
 
 module.exports = {
+  resolveTemplateBranch,
   createTemplateFromTransaction,
   createTemplate,
   getTemplateById,

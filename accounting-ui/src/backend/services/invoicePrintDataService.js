@@ -93,7 +93,9 @@ async function getCustomerFacingItems(invoiceId, useForeignAmount) {
     });
 }
 
-async function getInvoicePrintViewModel({ id, companyId, requestedTemplateId, withEntries = false }) {
+// Multi-Branch Phase C-3: branchScope / expectBranchId are passed straight to
+// transactionPrintDataService (another branch's invoice -> 404).
+async function getInvoicePrintViewModel({ id, companyId, requestedTemplateId, withEntries = false, branchScope = null, expectBranchId }) {
   if (!id) throw new HttpError(400, "Invoice id is required.");
 
   // Reuses the exact same authoritative, company-scoped data the existing
@@ -106,6 +108,8 @@ async function getInvoicePrintViewModel({ id, companyId, requestedTemplateId, wi
   const base = await TransactionPrintDataService.getTransactionDocument("invoice", id, {
     withEntries,
     companyId,
+    branchScope,
+    expectBranchId,
   });
   const { doc, party, company, outputVat, entriesSummary, lines } = base;
 
@@ -263,6 +267,8 @@ async function getInvoicePrintViewModel({ id, companyId, requestedTemplateId, wi
 
   return {
     document,
+    // Phase C-3: the invoice's branch (null for a company-level invoice).
+    branch: doc.branch || null,
     seller,
     customer,
     items,

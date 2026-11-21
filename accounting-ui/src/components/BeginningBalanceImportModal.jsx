@@ -54,7 +54,9 @@ function formatMoney(value) {
 // back, never row data, so what gets saved is exactly what was previewed
 // and then re-validated fresh at commit time. One component, parameterized
 // by `module` ("gl" | "ar" | "ap"), reused by every Beginning Balance page.
-export default function BeginningBalanceImportModal({ open, module, onClose, onImported }) {
+// Multi-Branch Phase C-3: branchId = the branch chosen on the page; the
+// server resolves / validates it and pins the batch to it at preview.
+export default function BeginningBalanceImportModal({ open, module, onClose, onImported, branchId = "" }) {
   const [step, setStep] = useState("upload");
   const [file, setFile] = useState(null);
   const [duplicateMode, setDuplicateMode] = useState("REJECT");
@@ -132,6 +134,7 @@ export default function BeginningBalanceImportModal({ open, module, onClose, onI
       const formData = new FormData();
       formData.append("file", file);
       formData.append("duplicateMode", duplicateMode);
+      if (branchId) formData.append("branchId", String(branchId));
 
       const res = await fetch(`${API_BASE}/api/beginning-balances/${module}/import/preview`, {
         method: "POST",
@@ -168,7 +171,7 @@ export default function BeginningBalanceImportModal({ open, module, onClose, onI
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json", ...authHeaders() },
-        body: JSON.stringify({ batchId: previewResult.batchId }),
+        body: JSON.stringify({ batchId: previewResult.batchId, ...(branchId ? { branchId: Number(branchId) } : {}) }),
       });
 
       const data = await res.json();
@@ -328,6 +331,9 @@ export default function BeginningBalanceImportModal({ open, module, onClose, onI
 
           {step === "preview" && summary && (
             <>
+              {previewResult?.branch ? (
+                <div className="bbim-branch-note">Importing into branch: <strong>{previewResult.branch.code} - {previewResult.branch.name}</strong></div>
+              ) : null}
               <div className="bbim-summary-grid">
                 <div className="bbim-summary-item">
                   <div className="label">Total Rows</div>

@@ -4,6 +4,7 @@ import "./RecurringTransactions.css";
 import "../../components/RecurringTemplateModal.css";
 import RecurringGenerateNowModal from "../../components/RecurringGenerateNowModal";
 import RecurringHistoryModal from "../../components/RecurringHistoryModal";
+import useAuthorizedBranches from "../../hooks/useAuthorizedBranches";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
 
@@ -28,6 +29,10 @@ function statusBadge(t) {
 }
 
 export default function RecurringTransactions() {
+  // Multi-Branch Phase C-3: the list is branch-filtered by the server; the
+  // Branch column shows each template's branch when the company has branches.
+  const { branches: userBranches } = useAuthorizedBranches();
+  const showBranch = userBranches.length > 0;
   const [templates, setTemplates] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -155,6 +160,7 @@ export default function RecurringTransactions() {
           <thead>
             <tr>
               <th>Template Name</th>
+              {showBranch ? <th>Branch</th> : null}
               <th>Type</th>
               <th>Customer/Supplier</th>
               <th>Currency</th>
@@ -168,16 +174,17 @@ export default function RecurringTransactions() {
           </thead>
           <tbody>
             {loading && (
-              <tr><td colSpan={10} className="rtx-empty">Loading...</td></tr>
+              <tr><td colSpan={showBranch ? 11 : 10} className="rtx-empty">Loading...</td></tr>
             )}
             {!loading && templates.length === 0 && (
-              <tr><td colSpan={10} className="rtx-empty">No recurring templates yet. Open a saved Invoice and click "Make Recurring" to create one.</td></tr>
+              <tr><td colSpan={showBranch ? 11 : 10} className="rtx-empty">No recurring templates yet. Open a saved Invoice and click "Make Recurring" to create one.</td></tr>
             )}
             {!loading && templates.map((t) => {
               const badge = statusBadge(t);
               return (
                 <tr key={t.id}>
                   <td>{t.template_name}</td>
+                  {showBranch ? <td>{t.branch_name || "—"}</td> : null}
                   <td>{MODULE_LABELS[t.module_type] || t.module_type}</td>
                   <td>{t.party_name || "-"}</td>
                   <td>{t.currencyCode || "PHP"}</td>

@@ -296,3 +296,10 @@
     grid-template-columns: repeat(2, 1fr);
   }
 }
+
+/* Multi-Branch Phase C-3: the branch the previewed batch is pinned to. */
+.bbim-branch-note {
+  margin-bottom: 12px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}

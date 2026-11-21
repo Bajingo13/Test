@@ -46,6 +46,7 @@ const COAImportService = require("./services/COAImportService");
 const GroupCodeImportService = require("./services/GroupCodeImportService");
 const GenLibImportService = require("./services/GenLibImportService");
 const GLBeginningBalanceService = require("./services/GLBeginningBalanceService");
+const BeginningBalanceBranchService = require("./services/beginningBalanceBranchService"); // Multi-Branch Phase C-3
 const BeginningBalanceCurrencyService = require("./services/beginningBalanceCurrencyService");
 const TrialBalanceDifferenceService = require("./services/trialBalanceDifferenceService");
 const TrialBalanceCheckerService = require("./services/trialBalanceCheckerService");
@@ -8179,11 +8180,15 @@ app.get("/api/arap-beginning-balances/:type", authenticateToken, authorizePermis
   try {
     const { type } = req.params;
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+    // Multi-Branch Phase C-3: only headers of the user's authorized branches.
+    const bbVisibleSql = await BeginningBalanceBranchService.visibleSql(req.user, companyId, "h");
 
     const [rows] = await pool.execute(
       `
       SELECT
         l.id,
+        h.branch_id AS branchId,
+        br.name AS branchName,
         h.balance_type AS balanceType,
         DATE_FORMAT(h.balance_date, '%Y-%m-%d') AS balanceDate,
         h.currency_code AS currencyCode,
@@ -8208,8 +8213,9 @@ app.get("/api/arap-beginning-balances/:type", authenticateToken, authorizePermis
         DATE_FORMAT(s.schedule_date, '%Y-%m-%d') AS scheduleDate
       FROM arap_beginning_balance_lines l
       JOIN arap_beginning_balance_headers h ON h.id = l.header_id
+      LEFT JOIN branches br ON br.id = h.branch_id
       LEFT JOIN arap_payment_schedules s ON s.beginning_balance_line_id = l.id
-      WHERE h.balance_type = ? AND h.company_id = ?
+      WHERE h.balance_type = ? AND h.company_id = ? AND ${bbVisibleSql}
       ORDER BY l.id DESC
       `,
       [type, companyId]
@@ -8239,6 +8245,7 @@ app.get("/api/arap-beginning-balances/:type", authenticateToken, authorizePermis
 
 app.post("/api/arap-beginning-balances", authenticateToken, authorizePermission("FILESETUP.BEGINNING_BALANCES", "CREATE"), async (req, res) => {
   const conn = await pool.getConnection();
+  let bbLockCompanyId = null;
 
   try {
     const {
@@ -8261,6 +8268,14 @@ app.post("/api/arap-beginning-balances", authenticateToken, authorizePermission(
     // relevant opening period is closed.
     await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate: balanceDate, operation: "CREATE", user: req.user }, conn);
 
+    // Multi-Branch Phase C-3: the branch is resolved server-side (never
+    // trusted from the request); the party and account must be shared or the
+    // branch's own.
+    const bbBranchId = await BeginningBalanceBranchService.resolveBeginningBalanceBranch(conn, req.user, { companyId, requestedBranchId: req.body.branchId });
+    await BeginningBalanceBranchService.validateBeginningBalanceReferences(conn, {
+      companyId, branchId: bbBranchId, partyIds: [line.partyId], accountIds: [line.accountId],
+    });
+
     const currencyResult = await BeginningBalanceCurrencyService.resolveLineCurrency({
       user: req.user,
       companyId,
@@ -8279,24 +8294,21 @@ app.post("/api/arap-beginning-balances", authenticateToken, authorizePermission(
     });
     const foreignOriginal = converted.foreignDebit || converted.foreignCredit;
 
-    const [headerResult] = await conn.execute(
-      `
-      INSERT INTO arap_beginning_balance_headers
-      (company_id, balance_type, balance_date, currency_code, currency_name, remarks, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-      `,
-      [
-        companyId,
-        balanceType,
-        balanceDate,
-        currencyCode || "PHP",
-        currencyName || "PHILIPPINE PESO",
-        remarks || "",
-        "Posted",
-      ]
-    );
-
-    const headerId = headerResult.insertId;
+    // Phase C-3: one header per Company + Branch + type + date (+ header
+    // currency) - a second line for the same key joins the existing header
+    // instead of creating a duplicate one (previously one header per line).
+    await BeginningBalanceBranchService.acquireHeaderLock(conn, "arap", companyId);
+    bbLockCompanyId = companyId;
+    const headerId = await BeginningBalanceBranchService.findOrCreateARAPHeader(conn, {
+      companyId,
+      branchId: bbBranchId,
+      balanceType,
+      balanceDate,
+      currencyCode: currencyCode || "PHP",
+      currencyName: currencyName || "PHILIPPINE PESO",
+      remarks: remarks || "",
+      status: "Posted",
+    });
 
     const [lineResult] = await conn.execute(
       `
@@ -8399,19 +8411,20 @@ app.post("/api/arap-beginning-balances", authenticateToken, authorizePermission(
       afterData: {
         partyName: line.partyName, referenceNo: line.referenceNo,
         debit: converted.baseDebit, credit: converted.baseCredit,
-        balanceDate,
+        balanceDate, branchId: bbBranchId,
       },
       user: req.user,
     });
 
     await conn.commit();
 
-    res.json({ success: true, message: "Beginning balance saved successfully" });
+    res.json({ success: true, message: "Beginning balance saved successfully", headerId, branchId: bbBranchId });
   } catch (err) {
     await conn.rollback();
     console.error("SAVE ARAP BB ERROR:", err);
     res.status(err.statusCode || 500).json({ message: err.message || "Failed to save AR/AP beginning balance", ...(err.statusCode && err.code ? { code: err.code } : {}) });
   } finally {
+    if (bbLockCompanyId) await BeginningBalanceBranchService.releaseHeaderLock(conn, "arap", bbLockCompanyId);
     conn.release();
   }
 });
@@ -8429,7 +8442,7 @@ app.put("/api/arap-beginning-balances", authenticateToken, authorizePermission("
     const [existingRows] = await conn.execute(
       `SELECT l.id, l.foreign_paid_amount AS foreignPaidAmount, l.party_name AS partyName, l.reference_no AS referenceNo,
               l.debit AS debit, l.credit AS credit, h.balance_type AS balanceType, h.balance_date AS balanceDate, h.company_id AS companyId,
-              s.schedule_date AS existingScheduleDate
+              h.branch_id AS branchId, s.schedule_date AS existingScheduleDate
        FROM arap_beginning_balance_lines l JOIN arap_beginning_balance_headers h ON h.id = l.header_id
        LEFT JOIN arap_payment_schedules s ON s.beginning_balance_line_id = l.id
        WHERE l.id = ?`,
@@ -8441,9 +8454,15 @@ app.put("/api/arap-beginning-balances", authenticateToken, authorizePermission("
     const existing = existingRows[0];
     const txnType = existing.balanceType === "AP" ? "AP_BEGINNING" : "AR_BEGINNING";
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, requestedCompanyId);
-    if (existing.companyId !== companyId) {
+    // Phase C-3: another branch's line answers exactly like a missing one.
+    if (existing.companyId !== companyId || !(await BeginningBalanceBranchService.canSeeHeader(req.user, companyId, existing.branchId))) {
       return res.status(404).json({ message: "Beginning balance line not found" });
     }
+    // The line keeps its header's branch; the edited party / account must be
+    // usable there.
+    await BeginningBalanceBranchService.validateBeginningBalanceReferences(conn, {
+      companyId, branchId: existing.branchId, partyIds: [line.partyId], accountIds: [line.accountId],
+    });
 
     await conn.beginTransaction();
 
@@ -8624,12 +8643,13 @@ app.delete("/api/arap-beginning-balances/:id", authenticateToken, authorizePermi
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId || req.body?.companyId);
 
     const [ownerRows] = await pool.execute(
-      `SELECT h.company_id AS companyId, h.balance_date AS balanceDate, h.balance_type AS balanceType,
+      `SELECT h.company_id AS companyId, h.balance_date AS balanceDate, h.balance_type AS balanceType, h.branch_id AS branchId,
               l.party_name AS partyName, l.reference_no AS referenceNo, l.debit AS debit, l.credit AS credit
        FROM arap_beginning_balance_lines l JOIN arap_beginning_balance_headers h ON h.id = l.header_id WHERE l.id = ?`,
       [id]
     );
-    if (!ownerRows.length || ownerRows[0].companyId !== companyId) {
+    if (!ownerRows.length || ownerRows[0].companyId !== companyId
+        || !(await BeginningBalanceBranchService.canSeeHeader(req.user, companyId, ownerRows[0].branchId))) {
       return res.status(404).json({ message: "Beginning balance line not found" });
     }
     const delDateISO = AccountingPeriodService.toDateOnly(ownerRows[0].balanceDate);
@@ -8682,7 +8702,9 @@ app.delete("/api/arap-beginning-balances/:id", authenticateToken, authorizePermi
 app.get("/api/gl-beginning-balances", authenticateToken, authorizePermission("FILESETUP.BEGINNING_BALANCES", "VIEW"), async (req, res) => {
   try {
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
-    const data = await GLBeginningBalanceService.listGLBeginningBalances(companyId);
+    const data = await GLBeginningBalanceService.listGLBeginningBalances(companyId, {
+      visibilitySql: await BeginningBalanceBranchService.visibleSql(req.user, companyId, "h"),
+    });
     res.json(data);
   } catch (err) {
     console.error("LIST GL BB ERROR:", err);
@@ -8702,8 +8724,8 @@ app.post("/api/gl-beginning-balances", authenticateToken, authorizePermission("F
     }
 
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, header.companyId);
-    const { headerId } = await GLBeginningBalanceService.createGLBeginningBalance({ header, rows, user: req.user, companyId });
-    res.json({ success: true, message: "GL beginning balance saved successfully", headerId });
+    const { headerId, branchId } = await GLBeginningBalanceService.createGLBeginningBalance({ header, rows, user: req.user, companyId });
+    res.json({ success: true, message: "GL beginning balance saved successfully", headerId, branchId });
   } catch (err) {
     console.error("SAVE GL BB ERROR:", err);
     res.status(err.statusCode || 500).json({ message: err.message || "Failed to save GL beginning balance", ...(err.statusCode && err.code ? { code: err.code } : {}) });

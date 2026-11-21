@@ -17,15 +17,17 @@ function requirePrintPermission(req, res, next) {
   return authorizePermission("TRANSACTIONS.INVOICE", action)(req, res, next);
 }
 
+// The 3 "Print List by ..." summaries - JSON view model + PDF export.
+// Declared before "/:id" so "list" is never captured by that param route -
+// and (Multi-Branch Phase C-3 fix) before "/:id/pdf" too: "/list/pdf" used to
+// match "/:id/pdf" with id = "list", so the list PDF export always answered 404.
+router.get("/list", authenticateInvoiceListPrintAccess, ctrl.getInvoiceListPrintDocument);
+router.get("/list/pdf", authenticateToken, authorizePermission("TRANSACTIONS.INVOICE", "PRINT"), ctrl.exportInvoiceListPrintPdf);
+
 // PDF export/preview (single invoice) - always the real logged-in user's
 // own session; this is the only route that ever mints a Puppeteer render
 // token internally.
 router.get("/:id/pdf", authenticateToken, requirePrintPermission, ctrl.exportInvoicePrintPdf);
-
-// The 3 "Print List by ..." summaries - JSON view model + PDF export.
-// Declared before "/:id" so "list" is never captured by that param route.
-router.get("/list", authenticateInvoiceListPrintAccess, ctrl.getInvoiceListPrintDocument);
-router.get("/list/pdf", authenticateToken, authorizePermission("TRANSACTIONS.INVOICE", "PRINT"), ctrl.exportInvoiceListPrintPdf);
 
 // JSON view-model for the single-invoice React printable - accepts either
 // the real user's session (browser) or a short-lived, invoice-scoped

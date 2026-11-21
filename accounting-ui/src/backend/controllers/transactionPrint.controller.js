@@ -3,6 +3,9 @@ const { logAudit, requestMeta } = require("../lib/audit");
 const DataService = require("../services/transactionPrintDataService");
 const CurrencyService = require("../services/currencyService");
 const PrintTemplateService = require("../services/printTemplateService");
+// Multi-Branch Phase C-3: print only documents of the user's authorized
+// branches (another branch's document -> the same 404 as a missing one).
+const TransactionBranchEnforcement = require("../services/transactionBranchEnforcement");
 
 const PRINT_ACTIONS = { preview: "PRINT_PREVIEW", print: "PRINT_DOCUMENT", export_pdf: "PRINT_EXPORT_PDF" };
 const LIST_ACTIONS = { preview: "PRINT_LIST_PREVIEW", print: "PRINT_LIST", export_pdf: "PRINT_LIST_EXPORT_PDF" };
@@ -26,7 +29,8 @@ exports.getDocument = async (req, res) => {
     const moduleKey = DataService.MODULE_CONFIG[transactionType]?.moduleKey || transactionType;
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
-    const result = await DataService.getTransactionDocument(transactionType, id, { withEntries: mode === "with_entries", companyId });
+    const branchScope = await TransactionBranchEnforcement.printScope(req.user, companyId);
+    const result = await DataService.getTransactionDocument(transactionType, id, { withEntries: mode === "with_entries", companyId, branchScope });
 
     // Phase 2 (Document Print Template Infrastructure): presentation-only
     // config, resolved and attached alongside the accounting data DataService
@@ -77,7 +81,8 @@ exports.getList = async (req, res) => {
     const moduleKey = DataService.MODULE_CONFIG[transactionType]?.moduleKey || transactionType;
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.body?.companyId);
 
-    const result = await DataService.getTransactionList(transactionType, { from, to, grouping, companyId });
+    const branchScope = await TransactionBranchEnforcement.printScope(req.user, companyId);
+    const result = await DataService.getTransactionList(transactionType, { from, to, grouping, companyId, branchScope });
 
     await logAudit(pool, {
       module: moduleKey,

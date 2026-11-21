@@ -9,6 +9,40 @@ const Resolver = require("./exchangeRateResolverService");
 const TransactionCurrencyService = require("./transactionCurrencyService");
 const ControlAmountService = require("./controlAmountService");
 const AccountingPeriodService = require("./accountingPeriodService");
+// Multi-Branch Phase C-3 - recurring branch inheritance.
+const TransactionBranchEnforcement = require("./transactionBranchEnforcement");
+
+// The branch a generated transaction is recorded in = the template's branch,
+// re-validated at EVERY generation (stale template data is never trusted):
+// it must still exist, belong to the template's company and be ACTIVE.
+// A legacy template without a branch: a company without branches keeps
+// generating company-level (NULL) documents exactly as before; a company with
+// exactly ONE branch uses that branch (the Phase A single-branch rule); a
+// company with several is refused - the branch is never guessed, and a
+// branch-less document is never created where every manual one needs a
+// branch.
+async function resolveGenerationBranch(db, template, companyId) {
+  if (template.branch_id !== null && template.branch_id !== undefined) {
+    const [[b]] = await db.execute("SELECT id, company_id, status FROM branches WHERE id = ?", [template.branch_id]);
+    if (!b) throw new HttpError(422, "This recurring template's branch no longer exists.", "BRANCH_NOT_FOUND");
+    if (Number(b.company_id) !== Number(companyId)) {
+      throw new HttpError(422, "This recurring template's branch does not belong to its company.", "BRANCH_COMPANY_MISMATCH");
+    }
+    if (String(b.status || "").toUpperCase() !== "ACTIVE") {
+      throw new HttpError(409, "This recurring template's branch is inactive; no transaction can be generated in it.", "BRANCH_INACTIVE");
+    }
+    return Number(b.id);
+  }
+  const [branches] = await db.execute("SELECT id, status FROM branches WHERE company_id = ? ORDER BY id", [companyId]);
+  if (!branches.length) return null;
+  if (branches.length === 1) {
+    if (String(branches[0].status || "").toUpperCase() !== "ACTIVE") {
+      throw new HttpError(409, "This company's only branch is inactive; no transaction can be generated in it.", "BRANCH_INACTIVE");
+    }
+    return Number(branches[0].id);
+  }
+  throw new HttpError(422, "This recurring template has no branch. Assign its branch before generating.", "BRANCH_REQUIRED");
+}
 
 // Per-module insert shape, mirroring the exact column list the existing
 // manual POST handlers use in server.js (invoice: server.js ~1034-1100).
@@ -315,6 +349,16 @@ async function processSchedule(scheduleId, { triggerType = "MANUAL", userId = nu
       companyId: await resolveTemplateCompanyId(template),
     });
 
+    // Phase C-3: the generated document's branch (validated) - and the
+    // template's party / accounts / Gen Ref parties must still be usable in it.
+    const generationBranchId = await resolveGenerationBranch(conn, template, await resolveTemplateCompanyId(template));
+    await TransactionBranchEnforcement.validateReferences(conn, {
+      companyId: await resolveTemplateCompanyId(template),
+      branchId: generationBranchId,
+      partyIds: template.party_id ? [template.party_id] : [],
+      lines: lineRows.map((l) => ({ accountId: l.account_id, genRef: l.gen_ref })),
+    });
+
     // Compute this occurrence's line amounts per amount_mode.
     let computedLines = await computeLineAmounts(conn, template, lineRows, schedule.generated_count);
     if (template.amount_mode === "ESCALATION") {
@@ -443,6 +487,8 @@ async function processSchedule(scheduleId, { triggerType = "MANUAL", userId = nu
     });
     const [headerResult] = await conn.execute(sql, params);
     const generatedId = headerResult.insertId;
+    // Phase C-3: same transaction, same branch as the template - never escapes it.
+    await TransactionBranchEnforcement.assign(conn, genCfg.headerTable, generatedId, generationBranchId);
 
     for (const line of baseLines) {
       const particulars = substituteVariables(line.particulars_template, ctx);
@@ -536,13 +582,13 @@ async function processSchedule(scheduleId, { triggerType = "MANUAL", userId = nu
       entityId: generatedId,
       action: "OCCURRENCE_GENERATED",
       description: `Generated ${moduleType.toUpperCase()} ${voucherNo} from recurring template #${template.id} for ${occurrenceDate} (trigger=${triggerType})`,
-      afterData: { scheduleId, occurrenceDate, generatedId, voucherNo },
+      afterData: { scheduleId, occurrenceDate, generatedId, voucherNo, branchId: generationBranchId },
       user: userId ? { id: userId } : null,
       companyId: auditCompanyId,
     });
 
     await conn.commit();
-    return { status: "SUCCESS", occurrenceDate, generatedId, voucherNo, nextRunDate, occurrenceId: occurrenceResult.insertId };
+    return { status: "SUCCESS", occurrenceDate, generatedId, voucherNo, nextRunDate, occurrenceId: occurrenceResult.insertId, branchId: generationBranchId };
   } catch (err) {
     await conn.rollback();
 
@@ -731,4 +777,4 @@ async function processDueSchedules({ triggerType = "SCHEDULED", limit = 50 } = {
   };
 }
 
-module.exports = { processSchedule, processDueSchedules };
+module.exports = { processSchedule, processDueSchedules, resolveGenerationBranch };

@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import BeginningBalanceImportModal from "../../components/BeginningBalanceImportModal";
+import BeginningBalanceBranchField from "../../components/BeginningBalanceBranchField";
+import useAuthorizedBranches from "../../hooks/useAuthorizedBranches";
+import { branchFieldMode, defaultTransactionBranch, visibleInBranch } from "../TRANSACTIONS/transactionBranch.mjs";
 import AutoResizeTextarea from "../../components/AutoResizeTextarea";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
 import "./ARAPBeginningBalance.css";
@@ -58,6 +61,15 @@ export default function ARAPBeginningBalance({ balanceType }) {
   const [showImportModal, setShowImportModal] = useState(false);
   const [currencyOptions, setCurrencyOptions] = useState([]);
   const [baseCurrency, setBaseCurrency] = useState(null);
+  // Multi-Branch Phase C-3: a new balance's branch; an edited line keeps its
+  // own header's branch (pickers follow whichever applies).
+  const { branches: userBranches } = useAuthorizedBranches();
+  const [branchId, setBranchId] = useState("");
+  const [branchError, setBranchError] = useState("");
+  useEffect(() => {
+    setBranchId((current) => current || defaultTransactionBranch(userBranches));
+  }, [userBranches]);
+  const showBranchColumn = userBranches.length > 0;
 
   useEffect(() => {
     loadParties();
@@ -161,6 +173,11 @@ export default function ARAPBeginningBalance({ balanceType }) {
     }
   }
 
+  const editedRow = selectedId ? rows.find((r) => r.id === selectedId) : null;
+  const formBranchId = editedRow ? (editedRow.branchId == null ? "" : String(editedRow.branchId)) : branchId;
+  const branchAccounts = accounts.filter((a) => visibleInBranch(a, formBranchId));
+  const branchParties = parties.filter((p) => visibleInBranch(p, formBranchId));
+
   const filteredRows = useMemo(() => {
     const q = search.trim().toLowerCase();
 
@@ -256,6 +273,11 @@ export default function ARAPBeginningBalance({ balanceType }) {
   }
 
   async function saveBalance() {
+    if (!selectedId && branchFieldMode(userBranches) === "choose" && !branchId) {
+      setBranchError("Select the branch this beginning balance belongs to.");
+      return;
+    }
+    setBranchError("");
     if (!form.accountId) return alert("Account is required.");
     if (!form.partyId) return alert(`${partyLabel} code is required.`);
     if (!form.referenceNo.trim()) return alert("Reference No. is required.");
@@ -274,6 +296,7 @@ export default function ARAPBeginningBalance({ balanceType }) {
     const payload = {
       balanceType,
       ...header,
+      branchId: !selectedId && branchId ? Number(branchId) : undefined,
       line: {
         ...form,
         debit: isAR ? amount : 0,
@@ -300,6 +323,10 @@ export default function ARAPBeginningBalance({ balanceType }) {
 
       if (!res.ok) {
         if (handleAuthError(res.status)) return;
+        if (/^(BRANCH_|ACCOUNT_BRANCH|ACCOUNT_NOT_FOUND|PARTY_BRANCH|PARTY_NOT_FOUND)/.test(data.code || "")) {
+          setBranchError(data.message || "This branch cannot be used.");
+          return;
+        }
         alert(data.message || "Failed to save beginning balance.");
         return;
       }
@@ -315,8 +342,12 @@ export default function ARAPBeginningBalance({ balanceType }) {
 
   async function downloadTemplate() {
     try {
+      if (branchFieldMode(userBranches) === "choose" && !branchId) {
+        setBranchError("Select the branch this beginning balance belongs to.");
+        return;
+      }
       const res = await fetch(
-        `${API_BASE}/api/beginning-balances/${balanceType.toLowerCase()}/template?format=xlsx`,
+        `${API_BASE}/api/beginning-balances/${balanceType.toLowerCase()}/template?format=xlsx${branchId ? `&branchId=${encodeURIComponent(branchId)}` : ""}`,
         { credentials: "include", headers: authHeaders() }
       );
 
@@ -376,7 +407,13 @@ export default function ARAPBeginningBalance({ balanceType }) {
           <button onClick={downloadTemplate} className="arap-btn">
             Download Template
           </button>
-          <button onClick={() => setShowImportModal(true)} className="arap-btn">
+          <button onClick={() => {
+            if (branchFieldMode(userBranches) === "choose" && !branchId) {
+              setBranchError("Select the branch this beginning balance belongs to.");
+              return;
+            }
+            setShowImportModal(true);
+          }} className="arap-btn">
             Import File
           </button>
           <button onClick={resetForm} className="arap-btn primary">
@@ -387,6 +424,14 @@ export default function ARAPBeginningBalance({ balanceType }) {
 
       <div className="arap-card">
         <div className="arap-grid">
+          <BeginningBalanceBranchField
+            branches={userBranches}
+            value={formBranchId}
+            onChange={(v) => { if (!selectedId) { setBranchId(v); setBranchError(""); } }}
+            error={branchError}
+            id="arapbb-branch"
+          />
+
           <div>
             <label>Beginning Date</label>
             <input
@@ -459,7 +504,7 @@ export default function ARAPBeginningBalance({ balanceType }) {
                     onChange={(e) => handleAccountChange(e.target.value)}
                   >
                     <option value="">Select account</option>
-                    {accounts.map((account) => (
+                    {branchAccounts.map((account) => (
                       <option key={account.id} value={account.id}>
                         {account.code} - {account.title}
                       </option>
@@ -483,7 +528,7 @@ export default function ARAPBeginningBalance({ balanceType }) {
                     onChange={(e) => handlePartyChange(e.target.value)}
                   >
                     <option value="">Select {partyLabel} code</option>
-                    {parties.map((party) => (
+                    {branchParties.map((party) => (
                       <option key={party.id} value={party.id}>
                         {party.code}
                       </option>
@@ -615,6 +660,7 @@ export default function ARAPBeginningBalance({ balanceType }) {
           <table className="arap-table">
             <thead>
               <tr>
+                {showBranchColumn ? <th>Branch</th> : null}
                 <th>{partyLabel}</th>
                 <th>Account</th>
                 <th>Reference</th>
@@ -631,7 +677,7 @@ export default function ARAPBeginningBalance({ balanceType }) {
             <tbody>
               {filteredRows.length === 0 ? (
                 <tr>
-                  <td colSpan="10" className="arap-empty">
+                  <td colSpan={showBranchColumn ? 11 : 10} className="arap-empty">
                     {rows.length === 0
                       ? `No ${title} records yet.`
                       : "No records match your search/filter."}
@@ -642,6 +688,7 @@ export default function ARAPBeginningBalance({ balanceType }) {
                   const rowIsForeign = row.currencyId && baseCurrency && String(row.currencyId) !== String(baseCurrency.id);
                   return (
                     <tr key={row.id}>
+                      {showBranchColumn ? <td>{row.branchName || "—"}</td> : null}
                       <td>{row.partyName}</td>
                       <td>
                         {row.accountCode} - {row.accountTitle}
@@ -680,7 +727,7 @@ export default function ARAPBeginningBalance({ balanceType }) {
 
             <tfoot>
               <tr>
-                <td colSpan="4">Totals</td>
+                <td colSpan={showBranchColumn ? 6 : 5}>Totals</td>
                 <td className="amount">₱ {formatMoney(totals.debit)}</td>
                 <td className="amount">₱ {formatMoney(totals.credit)}</td>
                 <td className="amount">₱ {formatMoney(totals.balance)}</td>
@@ -694,6 +741,7 @@ export default function ARAPBeginningBalance({ balanceType }) {
       <BeginningBalanceImportModal
         open={showImportModal}
         module={balanceType.toLowerCase()}
+        branchId={branchId}
         onClose={() => setShowImportModal(false)}
         onImported={loadBalances}
       />

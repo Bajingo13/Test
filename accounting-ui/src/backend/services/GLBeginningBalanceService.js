@@ -4,6 +4,8 @@ const BBCurrency = require("./beginningBalanceCurrencyService");
 const TransactionCurrencyService = require("./transactionCurrencyService");
 const AccountingPeriodService = require("./accountingPeriodService");
 const { logAudit } = require("../lib/audit");
+// Multi-Branch Phase C-3: headers are Company + Branch + Balance Date.
+const BBBranch = require("./beginningBalanceBranchService");
 
 // GL Beginning Balance persistence - previously nonexistent (the manual
 // entry page only console.logged; gl_beginning_balance_headers/lines were
@@ -19,14 +21,17 @@ const { logAudit } = require("../lib/audit");
 
 const { roundMoney } = TransactionCurrencyService;
 
-async function listGLBeginningBalances(companyId) {
+// visibilitySql: the caller's branch-visibility predicate on alias h
+// (BBBranch.visibleSql) - omitted only by internal callers.
+async function listGLBeginningBalances(companyId, { visibilitySql = "1 = 1" } = {}) {
   const [headers] = await pool.execute(
-    `SELECT id, filter_code AS filterCode, DATE_FORMAT(balance_date, '%Y-%m-%d') AS balanceDate,
-      currency_code AS currencyCode, currency_name AS currencyName, title, status,
-      created_at AS createdAt
-     FROM gl_beginning_balance_headers
-     WHERE company_id = ?
-     ORDER BY balance_date DESC, id DESC`,
+    `SELECT h.id, h.filter_code AS filterCode, DATE_FORMAT(h.balance_date, '%Y-%m-%d') AS balanceDate,
+      h.currency_code AS currencyCode, h.currency_name AS currencyName, h.title, h.status,
+      h.created_at AS createdAt, h.branch_id AS branchId, b.name AS branchName
+     FROM gl_beginning_balance_headers h
+     LEFT JOIN branches b ON b.id = h.branch_id
+     WHERE h.company_id = ? AND ${visibilitySql}
+     ORDER BY h.balance_date DESC, h.id DESC`,
     [companyId]
   );
 
@@ -55,32 +60,12 @@ async function listGLBeginningBalances(companyId) {
   return headers.map((h) => ({ ...h, lines: linesByHeader.get(h.id) || [] }));
 }
 
-// Finds an existing Draft/open header for the exact balance date, or
-// creates one. Used by import commit to group same-date rows under one
-// header (per design decision) instead of one header per line.
-async function findOrCreateHeader(conn, { balanceDate, filterCode, currencyCode, currencyName, title, companyId }) {
-  const [existing] = await conn.execute(
-    `SELECT id FROM gl_beginning_balance_headers WHERE balance_date = ? AND company_id = ? LIMIT 1`,
-    [balanceDate, companyId]
-  );
-
-  if (existing.length > 0) return existing[0].id;
-
-  const [result] = await conn.execute(
-    `INSERT INTO gl_beginning_balance_headers (company_id, filter_code, balance_date, currency_code, currency_name, title, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [
-      companyId,
-      filterCode || "NON",
-      balanceDate,
-      currencyCode || "PHP",
-      currencyName || "PHILIPPINE PESO",
-      title || null,
-      "Posted",
-    ]
-  );
-
-  return result.insertId;
+// Finds the existing header for the exact Company + Branch + balance date,
+// or creates one (Phase C-3; previously Company + date). Used by manual save
+// and import commit to group same-key rows under one header. Callers hold
+// the per-company header lock (BBBranch.acquireHeaderLock).
+async function findOrCreateHeader(conn, { balanceDate, filterCode, currencyCode, currencyName, title, companyId, branchId = null }) {
+  return BBBranch.findOrCreateGLHeader(conn, { companyId, branchId, balanceDate, filterCode, currencyCode, currencyName, title });
 }
 
 // Resolves the line's own currency/rate (section 4/5), inserts it with
@@ -173,6 +158,13 @@ async function createGLBeginningBalance({ header, rows, user, companyId }) {
   try {
     await conn.beginTransaction();
 
+    // Phase C-3: the branch is resolved server-side (never trusted from the
+    // request) and every account must be shared or the branch's own.
+    const branchId = await BBBranch.resolveBeginningBalanceBranch(conn, user, { companyId, requestedBranchId: header.branchId });
+    await BBBranch.validateBeginningBalanceReferences(conn, { companyId, branchId, accountIds: rows.map((r) => r.accountId) });
+    await BBBranch.assertAccountCodesUsable(conn, { branchId, codes: rows.filter((r) => !r.accountId).map((r) => r.code) });
+    await BBBranch.acquireHeaderLock(conn, "gl", companyId);
+
     // Covers both the manual-entry save endpoint and the import commit
     // path (both call this one function) - Checkpoint 5 section 21.
     await AccountingPeriodService.assertPeriodOpen({
@@ -186,6 +178,7 @@ async function createGLBeginningBalance({ header, rows, user, companyId }) {
       currencyName: header.currencyName,
       title: header.title,
       companyId,
+      branchId,
     });
 
     let totalBaseDebit = 0;
@@ -239,6 +232,7 @@ async function createGLBeginningBalance({ header, rows, user, companyId }) {
       description: `GL Beginning Balance batch saved under header #${headerId} (${rows.length} line(s), ${header.date})`,
       afterData: {
         balanceDate: header.date,
+        branchId,
         currencyCode: header.currency || "PHP",
         lineCount: rows.length,
         totalDebit: totalBaseDebit,
@@ -248,11 +242,12 @@ async function createGLBeginningBalance({ header, rows, user, companyId }) {
     });
 
     await conn.commit();
-    return { headerId };
+    return { headerId, branchId };
   } catch (err) {
     await conn.rollback();
     throw err;
   } finally {
+    await BBBranch.releaseHeaderLock(conn, "gl", companyId);
     conn.release();
   }
 }

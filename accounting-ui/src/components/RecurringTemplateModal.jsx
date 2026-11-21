@@ -285,6 +285,9 @@ export default function RecurringTemplateModal({ open, onClose, transactionType,
         headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({
           moduleType: transactionType,
+          // Multi-Branch Phase C-3: the template inherits the source
+          // transaction's branch (validated by the server).
+          ...(bootstrap.sourceBranchId != null ? { branchId: bootstrap.sourceBranchId } : {}),
           templateName,
           partyId: bootstrap.partyId,
           partyName: bootstrap.partyName,

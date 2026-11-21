@@ -4,6 +4,29 @@ const InvoicePrintDataService = require("../services/invoicePrintDataService");
 const InvoiceListPrintDataService = require("../services/invoiceListPrintDataService");
 const InvoicePrintPdfService = require("../services/invoicePrintPdfService");
 const CurrencyService = require("../services/currencyService");
+const TransactionBranchEnforcement = require("../services/transactionBranchEnforcement");
+
+// Multi-Branch Phase C-3 - the branch scope a print request is held to:
+//   a real user          -> that user's authorized branches;
+//   a user render token  -> the scope (and invoice branch) baked into the
+//                           token by the minting, already-authorized request;
+//   a public-verification render token -> none (public verification is
+//                           unauthenticated by design; that token is already
+//                           pinned to one verified invoice).
+// A user render token without a scope is refused (never widened).
+async function printBranchContext(req, companyId) {
+  const token = req.printRenderToken;
+  if (token) {
+    if (token.public === true) return { branchScope: null, expectBranchId: undefined };
+    if (!token.branchScope) {
+      const err = new Error("Render token is not valid for this document");
+      err.statusCode = 403;
+      throw err;
+    }
+    return { branchScope: token.branchScope, expectBranchId: Object.prototype.hasOwnProperty.call(token, "branchId") ? token.branchId : undefined };
+  }
+  return { branchScope: await TransactionBranchEnforcement.printScope(req.user, companyId), expectBranchId: undefined };
+}
 
 const INTENTS = { preview: "PRINT_PREVIEW", print: "PRINT_DOCUMENT", export_pdf: "PRINT_EXPORT_PDF" };
 
@@ -26,11 +49,13 @@ exports.getInvoicePrintDocument = async (req, res) => {
       : await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
     const withEntries = req.query.mode === "with_entries";
+    const branchContext = await printBranchContext(req, companyId);
     const viewModel = await InvoicePrintDataService.getInvoicePrintViewModel({
       id,
       companyId,
       requestedTemplateId: req.query.templateId || null,
       withEntries,
+      ...branchContext,
     });
 
     await logAudit(pool, {
@@ -64,12 +89,14 @@ exports.exportInvoicePrintPdf = async (req, res) => {
     const { id } = req.params;
     const withEntries = req.query.mode === "with_entries";
     const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+    const branchScope = await TransactionBranchEnforcement.printScope(req.user, companyId);
 
     const viewModel = await InvoicePrintDataService.getInvoicePrintViewModel({
       id,
       companyId,
       requestedTemplateId: req.query.templateId || null,
       withEntries,
+      branchScope,
     });
 
     const pdfBuffer = await InvoicePrintPdfService.renderInvoicePdf({
@@ -78,6 +105,8 @@ exports.exportInvoicePrintPdf = async (req, res) => {
       username: req.user.username,
       companyId,
       mode: withEntries ? "with_entries" : "without_entries",
+      branchScope,
+      branchId: viewModel.branch ? viewModel.branch.id : null,
     });
 
     const disposition = req.query.disposition === "attachment" ? "attachment" : "inline";
@@ -112,11 +141,13 @@ exports.getInvoiceListPrintDocument = async (req, res) => {
       ? req.printRenderToken.companyId
       : await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
 
+    const { branchScope } = await printBranchContext(req, companyId);
     const viewModel = await InvoiceListPrintDataService.getInvoiceListPrintViewModel({
       companyId,
       from: req.query.from || null,
       to: req.query.to || null,
       grouping: req.query.grouping || "number",
+      branchScope,
     });
 
     await logAudit(pool, {
@@ -145,7 +176,8 @@ exports.exportInvoiceListPrintPdf = async (req, res) => {
     const from = req.query.from || null;
     const to = req.query.to || null;
 
-    const viewModel = await InvoiceListPrintDataService.getInvoiceListPrintViewModel({ companyId, from, to, grouping });
+    const branchScope = await TransactionBranchEnforcement.printScope(req.user, companyId);
+    const viewModel = await InvoiceListPrintDataService.getInvoiceListPrintViewModel({ companyId, from, to, grouping, branchScope });
 
     const pdfBuffer = await InvoicePrintPdfService.renderInvoiceListPdf({
       userId: req.user.id,
@@ -154,6 +186,7 @@ exports.exportInvoiceListPrintPdf = async (req, res) => {
       grouping,
       from,
       to,
+      branchScope,
     });
 
     const disposition = req.query.disposition === "attachment" ? "attachment" : "inline";

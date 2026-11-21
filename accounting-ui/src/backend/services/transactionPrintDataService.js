@@ -1,5 +1,6 @@
 const pool = require("../db");
 const { HttpError } = require("../lib/httpError");
+const { scopeSql } = require("./transactionBranchEnforcement"); // Multi-Branch Phase C-3
 const TransactionCurrencyService = require("./transactionCurrencyService");
 const TaxEntryService = require("./taxEntryService");
 
@@ -431,10 +432,16 @@ function buildEntriesSummary(lineRows) {
   return { totalDebit, totalCredit, balanced: Math.abs(totalDebit - totalCredit) < 0.01 };
 }
 
-async function getTransactionDocument(transactionType, id, { withEntries, companyId }) {
+// Multi-Branch Phase C-3: branchScope (TransactionBranchEnforcement.printScope)
+// restricts the document to the caller's authorized branches - another
+// branch's document answers exactly like a missing one (404 "Transaction not
+// found"). expectBranchId (a render token's own branch) must match the
+// document's branch. Both omitted -> company scope only (public verification,
+// internal callers).
+async function getTransactionDocument(transactionType, id, { withEntries, companyId, branchScope = null, expectBranchId } = {}) {
   const cfg = getModuleConfig(transactionType);
 
-  const metaCols = ["id", "voucher_no AS voucherNo"];
+  const metaCols = ["id", "voucher_no AS voucherNo", "branch_id AS branchId"];
   if (cfg.hasParty) metaCols.push(`${cfg.partyIdCol} AS partyId`, `${cfg.partyNameCol} AS partyName`);
   metaCols.push(
     "DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate",
@@ -469,7 +476,8 @@ async function getTransactionDocument(transactionType, id, { withEntries, compan
   // subtype when two print modules share one physical table (debitMemo/
   // creditMemo both read memo_headers) - without it, printing a credit
   // memo's id through the debit-memo module would succeed and mislabel it.
-  const headerWhere = cfg.extraWhere ? `WHERE id = ? AND company_id = ? AND ${cfg.extraWhere}` : `WHERE id = ? AND company_id = ?`;
+  const branchWhere = branchScope ? ` AND ${scopeSql("h", branchScope)}` : "";
+  const headerWhere = (cfg.extraWhere ? `WHERE id = ? AND company_id = ? AND ${cfg.extraWhere}` : `WHERE id = ? AND company_id = ?`) + branchWhere;
   const [headers] = await pool.execute(
     `SELECT ${metaCols.join(", ")} FROM ${cfg.headerTable} h ${headerWhere}`,
     [id, companyId]
@@ -478,6 +486,10 @@ async function getTransactionDocument(transactionType, id, { withEntries, compan
     throw new HttpError(404, "Transaction not found");
   }
   const doc = headers[0];
+  if (expectBranchId !== undefined && (doc.branchId ?? null) !== (expectBranchId ?? null)) {
+    throw new HttpError(404, "Transaction not found");
+  }
+  doc.branch = await getBranchProfile(doc.branchId);
 
   const lineCols = ["account_code AS accountCode", "account_title AS accountTitle", "particulars", "debit", "credit", "gen_ref AS genRef", "gen_name AS genName"];
   if (cfg.hasCurrency) lineCols.push("foreign_debit AS foreignDebit", "foreign_credit AS foreignCredit");
@@ -600,10 +612,10 @@ const GROUP_KEY_FIELD = {
   status: { key: "status", label: "status", fallbackLabel: "(No Status)" },
 };
 
-async function getTransactionList(transactionType, { from, to, grouping, companyId }) {
+async function getTransactionList(transactionType, { from, to, grouping, companyId, branchScope = null }) {
   const cfg = getModuleConfig(transactionType);
 
-  const cols = ["id", "voucher_no AS voucherNo"];
+  const cols = ["id", "voucher_no AS voucherNo", "branch_id AS branchId"];
   if (cfg.hasParty) cols.push(`${cfg.partyIdCol} AS partyId`, `${cfg.partyNameCol} AS partyName`);
   cols.push(
     "DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate",
@@ -620,6 +632,8 @@ async function getTransactionList(transactionType, { from, to, grouping, company
   const params = [companyId];
   let where = "WHERE company_id = ?";
   if (cfg.extraWhere) where += ` AND ${cfg.extraWhere}`;
+  // Phase C-3: only the caller's authorized branches are listed.
+  if (branchScope) where += ` AND ${scopeSql("h", branchScope)}`;
   if (from) {
     where += " AND transaction_date >= ?";
     params.push(from);
@@ -673,4 +687,12 @@ async function getTransactionList(transactionType, { from, to, grouping, company
   return { company, grouping, rows, grandTotal, count: rows.length };
 }
 
-module.exports = { getCompanyProfile, getTransactionDocument, getTransactionList, MODULE_CONFIG };
+// Branch shown on the printed document (code + name); null for a
+// company-level document.
+async function getBranchProfile(branchId) {
+  if (branchId === null || branchId === undefined) return null;
+  const [[b]] = await pool.execute("SELECT id, code, name FROM branches WHERE id = ?", [branchId]);
+  return b ? { id: Number(b.id), code: b.code, name: b.name } : null;
+}
+
+module.exports = { getCompanyProfile, getTransactionDocument, getTransactionList, getBranchProfile, MODULE_CONFIG };

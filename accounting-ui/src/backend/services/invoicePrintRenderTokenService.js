@@ -27,7 +27,11 @@ const RENDER_TOKEN_TTL_SECONDS = 90;
 // docType "list" (the 3 "Print List by ..." summaries) carries no
 // invoiceId - it isn't scoped to one document, only to the company/
 // permission already checked before minting.
-function signInvoicePrintRenderToken({ userId, username, companyId, invoiceId, docType = "single" }) {
+// Multi-Branch Phase C-3: branchScope (the minting user's authorized
+// branches) and, for a single invoice, branchId (that invoice's own branch)
+// travel in the token, so the headless renderer is held to exactly what the
+// minting user may print.
+function signInvoicePrintRenderToken({ userId, username, companyId, invoiceId, docType = "single", branchScope = null, branchId }) {
   return jwt.sign(
     {
       typ: RENDER_TOKEN_TYPE,
@@ -36,6 +40,8 @@ function signInvoicePrintRenderToken({ userId, username, companyId, invoiceId, d
       companyId,
       docType,
       invoiceId: invoiceId != null ? String(invoiceId) : null,
+      branchScope,
+      ...(branchId !== undefined ? { branchId: branchId ?? null } : {}),
     },
     process.env.JWT_SECRET,
     { expiresIn: RENDER_TOKEN_TTL_SECONDS }

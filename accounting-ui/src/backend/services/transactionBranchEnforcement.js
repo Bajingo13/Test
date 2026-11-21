@@ -51,6 +51,23 @@ async function visibleSql(user, companyId, alias, db = pool) {
   return BranchResolution.branchScopeSql(alias, await transactionScope(user, companyId, db));
 }
 
+// Multi-Branch Phase C-3 - print isolation. A serializable form of the
+// visibility scope (it travels inside short-lived PDF render tokens, so the
+// headless renderer sees exactly what the minting user may see):
+//   { all: true }                            SUPER_ADMIN
+//   { branchIds: [...], includeUnassigned }  everyone else (transaction rule)
+async function printScope(user, companyId, db = pool) {
+  if (isSuper(user)) return { all: true };
+  const scope = await transactionScope(user, companyId, db);
+  return { branchIds: scope.branchIds, includeUnassigned: !!scope.includeUnassigned };
+}
+
+function scopeSql(alias, scope) {
+  if (!scope) return "1 = 1";
+  if (scope.all === true) return "1 = 1";
+  return BranchResolution.branchScopeSql(alias, scope);
+}
+
 // true / false; null when the user has no access to the record's company at
 // all (the route's own company check answers that case).
 async function canSee(user, companyId, branchId, db = pool) {
@@ -177,6 +194,8 @@ function registerIsolation(app) {
 }
 
 module.exports = {
+  printScope,
+  scopeSql,
   MODULES,
   transactionScope,
   visibleSql,

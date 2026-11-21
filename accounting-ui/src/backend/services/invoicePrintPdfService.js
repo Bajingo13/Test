@@ -125,8 +125,8 @@ async function renderPrintUrlToPdf(url) {
 // export controller) has already loaded/validated the invoice through the
 // normal, company-scoped, permission-checked print pipeline before this
 // runs.
-async function renderInvoicePdf({ invoiceId, userId, username, companyId, mode }) {
-  const renderToken = signInvoicePrintRenderToken({ userId, username, companyId, invoiceId, docType: "single" });
+async function renderInvoicePdf({ invoiceId, userId, username, companyId, mode, branchScope = null, branchId }) {
+  const renderToken = signInvoicePrintRenderToken({ userId, username, companyId, invoiceId, docType: "single", branchScope, branchId });
   const params = new URLSearchParams({ renderToken });
   if (mode === "with_entries") params.set("mode", "with_entries");
   const url = `${INTERNAL_APP_URL}/print/invoice/${encodeURIComponent(invoiceId)}?${params.toString()}`;
@@ -135,8 +135,8 @@ async function renderInvoicePdf({ invoiceId, userId, username, companyId, mode }
 
 // One of the 3 "Print List by ..." summaries (by invoice number, invoice
 // date, or customer) - never scoped to a single invoice id.
-async function renderInvoiceListPdf({ userId, username, companyId, grouping, from, to }) {
-  const renderToken = signInvoicePrintRenderToken({ userId, username, companyId, docType: "list" });
+async function renderInvoiceListPdf({ userId, username, companyId, grouping, from, to, branchScope = null }) {
+  const renderToken = signInvoicePrintRenderToken({ userId, username, companyId, docType: "list", branchScope });
   const params = new URLSearchParams({ renderToken, grouping: grouping || "number" });
   if (from) params.set("from", from);
   if (to) params.set("to", to);

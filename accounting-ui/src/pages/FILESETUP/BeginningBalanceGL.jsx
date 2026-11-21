@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import BeginningBalanceImportModal from "../../components/BeginningBalanceImportModal";
+import BeginningBalanceBranchField from "../../components/BeginningBalanceBranchField";
+import useAuthorizedBranches from "../../hooks/useAuthorizedBranches";
+import { branchFieldMode, defaultTransactionBranch } from "../TRANSACTIONS/transactionBranch.mjs";
 import "./BeginningBalanceGL.css";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
@@ -46,6 +49,14 @@ export default function BeginningBalance() {
   const [showImportModal, setShowImportModal] = useState(false);
   const [currencyOptions, setCurrencyOptions] = useState([]);
   const [baseCurrency, setBaseCurrency] = useState(null);
+  // Multi-Branch Phase C-3: the branch these balances belong to.
+  const { branches: userBranches } = useAuthorizedBranches();
+  const [branchId, setBranchId] = useState("");
+  const [branchError, setBranchError] = useState("");
+  useEffect(() => {
+    setBranchId((current) => current || defaultTransactionBranch(userBranches));
+  }, [userBranches]);
+  const branchQuery = branchId ? `&branchId=${encodeURIComponent(branchId)}` : "";
 
   useEffect(() => {
     (async () => {
@@ -185,6 +196,11 @@ export default function BeginningBalance() {
   async function saveAll() {
     if (saving) return;
     if (rows.length === 0) return alert("Add at least one entry before saving.");
+    if (branchFieldMode(userBranches) === "choose" && !branchId) {
+      setBranchError("Select the branch this beginning balance belongs to.");
+      return;
+    }
+    setBranchError("");
 
     setSaving(true);
 
@@ -193,12 +209,16 @@ export default function BeginningBalance() {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders() },
         credentials: "include",
-        body: JSON.stringify({ header, rows }),
+        body: JSON.stringify({ header: { ...header, branchId: branchId ? Number(branchId) : undefined }, rows }),
       });
 
       const data = await res.json();
 
       if (!res.ok) {
+        if (/^(BRANCH_|ACCOUNT_BRANCH|ACCOUNT_NOT_FOUND)/.test(data.code || "")) {
+          setBranchError(data.message || "This branch cannot be used.");
+          return;
+        }
         alert(data.message || "Failed to save GL beginning balance");
         return;
       }
@@ -221,7 +241,11 @@ export default function BeginningBalance() {
 
   async function downloadTemplate() {
     try {
-      const res = await fetch(`${API_BASE}/api/beginning-balances/gl/template?format=xlsx`, {
+      if (branchFieldMode(userBranches) === "choose" && !branchId) {
+        setBranchError("Select the branch this beginning balance belongs to.");
+        return;
+      }
+      const res = await fetch(`${API_BASE}/api/beginning-balances/gl/template?format=xlsx${branchQuery}`, {
         credentials: "include",
         headers: authHeaders(),
       });
@@ -259,11 +283,25 @@ export default function BeginningBalance() {
               {saving ? "Saving..." : "Save"}
             </button>
             <button onClick={downloadTemplate}>Download Template</button>
-            <button onClick={() => setShowImportModal(true)}>Import File</button>
+            <button onClick={() => {
+              if (branchFieldMode(userBranches) === "choose" && !branchId) {
+                setBranchError("Select the branch this beginning balance belongs to.");
+                return;
+              }
+              setShowImportModal(true);
+            }}>Import File</button>
           </div>
         </div>
 
         <div className="glbb-info-grid">
+          <BeginningBalanceBranchField
+            branches={userBranches}
+            value={branchId}
+            onChange={(v) => { setBranchId(v); setBranchError(""); }}
+            error={branchError}
+            id="glbb-branch"
+          />
+
           <div>
             <label>Filter Code</label>
             <input
@@ -515,6 +553,7 @@ export default function BeginningBalance() {
       <BeginningBalanceImportModal
         open={showImportModal}
         module="gl"
+        branchId={branchId}
         onClose={() => setShowImportModal(false)}
         onImported={handleImported}
       />
