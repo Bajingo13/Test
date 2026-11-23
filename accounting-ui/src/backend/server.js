@@ -7795,6 +7795,8 @@ app.use("/api/reports/trial-balance-checker", require("./routes/trialBalanceChec
 app.use("/api", require("./routes/roles.routes"));
 app.use("/api/invitations", require("./routes/invitations.routes"));
 app.use("/api/users", require("./routes/users.routes"));
+// SUPER_ADMIN-only self-service credential management (change own password / username).
+app.use("/api/account", require("./routes/account.routes"));
 app.use("/api/access-restrictions", require("./routes/accessRestrictions.routes"));
 app.use("/api/permission-templates", require("./routes/templates.routes"));
 app.use("/api/print", require("./routes/transactionPrint.routes"));

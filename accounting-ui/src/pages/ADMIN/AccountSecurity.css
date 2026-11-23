@@ -1,0 +1,128 @@
+/* Account Security (SUPER_ADMIN-only User Settings tab). Theme tokens only, so
+   light and dark mode follow the rest of User Settings. */
+.acs-root {
+  min-width: 0;
+}
+
+.acs-title {
+  margin: 0 0 16px;
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--text-primary);
+}
+
+.acs-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+}
+
+.acs-section {
+  min-width: 0;
+  border: 1px solid var(--border-color-strong);
+  border-radius: 12px;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.acs-section h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--text-primary);
+}
+
+.acs-muted {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.acs-current {
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.acs-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.acs-field label {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.acs-field input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  height: 42px;
+  border: 1px solid var(--border-color-strong);
+  border-radius: 10px;
+  padding: 0 12px;
+  font-size: 14px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+
+.acs-banner {
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.acs-banner-error {
+  background: var(--danger-bg);
+  color: var(--danger-text);
+}
+
+.acs-banner-success {
+  background: var(--success-bg);
+  color: var(--success-text);
+}
+
+.acs-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.acs-btn-primary {
+  height: 42px;
+  padding: 0 18px;
+  border-radius: 10px;
+  border: 1px solid var(--dark-btn-bg);
+  background: var(--dark-btn-bg);
+  color: var(--dark-btn-text);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.acs-btn-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+@media (max-width: 900px) {
+  .acs-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 600px) {
+  .acs-section {
+    padding: 14px;
+  }
+
+  .acs-actions .acs-btn-primary {
+    width: 100%;
+  }
+}

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import UserList from "./UserList";
 import PendingInvitations from "./PendingInvitations";
+import AccountSecurity from "./AccountSecurity";
 import "./UserSettings.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
@@ -14,6 +15,8 @@ const TABS = [
   { id: "users", label: "User List" },
   { id: "invitations", label: "Pending Invitations" },
 ];
+// SUPER_ADMIN only (the server enforces the same rule on /api/account/*).
+const SUPER_ADMIN_TABS = [{ id: "security", label: "Account Security" }];
 
 export default function UserSettings() {
   const [activeTab, setActiveTab] = useState("users");
@@ -34,13 +37,15 @@ export default function UserSettings() {
         const edit = data.permissions.some((p) => p.moduleKey === "ADMIN.USER_SETTINGS" && p.action === "EDIT" && p.granted);
         setCanView(view);
         setCanEdit(edit);
-        setCurrentUser(data.user ? { id: data.user.id, roleCode: data.user.roleCode } : null);
+        setCurrentUser(data.user ? { id: data.user.id, roleCode: data.user.roleCode, username: data.user.username } : null);
       } catch (err) {
         console.error("CHECK USER SETTINGS ACCESS ERROR:", err);
         setCanView(false);
       }
     })();
   }, []);
+
+  const isSuperAdmin = currentUser?.roleCode === "SUPER_ADMIN";
 
   if (canView === null) {
     return <div className="us-page"><p className="us-muted">Loading...</p></div>;
@@ -62,7 +67,7 @@ export default function UserSettings() {
       <h1>User Settings</h1>
 
       <div className="us-tabs">
-        {TABS.map((tab) => (
+        {[...TABS, ...(isSuperAdmin ? SUPER_ADMIN_TABS : [])].map((tab) => (
           <button
             key={tab.id}
             type="button"
@@ -77,6 +82,12 @@ export default function UserSettings() {
       <div className="us-card">
         {activeTab === "users" && <UserList canEdit={canEdit} currentUser={currentUser} />}
         {activeTab === "invitations" && <PendingInvitations embedded />}
+        {activeTab === "security" && isSuperAdmin && (
+          <AccountSecurity
+            currentUsername={currentUser?.username}
+            onUsernameChanged={(username) => setCurrentUser((u) => (u ? { ...u, username } : u))}
+          />
+        )}
       </div>
     </div>
   );
