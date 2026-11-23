@@ -63,7 +63,10 @@ function mockEmail() {
   return jest.spyOn(EmailService, "sendInvitationEmail").mockResolvedValue({ delivered: false, reason: "SMTP_NOT_CONFIGURED" });
 }
 
-const invite = (who, body) => request(app).post("/api/invitations").set(auth(who)).send(body);
+// Login identity model: every invitation carries a username; tests that do not
+// pick one get a unique one derived from the (already unique) test e-mail.
+const withUsername = (body) => (body && body.email !== undefined && body.username === undefined ? { ...body, username: String(body.email).replace("@", ".at.") } : body);
+const invite = (who, body) => request(app).post("/api/invitations").set(auth(who)).send(withUsername(body));
 
 async function invitationRow(email) {
   const [rows] = await pool.execute("SELECT * FROM invitations WHERE email = ?", [email]);

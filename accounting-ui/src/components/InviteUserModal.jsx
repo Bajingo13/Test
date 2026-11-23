@@ -36,6 +36,7 @@ export default function InviteUserModal({ open, onClose, onInvited, inviterRoleC
 
   const [form, setForm] = useState({
     email: "",
+    username: "",
     fullName: "",
     roleId: "",
     companyIds: [],
@@ -80,7 +81,7 @@ export default function InviteUserModal({ open, onClose, onInvited, inviterRoleC
 
   useEffect(() => {
     if (!open) return;
-    setForm({ email: "", fullName: "", roleId: "", companyIds: [], branchIds: [], expiresInDays: 7, permissionTemplateId: "" });
+    setForm({ email: "", username: "", fullName: "", roleId: "", companyIds: [], branchIds: [], expiresInDays: 7, permissionTemplateId: "" });
     setError("");
     setResult(null);
     loadLookups();
@@ -126,8 +127,12 @@ export default function InviteUserModal({ open, onClose, onInvited, inviterRoleC
       setError("The form hasn't finished loading. Please retry loading it first.");
       return;
     }
-    if (!form.email.trim() || !form.fullName.trim() || !form.roleId) {
-      setError("Email, full name, and role are required.");
+    if (!form.fullName.trim() || !form.username.trim() || !form.email.trim() || !form.roleId) {
+      setError("Full name, username, email, and role are required.");
+      return;
+    }
+    if (/\s/.test(form.username.trim())) {
+      setError("The username cannot contain spaces.");
       return;
     }
     if (form.companyIds.length === 0) {
@@ -181,7 +186,9 @@ export default function InviteUserModal({ open, onClose, onInvited, inviterRoleC
               )}
             </div>
           ) : (
-            <form onSubmit={handleSubmit}>
+            <form onSubmit={handleSubmit} noValidate>
+              {/* noValidate: handleSubmit reports every problem in-page (one
+                  consistent message area) instead of native browser bubbles. */}
               {lookupsLoading && <p className="ium-muted">Loading roles and companies...</p>}
               {lookupError && (
                 <div className="ium-error-banner" role="alert">
@@ -192,24 +199,46 @@ export default function InviteUserModal({ open, onClose, onInvited, inviterRoleC
                 </div>
               )}
 
+              {/* Login identity model: Full Name (display), Username (login +
+                  greeting), Email (delivery / alerts / alternative login). */}
               <div className="ium-field">
-                <label>Email Address</label>
+                <label htmlFor="ium-full-name">Full Name</label>
                 <input
-                  type="email"
-                  value={form.email}
-                  onChange={(e) => setForm({ ...form, email: e.target.value })}
+                  id="ium-full-name"
+                  type="text"
+                  value={form.fullName}
+                  onChange={(e) => setForm({ ...form, fullName: e.target.value })}
+                  autoComplete="off"
                   required
                 />
               </div>
 
               <div className="ium-field">
-                <label>Full Name</label>
+                <label htmlFor="ium-username">Username</label>
                 <input
+                  id="ium-username"
                   type="text"
-                  value={form.fullName}
-                  onChange={(e) => setForm({ ...form, fullName: e.target.value })}
+                  value={form.username}
+                  onChange={(e) => setForm({ ...form, username: e.target.value })}
+                  placeholder="e.g. juan.delacruz"
+                  autoComplete="off"
+                  spellCheck={false}
                   required
                 />
+                <p className="ium-muted">Used to sign in and shown in the app. 3-100 characters: letters, digits and . _ @ + - only.</p>
+              </div>
+
+              <div className="ium-field">
+                <label htmlFor="ium-email">Email Address</label>
+                <input
+                  id="ium-email"
+                  type="email"
+                  value={form.email}
+                  onChange={(e) => setForm({ ...form, email: e.target.value })}
+                  autoComplete="off"
+                  required
+                />
+                <p className="ium-muted">The invitation and security notices go here; it can also be used to sign in.</p>
               </div>
 
               <div className="ium-field">

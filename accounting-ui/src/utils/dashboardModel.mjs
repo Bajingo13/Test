@@ -406,3 +406,12 @@ export function dashboardSummaryQuery({ companyId, from, to, branch }) {
   if (branch) q.branch = String(branch);
   return new URLSearchParams(q).toString();
 }
+
+// Dashboard greeting: always the account's USERNAME (login identity), from the
+// server when known, else the saved session. Never the e-mail or full name.
+export function greetingName({ serverUsername = "", sessionUser = null } = {}) {
+  const fromServer = typeof serverUsername === "string" ? serverUsername.trim() : "";
+  if (fromServer) return fromServer;
+  const fromSession = typeof sessionUser?.username === "string" ? sessionUser.username.trim() : "";
+  return fromSession;
+}

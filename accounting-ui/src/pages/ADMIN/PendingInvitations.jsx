@@ -149,6 +149,7 @@ export default function PendingInvitations({ embedded = false }) {
               <thead>
                 <tr>
                   <th>Email</th>
+                  <th>Username</th>
                   <th>Full Name</th>
                   <th>Role</th>
                   <th>Status</th>
@@ -162,6 +163,7 @@ export default function PendingInvitations({ embedded = false }) {
                 {invitations.map((inv) => (
                   <tr key={inv.id}>
                     <td>{inv.email}</td>
+                    <td>{inv.username || "-"}</td>
                     <td>{inv.full_name}</td>
                     <td>{inv.role_name}</td>
                     <td>

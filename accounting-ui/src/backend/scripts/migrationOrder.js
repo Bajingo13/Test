@@ -254,6 +254,11 @@ const MIGRATION_ORDER = [
   // another branch's code), General Library code unique per company. Indexes
   // only - no row changes. Must run after multi_branch_foundation_migration.sql.
   "multi_branch_phase_b_migration.sql",
+  // Login identity model (full name / username / email): invitations.username,
+  // the username chosen at invitation time, copied to users.username on
+  // acceptance. Nullable column + index only - no row changes. Must run after
+  // invitations_migration.sql.
+  "invitation_username_migration.sql",
 ];
 
 module.exports = { MIGRATION_ORDER };

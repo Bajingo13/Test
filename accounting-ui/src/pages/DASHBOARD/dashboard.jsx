@@ -16,6 +16,7 @@ import {
   dashboardCompanyChoice,
   dashboardCompanyLocked,
   dashboardSummaryQuery,
+  greetingName,
   financialIndicators,
   formatCompact,
   formatDate,
@@ -105,9 +106,10 @@ function sessionUser() {
   }
 }
 
-function currentUsername() {
-  const user = sessionUser();
-  return user?.username || user?.name || "";
+// Greeting identity: the USERNAME - the server's (from /api/me/permissions)
+// once known, the saved session's until then. Never the e-mail or full name.
+function currentUsername(serverUsername) {
+  return greetingName({ serverUsername, sessionUser: sessionUser() });
 }
 
 function WidgetFrame({ widget, children, onRemove, onMoveUp, onMoveDown }) {
@@ -188,6 +190,7 @@ export default function Dashboard() {
 
   const [companyState, setCompanyState] = useState({ status: "loading", companies: [], isSuperAdmin: false });
   const [companyId, setCompanyId] = useState("");
+  const [signedInUsername, setSignedInUsername] = useState("");
   // Multi-Branch: the branches this user may see in the selected company (the
   // server's answer); the selected branch scopes every figure server-side.
   const [branchState, setBranchState] = useState({ status: "idle", companyId: "", options: [] });
@@ -216,6 +219,7 @@ export default function Dashboard() {
       const list = Array.isArray(companies) ? companies : [];
       const isSuperAdmin = me?.user?.roleCode === "SUPER_ADMIN";
       setAccess(accessFromMe(me));
+      setSignedInUsername(me?.user?.username || "");
       // The server's word on who is signed in wins over the saved session:
       // if they differ, show this user's own layout and period.
       const confirmedId = me?.user?.id ? String(me.user.id) : "";
@@ -353,7 +357,7 @@ export default function Dashboard() {
   const branch = branchOpts.find((o) => o.value === branchValue) || null;
 
   function renderWidget(id) {
-    const props = { st, currency, navigate, retry: loadSummary, summary, request, access };
+    const props = { st, currency, navigate, retry: loadSummary, summary, request, access, signedInUsername };
     switch (id) {
       case "aiAssistant":
         return <SummaryWidget {...props} />;
@@ -577,9 +581,9 @@ const SUMMARY_LINKS = [
   { label: "Review APV", path: "/transactions/apv" },
 ];
 
-function SummaryWidget({ summary, request, navigate, retry, access }) {
+function SummaryWidget({ summary, request, navigate, retry, access, signedInUsername }) {
   const links = SUMMARY_LINKS.filter((l) => canOpen(access, l.path));
-  const name = currentUsername();
+  const name = currentUsername(signedInUsername);
   const lines = summaryLines(summary);
   return (
     <div className="ai-assistant">

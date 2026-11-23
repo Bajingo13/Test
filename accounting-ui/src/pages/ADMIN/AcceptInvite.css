@@ -91,3 +91,32 @@
   opacity: 0.6;
   cursor: not-allowed;
 }
+
+/* Account identity shown before the password is set (theme tokens only). */
+.ai-identity {
+  margin: 12px 0 4px;
+  display: grid;
+  gap: 6px;
+}
+
+.ai-identity div {
+  display: grid;
+  grid-template-columns: minmax(0, 110px) minmax(0, 1fr);
+  gap: 8px;
+}
+
+.ai-identity dt {
+  margin: 0;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.ai-identity dd {
+  margin: 0;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.ai-signin-hint {
+  margin-bottom: 12px;
+}

@@ -69,7 +69,7 @@ export default function Login() {
     e.preventDefault();
 
     if (!form.username.trim() || !form.password.trim()) {
-      setFormError("Please enter your username and password.");
+      setFormError("Please enter your username or email and your password.");
       return;
     }
 
@@ -131,7 +131,8 @@ export default function Login() {
                 name="username"
                 value={form.username}
                 onChange={handleChange}
-                placeholder="Username"
+                placeholder="Username or email"
+                aria-label="Username or email"
                 autoComplete="username"
                 required
               />

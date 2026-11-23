@@ -190,8 +190,8 @@ async function changeUsername({ actingUser, body = {}, meta = {} }) {
       `SELECT
          (SELECT COUNT(*) FROM users WHERE username = ? AND id <> ?) AS by_username,
          (SELECT COUNT(*) FROM users WHERE email = ? AND id <> ?) AS by_email,
-         (SELECT COUNT(*) FROM invitations WHERE email = ? AND status = 'PENDING') AS by_invitation`,
-      [username, user.id, username, user.id, username]
+         (SELECT COUNT(*) FROM invitations WHERE (email = ? OR username = ?) AND status = 'PENDING') AS by_invitation`,
+      [username, user.id, username, user.id, username, username]
     );
     if (Number(taken.by_username) || Number(taken.by_email) || Number(taken.by_invitation)) {
       throw fail(409, "USERNAME_TAKEN", "That username is already in use.");

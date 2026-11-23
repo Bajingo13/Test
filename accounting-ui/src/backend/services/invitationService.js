@@ -7,6 +7,7 @@ const EmailService = require("./emailService");
 const UserAccessService = require("./userAccessService");
 const TemplateService = require("./templateService");
 const BranchAssignment = require("../lib/branchAssignment");
+const { USERNAME_RE } = require("./accountCredentialService");
 
 const DEFAULT_EXPIRY_DAYS = 7;
 const MIN_EXPIRY_DAYS = 1;
@@ -45,7 +46,37 @@ function frontendBaseUrl() {
   return (process.env.FRONTEND_URL || "http://localhost:5173").split(",")[0].trim();
 }
 
-async function createInvitation({ email, fullName, roleId, companyIds, branchIds, expiresInDays, permissionTemplateId, actingUser }) {
+// Login identity model: every invited user gets a FULL NAME (display only), a
+// USERNAME (login + greeting) and an E-MAIL (delivery, alerts, alternative
+// login). The username follows the same rule as the SUPER_ADMIN Account
+// Security feature (accountCredentialService.USERNAME_RE).
+function normalizeUsername(username) {
+  const value = String(username ?? "").trim();
+  if (!value) throw Object.assign(new Error("Username is required."), { statusCode: 400, code: "USERNAME_REQUIRED" });
+  if (value.length > 100 || !USERNAME_RE.test(value)) {
+    throw Object.assign(
+      new Error("Usernames are 3-100 characters: letters, digits and . _ @ + - only, starting with a letter or digit, no spaces."),
+      { statusCode: 400, code: "USERNAME_INVALID" }
+    );
+  }
+  return value;
+}
+
+// One login identifier must always resolve to ONE account: a new username may
+// not equal any user's username OR e-mail (or a pending invitation's), and the
+// same for a new e-mail. Comparisons use the columns' case-insensitive
+// collation (utf8mb4_0900_ai_ci) - the same rule as the UNIQUE keys and login.
+async function identifierInUse(db, value) {
+  const [[r]] = await db.execute(
+    `SELECT
+       (SELECT COUNT(*) FROM users WHERE username = ? OR email = ?) AS users_n,
+       (SELECT COUNT(*) FROM invitations WHERE status = 'PENDING' AND (email = ? OR username = ?)) AS pending_n`,
+    [value, value, value, value]
+  );
+  return { user: Number(r.users_n) > 0, pending: Number(r.pending_n) > 0 };
+}
+
+async function createInvitation({ email, username, fullName, roleId, companyIds, branchIds, expiresInDays, permissionTemplateId, actingUser }) {
   const normalizedEmail = normalizeEmail(email);
   if (!isValidEmail(normalizedEmail)) {
     throw Object.assign(new Error("A valid email address is required."), { statusCode: 400 });
@@ -53,6 +84,7 @@ async function createInvitation({ email, fullName, roleId, companyIds, branchIds
   if (!fullName || !String(fullName).trim()) {
     throw Object.assign(new Error("Full name is required."), { statusCode: 400 });
   }
+  const normalizedUsername = normalizeUsername(username);
 
   const [roleRows] = await pool.execute("SELECT id, code, name FROM roles WHERE id = ?", [roleId]);
   const role = roleRows[0];
@@ -114,15 +146,25 @@ async function createInvitation({ email, fullName, roleId, companyIds, branchIds
   if (existingInvite.length > 0) {
     throw Object.assign(new Error("An invitation is already pending for this email. Resend or revoke it instead."), { statusCode: 409 });
   }
+  // The e-mail may not be another account's USERNAME / a pending invitation's
+  // username either, and the username may not be taken in any of the four ways.
+  const emailAsIdentifier = await identifierInUse(pool, normalizedEmail);
+  if (emailAsIdentifier.user || emailAsIdentifier.pending) {
+    throw Object.assign(new Error("A user with this email already exists."), { statusCode: 409 });
+  }
+  const usernameInUse = await identifierInUse(pool, normalizedUsername);
+  if (usernameInUse.user || usernameInUse.pending) {
+    throw Object.assign(new Error("That username is already in use."), { statusCode: 409, code: "USERNAME_TAKEN" });
+  }
 
   const days = Math.min(Math.max(Number(expiresInDays) || DEFAULT_EXPIRY_DAYS, MIN_EXPIRY_DAYS), MAX_EXPIRY_DAYS);
   const { raw, hash } = generateToken();
 
   const [result] = await pool.execute(
     `INSERT INTO invitations
-      (email, full_name, role_id, company_ids, branch_ids, permission_template_id, token_hash, status, expires_at, invited_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', DATE_ADD(NOW(), INTERVAL ? DAY), ?)`,
-    [normalizedEmail, String(fullName).trim(), roleId, JSON.stringify(companyIdList), JSON.stringify(branchIdList), hasTemplate ? Number(permissionTemplateId) : null, hash, days, actingUser.id]
+      (email, username, full_name, role_id, company_ids, branch_ids, permission_template_id, token_hash, status, expires_at, invited_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', DATE_ADD(NOW(), INTERVAL ? DAY), ?)`,
+    [normalizedEmail, normalizedUsername, String(fullName).trim(), roleId, JSON.stringify(companyIdList), JSON.stringify(branchIdList), hasTemplate ? Number(permissionTemplateId) : null, hash, days, actingUser.id]
   );
   const invitationId = result.insertId;
 
@@ -152,8 +194,8 @@ async function createInvitation({ email, fullName, roleId, companyIds, branchIds
     entityType: "INVITATION",
     entityId: invitationId,
     action: "USER_INVITED",
-    description: `${actingUser.username} invited ${normalizedEmail} as ${role.name}`,
-    afterData: { email: normalizedEmail, roleCode: role.code, companyIdList, branchIdList, emailDelivered: emailResult.delivered },
+    description: `${actingUser.username} invited ${normalizedEmail} (username ${normalizedUsername}) as ${role.name}`,
+    afterData: { email: normalizedEmail, username: normalizedUsername, roleCode: role.code, companyIdList, branchIdList, emailDelivered: emailResult.delivered },
     user: actingUser,
     // A company event only when the invitation covers exactly one company.
     companyId: await soleCompanyForAccess(pool, { companyIds: companyIdList, branchIds: branchIdList }),
@@ -162,6 +204,7 @@ async function createInvitation({ email, fullName, roleId, companyIds, branchIds
   return {
     id: invitationId,
     email: normalizedEmail,
+    username: normalizedUsername,
     emailDelivered: emailResult.delivered,
     // Only ever returned to the ACTING (already-authenticated, permission-
     // checked) admin as a manual-share fallback when SMTP isn't configured
@@ -181,7 +224,7 @@ async function listInvitations(actingUser) {
   }
 
   const [rows] = await pool.execute(
-    `SELECT i.id, i.email, i.full_name, r.name AS role_name, r.code AS role_code, i.status,
+    `SELECT i.id, i.email, i.username, i.full_name, r.name AS role_name, r.code AS role_code, i.status,
        i.expires_at, i.resend_count, i.last_sent_at, i.email_delivery_status,
        i.created_at, i.accepted_at, u.username AS invited_by_username
      FROM invitations i
@@ -281,7 +324,7 @@ async function validateToken(rawToken) {
   const hash = crypto.createHash("sha256").update(String(rawToken || "")).digest("hex");
 
   const [rows] = await pool.execute(
-    `SELECT i.id, i.email, i.full_name, i.status, i.expires_at, r.name AS role_name, i.company_ids
+    `SELECT i.id, i.email, i.username, i.full_name, i.status, i.expires_at, r.name AS role_name, i.company_ids
      FROM invitations i JOIN roles r ON r.id = i.role_id
      WHERE i.token_hash = ?`,
     [hash]
@@ -311,6 +354,8 @@ async function validateToken(rawToken) {
   // Never expose raw database IDs - only display-safe fields.
   return {
     email: invitation.email,
+    // Invitations from before the username column accept with username = e-mail.
+    username: invitation.username || invitation.email,
     fullName: invitation.full_name,
     roleName: invitation.role_name,
     companyNames,
@@ -345,9 +390,16 @@ async function acceptInvitation({ token, password, acceptedTerms }) {
       throw Object.assign(new Error("This invitation link has expired."), { statusCode: 410 });
     }
 
-    const [existingUser] = await conn.execute("SELECT id FROM users WHERE email = ?", [invitation.email]);
+    // The account's login username: chosen at invitation time; invitations from
+    // before the username column keep the previous behaviour (username = e-mail).
+    const username = invitation.username || invitation.email;
+    const [existingUser] = await conn.execute("SELECT id FROM users WHERE email = ? OR username = ?", [invitation.email, invitation.email]);
     if (existingUser.length > 0) {
       throw Object.assign(new Error("An account with this email already exists."), { statusCode: 409 });
+    }
+    const [usernameTaken] = await conn.execute("SELECT id FROM users WHERE username = ? OR email = ?", [username, username]);
+    if (usernameTaken.length > 0) {
+      throw Object.assign(new Error("An account with this username already exists. Ask for a new invitation."), { statusCode: 409 });
     }
 
     if (invitation.permission_template_id) {
@@ -370,7 +422,7 @@ async function acceptInvitation({ token, password, acceptedTerms }) {
     const [userResult] = await conn.execute(
       `INSERT INTO users (username, password, full_name, role, role_id, status, email, created_by)
        VALUES (?, ?, ?, 'user', ?, 'ACTIVE', ?, ?)`,
-      [invitation.email, passwordHash, invitation.full_name, invitation.role_id, invitation.email, invitation.invited_by]
+      [username, passwordHash, invitation.full_name, invitation.role_id, invitation.email, invitation.invited_by]
     );
     const newUserId = userResult.insertId;
 
@@ -426,7 +478,7 @@ async function acceptInvitation({ token, password, acceptedTerms }) {
       action: "INVITATION_ACCEPTED",
       description: `${invitation.email} accepted their invitation and activated their account`,
       afterData: { newUserId },
-      user: { id: newUserId, username: invitation.email },
+      user: { id: newUserId, username },
       companyId: auditCompanyId,
     });
     await logAudit(conn, {
@@ -435,12 +487,12 @@ async function acceptInvitation({ token, password, acceptedTerms }) {
       entityId: newUserId,
       action: "USER_ACTIVATED",
       description: `Account activated via invitation for ${invitation.email}`,
-      user: { id: newUserId, username: invitation.email },
+      user: { id: newUserId, username },
       companyId: auditCompanyId,
     });
 
     await conn.commit();
-    return { userId: newUserId, username: invitation.email };
+    return { userId: newUserId, username };
   } catch (err) {
     await conn.rollback();
     throw err;

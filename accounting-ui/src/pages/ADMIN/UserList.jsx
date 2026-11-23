@@ -272,7 +272,11 @@ export default function UserList({ canEdit, currentUser }) {
                       {displayName(u)}
                       {Number(u.id) === Number(currentUser?.id) && <span className="ul-you">You</span>}
                     </td>
-                    <td>{u.email || u.username}</td>
+                    <td>
+                      {/* Login identity: both identifiers sign in; the username is what the app shows. */}
+                      <span className="ul-identity-email">{u.email || "-"}</span>
+                      <span className="ul-identity-username">{u.username}</span>
+                    </td>
                     <td>
                       <span className={`ul-role-badge ul-role-${(u.role_code || "").toLowerCase()}`}>
                         {u.role_name || "-"}

@@ -247,3 +247,16 @@
   height: 38px;
   padding: 0 16px;
 }
+
+/* Email / Username cell: e-mail on the first line, username below. */
+.ul-identity-email,
+.ul-identity-username {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.ul-identity-username {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}

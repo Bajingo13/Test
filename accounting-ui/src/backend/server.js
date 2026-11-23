@@ -173,15 +173,25 @@ const LOCKOUT_MINUTES = 15;
 
 app.post("/api/login", loginRateLimiter, async (req, res) => {
   try {
-    const { username, password } = req.body;
+    const { password } = req.body;
+    // One login identifier: the USERNAME or the account's E-MAIL (both unique,
+    // matched case-insensitively by the columns' collation). A username match
+    // wins over an e-mail match. Every other rule below - lockout, counters, the
+    // third-failure alert, the generic answer - is unchanged and per account.
+    const identifier = typeof req.body.username === "string" ? req.body.username.trim() : "";
+    const username = identifier;
     const { ipAddress, userAgent } = requestMeta(req);
 
-    const [rows] = await pool.execute(
-      `SELECT id, username, password, role, status, token_version, failed_login_count, locked_until,
-         (locked_until IS NOT NULL AND locked_until > NOW()) AS is_locked
-       FROM users WHERE username = ?`,
-      [username]
-    );
+    const [rows] = identifier
+      ? await pool.execute(
+          `SELECT id, username, password, role, status, token_version, failed_login_count, locked_until,
+             (locked_until IS NOT NULL AND locked_until > NOW()) AS is_locked
+           FROM users WHERE username = ? OR email = ?
+           ORDER BY (username = ?) DESC, id
+           LIMIT 1`,
+          [identifier, identifier, identifier]
+        )
+      : [[]];
 
     if (rows.length === 0) {
       await logAudit(pool, {

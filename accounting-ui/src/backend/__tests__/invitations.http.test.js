@@ -52,8 +52,11 @@ function mockEmail(delivered) {
     .mockResolvedValue(delivered ? { delivered: true } : { delivered: false, reason: "SMTP_NOT_CONFIGURED" });
 }
 
+// Login identity model: every invitation carries a username; tests that do not
+// pick one get a unique one derived from the (already unique) test e-mail.
+const withUsername = (body) => (body && body.email !== undefined && body.username === undefined ? { ...body, username: String(body.email).replace("@", ".at.") } : body);
 async function invite(who, body) {
-  return request(app).post("/api/invitations").set(auth(who)).send(body);
+  return request(app).post("/api/invitations").set(auth(who)).send(withUsername(body));
 }
 
 async function invitationRow(email) {
@@ -225,6 +228,7 @@ describe("validate -> accept -> user", () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
       email: MAIL("acct1"),
+      username: MAIL("acct1").replace("@", ".at."),
       fullName: "Acct One",
       roleName: "Accountant",
       companyNames: ["INVT Co A"],

@@ -193,7 +193,7 @@ describe("initial admin, then the company's own administration", () => {
     expect(self.status).toBe(403);
     const other = await call("admin-a", "patch", `/api/users/${uid["acct-a"]}`, { companyIds: [co.A, co.B] });
     expect(other.status).toBe(403);
-    const invite = await call("admin-a", "post", "/api/invitations", { email: "uat-company-invite@example.test", fullName: "x", roleId: (await pool.query("SELECT id FROM roles WHERE code = 'ACCOUNTANT'"))[0][0].id, companyIds: [co.B] });
+    const invite = await call("admin-a", "post", "/api/invitations", { email: "uat-company-invite@example.test", username: "uat-company-invite", fullName: "x", roleId: (await pool.query("SELECT id FROM roles WHERE code = 'ACCOUNTANT'"))[0][0].id, companyIds: [co.B] });
     expect(invite.status).toBe(403);
     expect(await access(uid["admin-a"])).toEqual(before);
   });
@@ -269,7 +269,7 @@ describe("branch-assignment security (server-side)", () => {
     const viaSuper = await call("super", "patch", `/api/users/${uid["acct-a"]}`, { branchIds: [br.B_MAIN] });
     expect(viaSuper.status).toBe(400);
     expect(viaSuper.body.message).toMatch(/belongs to that branch's company/);
-    const invite = await call("super", "post", "/api/invitations", { email: "uat-company-x@example.test", fullName: "x", roleId: (await pool.query("SELECT id FROM roles WHERE code = 'ACCOUNTANT'"))[0][0].id, companyIds: [co.A], branchIds: [br.B_MAIN] });
+    const invite = await call("super", "post", "/api/invitations", { email: "uat-company-x@example.test", username: "uat-company-x", fullName: "x", roleId: (await pool.query("SELECT id FROM roles WHERE code = 'ACCOUNTANT'"))[0][0].id, companyIds: [co.A], branchIds: [br.B_MAIN] });
     expect(invite.status).toBe(400);
     expect((await access(uid["acct-a"])).branches).toEqual([]);
   });

@@ -2,9 +2,9 @@ const InvitationService = require("../services/invitationService");
 
 exports.createInvitation = async (req, res) => {
   try {
-    const { email, fullName, roleId, companyIds, branchIds, expiresInDays, permissionTemplateId } = req.body;
+    const { email, username, fullName, roleId, companyIds, branchIds, expiresInDays, permissionTemplateId } = req.body;
     const result = await InvitationService.createInvitation({
-      email, fullName, roleId, companyIds, branchIds, expiresInDays, permissionTemplateId,
+      email, username, fullName, roleId, companyIds, branchIds, expiresInDays, permissionTemplateId,
       actingUser: req.user,
     });
     res.status(201).json({ success: true, ...result });

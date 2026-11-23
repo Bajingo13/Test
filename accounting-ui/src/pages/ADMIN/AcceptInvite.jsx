@@ -107,6 +107,12 @@ export default function AcceptInvite() {
               )}
               . Set a password to activate your account.
             </p>
+            <dl className="ai-identity">
+              <div><dt>Full Name</dt><dd>{invitation.fullName}</dd></div>
+              <div><dt>Username</dt><dd className="ai-identity-username">{invitation.username || invitation.email}</dd></div>
+              <div><dt>Email</dt><dd>{invitation.email}</dd></div>
+            </dl>
+            <p className="ai-muted ai-signin-hint">After activation you can sign in with your username or your email.</p>
 
             <form onSubmit={handleSubmit}>
               <div className="ai-field">
