@@ -98,7 +98,10 @@ async function workflowAudits(id) {
 async function setStatus(id, status) {
   await pool.execute(
     `UPDATE rfp_headers SET status = ?${status === "CONVERTED" ? ", converted_apv_id = ?" : ""} WHERE id = ?`,
-    status === "CONVERTED" ? [status, 2147470000 + id, id] : [status, id]
+    // Placeholder APV id: unique per RFP (uq_rfp_converted_apv), far above real
+    // APV ids, and always within signed INT (max 2,099,999,999 < 2,147,483,647)
+    // however far the test DB's rfp_headers ids grow.
+    status === "CONVERTED" ? [status, 2000000000 + (id % 100000000), id] : [status, id]
   );
 }
 

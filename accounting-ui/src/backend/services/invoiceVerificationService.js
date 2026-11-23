@@ -41,6 +41,119 @@ const PROTECTED_FIELDS = [
   "verificationToken",
 ];
 
+// ---------------------------------------------------------------------------
+// Canonical signature input (signature format v2)
+// ---------------------------------------------------------------------------
+// The defect this fixes: issuance used to sign the totals as JavaScript
+// numbers taken from the request (9000), while verification re-signed the
+// persisted row, where mysql2 returns DECIMAL columns as strings ("9000.00").
+// JSON.stringify(9000) !== JSON.stringify("9000.00"), so no normally posted
+// invoice could ever verify.
+//
+// Now BOTH sides (a) read the protected fields from the PERSISTED row with the
+// same SELECT (SIGNED_ROW_COLUMNS) and (b) pass every value through the same
+// canonicalizer before signing. Each logical value has exactly ONE byte
+// representation:
+//   money    fixed-scale decimal string, MONEY_SCALE (2) places - the scale of
+//            invoice_headers.total_debit / total_credit DECIMAL(15,2).
+//            9000, "9000", "9000.0", "9000.00" -> "9000.00"; 100.5 -> "100.50".
+//            Parsed and padded as TEXT - no floating-point arithmetic. A value
+//            with non-zero digits beyond the scale (one the column cannot
+//            hold) or a non-decimal / exponent form is refused, never rounded.
+//   integer  ids as base-10 integer strings ("55"), whether the driver or a
+//            caller supplied 55 or "55"; null stays null.
+//   date     "YYYY-MM-DD" only.
+//   text     the exact stored string (no trimming / case folding - the
+//            persisted bytes are the document's identity); null stays null.
+// The payload carries "v": 2, so a v2 payload can never collide with the
+// legacy format below.
+const SIGNATURE_VERSION = 2;
+const MONEY_SCALE = 2;
+
+class CanonicalValueError extends Error {}
+
+function canonicalMoney(value) {
+  if (value === null || value === undefined || value === "") return null;
+  let text;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new CanonicalValueError("money value is not finite");
+    text = String(value); // shortest round-trip form; no arithmetic is done on it
+  } else if (typeof value === "string") {
+    text = value.trim();
+  } else {
+    throw new CanonicalValueError("money value has an unsupported type");
+  }
+  const m = /^([+-]?)(\d+)(?:\.(\d+))?$/.exec(text);
+  if (!m) throw new CanonicalValueError("money value is not a plain decimal");
+  const [, sign, intDigits, fracDigits = ""] = m;
+  const extra = fracDigits.slice(MONEY_SCALE);
+  if (/[^0]/.test(extra)) throw new CanonicalValueError(`money value has more than ${MONEY_SCALE} decimal places`);
+  const intPart = intDigits.replace(/^0+(?=\d)/, "");
+  const fracPart = fracDigits.slice(0, MONEY_SCALE).padEnd(MONEY_SCALE, "0");
+  const isZero = /^0+$/.test(intPart) && /^0+$/.test(fracPart);
+  return `${sign === "-" && !isZero ? "-" : ""}${intPart}.${fracPart}`;
+}
+
+function canonicalInteger(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const text = typeof value === "number" ? (Number.isSafeInteger(value) ? String(value) : null) : String(value).trim();
+  if (text === null || !/^-?\d+$/.test(text)) throw new CanonicalValueError("id value is not an integer");
+  return text.replace(/^(-?)0+(?=\d)/, "$1");
+}
+
+function canonicalDate(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const text = String(value).trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) throw new CanonicalValueError("date value is not YYYY-MM-DD");
+  return text;
+}
+
+function canonicalText(value) {
+  if (value === null || value === undefined) return null;
+  return String(value);
+}
+
+const CANONICALIZERS = {
+  voucherNo: canonicalText,
+  transactionDate: canonicalDate,
+  customerId: canonicalInteger,
+  customerName: canonicalText,
+  totalDebit: canonicalMoney,
+  totalCredit: canonicalMoney,
+  currencyId: canonicalInteger,
+  companyId: canonicalInteger,
+  verificationToken: canonicalText,
+};
+
+// Canonical, order-fixed JSON: {"v":2, <PROTECTED_FIELDS in order>}.
+function buildCanonicalPayload(row) {
+  const ordered = { v: SIGNATURE_VERSION };
+  for (const key of PROTECTED_FIELDS) ordered[key] = CANONICALIZERS[key](row[key]);
+  return JSON.stringify(ordered);
+}
+
+// ---------------------------------------------------------------------------
+// Legacy signature format (v1) - verification only, never issued any more
+// ---------------------------------------------------------------------------
+// Every signature minted before this fix is v1: JSON of PROTECTED_FIELDS with
+// the totals as the JavaScript NUMBER issuance had (currencyResult's
+// base totals, the same value stored in the DECIMAL(15,2) column) and the
+// other fields exactly as persisted. Those invoices are already printed /
+// emailed with their QR code, so they are not silently invalidated:
+// verification reconstructs that ONE legacy form from the persisted row
+// (totals = Number(stored DECIMAL); every other field as stored) and accepts
+// it only on an exact HMAC match. This is a single deterministic
+// reconstruction, not a set of formatting variants, and it is computed from
+// the same persisted values - any change to a protected field still breaks it.
+function buildLegacyPayload(row) {
+  const ordered = {};
+  for (const key of PROTECTED_FIELDS) {
+    const v = row[key] ?? null;
+    ordered[key] = (key === "totalDebit" || key === "totalCredit") && v !== null ? Number(v) : v;
+  }
+  return JSON.stringify(ordered);
+}
+
 function getHmacSecret() {
   const secret = process.env.HMAC_SECRET;
   if (!secret) {
@@ -51,17 +164,40 @@ function getHmacSecret() {
   return secret;
 }
 
-// Canonical, order-fixed JSON (PROTECTED_FIELDS' own order, not object key
-// insertion order) so the exact same logical data always signs to the
-// exact same bytes.
-function buildProtectedPayload(row) {
-  const ordered = {};
-  for (const key of PROTECTED_FIELDS) ordered[key] = row[key] ?? null;
-  return JSON.stringify(ordered);
+function hmac(payload) {
+  return crypto.createHmac("sha256", getHmacSecret()).update(payload).digest("hex");
 }
 
+// The signature every issuance / re-sign now produces (canonical v2).
 function computeSignature(row) {
-  return crypto.createHmac("sha256", getHmacSecret()).update(buildProtectedPayload(row)).digest("hex");
+  return hmac(buildCanonicalPayload(row));
+}
+
+// Verification-only reconstruction of a pre-fix (v1) signature.
+function computeLegacySignature(row) {
+  return hmac(buildLegacyPayload(row));
+}
+
+// The persisted protected fields, read exactly the same way by issuance,
+// re-signing and verification (DATE_FORMAT keeps the date timezone-free).
+const SIGNED_ROW_COLUMNS = `
+      id,
+      company_id AS companyId,
+      voucher_no AS voucherNo,
+      customer_id AS customerId,
+      customer_name AS customerName,
+      DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate,
+      total_debit AS totalDebit,
+      total_credit AS totalCredit,
+      currency_id AS currencyId,
+      status,
+      verification_token AS verificationToken,
+      verification_signature AS verificationSignature`;
+
+async function loadSignedRowById(conn, invoiceId) {
+  const [rows] = await conn.execute(`SELECT ${SIGNED_ROW_COLUMNS} FROM invoice_headers WHERE id = ?`, [invoiceId]);
+  if (!rows.length) throw new Error(`Invoice ${invoiceId} not found while signing its verification data.`);
+  return rows[0];
 }
 
 function signaturesMatch(expectedHex, actualHex) {
@@ -85,25 +221,19 @@ function generateVerificationToken() {
 // reprints, PDF exports, and emails all reuse the token/signature this
 // mints here, which is what keeps one QR code valid for the document's
 // whole life.
-async function issueVerification(conn, { invoiceId, voucherNo, transactionDate, customerId, customerName, totalDebit, totalCredit, currencyId, companyId }) {
+//
+// QR fix: the signature is computed from the PERSISTED row (read back in this
+// same transaction with SIGNED_ROW_COLUMNS - the exact query verification
+// uses), never from the request's own values. The caller's field arguments
+// are accepted for call-site compatibility but are deliberately not signed:
+// signing what was stored is what guarantees issuance and verification see
+// byte-identical input.
+async function issueVerification(conn, { invoiceId }) {
   const verificationToken = generateVerificationToken();
-  const signature = computeSignature({
-    voucherNo,
-    transactionDate,
-    customerId,
-    customerName,
-    totalDebit,
-    totalCredit,
-    currencyId,
-    companyId,
-    verificationToken,
-  });
-
-  await conn.execute(
-    `UPDATE invoice_headers SET verification_token = ?, verification_signature = ? WHERE id = ?`,
-    [verificationToken, signature, invoiceId]
-  );
-
+  await conn.execute(`UPDATE invoice_headers SET verification_token = ? WHERE id = ?`, [verificationToken, invoiceId]);
+  const row = await loadSignedRowById(conn, invoiceId);
+  const signature = computeSignature(row);
+  await conn.execute(`UPDATE invoice_headers SET verification_signature = ? WHERE id = ?`, [signature, invoiceId]);
   return { verificationToken, signature };
 }
 
@@ -113,24 +243,7 @@ async function issueVerification(conn, { invoiceId, voucherNo, transactionDate, 
 // convention as GET /api/invoices/:id and the atp_date fixes, so the same
 // bytes get signed/verified regardless of server timezone.
 async function findByToken(token) {
-  const [rows] = await pool.execute(
-    `SELECT
-      id,
-      company_id AS companyId,
-      voucher_no AS voucherNo,
-      customer_id AS customerId,
-      customer_name AS customerName,
-      DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate,
-      total_debit AS totalDebit,
-      total_credit AS totalCredit,
-      currency_id AS currencyId,
-      status,
-      verification_token AS verificationToken,
-      verification_signature AS verificationSignature
-    FROM invoice_headers
-    WHERE verification_token = ?`,
-    [token]
-  );
+  const [rows] = await pool.execute(`SELECT ${SIGNED_ROW_COLUMNS} FROM invoice_headers WHERE verification_token = ?`, [token]);
   return rows[0] || null;
 }
 
@@ -147,23 +260,25 @@ function classifyInvoice(row) {
     return { valid: false, reason: "voided" };
   }
 
-  const expected = computeSignature({
-    voucherNo: row.voucherNo,
-    transactionDate: row.transactionDate,
-    customerId: row.customerId,
-    customerName: row.customerName,
-    totalDebit: row.totalDebit,
-    totalCredit: row.totalCredit,
-    currencyId: row.currencyId,
-    companyId: row.companyId,
-    verificationToken: row.verificationToken,
-  });
-
-  if (!signaturesMatch(expected, row.verificationSignature)) {
-    return { valid: false, reason: "altered" };
+  // Canonical v2 first (every signature issued since the QR fix), then the
+  // single legacy v1 reconstruction (signatures issued before it). Both are
+  // exact, timing-safe HMAC comparisons over the CURRENT persisted values.
+  // A value that cannot be canonicalized (corrupted / out-of-scale data) can
+  // never produce a valid v2 signature - it is classified "altered", never a
+  // server error.
+  let expected = null;
+  try {
+    expected = computeSignature(row);
+  } catch (err) {
+    if (!(err instanceof CanonicalValueError)) throw err;
   }
-
-  return { valid: true, reason: "valid" };
+  if (expected && signaturesMatch(expected, row.verificationSignature)) {
+    return { valid: true, reason: "valid" };
+  }
+  if (signaturesMatch(computeLegacySignature(row), row.verificationSignature)) {
+    return { valid: true, reason: "valid_legacy" };
+  }
+  return { valid: false, reason: "altered" };
 }
 
 // Called from PUT /api/invoices/:id, only ever reachable while the
@@ -179,7 +294,11 @@ function classifyInvoice(row) {
 // immutability rule means this signature can never legitimately change
 // again - any later mismatch is exactly the "altered after issuance" case
 // classifyInvoice() is meant to catch.
-async function reSignVerification(conn, { invoiceId, verificationToken, voucherNo, transactionDate, customerId, customerName, totalDebit, totalCredit, currencyId, companyId }) {
+//
+// QR fix: like issuance, the new signature is computed from the PERSISTED
+// (already-updated) row with SIGNED_ROW_COLUMNS; the field arguments are
+// accepted for call-site compatibility only.
+async function reSignVerification(conn, { invoiceId, verificationToken }) {
   if (!verificationToken) {
     // Defensive only: every row reaches here through issueVerification()
     // first (POST always runs before any PUT can target the same id), so
@@ -189,28 +308,30 @@ async function reSignVerification(conn, { invoiceId, verificationToken, voucherN
     return null;
   }
 
-  const signature = computeSignature({
-    voucherNo,
-    transactionDate,
-    customerId,
-    customerName,
-    totalDebit,
-    totalCredit,
-    currencyId,
-    companyId,
-    verificationToken,
-  });
-
+  const row = await loadSignedRowById(conn, invoiceId);
+  if (row.verificationToken !== verificationToken) {
+    throw new Error(`Invoice ${invoiceId} verification token changed while re-signing.`);
+  }
+  const signature = computeSignature(row);
   await conn.execute(`UPDATE invoice_headers SET verification_signature = ? WHERE id = ?`, [signature, invoiceId]);
   return signature;
 }
 
 module.exports = {
   PROTECTED_FIELDS,
+  SIGNATURE_VERSION,
+  MONEY_SCALE,
+  CanonicalValueError,
+  canonicalMoney,
+  canonicalInteger,
+  canonicalDate,
+  buildCanonicalPayload,
+  buildLegacyPayload,
   issueVerification,
   reSignVerification,
   findByToken,
   classifyInvoice,
   computeSignature,
+  computeLegacySignature,
   generateVerificationToken,
 };
