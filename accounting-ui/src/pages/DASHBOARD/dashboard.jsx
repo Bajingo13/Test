@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
-import { createRequestGuard, isCompanyLocked, pickInitialCompany } from "../../utils/trialBalanceCompany.mjs";
+import { createRequestGuard } from "../../utils/trialBalanceCompany.mjs";
+import { branchOptions } from "../REPORTS/reportBranch.mjs";
 import { accountAnalysisLink } from "../../utils/accountAnalysisCompany.mjs";
 import {
   PRESETS,
@@ -11,6 +12,10 @@ import {
   canOpen,
   bucketLabel,
   cashOutlook,
+  dashboardBranchChoice,
+  dashboardCompanyChoice,
+  dashboardCompanyLocked,
+  dashboardSummaryQuery,
   financialIndicators,
   formatCompact,
   formatDate,
@@ -183,6 +188,10 @@ export default function Dashboard() {
 
   const [companyState, setCompanyState] = useState({ status: "loading", companies: [], isSuperAdmin: false });
   const [companyId, setCompanyId] = useState("");
+  // Multi-Branch: the branches this user may see in the selected company (the
+  // server's answer); the selected branch scopes every figure server-side.
+  const [branchState, setBranchState] = useState({ status: "idle", companyId: "", options: [] });
+  const [branchValue, setBranchValue] = useState("");
   const [request, setRequest] = useState({ status: "idle", data: null, message: "" });
   const guard = useRef(createRequestGuard());
 
@@ -220,7 +229,7 @@ export default function Dashboard() {
         setCustomDraft({ from: nextPeriod.from, to: nextPeriod.to });
       }
       setCompanyState({ status: "ready", companies: list, isSuperAdmin });
-      setCompanyId((current) => pickInitialCompany({ companies: list, isSuperAdmin, current }));
+      setCompanyId((current) => dashboardCompanyChoice({ companies: list, current }));
     } catch {
       setCompanyState({ status: "error", companies: [], isSuperAdmin: false });
       setAccess({ ready: false, superAdmin: false, granted: new Set() });
@@ -232,6 +241,38 @@ export default function Dashboard() {
     loadCompanies();
   }, [loadCompanies]);
 
+  // ---- branch context (GET /api/branch-scope/branches for this company) ---
+  useEffect(() => {
+    if (!companyId) {
+      setBranchState({ status: "idle", companyId: "", options: [] });
+      setBranchValue("");
+      return undefined;
+    }
+    let alive = true;
+    setBranchState({ status: "loading", companyId, options: [] });
+    (async () => {
+      try {
+        const res = await fetch(`${API_URL}/api/branch-scope/branches?${new URLSearchParams({ companyId })}`, { credentials: "include", headers: authHeaders() });
+        if (handleAuthError(res.status)) return;
+        const body = await res.json().catch(() => ({}));
+        if (!alive) return;
+        // A failed lookup leaves no selector; the server still applies the
+        // user's own branch scope to the summary.
+        const options = res.ok ? branchOptions(body) : [];
+        setBranchState({ status: "ready", companyId, options });
+        setBranchValue((current) => dashboardBranchChoice(options, current));
+      } catch {
+        if (alive) {
+          setBranchState({ status: "ready", companyId, options: [] });
+          setBranchValue("");
+        }
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [companyId]);
+
   // ---- summary -------------------------------------------------------
   const loadSummary = useCallback(async () => {
     if (!companyId) {
@@ -239,11 +280,18 @@ export default function Dashboard() {
       setRequest({ status: "idle", data: null, message: "" });
       return;
     }
+    // Wait for this company's branch context, so the first request already
+    // carries the selected branch.
+    if (branchState.status !== "ready" || branchState.companyId !== companyId) return;
     const ticket = guard.current.next();
     // Keep showing the previous figures only while they belong to the same
-    // company; a company switch clears them first.
-    setRequest((r) => ({ status: "loading", data: r.data && String(r.data.meta.companyId) === String(companyId) ? r.data : null, message: "" }));
-    const qs = new URLSearchParams({ companyId, from: period.from, to: period.to }).toString();
+    // company AND branch; a company or branch switch clears them first.
+    setRequest((r) => ({
+      status: "loading",
+      data: r.data && String(r.data.meta.companyId) === String(companyId) && (r.data.meta.requestedBranch || "") === branchValue ? r.data : null,
+      message: "",
+    }));
+    const qs = dashboardSummaryQuery({ companyId, from: period.from, to: period.to, branch: branchValue });
     try {
       const res = await fetch(`${API_URL}/api/dashboard/summary?${qs}`, { credentials: "include", headers: authHeaders() });
       if (handleAuthError(res.status)) return;
@@ -253,11 +301,11 @@ export default function Dashboard() {
         setRequest({ status: "error", data: null, message: res.status < 500 && body?.message ? body.message : "Unable to load the dashboard." });
         return;
       }
-      setRequest({ status: "ready", data: body, message: "" });
+      setRequest({ status: "ready", data: { ...body, meta: { ...body.meta, requestedBranch: branchValue } }, message: "" });
     } catch {
       if (guard.current.isCurrent(ticket)) setRequest({ status: "error", data: null, message: "Unable to reach the server." });
     }
-  }, [companyId, period.from, period.to]);
+  }, [companyId, period.from, period.to, branchState, branchValue]);
 
   useEffect(() => {
     loadSummary();
@@ -300,7 +348,9 @@ export default function Dashboard() {
   const currency = summary?.meta?.currency || null;
   const st = (key) => sectionState(request, key);
   const company = companyState.companies.find((c) => String(c.id) === String(companyId)) || null;
-  const locked = companyState.status === "ready" && isCompanyLocked(companyState);
+  const locked = companyState.status === "ready" && dashboardCompanyLocked(companyState);
+  const branchOpts = branchState.companyId === companyId ? branchState.options : [];
+  const branch = branchOpts.find((o) => o.value === branchValue) || null;
 
   function renderWidget(id) {
     const props = { st, currency, navigate, retry: loadSummary, summary, request, access };
@@ -362,7 +412,8 @@ export default function Dashboard() {
 
           <div className="ai-status-row" aria-live="polite">
             <span className={`ai-pulse${request.status === "error" ? " dash-pulse-error" : ""}`}></span>
-            <span>{company ? company.name : companyState.status === "loading" ? "Loading companies..." : "No company selected"}</span>
+            <span className="dash-context-company">{company ? `Company: ${company.name}` : companyState.status === "loading" ? "Loading companies..." : "No company selected"}</span>
+            {company && branch ? <span className="dash-context-branch">{`Branch: ${branch.label}`}</span> : null}
             <span>{periodText(period.from, period.to)}</span>
             <span>
               {request.status === "loading"
@@ -403,6 +454,21 @@ export default function Dashboard() {
             </select>
           )}
         </div>
+
+        {branchOpts.length ? (
+          <div className="dash-company dash-branch">
+            <label htmlFor="dash-branch">Branch</label>
+            {branchOpts.length > 1 ? (
+              <select id="dash-branch" value={branchValue} onChange={(e) => setBranchValue(e.target.value)}>
+                {branchOpts.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            ) : (
+              <strong id="dash-branch">{branchOpts[0].label}</strong>
+            )}
+          </div>
+        ) : null}
 
         <div className="dash-presets" role="group" aria-label="Period">
           {PRESETS.map((p) => (

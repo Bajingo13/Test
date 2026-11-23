@@ -7,6 +7,17 @@ const LedgerReportService = require("./LedgerReportService");
 const AgingReportService = require("./agingReportService");
 const AuditLogService = require("./auditLogService"); // sanitize() only
 const { HttpError } = require("../lib/httpError");
+// Multi-Branch: the request's branch scope, resolved and authorized ONCE by
+// lib/reportBranchContext.middleware (mounted on /api/dashboard exactly as on
+// /api/reports). Every ledger / aging figure picks it up through
+// reportRecognitionService.postedOnlySql; the few direct queries below add the
+// same predicate explicitly. No scope (full-authority user, no ?branch) = the
+// company-wide dashboard exactly as before.
+const ReportBranchContext = require("../lib/reportBranchContext");
+const branchAnd = (alias = "") => {
+  const p = ReportBranchContext.predicate(alias);
+  return p ? ` AND ${p}` : "";
+};
 
 // Dashboard summary: a read-only VIEW over the accounting engine. It holds
 // no accounting rules of its own - every figure comes from the service the
@@ -310,15 +321,15 @@ async function agingSection(type, companyId, period) {
 async function workflowSection(companyId, perms) {
   const out = {};
   if (perms.apv) {
-    const [[r]] = await pool.query("SELECT COUNT(*) AS n, COALESCE(SUM(total_credit), 0) AS amount FROM apv_headers WHERE company_id = ? AND UPPER(status) = 'DRAFT'", [companyId]);
+    const [[r]] = await pool.query(`SELECT COUNT(*) AS n, COALESCE(SUM(total_credit), 0) AS amount FROM apv_headers WHERE company_id = ? AND UPPER(status) = 'DRAFT'${branchAnd()}`, [companyId]);
     out.draftApv = { count: Number(r.n), amount: round2(r.amount) };
   }
   if (perms.invoice) {
-    const [[r]] = await pool.query("SELECT COUNT(*) AS n FROM invoice_headers WHERE company_id = ? AND UPPER(status) = 'DRAFT'", [companyId]);
+    const [[r]] = await pool.query(`SELECT COUNT(*) AS n FROM invoice_headers WHERE company_id = ? AND UPPER(status) = 'DRAFT'${branchAnd()}`, [companyId]);
     out.draftInvoices = { count: Number(r.n) };
   }
   if (perms.rfp) {
-    const [[r]] = await pool.query("SELECT COUNT(*) AS n, COALESCE(SUM(total_amount), 0) AS amount FROM rfp_headers WHERE company_id = ? AND status = 'SUBMITTED'", [companyId]);
+    const [[r]] = await pool.query(`SELECT COUNT(*) AS n, COALESCE(SUM(total_amount), 0) AS amount FROM rfp_headers WHERE company_id = ? AND status = 'SUBMITTED'${branchAnd()}`, [companyId]);
     out.rfpAwaitingApproval = { count: Number(r.n), amount: round2(r.amount) };
   }
   return out;
@@ -350,7 +361,7 @@ async function transactionsSection(companyId, viewable) {
       const [rows] = await pool.query(
         `SELECT id, ${s.no} AS voucherNo, ${s.party} AS party, ${s.amount} AS amount, status,
                 DATE_FORMAT(${s.date}, '%Y-%m-%d') AS transactionDate, ${s.touched} AS touchedAt
-           FROM ${s.table} WHERE company_id = ?${s.where ? ` AND ${s.where}` : ""}
+           FROM ${s.table} WHERE company_id = ?${s.where ? ` AND ${s.where}` : ""}${branchAnd()}
           ORDER BY ${s.touched} DESC, id DESC LIMIT ?`,
         [companyId, RECENT_LIMIT]
       );
@@ -411,6 +422,36 @@ const ACTIVITY_ENTITY_TYPES = {
   RFP: "TRANSACTIONS.RFP",
 };
 
+// Multi-Branch: audit_logs carry no branch, so under a branch scope an event is
+// kept only when the document it is about (entity_id on that module's header
+// table) is in the authorized branch(es). Events with no branch-owned document
+// (e.g. bank reconciliation) are not shown under a branch scope.
+const ACTIVITY_MODULE_TABLES = {
+  "TRANSACTIONS.INVOICE": "invoice_headers",
+  "TRANSACTIONS.OR": "or_headers",
+  "TRANSACTIONS.APV": "apv_headers",
+  "TRANSACTIONS.CV": "cv_headers",
+  "TRANSACTIONS.JV": "jv_headers",
+  "TRANSACTIONS.RFP": "rfp_headers",
+  "TRANSACTIONS.PETTY_CASH": "petty_cash_headers",
+  "TRANSACTIONS.DEBIT_CREDIT_MEMO": "memo_headers",
+  "TRANSACTIONS.PURCHASE_ORDER": "purchase_order_headers",
+  "TRANSACTIONS.QUOTATION": "quotation_headers",
+};
+const ACTIVITY_ENTITY_TABLES = {
+  INV: "invoice_headers", INVOICE: "invoice_headers", OR: "or_headers", APV: "apv_headers", CV: "cv_headers", JV: "jv_headers",
+  PETTY_CASH: "petty_cash_headers", MEMO_DEBIT: "memo_headers", MEMO_CREDIT: "memo_headers", PO: "purchase_order_headers",
+  QUOTATION: "quotation_headers", RFP: "rfp_headers",
+};
+function activityBranchSql(modules, entityTypes) {
+  if (!ReportBranchContext.current()) return "";
+  const inBranch = (table) => `EXISTS (SELECT 1 FROM ${table} bt WHERE bt.id = a.entity_id AND ${ReportBranchContext.predicate("bt")})`;
+  const parts = [];
+  for (const m of modules) if (ACTIVITY_MODULE_TABLES[m]) parts.push(`(a.module = '${m}' AND ${inBranch(ACTIVITY_MODULE_TABLES[m])})`);
+  for (const t of entityTypes) if (ACTIVITY_ENTITY_TABLES[t]) parts.push(`(a.module = 'TRANSACTIONS' AND a.entity_type = '${t}' AND ${inBranch(ACTIVITY_ENTITY_TABLES[t])})`);
+  return ` AND (${parts.length ? parts.join(" OR ") : "1 = 0"})`;
+}
+
 async function activitySection(companyId, viewable) {
   const modules = Object.entries(ACTIVITY_MODULES).filter(([, perm]) => viewable.has(perm)).map(([m]) => m);
   const entityTypes = Object.entries(ACTIVITY_ENTITY_TYPES).filter(([, perm]) => viewable.has(perm)).map(([t]) => t);
@@ -429,7 +470,7 @@ async function activitySection(companyId, viewable) {
     `SELECT a.id, a.module, a.entity_type AS entityType, a.entity_id AS entityId, a.action, a.description,
             a.created_at AS createdAt, u.username
        FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id
-      WHERE a.company_id = ? AND (${clauses.join(" OR ")})
+      WHERE a.company_id = ? AND (${clauses.join(" OR ")})${activityBranchSql(modules, entityTypes)}
       ORDER BY a.created_at DESC, a.id DESC LIMIT ?`,
     [...params, RECENT_LIMIT]
   );
@@ -499,11 +540,29 @@ function buildAlerts(s, period) {
 
 // ---------------------------------------------------------------------------
 
+// What the figures cover (display only - the scope itself was resolved and
+// authorized by the middleware): the whole company (no scope), ONE consolidated
+// All Branches figure, or the authorized branch(es).
+async function branchMeta(companyId) {
+  const ctx = ReportBranchContext.current();
+  if (!ctx) return { scope: "COMPANY", consolidated: null, branches: [] };
+  const ids = (ctx.branchIds || []).map(Number).filter((n) => Number.isInteger(n) && n > 0);
+  const [rows] = ids.length
+    ? await pool.query("SELECT id, code, name FROM branches WHERE company_id = ? AND id IN (?) ORDER BY name, id", [companyId, ids])
+    : [[]];
+  return {
+    scope: ctx.consolidated ? "ALL" : "BRANCH",
+    consolidated: !!ctx.consolidated,
+    branches: rows.map((b) => ({ id: b.id, code: b.code, name: b.name })),
+  };
+}
+
 async function getDashboardSummary(user, query = {}) {
   const period = parsePeriod(query);
   const companyId = await resolveCompany(user, query);
   const company = await loadCompany(companyId);
   const buckets = buildBuckets(period.from, period.to);
+  const branch = await branchMeta(companyId);
 
   // Every VIEW permission a section depends on, checked server-side once.
   const VIEW_KEYS = [
@@ -535,6 +594,7 @@ async function getDashboardSummary(user, query = {}) {
       companyId: company.id,
       companyName: company.name,
       currency: company.currency,
+      branch,
       from: period.from,
       to: period.to,
       granularity: buckets.granularity,

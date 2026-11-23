@@ -374,3 +374,35 @@ export function filterBankAccounts(accounts, query) {
     BANK_SEARCH_FIELDS.some((f) => a?.[f] !== null && a?.[f] !== undefined && String(a[f]).toLowerCase().includes(q))
   );
 }
+
+// ---------------------------------------------------------------------------
+// Multi-Branch: company + branch context of the Dashboard.
+//
+// Company: when the signed-in user can reach exactly ONE company (any role,
+// Super Admin included - e.g. the ALAS deployment) it is chosen automatically
+// and shown, never "Select a company". Several companies keep the chooser.
+export function dashboardCompanyChoice({ companies = [], current = "" } = {}) {
+  const list = Array.isArray(companies) ? companies : [];
+  if (current && list.some((c) => String(c.id) === String(current))) return String(current);
+  return list.length === 1 ? String(list[0].id) : "";
+}
+
+export function dashboardCompanyLocked({ companies = [] } = {}) {
+  return Array.isArray(companies) && companies.length === 1;
+}
+
+// Branch: the options come from GET /api/branch-scope/branches through the
+// report selector's own rules (pages/REPORTS/reportBranch.mjs). Keep the user's
+// current choice while it is still offered, otherwise the default option.
+export function dashboardBranchChoice(options = [], current = "") {
+  const list = Array.isArray(options) ? options : [];
+  if (current && list.some((o) => o.value === String(current))) return String(current);
+  return list.length ? list[0].value : "";
+}
+
+// GET /api/dashboard/summary query (the server re-authorizes `branch`).
+export function dashboardSummaryQuery({ companyId, from, to, branch }) {
+  const q = { companyId: String(companyId), from, to };
+  if (branch) q.branch = String(branch);
+  return new URLSearchParams(q).toString();
+}

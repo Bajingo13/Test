@@ -7778,6 +7778,10 @@ registerMemoRoutes("CREDIT", "credit-memos", "TRANSACTIONS.DEBIT_CREDIT_MEMO", "
 app.use("/api/audit-logs", require("./routes/auditLogs.routes"));
 // Dashboard: one read-only summary built from the report services (see
 // routes/dashboard.routes.js and services/dashboardService.js).
+// Multi-Branch: the dashboard is a view over the reports, so it gets the SAME
+// branch scope (?branch=<id>|ALL, authorized by the Phase A resolver; a
+// branch-restricted user without ?branch sees only their own branches).
+app.use("/api/dashboard", require("./lib/reportBranchContext").middleware);
 app.use("/api/dashboard", require("./routes/dashboard.routes"));
 
 // ===================== BANK RECONCILIATION API =====================

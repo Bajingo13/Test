@@ -800,6 +800,21 @@
   font: inherit;
 }
 
+/* Multi-Branch: the Branch field wraps (label above the selector) and the
+   selector may shrink, so a long option such as "All Branches" never widens
+   the page next to the sidebar on narrow screens. */
+.dash-branch {
+  flex-wrap: wrap;
+  row-gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.dash-branch select {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .dash-presets {
   display: flex;
   flex-wrap: wrap;

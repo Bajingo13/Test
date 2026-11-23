@@ -131,10 +131,10 @@ describe("dashboard page", () => {
     expect(page).not.toMatch(/AI confidence|Last scan: Just now|forecasted collection|ABC Trading|APV-0008/);
   });
 
-  test("every figure comes from the summary endpoint with the selected company and period", () => {
+  test("every figure comes from the summary endpoint with the selected company, branch and period", () => {
     expect(page).toMatch(/\/api\/dashboard\/summary\?\$\{qs\}/);
-    expect(page).toMatch(/new URLSearchParams\(\{ companyId, from: period\.from, to: period\.to \}\)/);
-    expect(page).toMatch(/pickInitialCompany/);
+    expect(page).toContain("const qs = dashboardSummaryQuery({ companyId, from: period.from, to: period.to, branch: branchValue });");
+    expect(page).toContain("dashboardCompanyChoice({ companies: list, current })");
     expect(page).toMatch(/guard\.current\.isCurrent\(ticket\)/);
   });
 
@@ -344,5 +344,82 @@ describe("Bank & Cash Accounts search", () => {
   test("does not search the balance or other fields", () => {
     expect(m.filterBankAccounts([acct({ balance: 98765 })], "98765")).toEqual([]);
     expect(m.filterBankAccounts([acct({ accountType: "ASSET" })], "asset")).toEqual([]);
+  });
+});
+
+describe("Multi-Branch: company + branch context", () => {
+  const ALAS = { id: 7, name: "ALAS, OPLAS & CO., CPA'S" };
+  let rb;
+  beforeAll(async () => {
+    rb = await import("../../pages/REPORTS/reportBranch.mjs");
+  });
+  const B = (id, name) => ({ id, name, code: name.toUpperCase().replace(/ /g, ""), status: "ACTIVE" });
+
+  test("DBR-UI-01/02 exactly one accessible company is chosen automatically for every role (no Select a company)", () => {
+    expect(m.dashboardCompanyChoice({ companies: [ALAS] })).toBe("7");
+    expect(m.dashboardCompanyLocked({ companies: [ALAS] })).toBe(true);
+    const two = [ALAS, { id: 8, name: "Other" }];
+    expect(m.dashboardCompanyChoice({ companies: two })).toBe("");
+    expect(m.dashboardCompanyLocked({ companies: two })).toBe(false);
+    expect(m.dashboardCompanyChoice({ companies: two, current: "8" })).toBe("8");
+    expect(m.dashboardCompanyChoice({ companies: [ALAS], current: "99" })).toBe("7");
+    expect(m.dashboardCompanyChoice({ companies: [] })).toBe("");
+  });
+
+  test("the page shows the company name when locked and a Company / Branch context line", () => {
+    expect(page).toContain('<strong id="dash-company">{company?.name || ""}</strong>');
+    expect(page).toContain('const locked = companyState.status === "ready" && dashboardCompanyLocked(companyState);');
+    expect(page).toContain("`Company: ${company.name}`");
+    expect(page).toContain("`Branch: ${branch.label}`");
+  });
+
+  test("DBR-UI-03/04 ADMIN / SUPER_ADMIN (canConsolidate): All Branches first, then each branch", () => {
+    const opts = rb.branchOptions({ branches: [B(1, "Branch 1"), B(2, "Branch 2"), B(3, "Branch 3")], canConsolidate: true });
+    expect(opts.map((o) => o.label)).toEqual(["All Branches", "Branch 1", "Branch 2", "Branch 3"]);
+    expect(m.dashboardBranchChoice(opts)).toBe("ALL");
+    expect(m.dashboardBranchChoice(opts, "2")).toBe("2");
+  });
+
+  test("DBR-UI-05 accountant with Branch 1 only: that branch, no All Branches", () => {
+    const opts = rb.branchOptions({ branches: [B(1, "Branch 1")], canConsolidate: false });
+    expect(opts).toEqual([{ value: "1", label: "Branch 1" }]);
+    expect(m.dashboardBranchChoice(opts)).toBe("1");
+  });
+
+  test("DBR-UI-06/07/09 accountant with Branch 1 + 2: exactly those two, switchable, never Branch 3 or All Branches", () => {
+    const opts = rb.branchOptions({ branches: [B(1, "Branch 1"), B(2, "Branch 2")], canConsolidate: false });
+    expect(opts.map((o) => o.label)).toEqual(["Branch 1", "Branch 2"]);
+    expect(m.dashboardBranchChoice(opts)).toBe("1");
+    expect(m.dashboardBranchChoice(opts, "2")).toBe("2");
+    expect(m.dashboardBranchChoice(opts, "3")).toBe("1");
+    expect(m.dashboardBranchChoice(opts, "ALL")).toBe("1");
+  });
+
+  test("the summary query carries the selected branch (nothing when there is no branch context)", () => {
+    expect(m.dashboardSummaryQuery({ companyId: 7, from: "2026-11-01", to: "2026-11-30", branch: "2" })).toBe("companyId=7&from=2026-11-01&to=2026-11-30&branch=2");
+    expect(m.dashboardSummaryQuery({ companyId: 7, from: "2026-11-01", to: "2026-11-30", branch: "" })).toBe("companyId=7&from=2026-11-01&to=2026-11-30");
+  });
+
+  test("the page reuses the server's branch list and the report selector rules (no second authorization)", () => {
+    expect(page).toContain('import { branchOptions } from "../REPORTS/reportBranch.mjs";');
+    expect(page).toContain("/api/branch-scope/branches?${new URLSearchParams({ companyId })}");
+    expect(page).toContain("const options = res.ok ? branchOptions(body) : [];");
+    expect(page).toMatch(/branchOpts\.length > 1 \? \(\s*<select id="dash-branch"/);
+    expect(page).toContain('<strong id="dash-branch">{branchOpts[0].label}</strong>');
+    expect(page).toContain('(r.data.meta.requestedBranch || "") === branchValue');
+  });
+
+  test("the Branch field wraps and its selector may shrink (no page overflow next to the sidebar at 390px)", () => {
+    const css = fs.readFileSync(path.join(__dirname, "..", "..", "pages", "DASHBOARD", "Dashboard.css"), "utf8");
+    expect(css).toMatch(/\.dash-branch \{\s*flex-wrap: wrap;[\s\S]*?min-width: 0;\s*max-width: 100%;\s*\}/);
+    expect(css).toMatch(/\.dash-branch select \{\s*min-width: 0;\s*max-width: 100%;\s*\}/);
+  });
+
+  test("server: the dashboard gets the SAME branch-scope middleware as the reports, before its routes", () => {
+    const server = fs.readFileSync(path.join(__dirname, "..", "..", "backend", "server.js"), "utf8");
+    const mw = server.indexOf('app.use("/api/dashboard", require("./lib/reportBranchContext").middleware);');
+    const routes = server.indexOf('app.use("/api/dashboard", require("./routes/dashboard.routes"));');
+    expect(mw).toBeGreaterThan(-1);
+    expect(routes).toBeGreaterThan(mw);
   });
 });
