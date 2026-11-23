@@ -314,20 +314,9 @@ export default function TrialBalance() {
             </select>
           </div>
 
-          {/* Informational only: posted transactions carry no branch / department
-              tag, and the Trial Balance includes Posted transactions only
-              (trialBalanceDifferenceService). Previously these selects looked
-              like filters but did nothing. */}
-          <div>
-            <label htmlFor="tb-branch">Branch / Department</label>
-            <select id="tb-branch" disabled aria-describedby="tb-branch-note">
-              <option>All Branches</option>
-            </select>
-            <p id="tb-branch-note" className="tb-filter-note">
-              Transactions are not tagged by branch or department, so the Trial Balance covers the whole company.
-            </p>
-          </div>
-
+          {/* Informational only: the Trial Balance includes Posted transactions
+              only (trialBalanceDifferenceService). The Branch filter is the real
+              Multi-Branch selector rendered by ReportPeriodFilter above. */}
           <div>
             <label htmlFor="tb-status">Status</label>
             <select id="tb-status" disabled aria-describedby="tb-status-note">

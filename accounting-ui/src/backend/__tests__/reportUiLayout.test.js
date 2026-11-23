@@ -38,7 +38,8 @@ describe("TC-REPORT-013 report filters: every visible label is linked to its con
     "InputVAT.jsx": ["ivat-account", "ivat-company"],
     "OutputVAT.jsx": ["ovat-account"],
     "PrepaidSubsidiary.jsx": ["pps-account"],
-    "TrialBalance.jsx": ["tb-company", "tb-branch", "tb-status"],
+    // tb-branch is rendered (label + select) by the shared ReportPeriodFilter.
+    "TrialBalance.jsx": ["tb-company", "tb-status"],
   };
   for (const [file, ids] of Object.entries(PAGES)) {
     test(`${file}: no bare <label> before a <select>; htmlFor / id pairs present`, () => {

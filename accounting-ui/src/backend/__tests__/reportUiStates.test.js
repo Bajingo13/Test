@@ -5,8 +5,8 @@ const path = require("path");
 // verified in a real browser separately):
 //   - validation and generation-failure messages are in-page role="alert"
 //     blocks instead of native alert() on the report pages;
-//   - Trial Balance Branch / Department and Status are informational (the
-//     Trial Balance is Posted-only and transactions carry no branch tag);
+//   - Trial Balance Status is informational (the Trial Balance is
+//     Posted-only); its Branch filter is the real Multi-Branch selector;
 //   - TC-REPORT-015 AP Statement of Accounts page is registered and wired.
 
 const SRC = path.join(__dirname, "../..");
@@ -61,14 +61,28 @@ describe("generation failures are in-page messages, not native alerts", () => {
   }
 });
 
-describe("Trial Balance Branch / Department and Status are informational", () => {
+describe("Trial Balance Status is informational; Branch is the real Multi-Branch selector", () => {
   const src = read("TrialBalance.jsx");
-  test("both controls are disabled, described, and only offer what the report does", () => {
-    expect(src).toMatch(/<select id="tb-branch" disabled aria-describedby="tb-branch-note">\s*<option>All Branches<\/option>\s*<\/select>/);
+  test("Status is disabled, described, and only offers what the report does", () => {
     expect(src).toMatch(/<select id="tb-status" disabled aria-describedby="tb-status-note">\s*<option>Posted<\/option>\s*<\/select>/);
     expect(src).not.toMatch(/<option>Draft<\/option>/);
-    expect(src).toMatch(/id="tb-branch-note"[\s\S]*?not tagged by branch or department/);
     expect(src).toMatch(/id="tb-status-note"[\s\S]*?Only posted transactions are included/);
+  });
+  test("the pre-Multi-Branch hard-coded 'All Branches' control and its note are gone", () => {
+    expect(src).not.toMatch(/<option>All Branches<\/option>/);
+    expect(src).not.toMatch(/tb-branch-note/);
+    expect(src).not.toMatch(/not tagged by branch/);
+    expect(src).not.toMatch(/Branch \/ Department/);
+    // the page declares no branch control of its own ...
+    expect(src).not.toMatch(/id="tb-branch"/);
+    expect(src).not.toMatch(/htmlFor="tb-branch"/);
+  });
+  test("exactly one Branch selector: the shared ReportPeriodFilter's, as tb-branch", () => {
+    expect(src.match(/<ReportPeriodFilter\b/g)).toHaveLength(1);
+    expect(src).toMatch(/<ReportPeriodFilter period=\{period\} idPrefix="tb" \/>/);
+    const filter = read("ReportPeriodFilter.jsx");
+    expect(filter).toContain("htmlFor={`${idPrefix}-branch`}");
+    expect(filter).toContain("id={`${idPrefix}-branch`}");
   });
   test("the backend rule they describe: the Trial Balance union is Posted-only", () => {
     const svc = readSrc("backend/services/trialBalanceDifferenceService.js");

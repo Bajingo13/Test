@@ -7,6 +7,8 @@
 
 .pi-header {
   display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
   align-items: center;
   justify-content: space-between;
   margin-bottom: 20px;
@@ -50,8 +52,13 @@
   cursor: pointer;
 }
 
+/* The table scrolls inside its own box. contain: inline-size stops the
+   table's min-content width from widening the flex <main> on narrow screens,
+   so the page itself never scrolls sideways (same pattern as UserList.css). */
 .pi-table-wrap {
   overflow-x: auto;
+  max-width: 100%;
+  contain: inline-size;
 }
 
 .pi-table {
@@ -117,4 +124,20 @@
 
 .pi-link-btn.pi-danger {
   color: var(--danger-text);
+}
+
+/* Narrow screens: tighter gutters (same values as UserSettings.css), so the
+   standalone page fits next to the sidebar; the table scrolls in its wrapper. */
+@media (max-width: 600px) {
+  .pi-page {
+    padding: 16px;
+  }
+
+  .pi-header h1 {
+    font-size: 22px;
+  }
+
+  .pi-card {
+    padding: 14px;
+  }
 }
