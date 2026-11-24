@@ -78,10 +78,28 @@ function isPostingStatus(key, status) {
 }
 
 // ---- content fingerprint -------------------------------------------------
+// Business content, not storage representation (Release 1 validation finding):
+// a Draft stored by older code (or another path) may hold NULL where today's
+// save writes "" (reference_no, remarks, gen_ref, ...), "90" where it writes
+// "90.00", or NULL foreign amounts on a base-currency line where it writes the
+// base amount. Re-saving such a Draft unchanged must not count as a content
+// change. Every real change - a different amount, date, account, party,
+// reference, description, a non-empty text change - still differs.
+const NUMERIC_RE = /^-?\d+(\.\d+)?$/;
 function stable(value) {
   if (value instanceof Date) return value.toISOString();
   if (Buffer.isBuffer(value)) return value.toString("hex");
-  return value === null || value === undefined ? null : String(value);
+  if (value === null || value === undefined) return "";
+  if (typeof value === "number") return String(value);
+  const s = String(value);
+  return NUMERIC_RE.test(s) ? String(Number(s)) : s;
+}
+// A missing foreign amount means "same as the base amount" (pre-FX rows).
+function withForeignDefaults(line) {
+  const l = { ...line };
+  if ("foreign_debit" in l && (l.foreign_debit === null || l.foreign_debit === undefined)) l.foreign_debit = l.debit;
+  if ("foreign_credit" in l && (l.foreign_credit === null || l.foreign_credit === undefined)) l.foreign_credit = l.credit;
+  return l;
 }
 
 async function fingerprint(conn, key, id) {
@@ -89,15 +107,20 @@ async function fingerprint(conn, key, id) {
   const parts = [];
   const [[header]] = await conn.query(`SELECT * FROM ${m.table} WHERE id = ?`, [id]);
   if (!header) return null;
+  // A missing currency means the company's base currency (pre-currency rows).
+  if ("currency_id" in header && (header.currency_id === null || header.currency_id === undefined)) {
+    const [[base]] = await conn.query("SELECT id FROM currencies WHERE company_id = ? AND is_base_currency = 1 ORDER BY id LIMIT 1", [header.company_id]);
+    if (base) header.currency_id = base.id;
+  }
   parts.push(Object.keys(header).filter((c) => !HEADER_NON_CONTENT.has(c)).sort().map((c) => [c, stable(header[c])]));
   const [lines] = await conn.query(`SELECT * FROM ${m.lines[0]} WHERE ${m.lines[1]} = ? ORDER BY id`, [id]);
-  parts.push(lines.map((l) => Object.keys(l).filter((c) => !LINE_NON_CONTENT.has(c)).sort().map((c) => [c, stable(l[c])])));
+  parts.push(lines.map(withForeignDefaults).map((l) => Object.keys(l).filter((c) => !LINE_NON_CONTENT.has(c)).sort().map((c) => [c, stable(l[c])])));
   if (m.applied) {
     const [apps] = await conn.query(
       "SELECT source_type, source_id, amount, foreign_amount_applied FROM transaction_applications WHERE applied_type = ? AND applied_id = ? ORDER BY source_type, source_id, id",
       [m.applied, id]
     );
-    parts.push(apps.map((a) => [a.source_type, stable(a.source_id), stable(a.amount), stable(a.foreign_amount_applied)]));
+    parts.push(apps.map((a) => [a.source_type, stable(a.source_id), stable(a.amount), stable(a.foreign_amount_applied ?? a.amount)]));
   }
   if (m.snapshot) {
     const [snap] = await conn.query(

@@ -461,3 +461,28 @@ describe("14. an opened PO is no longer the maker's", () => {
     expect((await api("delete", "acctA1", `/api/purchase-orders/${d.id}?companyId=${co.A}`)).status).toBe(200);
   });
 });
+
+describe("15. legacy storage representation is not mistaken for a content change (validation finding)", () => {
+  async function legacyJv(no) {
+    // stored the way older code / direct inserts did: NULL text fields, NULL foreign amounts
+    const [h] = await pool.query("INSERT INTO jv_headers (company_id, branch_id, voucher_no, transaction_date, description, total_debit, total_credit, status, created_by) VALUES (?, ?, ?, ?, 'legacy', 90, 90, 'Draft', ?)", [co.A, br.A1, `${P}LEG-${no}`, DATE, usr.acctA1.id]);
+    await pool.query("INSERT INTO jv_lines (jv_id, account_id, account_code, account_title, particulars, debit, credit) VALUES (?, ?, ?, ?, 'x', 90, 0), (?, ?, ?, ?, 'x', 0, 90)", [h.insertId, acc.EXP.id, acc.EXP.code, acc.EXP.code, h.insertId, acc.CASH.id, acc.CASH.code, acc.CASH.code]);
+    const b = { voucherNo: `${P}LEG-${no}`, transactionDate: DATE, description: "legacy", status: "Posted", lines: [{ ...L("EXP", 90, 0), particulars: "x" }, { ...L("CASH", 0, 90), particulars: "x" }], totalDebit: 90, totalCredit: 90, currency: { companyId: co.A }, branchId: br.A1 };
+    return { id: h.insertId, b };
+  }
+  test("re-saving a NULL-format Draft unchanged posts (NULL = empty text; missing foreign amount = base amount; 90 = 90.00)", async () => {
+    const d = await legacyJv(1);
+    const r = await api("put", "adminA", `/api/jv/${d.id}`, d.b);
+    expect({ status: r.status, code: r.body.code }).toEqual({ status: 200, code: undefined });
+    expect((await row("JV", d.id)).status).toBe("Posted");
+  });
+  test("but a real change is still refused - including filling an empty field with text", async () => {
+    const d = await legacyJv(2);
+    const withRef = await api("put", "adminA", `/api/jv/${d.id}`, { ...d.b, referenceNo: "NEW-REF" });
+    expect(withRef.status).toBe(409);
+    expect(withRef.body.code).toBe("POSTING_CONTENT_CHANGED");
+    const otherAmount = await api("put", "adminA", `/api/jv/${d.id}`, { ...d.b, lines: [{ ...L("EXP", 95, 0), particulars: "x" }, { ...L("CASH", 0, 95), particulars: "x" }], totalDebit: 95, totalCredit: 95 });
+    expect(otherAmount.status).toBe(409);
+    expect((await row("JV", d.id)).status).toBe("Draft");
+  });
+});
