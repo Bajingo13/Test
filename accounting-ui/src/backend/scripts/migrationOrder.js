@@ -259,6 +259,10 @@ const MIGRATION_ORDER = [
   // acceptance. Nullable column + index only - no row changes. Must run after
   // invitations_migration.sql.
   "invitation_username_migration.sql",
+  // SUPER_ADMIN notification e-mail verification (Account Security): new table
+  // account_email_verifications (hashed one-time tokens, expiry, status). New
+  // table only - no row changes. Must run after the users table exists.
+  "account_email_verification_migration.sql",
 ];
 
 module.exports = { MIGRATION_ORDER };

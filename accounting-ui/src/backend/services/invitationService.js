@@ -42,6 +42,15 @@ function generateToken() {
   return { raw, hash };
 }
 
+// What the inviting admin is told when the e-mail did not go out - plain
+// language only (the technical reason stays in the server log).
+function deliveryNotice(emailResult) {
+  if (emailResult.delivered) return undefined;
+  return emailResult.reason === "SMTP_NOT_CONFIGURED"
+    ? "Email delivery is not set up on this system yet. Share the invitation link below with the invitee."
+    : "The invitation email could not be delivered. Share the invitation link below, or try Resend later.";
+}
+
 function frontendBaseUrl() {
   return (process.env.FRONTEND_URL || "http://localhost:5173").split(",")[0].trim();
 }
@@ -206,6 +215,7 @@ async function createInvitation({ email, username, fullName, roleId, companyIds,
     email: normalizedEmail,
     username: normalizedUsername,
     emailDelivered: emailResult.delivered,
+    emailNotice: deliveryNotice(emailResult),
     // Only ever returned to the ACTING (already-authenticated, permission-
     // checked) admin as a manual-share fallback when SMTP isn't configured
     // or delivery failed - never logged, never emailed in plaintext to
@@ -293,7 +303,7 @@ async function resendInvitation(id, actingUser) {
     companyId: await soleCompanyForAccess(pool, { companyIds: invitation.company_ids, branchIds: invitation.branch_ids }),
   });
 
-  return { id, emailDelivered: emailResult.delivered, acceptUrl: emailResult.delivered ? undefined : acceptUrl };
+  return { id, emailDelivered: emailResult.delivered, emailNotice: deliveryNotice(emailResult), acceptUrl: emailResult.delivered ? undefined : acceptUrl };
 }
 
 async function revokeInvitation(id, actingUser) {

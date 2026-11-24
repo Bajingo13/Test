@@ -178,6 +178,7 @@ export default function InviteUserModal({ open, onClose, onInvited, inviterRoleC
               {result.emailDelivered === false ? (
                 <>
                   <p>Invitation created — email not sent. Share the invitation link manually.</p>
+                  {result.emailNotice && <p className="ium-muted">{result.emailNotice}</p>}
                   <p className="ium-muted">Invitation link for <strong>{result.email}</strong>:</p>
                   <code className="ium-link-box">{result.acceptUrl}</code>
                 </>

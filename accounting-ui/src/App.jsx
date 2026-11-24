@@ -11,6 +11,7 @@ import GroupCodes from "./pages/FILESETUP/GroupCodes";
 import ReportSections from "./pages/FILESETUP/ReportSections";
 import Login from "./pages/login/login";
 import AcceptInvite from "./pages/ADMIN/AcceptInvite";
+import VerifyEmail from "./pages/ADMIN/VerifyEmail";
 import PendingInvitations from "./pages/ADMIN/PendingInvitations";
 import UserSettings from "./pages/ADMIN/UserSettings";
 import RolePermissionMatrix from "./pages/ADMIN/RolePermissionMatrix";
@@ -123,7 +124,7 @@ function PlaceholderPage({ title }) {
 
 function AppLayout() {
   const location = useLocation();
-  const isLoginPage = location.pathname === "/login" || location.pathname === "/accept-invite";
+  const isLoginPage = location.pathname === "/login" || location.pathname === "/accept-invite" || location.pathname === "/verify-email";
   // Standard Letter Invoice printable: full-bleed, no sidebar/app chrome -
   // it's a Letter-sized document, not an app screen, and is also what
   // Puppeteer will screenshot for PDF export (Phase 4).
@@ -169,6 +170,7 @@ function AppLayout() {
           <Route path="/print/invoice/:identifier/viewer" element={<InvoicePrintViewer />} />
           <Route path="/verify/:token" element={<PublicInvoiceVerificationPage />} />
           <Route path="/accept-invite" element={<AcceptInvite />} />
+          <Route path="/verify-email" element={<VerifyEmail />} />
           <Route path="/admin/invitations" element={<PendingInvitations />} />
           <Route path="/admin/user-settings" element={<UserSettings />} />
           <Route path="/admin/roles-permissions" element={<RolePermissionMatrix />} />

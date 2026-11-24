@@ -80,7 +80,7 @@ export default function PendingInvitations({ embedded = false }) {
         return;
       }
       if (data.emailDelivered === false) {
-        alert(`Email delivery isn't configured. Share this link manually:\n\n${data.acceptUrl}`);
+        alert(`${data.emailNotice || "The invitation email was not sent. Share this link manually."}\n\n${data.acceptUrl}`);
       }
       loadInvitations();
     } catch (err) {

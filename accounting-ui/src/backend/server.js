@@ -170,6 +170,7 @@ async function logFxSettlementAudit(conn, { req, moduleKey, appliedType, applied
 
 const MAX_FAILED_LOGIN_ATTEMPTS = 5;
 const LOCKOUT_MINUTES = 15;
+const { recordFailedLogin } = require("./lib/loginAttempts");
 
 app.post("/api/login", loginRateLimiter, async (req, res) => {
   try {
@@ -225,19 +226,30 @@ app.post("/api/login", loginRateLimiter, async (req, res) => {
     const isMatch = await bcrypt.compare(password, user.password);
 
     if (!isMatch) {
-      const nextCount = (user.failed_login_count || 0) + 1;
-      const lockingNow = nextCount >= MAX_FAILED_LOGIN_ATTEMPTS;
-
-      await pool.execute(
-        `UPDATE users SET failed_login_count = ?, locked_until = ${lockingNow ? "DATE_ADD(NOW(), INTERVAL ? MINUTE)" : "locked_until"} WHERE id = ?`,
-        lockingNow ? [nextCount, LOCKOUT_MINUTES, user.id] : [nextCount, user.id]
-      );
+      // Atomic per-account increment + lockout + expired-lockout reset
+      // (lib/loginAttempts.js). The lockout is committed BEFORE any e-mail work,
+      // so nothing about e-mail delivery can affect it.
+      const attempt = await recordFailedLogin(pool, user.id, { maxAttempts: MAX_FAILED_LOGIN_ATTEMPTS, lockoutMinutes: LOCKOUT_MINUTES });
+      if (attempt.alreadyLocked) {
+        await logAudit(pool, {
+          module: "AUTH", entityType: "LOGIN", action: "LOGIN_FAILURE",
+          description: `Login blocked for ${user.username} - account locked by a concurrent attempt`,
+          user, ipAddress, userAgent,
+        });
+        return res.status(403).json({
+          success: false,
+          message: "Account temporarily locked due to repeated failed attempts. Please try again later.",
+        });
+      }
+      const nextCount = attempt.count;
+      const lockingNow = attempt.lockingNow;
 
       await logAudit(pool, {
         module: "AUTH", entityType: "LOGIN", action: "LOGIN_FAILURE",
-        description: lockingNow
+        description: (lockingNow
           ? `Login failed for ${user.username} - account locked for ${LOCKOUT_MINUTES} minutes after ${nextCount} failed attempts`
-          : `Login failed for ${user.username} (attempt ${nextCount}/${MAX_FAILED_LOGIN_ATTEMPTS})`,
+          : `Login failed for ${user.username} (attempt ${nextCount}/${MAX_FAILED_LOGIN_ATTEMPTS})`) +
+          (attempt.streakReset ? " - previous lockout had expired, new attempt streak" : ""),
         user, ipAddress, userAgent,
       });
 

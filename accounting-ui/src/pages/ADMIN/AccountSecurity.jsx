@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { authHeaders, handleAuthError, AUTH_NOTICE_KEY, TOKEN_KEY, USER_KEY } from "../../utils/authSession";
 import "./AccountSecurity.css";
 
@@ -149,6 +149,82 @@ function ChangeUsernameForm({ currentUsername, onChanged }) {
   );
 }
 
+// Notification email: where security notices (e.g. the 3-failed-logins alert)
+// are sent. A new address takes effect only after its owner opens the one-time
+// confirmation link e-mailed to it (routes/account.routes.js -> /email/*).
+function NotificationEmailForm() {
+  const [status, setStatus] = useState({ loading: true, email: null, pending: null });
+  const [form, setForm] = useState({ currentPassword: "", newEmail: "" });
+  const [state, setState] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
+
+  async function load() {
+    try {
+      const res = await fetch(`${API_URL}/api/account/email`, { headers: authHeaders() });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 401) return handleAuthError(res.status, data.code);
+      if (!res.ok) return setStatus({ loading: false, email: null, pending: null });
+      setStatus({ loading: false, email: data.email || null, pending: data.pending || null });
+    } catch {
+      setStatus({ loading: false, email: null, pending: null });
+    }
+  }
+
+  useEffect(() => { load(); }, []);
+
+  async function submit(e) {
+    e.preventDefault();
+    if (!form.currentPassword) return setState({ tone: "error", text: "Enter your current password." });
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.newEmail.trim())) return setState({ tone: "error", text: "Enter a valid email address." });
+    setBusy(true);
+    setState(null);
+    try {
+      const { res, data } = await postJson("/api/account/email/request", form);
+      if (res.status === 401) return handleAuthError(res.status, data.code);
+      if (!res.ok) {
+        setForm({ ...form, currentPassword: "" });
+        return setState({ tone: "error", text: messageFor(res, data) });
+      }
+      setForm({ currentPassword: "", newEmail: "" });
+      setState({ tone: data.emailDelivered ? "success" : "error", text: data.message });
+      load();
+    } catch {
+      setState({ tone: "error", text: "Unable to connect to the server." });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form className="acs-section" onSubmit={submit} noValidate>
+      <h3>Notification Email</h3>
+      <p className="acs-muted">
+        Security notices are sent here. Current:{" "}
+        <strong className="acs-current">{status.loading ? "..." : status.email || "None registered"}</strong>.
+        {status.pending && (
+          <>
+            {" "}Waiting for confirmation of <strong>{status.pending.email}</strong> - check that inbox.
+          </>
+        )}
+        {" "}A new address is used only after you open the confirmation link sent to it.
+      </p>
+      <div className="acs-field">
+        <label htmlFor="acs-em-current">Current Password</label>
+        <input id="acs-em-current" type="password" autoComplete="current-password" value={form.currentPassword} onChange={set("currentPassword")} />
+      </div>
+      <div className="acs-field">
+        <label htmlFor="acs-em-new">New Email Address</label>
+        <input id="acs-em-new" type="email" autoComplete="email" value={form.newEmail} onChange={set("newEmail")} />
+      </div>
+      <Banner state={state} />
+      <div className="acs-actions">
+        <button type="submit" className="acs-btn-primary" disabled={busy}>{busy ? "Sending..." : "Send Confirmation Link"}</button>
+      </div>
+    </form>
+  );
+}
+
 export default function AccountSecurity({ currentUsername, onUsernameChanged }) {
   return (
     <div className="acs-root">
@@ -156,6 +232,7 @@ export default function AccountSecurity({ currentUsername, onUsernameChanged }) 
       <div className="acs-grid">
         <ChangePasswordForm />
         <ChangeUsernameForm currentUsername={currentUsername} onChanged={onUsernameChanged} />
+        <NotificationEmailForm />
       </div>
     </div>
   );
