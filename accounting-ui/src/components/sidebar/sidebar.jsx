@@ -115,9 +115,13 @@ export default function Sidebar({ sidebarOpen, setSidebarOpen }) {
             </div>
           )}
 
-          <Link to="/posting" onClick={closeAllDropdowns} className={location.pathname === "/posting" ? "nav-link active" : "nav-link"}>
-            Posting
-          </Link>
+          {/* Maker-Checker R1: the bulk Posting page is for authorized approvers
+              only (the server refuses everyone else with 403 regardless). */}
+          {can("POSTING", "VIEW") && (
+            <Link to="/posting" onClick={closeAllDropdowns} className={location.pathname === "/posting" ? "nav-link active" : "nav-link"}>
+              Posting
+            </Link>
+          )}
 
           <Link to="/ledger" onClick={closeAllDropdowns} className={location.pathname === "/ledger" ? "nav-link active" : "nav-link"}>
             Ledger

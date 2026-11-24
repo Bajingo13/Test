@@ -263,6 +263,11 @@ const MIGRATION_ORDER = [
   // account_email_verifications (hashed one-time tokens, expiry, status). New
   // table only - no row changes. Must run after the users table exists.
   "account_email_verification_migration.sql",
+  // Maker-Checker Release 1: created_by / updated_by / posted_by / posted_at on
+  // the eight posting modules (additive, NULLable) + a Draft-only backfill from
+  // single unambiguous CREATE / latest EDIT audit entries. Must run after the
+  // header tables and audit_logs exist.
+  "posting_control_migration.sql",
 ];
 
 module.exports = { MIGRATION_ORDER };

@@ -106,6 +106,11 @@ app.use(express.json());
 // isolated by branch before the module routes run (services/transactionBranchEnforcement).
 const TxBranch = require("./services/transactionBranchEnforcement");
 TxBranch.registerIsolation(app);
+// Maker-Checker Release 1 (lib/postingControl.js) and the safe error answer (D1).
+const PostingControl = require("./lib/postingControl");
+const PermissionService = require("./services/permissionService");
+const requireSuperAdmin = require("./middleware/requireSuperAdmin");
+const { sendRouteError } = require("./lib/routeError");
 
 app.get("/health", (req, res) => {
   res.json({ status: "ok" });
@@ -1417,6 +1422,7 @@ app.post("/api/invoices", authenticateToken, authorizePermission("TRANSACTIONS.I
 
     const total = Number(totalDebit || 0); // gross in the TRANSACTION currency
     const finalStatus = status || "DRAFT";
+    PostingControl.assertDraftOnCreate("INV", finalStatus);
 
     // EWT stays completely unchanged - still operates on the raw
     // transaction-currency lines/gross, exactly as the EWT phase built it.
@@ -1637,6 +1643,7 @@ app.post("/api/invoices", authenticateToken, authorizePermission("TRANSACTIONS.I
       user: req.user,
     });
 
+    await PostingControl.recordCreated(conn, "INV", invoiceId, req.user);
     await conn.commit();
 
     res.json({
@@ -1740,6 +1747,7 @@ app.put("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACTION
     // P1: the INV party must be a CUSTOMER of this company (server-enforced, Drafts included).
     await TransactionPartyService.resolveTransactionParty(conn, { module: "INV", companyId, partyId: customerId, existing: { table: "invoice_headers", column: "customer_id", id } });
     await TxBranch.enforceUpdate(conn, req.user, { table: "invoice_headers", id, companyId, body: req.body, partyIds: [customerId], status: req.body?.status }); // Phase C-1
+    const postingGate = await PostingControl.beginEdit(conn, { module: "INV", id: req.params.id, user: req.user, finalStatus });
     await conn.execute(
       `UPDATE invoice_headers SET
         voucher_no = ?,
@@ -1918,6 +1926,7 @@ app.put("/api/invoices/:id", authenticateToken, authorizePermission("TRANSACTION
       user: req.user,
     });
 
+    await postingGate.finish(conn);
     await conn.commit();
 
     res.json({
@@ -2098,6 +2107,7 @@ app.post("/api/or", authenticateToken, authorizePermission("TRANSACTIONS.OR", "C
     const finalCustomerId = customerId ?? req.body.partyId ?? null;
     const finalCustomerName = customerName || req.body.partyName || "";
     const finalStatus = status || "Draft";
+    PostingControl.assertDraftOnCreate("OR", finalStatus);
     const isPosting = String(finalStatus).toUpperCase() === "POSTED";
 
     const ewt = await resolveTaxWithholding(conn, {
@@ -2309,6 +2319,7 @@ app.post("/api/or", authenticateToken, authorizePermission("TRANSACTIONS.OR", "C
       user: req.user,
     });
 
+    await PostingControl.recordCreated(conn, "OR", orId, req.user);
     await conn.commit();
 
     res.json({
@@ -2532,6 +2543,7 @@ app.put("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
      * Invoice status will later be recalculated using the remaining
      * transaction applications.
      */
+    const postingGate = await PostingControl.beginEdit(conn, { module: "OR", id: req.params.id, user: req.user, finalStatus });
     await conn.execute(
       `DELETE FROM transaction_applications
        WHERE applied_type = 'OR'
@@ -2834,6 +2846,7 @@ app.put("/api/or/:id", authenticateToken, authorizePermission("TRANSACTIONS.OR",
       user: req.user,
     });
 
+    await postingGate.finish(conn);
     await conn.commit();
 
     res.json({
@@ -3225,8 +3238,7 @@ app.get("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV
         : { reversed: false },
     });
   } catch (err) {
-    console.error("GET APV DETAILS ERROR:", err);
-    res.status(500).json({ message: "Failed to load APV details" });
+    sendRouteError(res, err, "GET APV DETAILS ERROR", "Failed to load APV details"); // D1
   }
 });
 
@@ -3345,6 +3357,7 @@ app.put("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV
     // P1: the APV party must be a SUPPLIER of this company (server-enforced, Drafts included).
     await TransactionPartyService.resolveTransactionParty(conn, { module: "APV", companyId, partyId: supplierId, existing: { table: "apv_headers", column: "supplier_id", id } });
     await TxBranch.enforceUpdate(conn, req.user, { table: "apv_headers", id, companyId, body: req.body, partyIds: [supplierId], status: req.body?.status }); // Phase C-1
+    const postingGate = await PostingControl.beginEdit(conn, { module: "APV", id: req.params.id, user: req.user, finalStatus });
     await conn.execute(
       `UPDATE apv_headers SET
         voucher_no = ?,
@@ -3505,6 +3518,7 @@ app.put("/api/apv/:id", authenticateToken, authorizePermission("TRANSACTIONS.APV
       user: req.user,
     });
 
+    await postingGate.finish(conn);
     await conn.commit();
 
     res.json({
@@ -3729,6 +3743,7 @@ app.post("/api/apv/:id/void", authenticateToken, authorizePermission("TRANSACTIO
       await conn.rollback();
       return res.status(409).json({ message: "Only a Posted APV can be voided. Cancel the Draft instead.", code: "TRANSACTION_NOT_POSTED" });
     }
+    await PostingControl.assertCanReverse(conn, { module: "APV", id, user: req.user }); // Maker-Checker R1
 
     // APV settlement protection - do NOT cascade-void the CV.
     const [[appRow]] = await conn.execute(
@@ -3907,6 +3922,7 @@ app.post("/api/apv/:id/reverse", authenticateToken, authorizePermission("TRANSAC
       await conn.rollback();
       return res.status(409).json({ message: "Only a Posted APV can be reversed.", code: "TRANSACTION_NOT_POSTED" });
     }
+    await PostingControl.assertCanReverse(conn, { module: "APV", id, user: req.user }); // Maker-Checker R1
     const existing = await findPostedReversalJv(conn, { companyId, module: "APV", originalId: Number(id) });
     if (existing) {
       await conn.rollback();
@@ -4128,6 +4144,7 @@ app.post("/api/purchase-orders", authenticateToken, authorizePermission("TRANSAC
     } = req.body;
 
     const finalStatus = status === "Draft" ? "Draft" : "Open";
+    PostingControl.assertDraftOnCreate("PO", finalStatus);
     // PO never posts to GL (confirmed non-GL - absent from every ledger/
     // trial-balance union). Its own commitment boundary is Draft -> Open,
     // the PO equivalent of Invoice/APV's Draft -> Posted, so the currency
@@ -4262,6 +4279,7 @@ app.post("/api/purchase-orders", authenticateToken, authorizePermission("TRANSAC
       user: req.user,
     });
 
+    await PostingControl.recordCreated(conn, "PO", poId, req.user);
     await conn.commit();
 
     res.json({
@@ -4343,6 +4361,7 @@ app.put("/api/purchase-orders/:id", authenticateToken, authorizePermission("TRAN
     // P1: the PO party must be a SUPPLIER of this company (server-enforced, Drafts included).
     await TransactionPartyService.resolveTransactionParty(conn, { module: "PO", companyId, partyId: supplierId, existing: { table: "purchase_order_headers", column: "supplier_id", id } });
     await TxBranch.enforceUpdate(conn, req.user, { table: "purchase_order_headers", id, companyId, body: req.body, partyIds: [supplierId], status: req.body?.status }); // Phase C-1
+    const postingGate = await PostingControl.beginEdit(conn, { module: "PO", id: req.params.id, user: req.user, finalStatus });
     await conn.execute(
       `UPDATE purchase_order_headers SET
         voucher_no = ?,
@@ -4454,6 +4473,7 @@ app.put("/api/purchase-orders/:id", authenticateToken, authorizePermission("TRAN
       user: req.user,
     });
 
+    await postingGate.finish(conn);
     await conn.commit();
 
     res.json({
@@ -4482,7 +4502,21 @@ app.delete("/api/purchase-orders/:id", authenticateToken, authorizePermission("T
     const delDateISO = AccountingPeriodService.toDateOnly(ownerRows[0].transaction_date);
     await AccountingPeriodService.assertPeriodOpen({ companyId, transactionDate: delDateISO, operation: "DELETE", user: req.user });
 
-    await pool.execute("DELETE FROM purchase_order_headers WHERE id = ? AND company_id = ?", [id, companyId]);
+    // Maker-Checker R1: an opened (non-Draft) PO was released by a checker -
+    // it is no longer the maker's to delete (same rule as Posted documents in
+    // the other modules). The DELETE is also conditional, so a concurrent
+    // "open" cannot slip between the check and the delete.
+    const poSod = PostingControl.sodEnforced();
+    if (poSod && PostingControl.isPostingStatus("PO", ownerRows[0].status)) {
+      return res.status(409).json({ message: "This purchase order is no longer a Draft and cannot be deleted.", code: "TRANSACTION_ALREADY_POSTED" });
+    }
+    const [poDel] = await pool.execute(
+      `DELETE FROM purchase_order_headers WHERE id = ? AND company_id = ?${poSod ? " AND UPPER(status) = 'DRAFT'" : ""}`,
+      [id, companyId]
+    );
+    if (poSod && poDel.affectedRows !== 1) {
+      return res.status(409).json({ message: "This purchase order is no longer a Draft and cannot be deleted.", code: "TRANSACTION_ALREADY_POSTED" });
+    }
 
     // This route has never used a transaction (pool.execute throughout, no
     // conn/beginTransaction) - preserved as-is per the additive-only scope
@@ -5136,6 +5170,7 @@ app.post("/api/quotations/:id/convert-to-invoice", authenticateToken, authorizeP
 
     const invoiceId = result.insertId;
     await TxBranch.assign(conn, "invoice_headers", invoiceId, await TxBranch.resolveCreateBranch(conn, req.user, { companyId, forcedBranchId: quotation.branch_id ?? undefined })); // Phase C-1: inherits the quotation's branch
+    await PostingControl.recordCreated(conn, "INV", invoiceId, req.user); // Maker-Checker R1: the converter is the Draft's maker
 
     await conn.execute(
       `INSERT INTO invoice_lines (
@@ -5230,51 +5265,108 @@ app.get("/api/posting/pending", authenticateToken, authorizePermission("POSTING"
     // else scope === null (SUPER_ADMIN, no companyId given) - no filter,
     // companyFilter stays "" and filterParams stays [], exactly like today.
 
+    // Maker-Checker R1 / B1: a branch-restricted user only ever sees drafts of
+    // the branches they are authorized for (company-level rows with no branch
+    // stay visible, as everywhere else). SUPER_ADMIN / ADMIN act on every
+    // branch of their companies already, so no extra filter applies to them.
+    let branchFilter = "";
+    let branchParams = [];
+    if (req.user.roleCode !== "SUPER_ADMIN" && req.user.roleCode !== "ADMIN") {
+      const allowed = await BranchResolution.authorizedBranchIdsAnyCompany(req.user);
+      branchFilter = allowed.length ? "AND (h.branch_id IS NULL OR h.branch_id IN (?))" : "AND h.branch_id IS NULL";
+      branchParams = allowed.length ? [allowed] : [];
+    }
+    const scopeFilter = `${companyFilter.replace(/company_id/g, "h.company_id")} ${branchFilter}`;
+    const scopeParams = [...filterParams, ...branchParams];
+
     // pool.query (not .execute) so the IN (?) array-expansion shorthand
-    // works, the same convention already used elsewhere in this file (e.g.
-    // the bulk-posting route above). The SAME filterParams tuple is
-    // repeated once per UNION ALL branch, in the same order the five `?`
-    // placeholders appear below (Invoice, OR, APV, CV, PO) - each branch
-    // gets its own independent copy of the identical company scope.
+    // works. The SAME scopeParams tuple is repeated once per UNION ALL
+    // branch, in order (Invoice, OR, APV, CV, PO).
+    const part = (type, table, party, amount) => `
+      SELECT '${type}' AS sourceType, h.id, h.voucher_no AS voucherNo, h.${party} AS party,
+        DATE_FORMAT(h.transaction_date, '%Y-%m-%d') AS transactionDate, h.${amount} AS amount, h.status,
+        h.branch_id AS branchId, b.code AS branchCode, h.created_by AS createdBy, h.updated_by AS updatedBy,
+        cu.username AS maker, COALESCE(uu.username, cu.username) AS lastEditor
+      FROM ${table} h
+      LEFT JOIN branches b ON b.id = h.branch_id
+      LEFT JOIN users cu ON cu.id = h.created_by
+      LEFT JOIN users uu ON uu.id = h.updated_by
+      WHERE UPPER(h.status) = 'DRAFT' ${scopeFilter}`;
     const [rows] = await pool.query(
-      `
-      SELECT 'INV' AS sourceType, id, voucher_no AS voucherNo, customer_name AS party,
-        DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate, total_debit AS amount, status
-      FROM invoice_headers WHERE UPPER(status) = 'DRAFT' ${companyFilter}
-
-      UNION ALL
-
-      SELECT 'OR' AS sourceType, id, voucher_no AS voucherNo, customer_name AS party,
-        DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate, total_debit AS amount, status
-      FROM or_headers WHERE UPPER(status) = 'DRAFT' ${companyFilter}
-
-      UNION ALL
-
-      SELECT 'APV' AS sourceType, id, voucher_no AS voucherNo, supplier_name AS party,
-        DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate, total_credit AS amount, status
-      FROM apv_headers WHERE UPPER(status) = 'DRAFT' ${companyFilter}
-
-      UNION ALL
-
-      SELECT 'CV' AS sourceType, id, voucher_no AS voucherNo, payee_name AS party,
-        DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate, total_credit AS amount, status
-      FROM cv_headers WHERE UPPER(status) = 'DRAFT' ${companyFilter}
-
-      UNION ALL
-
-      SELECT 'PO' AS sourceType, id, voucher_no AS voucherNo, supplier_name AS party,
-        DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transactionDate, total_credit AS amount, status
-      FROM purchase_order_headers WHERE UPPER(status) = 'DRAFT' ${companyFilter}
-
-      ORDER BY transactionDate DESC
-      `,
-      [...filterParams, ...filterParams, ...filterParams, ...filterParams, ...filterParams]
+      `${part("INV", "invoice_headers", "customer_name", "total_debit")}
+      UNION ALL ${part("OR", "or_headers", "customer_name", "total_debit")}
+      UNION ALL ${part("APV", "apv_headers", "supplier_name", "total_credit")}
+      UNION ALL ${part("CV", "cv_headers", "payee_name", "total_credit")}
+      UNION ALL ${part("PO", "purchase_order_headers", "supplier_name", "total_credit")}
+      ORDER BY transactionDate DESC`,
+      [...scopeParams, ...scopeParams, ...scopeParams, ...scopeParams, ...scopeParams]
     );
+
+    // Whether THIS user may post each row (separation of duties) - the bulk
+    // and single posting routes enforce the same rules on their own.
+    const canPostAtAll = await PermissionService.can(req.user.id, "POSTING", "POST");
+    const enforced = PostingControl.sodEnforced();
+    for (const r of rows) {
+      const own = r.createdBy !== null && (Number(r.createdBy) === Number(req.user.id) || Number(r.updatedBy ?? r.createdBy) === Number(req.user.id));
+      const reason = !canPostAtAll ? "NOT_AUTHORIZED" : enforced && r.createdBy === null ? "MAKER_UNKNOWN" : enforced && own ? "OWN_WORK" : null;
+      r.canPost = reason === null;
+      r.blockedReason = reason;
+      delete r.createdBy;
+      delete r.updatedBy;
+    }
 
     res.json(rows);
   } catch (err) {
     console.error("GET PENDING POSTING ERROR:", err);
     res.status(err.statusCode || 500).json({ message: err.statusCode ? err.message : "Failed to load pending transactions", ...(err.statusCode && err.code ? { code: err.code } : {}) });
+  }
+});
+
+// ===================== MAKER-CHECKER R1: POSTING ELIGIBILITY / MAKER =====================
+// Read-only: may THIS user post this Draft, and if not, why (for the toolbar and
+// the Posting page). Company + branch access and the module's VIEW permission
+// are checked first, so nothing is revealed about records the caller cannot see.
+const POSTING_MODULE_PERMISSION = {
+  INV: "TRANSACTIONS.INVOICE", OR: "TRANSACTIONS.OR", APV: "TRANSACTIONS.APV", CV: "TRANSACTIONS.CV",
+  JV: "TRANSACTIONS.JV", MEMO: "TRANSACTIONS.DEBIT_CREDIT_MEMO", PCV: "TRANSACTIONS.PETTY_CASH", PO: "TRANSACTIONS.PURCHASE_ORDER",
+};
+async function loadPostingRecord(req, moduleKey, id) {
+  const permission = POSTING_MODULE_PERMISSION[moduleKey];
+  if (!permission || !Number.isInteger(Number(id)) || Number(id) <= 0) throw new HttpError(400, "Unknown transaction.", "BAD_REQUEST");
+  if (!(await PermissionService.can(req.user.id, permission, "VIEW"))) throw new HttpError(403, "You do not have permission to perform this action");
+  const { table } = PostingControl.MODULES[moduleKey];
+  const [[row]] = await pool.query(`SELECT id, company_id, branch_id FROM ${table} WHERE id = ?`, [Number(id)]);
+  if (!row) throw new HttpError(404, "Transaction not found.", "NOT_FOUND");
+  await CurrencyService.resolveCompanyIdForRead(req.user, row.company_id); // 403 for another company
+  try {
+    await BranchResolution.assertRecordBranchAccess(req.user, row.company_id, row.branch_id);
+  } catch (err) {
+    throw new HttpError(404, "Transaction not found.", "NOT_FOUND"); // same answer as an unknown id
+  }
+  return row;
+}
+
+app.get("/api/posting/eligibility", authenticateToken, async (req, res) => {
+  try {
+    const moduleKey = String(req.query.module || "").toUpperCase();
+    await loadPostingRecord(req, moduleKey, req.query.id);
+    res.json(await PostingControl.eligibility(req.user, moduleKey, Number(req.query.id)));
+  } catch (err) {
+    sendRouteError(res, err, "POSTING ELIGIBILITY ERROR", "Failed to check posting eligibility");
+  }
+});
+
+// SUPER_ADMIN only, audited, reason required: record the maker of a Draft whose
+// maker is unknown (decision 4 - never inferred or silently backfilled).
+app.post("/api/posting/maker", authenticateToken, requireSuperAdmin, async (req, res) => {
+  try {
+    const moduleKey = String(req.body?.module || "").toUpperCase();
+    await loadPostingRecord(req, moduleKey, req.body?.id);
+    res.json({ success: true, ...(await PostingControl.establishMaker({
+      actingUser: req.user, module: moduleKey, id: Number(req.body.id), makerUserId: Number(req.body.makerUserId), reason: req.body.reason, meta: requestMeta(req),
+    })) });
+  } catch (err) {
+    sendRouteError(res, err, "ESTABLISH MAKER ERROR", "Failed to record the maker");
   }
 });
 
@@ -5319,6 +5411,7 @@ app.post("/api/posting/post", authenticateToken, authorizePermission("POSTING", 
     let blockedCount = 0;
     let periodBlockedCount = 0;
     let paymentBlockedCount = 0;
+    let sodSkippedCount = 0;
 
     for (const target of targets) {
       // Rate locking (section 10) needs to know WHICH rows are about to
@@ -5330,11 +5423,25 @@ app.post("/api/posting/post", authenticateToken, authorizePermission("POSTING", 
       // rows already are below - bulk posting must never become a bypass
       // for the per-transaction period check.
       let draftRows = [];
-      const [rawDraftRows] = await conn.execute(
-        `SELECT id, transaction_date AS transactionDate FROM ${target.table} WHERE UPPER(status) = 'DRAFT' AND company_id = ?`,
-        [companyId]
+      // Maker-Checker R1 / B1: locked (no concurrent double post), only the
+      // caller's authorized branches (company-level rows with no branch stay
+      // in scope), and - separation of duties - never a draft the caller made
+      // or last edited, nor one whose maker is unknown.
+      const bulkBranchIds = await BranchResolution.authorizedBranchIds(req.user, companyId, conn);
+      const [rawDraftRows] = await conn.query(
+        `SELECT id, transaction_date AS transactionDate, created_by AS createdBy, updated_by AS updatedBy
+           FROM ${target.table}
+          WHERE UPPER(status) = 'DRAFT' AND company_id = ?
+            AND (branch_id IS NULL ${bulkBranchIds.length ? "OR branch_id IN (?)" : ""})
+          FOR UPDATE`,
+        bulkBranchIds.length ? [companyId, bulkBranchIds] : [companyId]
       );
       draftRows = rawDraftRows;
+      if (PostingControl.sodEnforced()) {
+        const eligible = draftRows.filter((r) => r.createdBy !== null && Number(r.createdBy) !== Number(req.user.id) && Number(r.updatedBy ?? r.createdBy) !== Number(req.user.id));
+        sodSkippedCount += draftRows.length - eligible.length;
+        draftRows = eligible;
+      }
       let draftIds = draftRows.map((r) => r.id);
 
       const distinctDates = [...new Set(draftRows.map((r) => AccountingPeriodService.toDateOnly(r.transactionDate)))];
@@ -5405,7 +5512,7 @@ app.post("/api/posting/post", authenticateToken, authorizePermission("POSTING", 
       }
 
       const [result] = draftIds.length
-        ? await conn.query(`UPDATE ${target.table} SET status = ? WHERE id IN (?) AND company_id = ?`, [target.status, draftIds, companyId])
+        ? await conn.query(`UPDATE ${target.table} SET status = ?, posted_by = ?, posted_at = NOW() WHERE id IN (?) AND company_id = ? AND UPPER(status) = 'DRAFT'`, [target.status, req.user.id, draftIds, companyId])
         : [{ affectedRows: 0 }];
 
       postedCount += result.affectedRows;
@@ -5451,6 +5558,7 @@ app.post("/api/posting/post", authenticateToken, authorizePermission("POSTING", 
     if (blockedCount) notes.push(`${blockedCount} were skipped because their payment rate differs from their source document's rate (realized FX gain/loss accounting is not yet implemented) - post those individually to see the details.`);
     if (periodBlockedCount) notes.push(`${periodBlockedCount} were skipped because their accounting period is closed.`);
     if (paymentBlockedCount) notes.push(`${paymentBlockedCount} were skipped because their payment details are incomplete (check number / check date, or transfer reference / date, and bank account) - complete them and post again.`);
+    if (sodSkippedCount) notes.push(`${sodSkippedCount} were skipped because you prepared or last edited them, or their maker is not recorded - another authorized user must post them.`);
 
     res.json({
       success: true,
@@ -5564,6 +5672,12 @@ app.post("/api/apply-payment", authenticateToken, authorizePermission("POSTING",
     await assertApvPayable(conn, sourceId, apvRows[0]);
     // Multi-Branch Foundation: the CV and the APV must be in the same branch.
     await assertSameBranchApplication(conn, { appliedType: "CV", appliedId, sourceType: "APV", sourceId });
+    // Maker-Checker R1 (B5): and the CALLER must be authorized for that branch -
+    // same-branch documents are not enough on their own.
+    for (const [table, docId] of [["cv_headers", appliedId], ["apv_headers", sourceId]]) {
+      const [[doc]] = await conn.query(`SELECT branch_id FROM ${table} WHERE id = ?`, [docId]);
+      await BranchResolution.assertRecordBranchAccess(req.user, companyId, doc ? doc.branch_id : null, conn);
+    }
 
     const balanceAmount = Number(apvRows[0].balanceAmount || 0);
     const paymentAmount = Number(amount || 0);
@@ -5682,6 +5796,7 @@ app.post("/api/cv", authenticateToken, authorizePermission("TRANSACTIONS.CV", "C
     const finalPayeeId = payeeId ?? req.body.supplierId ?? null;
     const finalPayeeName = payeeName || req.body.supplierName || "";
     const finalStatus = status || "Draft";
+    PostingControl.assertDraftOnCreate("CV", finalStatus);
     assertWriteStatus(finalStatus); // Phase 7K
     const isPosting = String(finalStatus).toUpperCase() === "POSTED";
 
@@ -5884,6 +5999,7 @@ app.post("/api/cv", authenticateToken, authorizePermission("TRANSACTIONS.CV", "C
       user: req.user,
     });
 
+    await PostingControl.recordCreated(conn, "CV", cvId, req.user);
     await conn.commit();
 
     res.json({
@@ -6108,6 +6224,7 @@ app.put("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
       });
     }
 
+    const postingGate = await PostingControl.beginEdit(conn, { module: "CV", id: req.params.id, user: req.user, finalStatus });
     await conn.execute(
       `DELETE FROM transaction_applications
        WHERE applied_type = 'CV'
@@ -6364,6 +6481,7 @@ app.put("/api/cv/:id", authenticateToken, authorizePermission("TRANSACTIONS.CV",
       user: req.user,
     });
 
+    await postingGate.finish(conn);
     await conn.commit();
 
     res.json({
@@ -6470,6 +6588,7 @@ app.post("/api/cv/:id/void", authenticateToken, authorizePermission("TRANSACTION
       await conn.rollback();
       return res.status(409).json({ message: "Only a Posted CV can be voided. Cancel the Draft instead.", code: "TRANSACTION_NOT_POSTED" });
     }
+    await PostingControl.assertCanReverse(conn, { module: "CV", id, user: req.user }); // Maker-Checker R1
 
     const dateISO = AccountingPeriodService.toDateOnly(rows[0].transaction_date);
     await assertVoidPeriodOrReversalRequired(conn, { companyId, transactionDate: dateISO, user: req.user });
@@ -6523,6 +6642,7 @@ app.post("/api/cv/:id/reverse", authenticateToken, authorizePermission("TRANSACT
       await conn.rollback();
       return res.status(409).json({ message: "Only a Posted CV can be reversed.", code: "TRANSACTION_NOT_POSTED" });
     }
+    await PostingControl.assertCanReverse(conn, { module: "CV", id, user: req.user }); // Maker-Checker R1
     const existing = await findPostedReversalJv(conn, { companyId, module: "CV", originalId: Number(id) });
     if (existing) {
       await conn.rollback();
@@ -6616,6 +6736,7 @@ app.post("/api/jv", authenticateToken, authorizePermission("TRANSACTIONS.JV", "C
 
     const preparedFor = req.body.preparedFor || supplierName || customerName || "";
     const finalStatus = status || "Draft";
+    PostingControl.assertDraftOnCreate("JV", finalStatus);
     const userId = req.user?.id || null;
     const isPosting = finalStatus === "Posted";
 
@@ -6732,6 +6853,7 @@ app.post("/api/jv", authenticateToken, authorizePermission("TRANSACTIONS.JV", "C
       user: req.user,
     });
 
+    await PostingControl.recordCreated(conn, "JV", jvId, req.user);
     await conn.commit();
 
     res.json({
@@ -6805,8 +6927,7 @@ app.get("/api/jv/:id", authenticateToken, authorizePermission("TRANSACTIONS.JV",
       currency: currencySnapshot,
     });
   } catch (err) {
-    console.error("GET JV DETAILS ERROR:", err);
-    res.status(500).json({ message: "Failed to load JV details" });
+    sendRouteError(res, err, "GET JV DETAILS ERROR", "Failed to load JV details"); // D1: a refusal keeps its 403/404
   }
 });
 
@@ -6878,6 +6999,7 @@ app.put("/api/jv/:id", authenticateToken, authorizePermission("TRANSACTIONS.JV",
       lines, grossAmount, vatKeyword: "vat", taxWithheldAmount: 0, isPosting,
     });
 
+    const postingGate = await PostingControl.beginEdit(conn, { module: "JV", id: req.params.id, user: req.user, finalStatus });
     await conn.execute(
       `UPDATE jv_headers SET
         voucher_no = ?,
@@ -6973,6 +7095,7 @@ app.put("/api/jv/:id", authenticateToken, authorizePermission("TRANSACTIONS.JV",
       user: req.user,
     });
 
+    await postingGate.finish(conn);
     await conn.commit();
 
     res.json({
@@ -7110,6 +7233,7 @@ app.post("/api/petty-cash", authenticateToken, authorizePermission("TRANSACTIONS
     } = req.body;
 
     const finalStatus = status || "Draft";
+    PostingControl.assertDraftOnCreate("PCV", finalStatus);
     const userId = req.user?.id || null;
     const isPosting = finalStatus === "Posted";
 
@@ -7179,6 +7303,7 @@ app.post("/api/petty-cash", authenticateToken, authorizePermission("TRANSACTIONS
       user: req.user,
     });
 
+    await PostingControl.recordCreated(conn, "PCV", pettyCashId, req.user);
     await conn.commit();
 
     res.json({ success: true, id: pettyCashId, message: "Petty Cash Voucher saved successfully" });
@@ -7281,6 +7406,7 @@ app.put("/api/petty-cash/:id", authenticateToken, authorizePermission("TRANSACTI
     });
 
 
+    const postingGate = await PostingControl.beginEdit(conn, { module: "PCV", id: req.params.id, user: req.user, finalStatus });
     await conn.execute(
       `UPDATE petty_cash_headers SET
         voucher_no = ?, payee_id = ?, payee_name = ?, transaction_date = ?, reference_no = ?,
@@ -7335,6 +7461,7 @@ app.put("/api/petty-cash/:id", authenticateToken, authorizePermission("TRANSACTI
       user: req.user,
     });
 
+    await postingGate.finish(conn);
     await conn.commit();
 
     res.json({ success: true, message: "Petty Cash Voucher updated successfully" });
@@ -7462,6 +7589,7 @@ function registerMemoRoutes(memoType, urlPrefix, permissionModule, label) {
       } = req.body;
 
       const finalStatus = status || "Draft";
+      PostingControl.assertDraftOnCreate("MEMO", finalStatus);
       const userId = req.user?.id || null;
       const isPosting = finalStatus === "Posted";
       const finalSourceType = sourceType === "INVOICE" || sourceType === "APV" ? sourceType : null;
@@ -7550,6 +7678,7 @@ function registerMemoRoutes(memoType, urlPrefix, permissionModule, label) {
         user: req.user,
       });
 
+      await PostingControl.recordCreated(conn, "MEMO", memoId, req.user);
       await conn.commit();
 
       res.json({ success: true, id: memoId, message: `${label} saved successfully` });
@@ -7670,6 +7799,7 @@ function registerMemoRoutes(memoType, urlPrefix, permissionModule, label) {
       // party_type comes from the library row (never the client) because it
       // decides whether the memo is an AR or an AP entry.
       const memoParty = await TransactionPartyService.resolveTransactionParty(conn, { module: memoType === "DEBIT" ? "DM" : "CM", companyId, partyId, existing: { table: "memo_headers", column: "party_id", id } });
+      const postingGate = await PostingControl.beginEdit(conn, { module: "MEMO", id: req.params.id, user: req.user, finalStatus });
       await conn.execute(
         `UPDATE memo_headers SET
           voucher_no = ?, party_id = ?, party_name = ?, party_type = ?, transaction_date = ?, reference_no = ?,
@@ -7724,6 +7854,7 @@ function registerMemoRoutes(memoType, urlPrefix, permissionModule, label) {
         user: req.user,
       });
 
+      await postingGate.finish(conn);
       await conn.commit();
 
       res.json({ success: true, message: `${label} updated successfully` });
@@ -8856,11 +8987,7 @@ app.get("/api/reports/general-ledger", authenticateToken, authorizePermission("R
       }))
     );
   } catch (err) {
-    console.error("GENERAL LEDGER REPORT ERROR:", err.message);
-    res.status(500).json({
-      message: "Failed to generate general ledger",
-      error: err.message,
-    });
+    sendRouteError(res, err, "GENERAL LEDGER REPORT ERROR", "Failed to generate general ledger"); // D1: refusals keep 403; no internal detail on a 500
   }
 });
 
@@ -9047,11 +9174,7 @@ app.get("/api/reports/books/journal", authenticateToken, authorizePermission("RE
     const rows = await LedgerReportService.getJournalBookRows({ from, to, companyId });
     res.json(rows);
   } catch (err) {
-    console.error("JOURNAL BOOK REPORT ERROR:", err.message);
-    res.status(500).json({
-      message: "Failed to generate Journal Book",
-      error: err.message,
-    });
+    sendRouteError(res, err, "JOURNAL BOOK REPORT ERROR", "Failed to generate Journal Book"); // D1: refusals keep 403; no internal detail on a 500
   }
 });
 
@@ -9394,11 +9517,7 @@ app.get("/api/reports/income-statement", authenticateToken, authorizePermission(
 
     res.json(rows);
   } catch (err) {
-    console.error("INCOME STATEMENT ERROR:", err.message);
-    res.status(500).json({
-      message: "Failed to generate income statement",
-      error: err.message,
-    });
+    sendRouteError(res, err, "INCOME STATEMENT ERROR", "Failed to generate income statement"); // D1: refusals keep 403; no internal detail on a 500
   }
 });
 
@@ -9483,11 +9602,7 @@ app.get("/api/reports/balance-sheet", authenticateToken, authorizePermission("RE
 
     res.json(rows);
   } catch (err) {
-    console.error("BALANCE SHEET ERROR:", err.message);
-    res.status(500).json({
-      message: "Failed to generate balance sheet",
-      error: err.message,
-    });
+    sendRouteError(res, err, "BALANCE SHEET ERROR", "Failed to generate balance sheet"); // D1: refusals keep 403; no internal detail on a 500
   }
 });
 

@@ -487,6 +487,12 @@ async function processSchedule(scheduleId, { triggerType = "MANUAL", userId = nu
     });
     const [headerResult] = await conn.execute(sql, params);
     const generatedId = headerResult.insertId;
+    // Maker-Checker R1: the maker of a generated Draft is the template's author
+    // (the person who wrote this recurring content). Unknown author -> stays
+    // NULL, so the Draft cannot be posted until a maker is established.
+    if (template.created_by !== null && template.created_by !== undefined) {
+      await conn.execute(`UPDATE ${genCfg.headerTable} SET created_by = ?, updated_by = ? WHERE id = ?`, [template.created_by, template.created_by, generatedId]);
+    }
     // Phase C-3: same transaction, same branch as the template - never escapes it.
     await TransactionBranchEnforcement.assign(conn, genCfg.headerTable, generatedId, generationBranchId);
 

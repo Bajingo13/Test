@@ -20,4 +20,7 @@ module.exports = {
     // dynamic-import pattern as transactionListFilters.test.js above.
     "<rootDir>/src/utils/__tests__/**/*.test.js",
   ],
+  // Maker-Checker Release 1: legacy suites post their own fixtures directly;
+  // see the file for the (test-environment-only) separation-of-duties switch.
+  setupFiles: ["<rootDir>/src/backend/__tests__/setup/postingSodLegacyBypass.js"],
 };

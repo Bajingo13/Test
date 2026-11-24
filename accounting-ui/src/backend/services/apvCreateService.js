@@ -7,6 +7,7 @@
 // required lines, currency/balance resolution, tax entries, snapshot and the
 // APV CREATE audit. The caller owns beginTransaction / commit / rollback.
 const { logAudit } = require("../lib/audit");
+const PostingControl = require("../lib/postingControl");
 const TransactionCurrencyService = require("./transactionCurrencyService");
 const AccountingPeriodService = require("./accountingPeriodService");
 const TaxEntryService = require("./taxEntryService");
@@ -111,6 +112,7 @@ async function createApvRecord(conn, { user, body, resolveCompanyId, branchId: f
 
   const finalStatus = status || "DRAFT";
   assertWriteStatus(finalStatus); // Phase 7K: Cancelled/Void only via the dedicated endpoints
+  PostingControl.assertDraftOnCreate("APV", finalStatus); // Maker-Checker R1: Draft only
   const foreignGross = Number(totalCredit || 0);
 
   const ewt = await resolveApvTaxWithholding(conn, {
@@ -194,6 +196,7 @@ async function createApvRecord(conn, { user, body, resolveCompanyId, branchId: f
   );
 
   const apvId = result.insertId;
+  await PostingControl.recordCreated(conn, "APV", apvId, user);
   await txBranch().assign(conn, "apv_headers", apvId, txBranchId);
 
   if (sourcePoId) {

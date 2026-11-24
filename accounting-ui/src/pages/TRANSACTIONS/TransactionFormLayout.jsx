@@ -1508,6 +1508,42 @@ setError("");
     moduleConfig, status: form.status, can, alreadyReversed,
   });
 
+  // Maker-Checker Release 1: who may post THIS Draft is decided by the server
+  // (GET /api/posting/eligibility - POSTING.POST, not the maker or last editor,
+  // maker known). A new, unsaved transaction is never posted directly: it is
+  // saved as Draft and posted by another authorized user.
+  const POSTING_MODULE_BY_CODE = { INV: "INV", OR: "OR", APV: "APV", CV: "CV", JV: "JV", PO: "PO", PCV: "PCV", DM: "MEMO", CM: "MEMO" };
+  const postingModule = POSTING_MODULE_BY_CODE[code] || null;
+  const selectedId = selectedTransaction?.id || null;
+  const isDraftRecord = String(form.status || "Draft").toUpperCase() === "DRAFT";
+  const [postingEligibility, setPostingEligibility] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    setPostingEligibility(null);
+    if (!postingModule || !selectedId || !isDraftRecord) return undefined;
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/posting/eligibility?module=${postingModule}&id=${selectedId}`, { headers: authHeaders() });
+        const data = await res.json().catch(() => null);
+        if (!cancelled && res.ok && data) setPostingEligibility(data);
+      } catch {
+        /* the server still enforces every rule; only the button stays hidden */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [postingModule, selectedId, isDraftRecord, saving]); // re-checked after every save (the saver becomes the last editor)
+  const canPostThis = !!selectedId && isDraftRecord && !!postingEligibility?.canPost;
+  // Void / Reverse post reversing entries - the same checker authority as posting.
+  const canReverseThis = can("POSTING", "POST");
+  const postingNotice = (() => {
+    if (!selectedId || !isDraftRecord || !postingEligibility || postingEligibility.canPost) return null;
+    const codes = (postingEligibility.reasons || []).map((r) => r.code);
+    const who = postingEligibility.maker ? ` Prepared by ${postingEligibility.maker}.` : "";
+    if (codes.includes("MAKER_UNKNOWN")) return `Awaiting posting: this Draft's maker is not recorded, so a Super Admin must record it before it can be posted.${who}`;
+    if (codes.includes("SELF_POSTING_NOT_ALLOWED") && !codes.includes("POSTING_NOT_PERMITTED")) return `Awaiting posting by another authorized approver - you prepared or last edited this Draft.${who}`;
+    return `Awaiting posting by an authorized approver.${who}`;
+  })();
+
   // Phase 7B: the old CSV-export/browser-print fallback (only reachable
   // when a module had no printModuleType, or for a brand-new unsaved
   // transaction) was removed along with the old top-actions/bottom-bar
@@ -2876,8 +2912,8 @@ if (code === "OR") {
               showEdit={toolbarVisibility.showEdit}
               showDelete={toolbarVisibility.showDelete}
               showCancel={toolbarVisibility.showCancel}
-              showVoid={toolbarVisibility.showVoid}
-              showReverse={toolbarVisibility.showReverse}
+              showVoid={toolbarVisibility.showVoid && canReverseThis}
+              showReverse={toolbarVisibility.showReverse && canReverseThis}
               showPrint={!!printModuleType && toolbarVisibility.showPrint}
               showEmail={toolbarVisibility.showEmail}
               showRecurring={!!recurringModuleType}
@@ -2885,7 +2921,7 @@ if (code === "OR") {
               showNext
               hasPrevious={hasPreviousTransaction}
               hasNext={hasNextTransaction}
-              showPost
+              showPost={canPostThis}
               onEdit={handleEditClick}
               onDelete={handleDeleteClick}
               onCancel={() => openCancelVoid("cancel")}
@@ -2900,6 +2936,13 @@ if (code === "OR") {
               onSaveDraft={() => handleSave("Draft")}
               onPost={handlePostTransactionClick}
             />
+
+            {/* Maker-Checker Release 1: why this Draft has no Post button. */}
+            {postingNotice && (
+              <div className="transaction-tax-duplication-warning" role="status" data-testid="posting-notice" style={{ margin: "8px 0" }}>
+                {postingNotice}
+              </div>
+            )}
 
             {/* Phase 7K.1: closed-period-reversed APV/CV keeps status Posted
                 but is logically reversed by a linked JV. */}

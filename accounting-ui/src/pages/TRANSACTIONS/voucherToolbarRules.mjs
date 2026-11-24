@@ -21,8 +21,10 @@
 // PO's Open/Closed/Draft lifecycle has no backend status restriction on
 // Edit/Delete at all (Phase 7A.1 finding) - every other module follows the
 // ordinary Draft/Posted rule the Phase 7A.1 immutability guard enforces.
+// Maker-Checker Release 1: a Purchase Order (OPEN_CLOSED) is released by a
+// checker when it leaves Draft; from then on it is not the maker's to edit or
+// delete (the server refuses it) - the same Draft-only rule as every module.
 export function isEditableStatus(statusModel, status) {
-  if (statusModel === "OPEN_CLOSED") return true;
   return String(status || "Draft").toUpperCase() === "DRAFT";
 }
 

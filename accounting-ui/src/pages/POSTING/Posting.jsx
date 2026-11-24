@@ -53,15 +53,17 @@ export default function Posting() {
   }
 
   async function postScope(scope) {
+    // Maker-Checker R1: only drafts this user may post (own work is skipped).
+    const mine = rows.filter((r) => r.canPost !== false);
     const count =
       scope === "ar"
-        ? rows.filter((r) => AR_TYPES.includes(r.sourceType)).length
+        ? mine.filter((r) => AR_TYPES.includes(r.sourceType)).length
         : scope === "ap"
-        ? rows.filter((r) => AP_TYPES.includes(r.sourceType)).length
-        : rows.length;
+        ? mine.filter((r) => AP_TYPES.includes(r.sourceType)).length
+        : mine.length;
 
     if (count === 0) {
-      alert("No draft transactions to post.");
+      alert("No draft transactions that you can post - drafts you prepared or last edited are posted by another approver.");
       return;
     }
 
@@ -100,14 +102,18 @@ export default function Posting() {
     }
   }
 
-  const arCount = rows.filter((r) => AR_TYPES.includes(r.sourceType)).length;
-  const apCount = rows.filter((r) => AP_TYPES.includes(r.sourceType)).length;
+  // Maker-Checker Release 1: only drafts THIS user may post are counted (the
+  // server applies the same rule - own work and unknown makers are skipped).
+  const postable = rows.filter((r) => r.canPost !== false);
+  const arCount = postable.filter((r) => AR_TYPES.includes(r.sourceType)).length;
+  const apCount = postable.filter((r) => AP_TYPES.includes(r.sourceType)).length;
+  const STATE_LABELS = { OWN_WORK: "Prepared by you - another approver posts it", MAKER_UNKNOWN: "Maker not recorded", NOT_AUTHORIZED: "Not authorized" };
 
   return (
     <div className="posting-page">
       <div className="posting-header">
         <h1>Posting</h1>
-        <p>Finalize draft transactions so they reflect in reports and the ledger.</p>
+        <p>Finalize draft transactions so they reflect in reports and the ledger. A draft is posted by an authorized approver other than the person who prepared or last edited it.</p>
       </div>
 
       <div className="posting-card">
@@ -115,9 +121,9 @@ export default function Posting() {
           <button
             className="posting-btn posting-btn-primary"
             onClick={() => postScope("all")}
-            disabled={posting || loading || rows.length === 0}
+            disabled={posting || loading || postable.length === 0}
           >
-            {posting ? "Posting..." : `Post All (${rows.length})`}
+            {posting ? "Posting..." : `Post All (${postable.length})`}
           </button>
 
           <button
@@ -149,19 +155,21 @@ export default function Posting() {
                 <th>Voucher No.</th>
                 <th>Date</th>
                 <th>Party</th>
+                <th>Branch</th>
+                <th>Prepared by</th>
                 <th className="text-right">Amount</th>
-                <th>Status</th>
+                <th>Posting</th>
               </tr>
             </thead>
 
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan="6" className="posting-empty">Loading...</td>
+                  <td colSpan="8" className="posting-empty">Loading...</td>
                 </tr>
               ) : rows.length === 0 ? (
                 <tr>
-                  <td colSpan="6" className="posting-empty">No draft transactions to post.</td>
+                  <td colSpan="8" className="posting-empty">No draft transactions to post.</td>
                 </tr>
               ) : (
                 rows.map((row) => (
@@ -172,8 +180,14 @@ export default function Posting() {
                     <td>{row.voucherNo}</td>
                     <td>{row.transactionDate}</td>
                     <td>{row.party}</td>
+                    <td>{row.branchCode || "-"}</td>
+                    <td>{row.maker || "Not recorded"}{row.lastEditor && row.lastEditor !== row.maker ? ` (last edit: ${row.lastEditor})` : ""}</td>
                     <td className="text-right">₱ {formatMoney(row.amount)}</td>
-                    <td>{row.status}</td>
+                    <td>
+                      {row.canPost === false
+                        ? <span className="posting-state posting-state-blocked">{STATE_LABELS[row.blockedReason] || "Awaiting another approver"}</span>
+                        : <span className="posting-state posting-state-ready">Ready to post</span>}
+                    </td>
                   </tr>
                 ))
               )}

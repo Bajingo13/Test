@@ -60,6 +60,11 @@
 
 .posting-table-container {
   overflow-x: auto;
+  /* The table scrolls inside its card instead of widening the whole page on
+     narrow screens: a zero intrinsic width (min-width keeps it full-width)
+     stops the wide table from stretching the app's flex layout. */
+  width: 0;
+  min-width: 100%;
 }
 
 .posting-table {
@@ -100,4 +105,25 @@
   color: var(--accent-indigo-hover);
   font-size: 12px;
   font-weight: 700;
+}
+
+/* Maker-Checker Release 1: per-row posting state */
+.posting-state {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: normal;
+}
+
+.posting-state-ready {
+  background: var(--accent-indigo-bg);
+  color: var(--accent-indigo-hover);
+}
+
+.posting-state-blocked {
+  background: var(--bg-page);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color-strong);
 }

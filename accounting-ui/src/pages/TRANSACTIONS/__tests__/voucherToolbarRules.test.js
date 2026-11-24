@@ -233,19 +233,17 @@ describe("getVoucherToolbarVisibility", () => {
     }
   });
 
-  describe("PO (OPEN_CLOSED statusModel - no Draft/Posted restriction, per Phase 7A.1)", () => {
-    test.each(["Open", "Closed", "Draft", "Posted", undefined])(
-      "status=%s: Edit/Delete available whenever permission allows (PO has no status guard)",
-      (status) => {
-        const result = getVoucherToolbarVisibility({
-          moduleConfig: PO,
-          status,
-          can: allowAll,
-        });
-        expect(result.showEdit).toBe(true);
-        expect(result.showDelete).toBe(true);
-      }
-    );
+  describe("PO (OPEN_CLOSED) - Maker-Checker Release 1: editable only while Draft", () => {
+    test.each(["Draft", undefined])("status=%s: Edit/Delete available when permission allows", (status) => {
+      const result = getVoucherToolbarVisibility({ moduleConfig: PO, status, can: allowAll });
+      expect(result.showEdit).toBe(true);
+      expect(result.showDelete).toBe(true);
+    });
+    test.each(["Open", "Closed", "Posted", "Converted"])("status=%s: released by a checker - Edit/Delete hidden (the server refuses them)", (status) => {
+      const result = getVoucherToolbarVisibility({ moduleConfig: PO, status, can: allowAll });
+      expect(result.showEdit).toBe(false);
+      expect(result.showDelete).toBe(false);
+    });
   });
 
   test("Debit Memo / Credit Memo Posted: Edit/Delete hidden (Checkpoint 6 modules covered by the same guard)", () => {
@@ -305,9 +303,10 @@ describe("isEditableStatus", () => {
     expect(isEditableStatus("DRAFT_POSTED", undefined)).toBe(true); // matches form.status's own "Draft" default
   });
 
-  test("OPEN_CLOSED: always editable regardless of value", () => {
-    expect(isEditableStatus("OPEN_CLOSED", "Open")).toBe(true);
-    expect(isEditableStatus("OPEN_CLOSED", "Closed")).toBe(true);
-    expect(isEditableStatus("OPEN_CLOSED", "Posted")).toBe(true);
+  test("OPEN_CLOSED (Maker-Checker R1): editable only while Draft", () => {
+    expect(isEditableStatus("OPEN_CLOSED", "Draft")).toBe(true);
+    expect(isEditableStatus("OPEN_CLOSED", "Open")).toBe(false);
+    expect(isEditableStatus("OPEN_CLOSED", "Closed")).toBe(false);
+    expect(isEditableStatus("OPEN_CLOSED", "Posted")).toBe(false);
   });
 });

@@ -284,12 +284,13 @@ describe("SUPER_ADMIN behavior (9)", () => {
 });
 
 describe("Response shape and empty-result behavior (10, 11)", () => {
-  test("10. existing response structure (field names) is unchanged", async () => {
+  test("10. existing response fields are unchanged; Maker-Checker R1 only ADDS branch / maker / posting-state fields", async () => {
     await createDraftInvoice(tokenA, { voucherNo: "TESTPP-INV-10A", amount: 33, companyId: companyAId });
     const res = await request(app).get("/api/posting/pending").set(auth(tokenA));
     const row = findRow(res.body, "INV", "TESTPP-INV-10A");
     expect(row).toBeTruthy();
-    expect(Object.keys(row).sort()).toEqual(["amount", "id", "party", "sourceType", "status", "transactionDate", "voucherNo"].sort());
+    expect(Object.keys(row).sort()).toEqual(["amount", "id", "party", "sourceType", "status", "transactionDate", "voucherNo",
+      "branchId", "branchCode", "maker", "lastEditor", "canPost", "blockedReason"].sort());
     expect(row.status).toBe("Draft");
     expect(row.party).toBe("TestPP Customer");
   });
