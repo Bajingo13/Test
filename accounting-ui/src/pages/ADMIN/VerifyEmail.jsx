@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import "./AcceptInvite.css";
+import "./VerifyEmail.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
 
@@ -51,7 +52,7 @@ export default function VerifyEmail() {
         )}
         {state === "done" && <p role="status">{message}</p>}
         {state === "error" && <div className="ai-error-banner" role="alert">{message}</div>}
-        <p className="ai-muted"><Link to="/login">Go to Login</Link></p>
+        <p className="ai-muted"><Link className="ve-link" to="/login">Go to Login</Link></p>
       </div>
     </div>
   );

@@ -85,6 +85,12 @@ describe("Notification Email form and confirmation page", () => {
     expect(verifyPage).toMatch(/\/api\/account\/email\/verify/);
     expect(verifyPage).not.toMatch(/console\./);
   });
+  test("the confirmation page's login link uses the theme colour (readable in dark mode)", () => {
+    const veCss = fs.readFileSync(path.join(__dirname, "..", "..", "pages", "ADMIN", "VerifyEmail.css"), "utf8");
+    expect(verifyPage).toMatch(/import "\.\/VerifyEmail\.css";/);
+    expect(verifyPage).toMatch(/<Link className="ve-link" to="\/login">/);
+    expect(veCss).toMatch(/\.ve-link \{\s*color: var\(--accent-blue\);/);
+  });
   test("/verify-email is a public, chrome-less route", () => {
     expect(appSrc).toMatch(/<Route path="\/verify-email" element=\{<VerifyEmail \/>\} \/>/);
     expect(appSrc).toMatch(/location\.pathname === "\/verify-email"/);

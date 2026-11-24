@@ -1,0 +1,20 @@
+/* Confirmation page link: theme colour (readable on the light and dark card),
+   not the browser's default link blue. */
+.ve-link {
+  color: var(--accent-blue);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.ve-link:hover,
+.ve-link:focus-visible {
+  color: var(--accent-blue-hover);
+}
+
+/* --accent-blue is ~4.2:1 on the dark card - lighter blue keeps WCAG AA (> 4.5:1). */
+[data-theme="dark"] .ve-link,
+[data-theme="dark"] .ve-link:hover,
+[data-theme="dark"] .ve-link:focus-visible {
+  color: #93c5fd;
+}
