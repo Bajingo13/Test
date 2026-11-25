@@ -388,12 +388,28 @@ describe("Beginning balances - import / template export", () => {
   });
 
   test("TC-C3-019 template export is branch-scoped (reference data of that branch only)", async () => {
-    const a = await api("get", "adminA", `/api/beginning-balances/ar/template?format=csv&companyId=${co.A}&branchId=${br.BA}`);
-    const b = await api("get", "adminA", `/api/beginning-balances/ar/template?format=csv&companyId=${co.A}&branchId=${br.BB}`);
+    // Release safety: the CSV template is header-only now (its old example
+    // line used the branch's first customer, which is how this test used to
+    // see the scope), so branch scope is read from the .xlsx template's
+    // Customer Reference sheet instead.
+    const xlsxOf = async (branchId) => {
+      const res = await api("get", "adminA", `/api/beginning-balances/ar/template?format=xlsx&companyId=${co.A}&branchId=${branchId}`)
+        .buffer(true).parse((r, cb) => { const chunks = []; r.on("data", (c) => chunks.push(c)); r.on("end", () => cb(null, Buffer.concat(chunks))); });
+      const wb = new (require("exceljs").Workbook)();
+      await wb.xlsx.load(res.body);
+      const codes = [];
+      wb.getWorksheet("Customer Reference").eachRow((row, n) => { if (n > 1) codes.push(row.getCell(1).value); });
+      return { status: res.status, codes };
+    };
+    const a = await xlsxOf(br.BA);
+    const b = await xlsxOf(br.BB);
     expect([a.status, b.status]).toEqual([200, 200]);
-    expect(a.text).toContain(party.CUSA.code);
-    expect(a.text).not.toContain(party.CUSB.code);
-    expect(b.text).toContain(party.CUSB.code);
+    expect(a.codes).toContain(party.CUSA.code);
+    expect(a.codes).not.toContain(party.CUSB.code);
+    expect(b.codes).toContain(party.CUSB.code);
+    const csvA = await api("get", "adminA", `/api/beginning-balances/ar/template?format=csv&companyId=${co.A}&branchId=${br.BA}`);
+    expect(csvA.status).toBe(200);
+    expect(csvA.text.trim().split("\n")).toHaveLength(1); // headers only
     expect((await api("get", "acctA", `/api/beginning-balances/ar/template?format=csv&companyId=${co.A}&branchId=${br.BB}`)).body.code).toBe("BRANCH_ACCESS_DENIED");
     const xlsx = await api("get", "acctA", `/api/beginning-balances/gl/template?format=xlsx&companyId=${co.A}`).buffer(true).parse((res, cb) => { const chunks = []; res.on("data", (c) => chunks.push(c)); res.on("end", () => cb(null, Buffer.concat(chunks))); });
     expect(xlsx.status).toBe(200);

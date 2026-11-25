@@ -349,10 +349,13 @@ function unwrapCellValue(value) {
   return value;
 }
 
-async function extractRowsFromXlsx(buffer) {
+// preferredSheet (optional): read the worksheet with that exact name when the
+// workbook has one (a template's designated import sheet, even if the user
+// moved other sheets in front of it); otherwise the first worksheet, as before.
+async function extractRowsFromXlsx(buffer, { preferredSheet = null } = {}) {
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(buffer);
-  const worksheet = workbook.worksheets[0];
+  const worksheet = (preferredSheet && workbook.getWorksheet(preferredSheet)) || workbook.worksheets[0];
 
   if (!worksheet) return { headers: [], dataRows: [] };
 

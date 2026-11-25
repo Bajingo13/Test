@@ -1,7 +1,23 @@
 const pool = require("../db");
 const { coaByCodeSql } = require("./coaLookupService"); // one COA row per code (Phase B branch-reused codes)
 const { buildMultiSheetXlsxTemplate } = require("./TemplateExportService");
-const { TEMPLATE_VERSION } = require("./beginningBalanceImportService");
+const { TEMPLATE_VERSION, IMPORT_SHEET_NAME } = require("./beginningBalanceImportService");
+
+// The example row is never on the import sheet: it is shown on a separate
+// "Example" sheet (same columns) that the importer never reads. It keeps the
+// fixed markers (GL-BEG-0001 / AR-BEG-0001 / AP-BEG-0001, 10,000.00), so a
+// copy pasted into the import sheet is refused by the importer.
+function exampleSheet(columns, sampleRow) {
+  return { type: "reference", name: "Example", columns: columns.map(({ key, header, width }) => ({ key, header, width })), rows: [sampleRow] };
+}
+const EXAMPLE_INSTRUCTIONS = {
+  heading: "Example Row",
+  body: [
+    `The '${IMPORT_SHEET_NAME}' sheet starts with headers only - enter your balances from row 2. Only that sheet is imported.`,
+    "The 'Example' sheet shows one filled-in row for reference and is never imported.",
+    "If a file made from an older template still contains its example row (reference / document number ending in BEG-0001 for 10,000.00), that row is refused with an error, never imported. Delete it - or, if it is a real balance, give it its own reference / document number.",
+  ],
+};
 // Multi-Branch Phase C-3: a template is for one resolved branch.
 const BBBranch = require("./beginningBalanceBranchService");
 
@@ -53,11 +69,11 @@ const GL_COLUMNS = [
   { key: "remarks", header: "Remarks" },
 ];
 
-function buildCsvTemplate(columns, sampleRow) {
-  const rows = [
-    columns.map((c) => c.header),
-    columns.map((c) => sampleRow[c.key] ?? ""),
-  ];
+// Release safety: the CSV template is the import file itself, so it carries
+// the header row ONLY - an example line here used to be importable as a real
+// opening balance (the example lives on the .xlsx template's Example sheet).
+function buildCsvTemplate(columns) {
+  const rows = [columns.map((c) => c.header)];
   return rows.map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(",")).join("\n");
 }
 
@@ -97,15 +113,10 @@ async function buildGLTemplate(format, companyId, scope = null) {
   };
 
   if (format === "csv") {
-    return buildCsvTemplate(GL_COLUMNS, sampleRow);
+    return buildCsvTemplate(GL_COLUMNS);
   }
 
-  const buffer = await buildMultiSheetXlsxTemplate({
-    sheets: [
-      {
-        type: "import",
-        name: "Import Template",
-        columns: [
+  const importColumns = [
           { key: "accountCode", header: "Account Code", width: 16, required: true },
           { key: "accountTitle", header: "Account Title", width: 30, note: "Reference only - validated against Account Code, not used to look up the account." },
           { key: "balanceDate", header: "Beginning Balance Date", width: 20, required: true, note: "Format: YYYY-MM-DD" },
@@ -119,8 +130,14 @@ async function buildGLTemplate(format, companyId, scope = null) {
           { key: "department", header: "Department", width: 16 },
           { key: "project", header: "Project", width: 16 },
           { key: "remarks", header: "Remarks", width: 30 },
-        ],
-        sampleRow,
+  ];
+
+  const buffer = await buildMultiSheetXlsxTemplate({
+    sheets: [
+      {
+        type: "import",
+        name: IMPORT_SHEET_NAME,
+        columns: importColumns,
       },
       {
         type: "instructions",
@@ -128,6 +145,7 @@ async function buildGLTemplate(format, companyId, scope = null) {
         title: "GL Beginning Balance Import - Instructions",
         meta: generatedMeta("gl", companyName, scope?.branch),
         sections: [
+          EXAMPLE_INSTRUCTIONS,
           {
             heading: "Required Columns",
             body: [
@@ -198,6 +216,7 @@ async function buildGLTemplate(format, companyId, scope = null) {
           },
         ],
       },
+      exampleSheet(importColumns, sampleRow),
       {
         type: "reference",
         name: "Account Reference",
@@ -299,15 +318,10 @@ async function buildPartyTemplate(module, format, companyId, scope = null) {
 
   if (format === "csv") {
     const columns = PARTY_COLUMNS.map((c) => ({ key: c.key, header: columnHeaderFor(c.key) }));
-    return buildCsvTemplate(columns, sampleRow);
+    return buildCsvTemplate(columns);
   }
 
-  const buffer = await buildMultiSheetXlsxTemplate({
-    sheets: [
-      {
-        type: "import",
-        name: "Import Template",
-        columns: [
+  const importColumns = [
           { key: "partyCode", header: columnHeaderFor("partyCode"), width: 16, required: true },
           { key: "partyName", header: columnHeaderFor("partyName"), width: 26, note: `Reference only - validated against ${partyLabel} Code, not used to look up the ${partyLabel.toLowerCase()}.` },
           { key: "accountCode", header: "Account Code", width: 16, required: true, note: `Must be flagged as a valid ${docPrefix === "AR" ? "Accounts Receivable" : "Accounts Payable"} account (see the Account Reference sheet).` },
@@ -322,8 +336,14 @@ async function buildPartyTemplate(module, format, companyId, scope = null) {
           { key: "openingRate", header: "Opening Exchange Rate", width: 18, note: "Required for any non-base Currency Code - the historical rate in effect when this balance was opened. Must be 1 for the base currency. No automatic lookup is performed." },
           { key: "rateDate", header: "Rate Date", width: 16, note: "Optional - defaults to the Beginning Balance Date." },
           { key: "referenceNo", header: "Reference Number", width: 20 },
-        ],
-        sampleRow,
+  ];
+
+  const buffer = await buildMultiSheetXlsxTemplate({
+    sheets: [
+      {
+        type: "import",
+        name: IMPORT_SHEET_NAME,
+        columns: importColumns,
       },
       {
         type: "instructions",
@@ -331,6 +351,7 @@ async function buildPartyTemplate(module, format, companyId, scope = null) {
         title: `${docPrefix} Beginning Balance Import - Instructions`,
         meta: generatedMeta(module, companyName, scope?.branch),
         sections: [
+          EXAMPLE_INSTRUCTIONS,
           {
             heading: "Required Columns",
             body: [
@@ -379,6 +400,7 @@ async function buildPartyTemplate(module, format, companyId, scope = null) {
           },
         ],
       },
+      exampleSheet(importColumns, sampleRow),
       {
         type: "reference",
         name: "Account Reference",

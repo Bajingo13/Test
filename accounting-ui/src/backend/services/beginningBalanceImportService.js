@@ -14,6 +14,64 @@ const BBBranch = require("./beginningBalanceBranchService");
 
 const TEMPLATE_VERSION = "1.0";
 
+// The designated import sheet of the Beginning Balance templates.
+const IMPORT_SHEET_NAME = "Import Template";
+
+// Release safety: templates generated before this change carried an example
+// row on the import sheet, built from REAL master data (the first account /
+// customer / supplier of the reference list, today's date, base currency,
+// 10,000.00) - so a forgotten example passed every account / party check and
+// could become a real opening balance. New templates keep the example on a
+// separate "Example" sheet; an uploaded row that carries the example's FIXED
+// markers is refused here with an error (never silently created, never
+// silently dropped - a real balance that happens to look like it is fixed by
+// changing its reference / document number). Markers (all must match):
+//   GL    Reference Number GL-BEG-0001 + Description "Opening balance"
+//         + Debit 10,000.00 + no Credit + Opening Rate blank or 1
+//   AR/AP Document Number AR-BEG-0001 / AP-BEG-0001 + Original 10,000.00
+//         + Paid blank or 0 + Balance blank or 10,000.00
+// Account code, party, date and currency are deliberately NOT part of the
+// match (they varied per template), and an amount or code alone never is.
+const EXAMPLE_MARKERS = {
+  gl: { referenceNo: "GL-BEG-0001", description: "opening balance", amount: 10000 },
+  ar: { documentNumber: "AR-BEG-0001", amount: 10000 },
+  ap: { documentNumber: "AP-BEG-0001", amount: 10000 },
+};
+const textKey = (v) => String(v ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+function amountValue(v) {
+  if (v === null || v === undefined || String(v).trim() === "") return 0;
+  const n = Number(String(v).replace(/[^0-9.-]/g, ""));
+  return Number.isFinite(n) ? n : NaN;
+}
+function isLegacyExampleRow(module, raw) {
+  const m = EXAMPLE_MARKERS[module];
+  if (!m || !raw) return false;
+  if (module === "gl") {
+    const rate = amountValue(raw.openingRate);
+    return textKey(raw.referenceNo) === textKey(m.referenceNo)
+      && textKey(raw.description) === m.description
+      && amountValue(raw.debit) === m.amount
+      && amountValue(raw.credit) === 0
+      && (rate === 0 || rate === 1);
+  }
+  const balance = amountValue(raw.balanceAmount);
+  return textKey(raw.documentNumber) === textKey(m.documentNumber)
+    && amountValue(raw.originalAmount) === m.amount
+    && amountValue(raw.paidAmount) === 0
+    && (balance === 0 || balance === m.amount);
+}
+function exampleRowErrors(module, raw) {
+  if (!isLegacyExampleRow(module, raw)) return [];
+  const m = EXAMPLE_MARKERS[module];
+  const column = module === "gl" ? "Reference Number" : "Document Number";
+  const value = module === "gl" ? m.referenceNo : m.documentNumber;
+  return [{
+    column,
+    value,
+    message: `This row is the example from the import template (${column} ${value}, 10,000.00), so it was not imported. Delete it - or, if it is a real opening balance, give it its own ${column}.`,
+  }];
+}
+
 const GL_FIELD_ALIASES = {
   accountCode: ["account code", "acct code", "code"],
   accountTitle: ["account title", "account name", "title"],
@@ -76,7 +134,7 @@ async function extractRows(buffer, filename) {
     return { headers: records[0] || [], dataRows: records.slice(1) };
   }
 
-  return extractRowsFromXlsx(buffer);
+  return extractRowsFromXlsx(buffer, { preferredSheet: IMPORT_SHEET_NAME });
 }
 
 function rowValuesToObject(rowValues, mapping) {
@@ -289,7 +347,7 @@ async function validateAndScoreRows(module, dataRows, mapping, companyId, branch
 
   const results = parsedRows.map((row) => {
     const result = cfg.validate(row, context);
-    return { ...result, errors: [...result.errors, ...branchCodeErrors(row, branch)] };
+    return { ...result, errors: [...result.errors, ...branchCodeErrors(row, branch), ...exampleRowErrors(module, row)] };
   });
   const existingDuplicateFlags = await cfg.findExistingDuplicates(results.map((r) => r.resolved), { companyId, branchId });
 
@@ -599,7 +657,7 @@ async function commitImport({ module, batchId, user, companyId: requestedCompany
   const revalidated = storedRows.map((stored) => {
     const raw = stored.raw_data; // mysql2 already parses JSON columns
     const result = cfg.validate(raw, context);
-    return { rowNum: stored.row_num, errors: [...result.errors, ...branchCodeErrors(raw, branch)], warnings: result.warnings, resolved: result.resolved };
+    return { rowNum: stored.row_num, errors: [...result.errors, ...branchCodeErrors(raw, branch), ...exampleRowErrors(module, raw)], warnings: result.warnings, resolved: result.resolved };
   });
 
   const insertable = revalidated.filter((r) => r.errors.length === 0);
@@ -814,6 +872,8 @@ function buildErrorCsv(errorRows) {
 
 module.exports = {
   TEMPLATE_VERSION,
+  IMPORT_SHEET_NAME,
+  isLegacyExampleRow,
   GL_FIELD_ALIASES,
   PARTY_FIELD_ALIASES,
   previewImport,
