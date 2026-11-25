@@ -4,6 +4,7 @@ import usePermissions from "../../hooks/usePermissions";
 import AutoResizeTextarea from "../../components/AutoResizeTextarea";
 import ReportSectionQuickAddModal from "../../components/ReportSectionQuickAddModal";
 import RecordViewModal from "../../components/RecordViewModal";
+import { postBulkDelete } from "../../utils/fileSetupBulkDelete";
 import "./GroupCodes.css";
 import "../../components/RecurringTemplateModal.css";
 
@@ -646,6 +647,14 @@ export default function GroupCodes() {
           selectedRecord={selectedRecord}
           detailsTitle="Selected Group Code"
           getDetails={getGroupCodeDetails}
+          bulkDelete={canConfigure && !isEditing ? {
+            noun: "group code(s)",
+            onDelete: async (ids) => {
+              const out = await postBulkDelete("/api/group-codes/bulk-delete", ids);
+              if (!out.error) await loadGroupCodes(selectedId);
+              return out;
+            },
+          } : null}
         />
 
         <div className="group-card">

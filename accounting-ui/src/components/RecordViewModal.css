@@ -247,3 +247,82 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* Bulk "Delete Selected" (optional bulkDelete prop). Theme tokens only. */
+.rvm-check-col {
+  width: 36px;
+  text-align: center;
+}
+
+.rvm-check-col input {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.rvm-bulkbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+
+.rvm-bulk-count {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-right: auto;
+}
+
+.rvm-btn-danger {
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 700;
+  background: var(--danger-bg);
+  color: var(--danger-text);
+  cursor: pointer;
+}
+
+.rvm-btn-danger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.rvm-bulk-confirm,
+.rvm-bulk-result {
+  border: 1px solid var(--border-color-strong);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin: 0 0 10px;
+  background: var(--bg-surface-muted);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.rvm-bulk-confirm p,
+.rvm-bulk-result p {
+  margin: 0 0 8px;
+}
+
+.rvm-bulk-confirm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.rvm-bulk-result.is-error {
+  background: var(--danger-bg);
+  color: var(--danger-text);
+}
+
+.rvm-bulk-result-list {
+  margin: 0;
+  padding-left: 18px;
+  max-height: 140px;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+}

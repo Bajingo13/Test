@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
 import usePermissions from "../../hooks/usePermissions";
 import RecordViewModal from "../../components/RecordViewModal";
+import { postBulkDelete } from "../../utils/fileSetupBulkDelete";
 import "./GroupCodes.css";
 
 // Phase M.1: Report Section master data. Reuses GroupCodes.css verbatim
@@ -414,6 +415,14 @@ export default function ReportSections() {
           selectedRecord={selectedRecord}
           detailsTitle="Selected Report Section"
           getDetails={getReportSectionDetails}
+          bulkDelete={canConfigure && !isEditing ? {
+            noun: "report section(s)",
+            onDelete: async (ids) => {
+              const out = await postBulkDelete("/api/report-sections/bulk-delete", ids);
+              if (!out.error) await loadReportSections(selectedId);
+              return out;
+            },
+          } : null}
         />
 
         <div className="group-card">

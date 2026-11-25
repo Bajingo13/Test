@@ -44,6 +44,7 @@ const { buildXlsxTemplate, buildMultiSheetXlsxTemplate } = require("./services/T
 const { templateImportUpload, coaImportUpload, handleUpload } = require("./lib/uploadMiddleware");
 const COAImportService = require("./services/COAImportService");
 const ImportBranchResolver = require("./services/importBranchResolver");
+const FileSetupDeleteService = require("./services/fileSetupDeleteService");
 const GroupCodeImportService = require("./services/GroupCodeImportService");
 const GenLibImportService = require("./services/GenLibImportService");
 const GLBeginningBalanceService = require("./services/GLBeginningBalanceService");
@@ -546,6 +547,19 @@ app.delete("/api/genlib/:id", authenticateToken, authorizePermission("FILESETUP.
     }
     await BranchResolution.assertSetupRecordVisible(req.user, ownerRows[0].branch_id);
 
+    // Post-File-Setup fix: a party that transactions / beginning balances /
+    // templates use is never deleted (no FK protects these references).
+    const [[party]] = await pool.execute("SELECT id, code, company_id FROM general_libraries WHERE id = ?", [id]);
+    const references = await FileSetupDeleteService.countPartyReferences(party);
+    if (Object.keys(references).length) {
+      return res.status(409).json({
+        message: "This record cannot be deleted because transactions, beginning balances or templates use it. Set it INACTIVE instead.",
+        code: "GENLIB_IN_USE",
+        error: "GENLIB_IN_USE",
+        references,
+      });
+    }
+
     await pool.execute("DELETE FROM general_libraries WHERE id = ? AND company_id = ?", [id, companyId]);
 
     res.json({
@@ -869,38 +883,36 @@ function validateCoaInput(body) {
   return { code, title, accountClass, date };
 }
 
-// TC-FS-001: an account that is still referenced must not be deleted (same
-// rule as the Group Code delete guard below). Transaction / beginning-balance
-// lines reference accounts by account_id and/or account_code WITHOUT a
-// foreign key, so a delete used to orphan them silently; the few real FKs
-// (bank-recon adjustments, FX account settings) made it fail with a raw 500.
-const COA_REFERENCE_SOURCES = [
-  ["apv_lines", "account_id", "account_code"], ["cv_lines", "account_id", "account_code"],
-  ["invoice_lines", "account_id", "account_code"], ["or_lines", "account_id", "account_code"],
-  ["jv_lines", "account_id", "account_code"], ["memo_lines", "account_id", "account_code"],
-  ["petty_cash_lines", "account_id", "account_code"], ["purchase_order_lines", "account_id", "account_code"],
-  ["quotation_lines", "account_id", "account_code"], ["recurring_transaction_template_lines", "account_id", "account_code"],
-  ["arap_beginning_balance_lines", "account_id", "account_code"], ["gl_beginning_balance_lines", "account_id", "account_code"],
-  ["rfp_lines", "account_id", null], ["transaction_tax_entries", "account_id", null],
-  ["bank_codes", "coa_account_id", null], ["bank_recon_adjustments", "suggested_account_id", null],
-  ["prepaid_accounts", null, "account_code"], ["prepaid_accounts", null, "expense_account_code"],
-];
-async function countCoaReferences(account) {
-  const references = {};
-  for (const [table, idCol, codeCol] of COA_REFERENCE_SOURCES) {
-    const where = [idCol ? `${idCol} = ?` : null, codeCol ? `${codeCol} = ?` : null].filter(Boolean).join(" OR ");
-    const params = [idCol ? account.id : null, codeCol ? account.code : null].filter((v) => v !== null);
-    const [[row]] = await pool.execute(`SELECT COUNT(*) AS n FROM ${table} WHERE ${where}`, params);
-    const n = Number(row.n) || 0;
-    if (n) references[codeCol && !idCol ? `${table}.${codeCol}` : table] = n;
-  }
-  const [[fx]] = await pool.execute(
-    `SELECT COUNT(*) AS n FROM company_fx_accounts WHERE ? IN (realized_fx_gain_account_id, realized_fx_loss_account_id, unrealized_fx_gain_account_id, unrealized_fx_loss_account_id)`,
-    [account.id]
-  );
-  if (Number(fx.n)) references.company_fx_accounts = Number(fx.n);
-  return references;
+// TC-FS-001: an account that is still referenced must not be deleted - the
+// reference check now lives in services/fileSetupDeleteService.js (moved
+// unchanged) so the single DELETE and the bulk Delete Selected share it.
+const { countCoaReferences } = FileSetupDeleteService;
+
+// Bulk "Delete Selected" (Post-File-Setup): the same permission as the single
+// DELETE route, the same rules per record (fileSetupDeleteService), every id
+// reported (deleted / blocked / skipped / failed). Nothing cascades.
+function bulkDeleteRoute(path, permission, makeDeleteOne) {
+  app.post(path, authenticateToken, authorizePermission(...permission), async (req, res) => {
+    const parsed = FileSetupDeleteService.parseIds(req.body?.ids);
+    if (parsed.error) return res.status(400).json({ message: parsed.error, code: "BULK_DELETE_INVALID" });
+    try {
+      const deleteOne = await makeDeleteOne(req);
+      res.json(await FileSetupDeleteService.bulk(parsed.ids, deleteOne));
+    } catch (err) {
+      if (err.statusCode && err.statusCode < 500) return res.status(err.statusCode).json({ message: err.message, code: err.code });
+      console.error(`BULK DELETE ${path} ERROR:`, err);
+      res.status(500).json({ message: "Bulk delete failed. Nothing further was deleted." });
+    }
+  });
 }
+const auditMeta = (req) => ({ ipAddress: req.ip || null, userAgent: req.get("user-agent") || null });
+bulkDeleteRoute("/api/coa/bulk-delete", ["FILESETUP.COA", "DELETE"], async (req) => (id) => FileSetupDeleteService.deleteCoa(req.user, id, { meta: auditMeta(req), bulk: true }));
+bulkDeleteRoute("/api/genlib/bulk-delete", ["FILESETUP.GENLIB", "DELETE"], async (req) => {
+  const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.body?.companyId || req.query.companyId);
+  return (id) => FileSetupDeleteService.deleteGenLib(req.user, id, companyId, { meta: auditMeta(req), bulk: true });
+});
+bulkDeleteRoute("/api/group-codes/bulk-delete", ["FILESETUP.GROUP_CODES", "CONFIGURE"], async (req) => (id) => FileSetupDeleteService.deleteGroupCode(req.user, id, { meta: auditMeta(req), bulk: true }));
+bulkDeleteRoute("/api/report-sections/bulk-delete", ["FILESETUP.REPORT_SECTIONS", "CONFIGURE"], async (req) => (id) => FileSetupDeleteService.deleteReportSection(req.user, id, { meta: auditMeta(req), bulk: true }));
 
 app.post("/api/coa", authenticateToken, authorizePermission("FILESETUP.COA", "CREATE"), async (req, res) => {
   let input;

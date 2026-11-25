@@ -5,6 +5,7 @@ import { matchesDateRange } from "../../utils/dateRangeFilter.mjs";
 import RecordViewModal from "../../components/RecordViewModal";
 import AutoResizeTextarea from "../../components/AutoResizeTextarea";
 import { DEFAULT_SORT, sortOptions, sortRecords, toolbarState } from "./fileSetupRecords.mjs";
+import { postBulkDelete } from "../../utils/fileSetupBulkDelete";
 import useAuthorizedBranches from "../../hooks/useAuthorizedBranches";
 import { ownershipLabel, ownershipOptions, ownershipValue, branchIdPayload } from "./branchOwnership.mjs";
 import "./COA.css";
@@ -659,6 +660,14 @@ export default function COA() {
             selectedRecord={selectedAccount}
             detailsTitle="Selected Account"
             getDetails={getAccountDetails}
+            bulkDelete={canDeletePerm && !isEditing ? {
+              noun: "account(s)",
+              onDelete: async (ids) => {
+                const out = await postBulkDelete("/api/coa/bulk-delete", ids);
+                if (!out.error) await loadAccounts(selectedId);
+                return out;
+              },
+            } : null}
           />
 
           <div className="coa-card">

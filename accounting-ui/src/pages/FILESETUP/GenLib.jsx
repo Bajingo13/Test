@@ -5,6 +5,7 @@ import usePermissions from "../../hooks/usePermissions";
 import RecordViewModal from "../../components/RecordViewModal";
 import AutoResizeTextarea from "../../components/AutoResizeTextarea";
 import { DEFAULT_SORT, filterGenLibRecords, sortOptions, sortRecords, statusBadge, toolbarState } from "./fileSetupRecords.mjs";
+import { postBulkDelete } from "../../utils/fileSetupBulkDelete";
 import useAuthorizedBranches from "../../hooks/useAuthorizedBranches";
 import { ownershipLabel, ownershipOptions, ownershipValue, branchIdPayload } from "./branchOwnership.mjs";
 import "./GenLib.css";
@@ -535,6 +536,14 @@ export default function GenLib() {
             selectedRecord={selectedRecord}
             detailsTitle="Selected Record"
             getDetails={getRecordDetails}
+            bulkDelete={canDeletePerm && !isEditing ? {
+              noun: "record(s)",
+              onDelete: async (ids) => {
+                const out = await postBulkDelete("/api/genlib/bulk-delete", ids);
+                if (!out.error) await loadRecords(selectedId);
+                return out;
+              },
+            } : null}
           />
 
           <div className="gl-card">
