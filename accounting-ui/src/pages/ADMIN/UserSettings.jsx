@@ -15,14 +15,18 @@ const TABS = [
   { id: "users", label: "User List" },
   { id: "invitations", label: "Pending Invitations" },
 ];
-// SUPER_ADMIN only (the server enforces the same rule on /api/account/*).
-const SUPER_ADMIN_TABS = [{ id: "security", label: "Account Security" }];
+// Shown to roles the server says may change their own credentials
+// (credentialManagement.changeOwnCredentials: SUPER_ADMIN, plus ADMIN on
+// deployments that enable it). The server enforces the same rule on /api/account/*.
+const SECURITY_TABS = [{ id: "security", label: "Account Security" }];
+const NO_CREDENTIALS = { changeOwnCredentials: false, manageUserCredentials: false, notificationEmail: false };
 
 export default function UserSettings() {
   const [activeTab, setActiveTab] = useState("users");
   const [canView, setCanView] = useState(null);
   const [canEdit, setCanEdit] = useState(false);
   const [currentUser, setCurrentUser] = useState(null);
+  const [credentials, setCredentials] = useState(NO_CREDENTIALS);
 
   useEffect(() => {
     (async () => {
@@ -38,6 +42,7 @@ export default function UserSettings() {
         setCanView(view);
         setCanEdit(edit);
         setCurrentUser(data.user ? { id: data.user.id, roleCode: data.user.roleCode, username: data.user.username } : null);
+        setCredentials({ ...NO_CREDENTIALS, ...(data.credentialManagement || {}) });
       } catch (err) {
         console.error("CHECK USER SETTINGS ACCESS ERROR:", err);
         setCanView(false);
@@ -45,7 +50,7 @@ export default function UserSettings() {
     })();
   }, []);
 
-  const isSuperAdmin = currentUser?.roleCode === "SUPER_ADMIN";
+  const canChangeOwnCredentials = credentials.changeOwnCredentials === true;
 
   if (canView === null) {
     return <div className="us-page"><p className="us-muted">Loading...</p></div>;
@@ -67,7 +72,7 @@ export default function UserSettings() {
       <h1>User Settings</h1>
 
       <div className="us-tabs">
-        {[...TABS, ...(isSuperAdmin ? SUPER_ADMIN_TABS : [])].map((tab) => (
+        {[...TABS, ...(canChangeOwnCredentials ? SECURITY_TABS : [])].map((tab) => (
           <button
             key={tab.id}
             type="button"
@@ -80,10 +85,13 @@ export default function UserSettings() {
       </div>
 
       <div className="us-card">
-        {activeTab === "users" && <UserList canEdit={canEdit} currentUser={currentUser} />}
+        {activeTab === "users" && (
+          <UserList canEdit={canEdit} currentUser={currentUser} canManageCredentials={credentials.manageUserCredentials === true} />
+        )}
         {activeTab === "invitations" && <PendingInvitations embedded />}
-        {activeTab === "security" && isSuperAdmin && (
+        {activeTab === "security" && canChangeOwnCredentials && (
           <AccountSecurity
+            showNotificationEmail={credentials.notificationEmail === true}
             currentUsername={currentUser?.username}
             onUsernameChanged={(username) => setCurrentUser((u) => (u ? { ...u, username } : u))}
           />

@@ -10,13 +10,49 @@ const settings = read("UserSettings.jsx");
 const security = read("AccountSecurity.jsx");
 const css = read("AccountSecurity.css");
 
-describe("Account Security tab is SUPER_ADMIN-only", () => {
-  test("the tab is added only when the signed-in role is SUPER_ADMIN", () => {
-    expect(settings).toMatch(/const isSuperAdmin = currentUser\?\.roleCode === "SUPER_ADMIN";/);
-    expect(settings).toMatch(/\[\.\.\.TABS, \.\.\.\(isSuperAdmin \? SUPER_ADMIN_TABS : \[\]\)\]/);
-    expect(settings).toMatch(/activeTab === "security" && isSuperAdmin && \(/);
+describe("Account Security tab follows the server's credential policy", () => {
+  test("the tab is added only when the server reports changeOwnCredentials (default: SUPER_ADMIN only)", () => {
+    expect(settings).toMatch(/const NO_CREDENTIALS = \{ changeOwnCredentials: false, manageUserCredentials: false, notificationEmail: false \};/);
+    expect(settings).toMatch(/setCredentials\(\{ \.\.\.NO_CREDENTIALS, \.\.\.\(data\.credentialManagement \|\| \{\}\) \}\);/);
+    expect(settings).toMatch(/const canChangeOwnCredentials = credentials\.changeOwnCredentials === true;/);
+    expect(settings).toMatch(/\[\.\.\.TABS, \.\.\.\(canChangeOwnCredentials \? SECURITY_TABS : \[\]\)\]/);
+    expect(settings).toMatch(/activeTab === "security" && canChangeOwnCredentials && \(/);
+    // the client never decides by role name
+    expect(settings).not.toMatch(/roleCode === "SUPER_ADMIN"/);
     // the base tab list for everyone else is unchanged
     expect(settings).toMatch(/const TABS = \[\n  \{ id: "users", label: "User List" \},\n  \{ id: "invitations", label: "Pending Invitations" \},\n\];/);
+  });
+  test("the Notification Email form is shown only when the server says so (SUPER_ADMIN)", () => {
+    expect(settings).toMatch(/showNotificationEmail=\{credentials\.notificationEmail === true\}/);
+    expect(security).toMatch(/showNotificationEmail = false \}\)/);
+    expect(security).toMatch(/\{showNotificationEmail && <NotificationEmailForm \/>\}/);
+  });
+  test("User List credential actions are passed only the server capability", () => {
+    expect(settings).toMatch(/canManageCredentials=\{credentials\.manageUserCredentials === true\}/);
+    const list = read("UserList.jsx");
+    expect(list).toMatch(/canManageCredentials = false \}/);
+    expect(list).toMatch(/\{canManageCredentials && \(/);
+  });
+});
+
+describe("User credential dialog (Reset Password / Change Username)", () => {
+  const dialog = read("UserCredentialDialog.jsx");
+  test("posts to the per-user administrative endpoints with only the new value", () => {
+    expect(dialog).toMatch(/`\$\{API_URL\}\/api\/users\/\$\{dialog\.user\.id\}\/\$\{path\}`/);
+    expect(dialog).toMatch(/dialog\.kind === "USERNAME" \? "change-username" : "reset-password"/);
+    expect(dialog).toMatch(/\{ newPassword: form\.newPassword, confirmPassword: form\.confirmPassword \}/);
+    expect(dialog).toMatch(/\{ newUsername: form\.newUsername \}/);
+    expect(dialog).toMatch(/method: "POST"/);
+  });
+  test("passwords are never logged, kept after an error, or put in the URL", () => {
+    expect(dialog).not.toMatch(/console\.(log|error|warn|info)/);
+    expect(dialog).toMatch(/setForm\(\{ \.\.\.form, newPassword: "", confirmPassword: "" \}\)/);
+    expect(dialog).not.toMatch(/\?newPassword|\?password/);
+    expect(dialog).toMatch(/autoComplete="new-password"/);
+    expect(dialog).not.toMatch(/\balert\(|\bconfirm\(|\bprompt\(/);
+  });
+  test("expired / revoked session goes through the shared auth-error handler", () => {
+    expect(dialog).toMatch(/if \(res\.status === 401\) return handleAuthError\(res\.status, data\.code\);/);
   });
 });
 

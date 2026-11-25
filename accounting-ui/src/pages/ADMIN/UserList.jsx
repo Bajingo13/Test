@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import UserAccessDrawer, { MANAGEABLE_ROLES_BY_ACTOR } from "../../components/UserAccessDrawer";
+import UserCredentialDialog from "./UserCredentialDialog";
 import "./UserList.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
@@ -26,6 +27,8 @@ const ACTION_HELP = {
   suspend:
     "Suspend: temporarily block the account, e.g. during a review. They are signed out and can't sign in until reactivated.",
   revoke: "Sign this user out of every device. Their account stays active.",
+  resetPassword: "Set a new password for this user. They are signed out of every device.",
+  changeUsername: "Change the username this user signs in with.",
 };
 
 // What each confirmation says. Unlock and Activate run without one.
@@ -75,7 +78,8 @@ function ConfirmDialog({ confirmation, busy, onCancel, onConfirm }) {
   );
 }
 
-export default function UserList({ canEdit, currentUser }) {
+export default function UserList({ canEdit, currentUser, canManageCredentials = false }) {
+  const [credentialDialog, setCredentialDialog] = useState(null);
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -217,6 +221,12 @@ export default function UserList({ canEdit, currentUser }) {
           <button type="button" className="ul-btn ul-btn-danger" title={ACTION_HELP.suspend} onClick={() => ask("SUSPENDED")}>Suspend</button>
         )}
         <button type="button" className="ul-btn" title={ACTION_HELP.revoke} onClick={() => ask("REVOKE")}>Revoke Sessions</button>
+        {canManageCredentials && (
+          <>
+            <button type="button" className="ul-btn" title={ACTION_HELP.resetPassword} onClick={() => setCredentialDialog({ kind: "PASSWORD", user: u, name: displayName(u) })}>Reset Password</button>
+            <button type="button" className="ul-btn" title={ACTION_HELP.changeUsername} onClick={() => setCredentialDialog({ kind: "USERNAME", user: u, name: displayName(u) })}>Change Username</button>
+          </>
+        )}
       </div>
     );
   }
@@ -318,6 +328,17 @@ export default function UserList({ canEdit, currentUser }) {
         busy={busy}
         onCancel={() => setConfirmation(null)}
         onConfirm={handleConfirm}
+      />
+
+      <UserCredentialDialog
+        dialog={credentialDialog}
+        onClose={() => setCredentialDialog(null)}
+        onDone={(message) => {
+          setCredentialDialog(null);
+          setError("");
+          setNotice(message);
+          loadUsers();
+        }}
       />
     </div>
   );

@@ -6,9 +6,10 @@ const API_URL = import.meta.env.VITE_API_URL || "";
 const PASSWORD_MIN_LENGTH = 8;
 export const PASSWORD_CHANGED_MESSAGE = "Password changed successfully. Please log in again.";
 
-// SUPER_ADMIN-only "Account Security" (User Settings tab). Rendered by
-// UserSettings.jsx only for roleCode SUPER_ADMIN; the server enforces the same
-// rule independently (routes/account.routes.js -> requireSuperAdmin).
+// "Account Security" (User Settings tab). Rendered by UserSettings.jsx only when
+// the server reports credentialManagement.changeOwnCredentials (SUPER_ADMIN; also
+// ADMIN where enabled); the Notification Email form only for SUPER_ADMIN. The
+// server enforces the same rules independently (routes/account.routes.js).
 // Changes the signed-in account only - no user id is ever sent.
 
 async function postJson(path, body) {
@@ -22,7 +23,7 @@ async function postJson(path, body) {
 }
 
 function messageFor(res, data) {
-  if (res.status === 403) return "Only a Super Admin can change account credentials.";
+  if (res.status === 403) return "Your role is not allowed to make this change.";
   if (res.status === 429) return data.message || "Too many attempts. Please try again later.";
   if (res.status >= 500) return "The change could not be completed. Please try again.";
   return data.message || "The change could not be completed.";
@@ -225,14 +226,14 @@ function NotificationEmailForm() {
   );
 }
 
-export default function AccountSecurity({ currentUsername, onUsernameChanged }) {
+export default function AccountSecurity({ currentUsername, onUsernameChanged, showNotificationEmail = false }) {
   return (
     <div className="acs-root">
       <h2 className="acs-title">Account Security</h2>
       <div className="acs-grid">
         <ChangePasswordForm />
         <ChangeUsernameForm currentUsername={currentUsername} onChanged={onUsernameChanged} />
-        <NotificationEmailForm />
+        {showNotificationEmail && <NotificationEmailForm />}
       </div>
     </div>
   );
