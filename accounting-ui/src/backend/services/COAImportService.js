@@ -7,6 +7,7 @@ const {
 } = require("./StatementImportService");
 const { OWNING_BRANCH_ALIASES, buildOwningBranchResolver } = require("./importBranchResolver");
 const { assertCoaCodeAllowed } = require("./coaLookupService");
+const { COA_EXAMPLE, COA_EXAMPLE_FIELDS, EXAMPLE_ROW_REASON, isExampleRow } = require("./templateExamples");
 
 // Phase B code rules (coaLookupService.assertCoaCodeAllowed), applied to the
 // whole file before anything is written. `taken` = existing accounts plus the
@@ -171,6 +172,12 @@ async function parseAndValidateRows(buffer, filename, { user = null } = {}) {
 
     if (!code || !title) {
       skipped.push({ row: rowNum, reason: "Missing required code or title" });
+      return;
+    }
+
+    // The example row of an older template (see templateExamples.js).
+    if (isExampleRow(get, COA_EXAMPLE, COA_EXAMPLE_FIELDS)) {
+      skipped.push({ row: rowNum, reason: EXAMPLE_ROW_REASON });
       return;
     }
 

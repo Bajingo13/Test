@@ -45,6 +45,7 @@ const { templateImportUpload, coaImportUpload, handleUpload } = require("./lib/u
 const COAImportService = require("./services/COAImportService");
 const ImportBranchResolver = require("./services/importBranchResolver");
 const FileSetupDeleteService = require("./services/fileSetupDeleteService");
+const TemplateExamples = require("./services/templateExamples");
 const GroupCodeImportService = require("./services/GroupCodeImportService");
 const GenLibImportService = require("./services/GenLibImportService");
 const GLBeginningBalanceService = require("./services/GLBeginningBalanceService");
@@ -597,10 +598,7 @@ const OWNING_BRANCH_INSTRUCTIONS = (recordLabel) => [
 app.get("/api/genlib/template", authenticateToken, authorizePermission("FILESETUP.GENLIB", "VIEW"), async (req, res) => {
   try {
     const branches = await templateOwnerBranches(req, { companyScoped: true });
-    const buffer = await buildMultiSheetXlsxTemplate({ sheets: [{
-      type: "import",
-      name: "General Libraries",
-      columns: [
+    const columns = [
         { key: "code", header: "Code", width: 14 },
         { key: "type", header: "Type", width: 14 },
         { key: "name", header: "Name", width: 28 },
@@ -625,19 +623,13 @@ app.get("/api/genlib/template", authenticateToken, authorizePermission("FILESETU
         { key: "isProspective", header: "Is Prospective", width: 14, note: "YES or NO" },
         { key: "isClient", header: "Is Client", width: 12, note: "YES or NO" },
         { key: "owningBranch", header: "Owning Branch", width: 16, note: "Optional. Blank or SHARED = shared by every branch. Or a Branch Code from the 'Branches' sheet for a branch-only record." },
-      ],
-      sampleRow: {
-        code: "CUST-001",
-        type: "CUSTOMER",
-        name: "Sample Customer Inc.",
-        status: "ACTIVE",
-        startDate: "2026-01-01",
-        address1: "123 Sample St.",
-        category: "REGULAR",
-        isProspective: "NO",
-        isClient: "YES",
-        owningBranch: "",
-      },
+    ];
+    // No example on the import sheet (the only sheet the importer reads) - it
+    // is on the separate "Example" sheet (templateExamples.js).
+    const buffer = await buildMultiSheetXlsxTemplate({ sheets: [{
+      type: "import",
+      name: "General Libraries",
+      columns,
       dropdowns: {
         type: GenLibImportService.PARTY_TYPES,
         status: GenLibImportService.STATUS_OPTIONS,
@@ -655,6 +647,11 @@ app.get("/api/genlib/template", authenticateToken, authorizePermission("FILESETU
       ],
       rows: [{ code: ImportBranchResolver.SHARED_KEYWORD, name: "Shared by every branch (default)", company: "" }, ...branches],
     }, {
+      type: "reference",
+      name: "Example",
+      columns,
+      rows: [TemplateExamples.GENLIB_EXAMPLE],
+    }, {
       type: "instructions",
       name: "Instructions",
       title: "General Libraries Import Template",
@@ -662,7 +659,8 @@ app.get("/api/genlib/template", authenticateToken, authorizePermission("FILESETU
       sections: [
         { heading: "How the import works", body: [
           "Only the first sheet ('General Libraries') is read. Code, Type and Name are required.",
-          "The grey sample row is an example - delete it before importing, or it is imported like any other row.",
+          "The first sheet starts empty - enter your records from row 2. The 'Example' sheet shows a filled-in row for reference and is never imported.",
+          "If a file from an older template still contains its example row (CUST-001 Sample Customer Inc.), that row is skipped with a reason, not imported.",
           "Codes are unique within the company. Existing codes are never overwritten; they are skipped with a reason.",
           "You see a preview first; nothing is saved until you confirm.",
         ] },
@@ -1083,10 +1081,7 @@ app.delete("/api/coa/:id", authenticateToken, authorizePermission("FILESETUP.COA
 app.get("/api/coa/template", authenticateToken, authorizePermission("FILESETUP.COA", "VIEW"), async (req, res) => {
   try {
     const branches = await templateOwnerBranches(req, { companyScoped: false });
-    const buffer = await buildMultiSheetXlsxTemplate({ sheets: [{
-      type: "import",
-      name: "Chart of Accounts",
-      columns: [
+    const columns = [
         { key: "code", header: "Code", width: 14 },
         { key: "date", header: "Date", width: 14, note: "Format: YYYY-MM-DD. Leave blank to default to today." },
         { key: "title", header: "Title", width: 30 },
@@ -1100,17 +1095,13 @@ app.get("/api/coa/template", authenticateToken, authorizePermission("FILESETUP.C
         },
         { key: "groups", header: "Group Codes", width: 20, note: "Semicolon-separated group codes (see Group Codes setup)." },
         { key: "owningBranch", header: "Owning Branch", width: 16, note: "Optional. Blank or SHARED = shared account (every branch). Or a Branch Code from the 'Branches' sheet for a branch-only account." },
-      ],
-      sampleRow: {
-        code: "1010",
-        date: "2026-01-01",
-        title: "Cash on Hand",
-        accountClass: "ASSET",
-        description: "Petty cash fund",
-        validations: "BANK / CASH",
-        groups: "",
-        owningBranch: "",
-      },
+    ];
+    // No example on the import sheet (the only sheet the importer reads) - it
+    // is on the separate "Example" sheet (templateExamples.js).
+    const buffer = await buildMultiSheetXlsxTemplate({ sheets: [{
+      type: "import",
+      name: "Chart of Accounts",
+      columns,
       dropdowns: {
         accountClass: COAImportService.CLASS_OPTIONS,
       },
@@ -1124,6 +1115,11 @@ app.get("/api/coa/template", authenticateToken, authorizePermission("FILESETUP.C
       ],
       rows: [{ code: ImportBranchResolver.SHARED_KEYWORD, name: "Shared by every branch (default)", company: "" }, ...branches],
     }, {
+      type: "reference",
+      name: "Example",
+      columns,
+      rows: [TemplateExamples.COA_EXAMPLE],
+    }, {
       type: "instructions",
       name: "Instructions",
       title: "Chart of Accounts Import Template",
@@ -1131,7 +1127,8 @@ app.get("/api/coa/template", authenticateToken, authorizePermission("FILESETUP.C
       sections: [
         { heading: "How the import works", body: [
           "Only the first sheet ('Chart of Accounts') is read. Code and Title are required; Account Class must be ASSET, LIABILITY, EQUITY, INCOME or EXPENSE.",
-          "The grey sample row is an example - delete it before importing, or it is imported like any other row.",
+          "The first sheet starts empty - enter your accounts from row 2. The 'Example' sheet shows a filled-in row for reference and is never imported.",
+          "If a file from an older template still contains its example row (1010 Cash on Hand, Petty cash fund), that row is skipped with a reason, not imported.",
           "Existing accounts are never overwritten; a code that already exists is skipped with the reason.",
           "The same code may be used by branch-only accounts of different branches (same Account Class); a shared code cannot be reused by a branch and vice versa.",
           "You see a preview first; nothing is saved until you confirm. Rows are listed by Account Code on the Chart of Accounts screen, not in file order.",

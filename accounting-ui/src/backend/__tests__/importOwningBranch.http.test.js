@@ -221,7 +221,7 @@ describe("templates", () => {
     expect(res.status).toBe(200);
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.load(res.body);
-    expect(wb.worksheets.map((w) => w.name)).toEqual(["Chart of Accounts", "Branches", "Instructions"]);
+    expect(wb.worksheets.map((w) => w.name)).toEqual(["Chart of Accounts", "Branches", "Example", "Instructions"]);
     expect(wb.worksheets[0].getRow(1).values.slice(1)).toContain("Owning Branch");
     const codes = [];
     wb.getWorksheet("Branches").eachRow((r, n) => { if (n > 1) codes.push(r.getCell(1).value); });
@@ -240,5 +240,41 @@ describe("templates", () => {
     const header = wb.worksheets[0].getRow(1);
     const bir = header.values.indexOf("Branch Code");
     expect(String(header.getCell(bir).note?.texts?.map((t) => t.text).join("") ?? header.getCell(bir).note)).toMatch(/BIR/);
+  });
+});
+
+describe("example rows never become master data (release review item 2)", () => {
+  const rowsWithValues = (ws) => { let n = 0; ws.eachRow({ includeEmpty: false }, () => { n += 1; }); return n; };
+  test.each([["/api/coa/template", "Chart of Accounts", "1010"], ["/api/genlib/template", "General Libraries", "CUST-001"]])(
+    "%s: the import sheet has only the header row; the example is on the 'Example' sheet",
+    async (path, importSheet, exampleCode) => {
+      const res = await getTemplate("adminAB", `${path}?companyId=${co.A}`);
+      const wb = new ExcelJS.Workbook();
+      await wb.xlsx.load(res.body);
+      expect(wb.worksheets[0].name).toBe(importSheet);
+      expect(rowsWithValues(wb.worksheets[0])).toBe(1);
+      const example = wb.getWorksheet("Example");
+      expect(example.getRow(2).getCell(1).value).toBe(exampleCode);
+      expect(example.getRow(1).values.slice(1)).toEqual(wb.worksheets[0].getRow(1).values.slice(1)); // same columns
+    }
+  );
+  test("COA: an older template's example row is skipped with the reason; a real 1010 account is imported", async () => {
+    const legacy = await xlsx(["Code", "Date", "Title", "Account Class", "Description", "Validations", "Group Codes"], [
+      ["1010", "2026-01-01", "Cash on Hand", "ASSET", "Petty cash fund", "BANK / CASH", ""], // 2 the old example
+      ["TBO-EX1", "2026-01-01", "Real cash", "ASSET", "", "", ""], // 3
+    ]);
+    const res = await send("adminAB", "/api/coa/import/preview", legacy);
+    expect(res.body.readyCount).toBe(1);
+    expect(reasonOf(res, 2)).toMatch(/example row from the template, so it was not imported/);
+    const real = await send("adminAB", "/api/coa/import/preview", await xlsx(["Code", "Title", "Account Class", "Description"], [["1010", "Cash on Hand", "ASSET", "Main vault"]]));
+    expect(real.body.skipped.filter((s) => /example row/.test(s.reason))).toEqual([]);
+  });
+  test("General Libraries: an older template's example row is skipped with the reason", async () => {
+    const res = await send("adminAB", "/api/genlib/import/preview", await xlsx(["Code", "Type", "Name", "Address1"], [
+      ["CUST-001", "CUSTOMER", "Sample Customer Inc.", "123 Sample St."],
+      ["TBO-EX2", "CUSTOMER", "Real customer", ""],
+    ]), { companyId: co.A });
+    expect(res.body.ready.map((r) => r.code)).toEqual(["TBO-EX2"]);
+    expect(reasonOf(res, 2)).toMatch(/example row from the template/);
   });
 });

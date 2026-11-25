@@ -6,6 +6,7 @@ const {
   parseStatementDate,
 } = require("./StatementImportService");
 const { OWNING_BRANCH_ALIASES, buildOwningBranchResolver } = require("./importBranchResolver");
+const { GENLIB_EXAMPLE, GENLIB_EXAMPLE_FIELDS, EXAMPLE_ROW_REASON, isExampleRow } = require("./templateExamples");
 
 const PARTY_TYPES = ["CUSTOMER", "SUPPLIER", "EMPLOYEE", "AFFILIATE", "BRANCH", "OTHER"];
 const STATUS_OPTIONS = ["ACTIVE", "INACTIVE"];
@@ -133,6 +134,12 @@ async function parseAndValidateRows(buffer, filename, { companyId = null, user =
 
     if (!code || !name) {
       skipped.push({ row: rowNum, code, reason: "Missing required code or name" });
+      return;
+    }
+
+    // The example row of an older template (see templateExamples.js).
+    if (isExampleRow(get, GENLIB_EXAMPLE, GENLIB_EXAMPLE_FIELDS)) {
+      skipped.push({ row: rowNum, code, reason: EXAMPLE_ROW_REASON });
       return;
     }
 
