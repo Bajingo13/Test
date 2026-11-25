@@ -145,10 +145,14 @@ async function parseAndValidateRows(buffer, filename) {
   const [existingRows] = await pool.execute("SELECT group_code FROM account_group_codes");
   const existingUpper = new Set(existingRows.map((r) => String(r.group_code).trim().toUpperCase()));
 
+  // One read of the Report Section List for the whole file (the same list
+  // the template's reference sheet and the form's dropdown come from).
+  const sections = await ReportSectionService.listReportSections();
+
   const ready = [];
   const skipped = [];
   const warnings = [];
-  const seenInFileUpper = new Set();
+  const seenInFileUpper = new Map(); // upper-cased code -> first row number
 
   for (const { rowNum, values } of dataRows) {
     const get = (field) => (mapping[field] !== undefined ? cellText(values[mapping[field]]) : "");
@@ -156,7 +160,7 @@ async function parseAndValidateRows(buffer, filename) {
     const skip = (reason) => skipped.push({ row: rowNum, groupCode, reason });
 
     const groupDescription = get("groupDescription");
-    const accountClass = get("accountClass").toUpperCase();
+    const accountClass = ReportSectionService.collapseWhitespace(get("accountClass")).toUpperCase();
 
     if (!groupCode) { skip("Group Code is required."); continue; }
     if (!groupDescription) { skip("Group Description is required."); continue; }
@@ -172,6 +176,7 @@ async function parseAndValidateRows(buffer, filename) {
     }
 
     const codeUpper = groupCode.toUpperCase();
+    // Reason texts unchanged from de8b06a (existing API/UI contract).
     if (existingUpper.has(codeUpper)) { skip("Group Code already exists."); continue; }
     if (seenInFileUpper.has(codeUpper)) {
       skip("Group Code is a duplicate of an earlier row in this file.");
@@ -179,7 +184,7 @@ async function parseAndValidateRows(buffer, filename) {
     }
 
     if (!CLASS_OPTIONS.includes(accountClass)) {
-      skip(`Account Class must be one of: ${CLASS_OPTIONS.join(", ")}.`);
+      skip(`Account Class must be one of: ${CLASS_OPTIONS.join(", ")}. Received "${get("accountClass")}".`);
       continue;
     }
 
@@ -197,10 +202,11 @@ async function parseAndValidateRows(buffer, filename) {
       accountClass,
       reportSection: get("reportSection"),
       displayOrder: get("displayOrder"),
+      sections,
     });
     if (!check.ok) { skip(check.error); continue; }
 
-    seenInFileUpper.add(codeUpper);
+    seenInFileUpper.set(codeUpper, rowNum);
     ready.push({
       rowNum,
       groupCode,
@@ -263,7 +269,7 @@ async function buildTemplate() {
           { key: "groupCode", header: "Group Code*", width: 18, required: true, note: `Up to ${CODE_MAX_LENGTH} characters. Must not already exist (case-insensitive).` },
           { key: "groupDescription", header: "Group Description*", width: 36, required: true, note: `Up to ${DESCRIPTION_MAX_LENGTH} characters.` },
           { key: "accountClass", header: "Account Class*", width: 16, required: true, note: `One of: ${CLASS_OPTIONS.join(", ")}.` },
-          { key: "reportSection", header: "Report Section", width: 24, note: "Optional. A Report Section CODE from the 'Report Sections' sheet that belongs to the same Account Class and is ACTIVE." },
+          { key: "reportSection", header: "Report Section", width: 24, note: "Optional. A Report Section Code OR Name from the 'Report Sections' sheet (any letter case) that belongs to the same Account Class and is ACTIVE." },
           { key: "displayOrder", header: "Display Order", width: 14, note: "Optional. A whole number." },
           { key: "status", header: "Status", width: 12, note: "Optional. ACTIVE or INACTIVE. Blank = ACTIVE." },
         ],
@@ -302,7 +308,7 @@ async function buildTemplate() {
               "Optional: Report Section, Display Order, Status.",
               `Account Class must be one of: ${CLASS_OPTIONS.join(", ")}.`,
               "Status must be ACTIVE or INACTIVE. A blank Status imports as ACTIVE.",
-              "Report Section is optional. If supplied it must be a Code from the 'Report Sections' sheet that is ACTIVE and belongs to the same Account Class as the row.",
+              "Report Section is optional. If supplied it may be the Code (e.g. OPERATING_EXPENSE) or the Name (e.g. Operating Expenses) from the 'Report Sections' sheet. Upper/lower case and extra spaces are ignored. It must be ACTIVE and belong to the same Account Class as the row; it is never moved to another class.",
               "Display Order is optional. If supplied it must be a whole number.",
               "Example row: GC-100 | Cash and Cash Equivalents | ASSET | CURRENT_ASSET | 10 | ACTIVE",
             ],

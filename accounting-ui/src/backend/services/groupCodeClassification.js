@@ -89,27 +89,26 @@ function isValidSectionForClass(accountClass, reportSection) {
 // will not yet have a slot in the structured statement skeleton, which
 // still checks against the original static SECTION_CODES - it shows under
 // Unclassified there, a documented limitation, not a defect.
-async function validateGroupCodeClassification({ accountClass, reportSection, displayOrder } = {}) {
+// `sections` (optional): a pre-read Report Section list, so an import resolves
+// every row against ONE consistent read instead of one query per row.
+async function validateGroupCodeClassification({ accountClass, reportSection, displayOrder, sections = null } = {}) {
   const section = normalizeSection(reportSection);
   const cls = String(accountClass || "").trim().toUpperCase();
 
+  // Post-File-Setup fix: the section may be given by its CODE or by its NAME
+  // as the Report Section List shows it (any case, extra spaces ignored) -
+  // the import template's users typed names ("Operating Expenses",
+  // "Intrabranch - Out") and every such row used to be refused because only
+  // the upper-cased code was compared. Resolution is strict (class, ACTIVE,
+  // unambiguous) and always stores the canonical code; see
+  // reportSectionService.resolveReportSectionInput. Same validator for the
+  // form (POST/PUT) and the import (preview and confirm).
+  let resolvedSection = null;
   if (section !== null) {
     const ReportSectionService = require("./reportSectionService");
-    const allowedCodes = await ReportSectionService.getActiveCodesByClass(cls);
-    if (!allowedCodes.includes(section)) {
-      const rows = await ReportSectionService.listReportSections({ accountClass: cls, status: "ACTIVE" });
-      const labelFor = (code) => {
-        const found = rows.find((r) => r.code === code);
-        return found ? found.name : code;
-      };
-      const label = (rows.find((r) => r.code === section) || {}).name || SECTION_LABELS[section] || section;
-      return {
-        ok: false,
-        error:
-          `Report section "${label}" is not valid for account class ${cls}. Allowed: ` +
-          `${rows.map((r) => labelFor(r.code)).join(", ") || "(none)"}.`,
-      };
-    }
+    const resolved = await ReportSectionService.resolveReportSectionInput(reportSection, cls, sections);
+    if (!resolved.ok) return { ok: false, error: resolved.error };
+    resolvedSection = resolved.code;
   }
 
   let order = null;
@@ -120,7 +119,7 @@ async function validateGroupCodeClassification({ accountClass, reportSection, di
     }
   }
 
-  return { ok: true, value: { reportSection: section, displayOrder: order } };
+  return { ok: true, value: { reportSection: resolvedSection, displayOrder: order } };
 }
 
 // The five canonical account classes report_section validation is keyed on.

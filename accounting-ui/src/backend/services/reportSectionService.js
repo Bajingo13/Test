@@ -64,6 +64,68 @@ async function listReportSections({ accountClass, status } = {}) {
   return rows.map(toRow);
 }
 
+// Collapses runs of whitespace and trims - "  Operating   Expenses " ->
+// "Operating Expenses".
+function collapseWhitespace(value) {
+  return String(value ?? "").trim().replace(/\s+/g, " ");
+}
+
+// Resolves what a user supplied for a Group Code's Report Section - its CODE
+// (e.g. OPERATING_EXPENSE) or its NAME as the Report Section List shows it
+// (e.g. "Operating Expenses", "Intrabranch - Out") - to the canonical code.
+// Letter case and extra spaces are ignored. Never remaps silently:
+//   blank                                   -> { ok: true, code: null }
+//   matches nothing                         -> not found
+//   matches only another class's section    -> wrong class (named, not moved)
+//   matches two sections of the class       -> ambiguous (code of one = name of another)
+//   matches an INACTIVE section             -> inactive
+// Every refusal keeps the phrase "is not valid for account class <CLASS>".
+// `sections` may be passed in (an import resolves many rows from one read).
+async function resolveReportSectionInput(input, accountClass, sections = null) {
+  const typed = collapseWhitespace(input);
+  if (!typed) return { ok: true, code: null };
+  const cls = normalizeClass(accountClass);
+  const all = sections || (await listReportSections());
+  const key = typed.toLowerCase();
+  const matches = all.filter(
+    (s) => String(s.code).toLowerCase() === key || collapseWhitespace(s.name).toLowerCase() === key
+  );
+  const allowedList = () =>
+    all
+      .filter((s) => s.accountClass === cls && s.status === "ACTIVE")
+      .map((s) => `${s.name} (${s.code})`)
+      .join(", ") || "(none)";
+
+  if (!matches.length) {
+    return {
+      ok: false,
+      error: `Report Section "${typed}" was not found in the Report Section List, so it is not valid for account class ${cls}. Use a Code or Name from the list. Allowed for ${cls}: ${allowedList()}.`,
+    };
+  }
+  const inClass = matches.filter((s) => s.accountClass === cls);
+  if (!inClass.length) {
+    const other = matches[0];
+    return {
+      ok: false,
+      error: `Report Section "${other.name}" (${other.code}) belongs to account class ${other.accountClass}, so it is not valid for account class ${cls}. Allowed for ${cls}: ${allowedList()}.`,
+    };
+  }
+  if (inClass.length > 1) {
+    return {
+      ok: false,
+      error: `Report Section "${typed}" is ambiguous for account class ${cls} (it matches ${inClass.map((s) => `${s.name} (${s.code})`).join(" and ")}), so it is not valid for account class ${cls} as written. Enter the Code instead.`,
+    };
+  }
+  const section = inClass[0];
+  if (section.status !== "ACTIVE") {
+    return {
+      ok: false,
+      error: `Report Section "${section.name}" (${section.code}) is INACTIVE, so it is not valid for account class ${cls}. Activate it in Report Sections or choose another: ${allowedList()}.`,
+    };
+  }
+  return { ok: true, code: section.code };
+}
+
 async function getActiveCodesByClass(accountClass) {
   const [rows] = await pool.execute(
     "SELECT code FROM report_sections WHERE account_class = ? AND status = 'ACTIVE'",
@@ -199,6 +261,8 @@ module.exports = {
   CANONICAL_ACCOUNT_CLASSES,
   listReportSections,
   getActiveCodesByClass,
+  resolveReportSectionInput,
+  collapseWhitespace,
   createReportSection,
   updateReportSection,
   deleteReportSection,
