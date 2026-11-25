@@ -1,10 +1,15 @@
 const bcrypt = require("bcryptjs");
 const pool = require("../db");
 const { logAudit } = require("../lib/audit");
+const { soleCompanyOfUser } = require("../lib/auditCompany");
+const CredentialPolicy = require("../lib/credentialPolicy");
 
-// SUPER_ADMIN-only self-service credential management (POST /api/account/*).
+// Credential management. Who may do what is lib/credentialPolicy: by default
+// only SUPER_ADMIN self-service; where ADMIN_CREDENTIAL_MANAGEMENT=enabled also
+// ADMIN self-service plus administrative changes to managed users (bottom of
+// this file). ACCOUNTANT never.
 //
-// The account being changed is ALWAYS the authenticated user (req.user.id from
+// Self-service (POST /api/account/*): the account being changed is ALWAYS the authenticated user (req.user.id from
 // middleware/authenticate.js) - no target user id is ever accepted from the
 // browser. Only the credential columns are written; id, role, role_id, status,
 // permissions and company/branch assignments are never touched, so this can
@@ -76,8 +81,9 @@ function normalizeUsername(raw) {
   return username;
 }
 
-// Locks and returns the authenticated user's row, and confirms it is an ACTIVE
-// SUPER_ADMIN (re-checked here, not only in the route middleware).
+// Locks and returns the authenticated user's row, and confirms it is ACTIVE and
+// that its STORED role may change its own credentials (lib/credentialPolicy:
+// SUPER_ADMIN, plus ADMIN where enabled) - re-checked here, not only in the route.
 async function lockSelf(conn, userId) {
   const [rows] = await conn.execute(
     `SELECT u.id, u.username, u.password, u.status, u.role_id, r.code AS role_code
@@ -87,8 +93,27 @@ async function lockSelf(conn, userId) {
   );
   const user = rows[0];
   if (!user || user.status !== "ACTIVE") throw fail(401, "SESSION_INVALID", "Your session is no longer valid. Please log in again.");
-  if (user.role_code !== "SUPER_ADMIN") throw fail(403, "SUPER_ADMIN_REQUIRED", "Super Admin access required");
+  if (!CredentialPolicy.canChangeOwnCredentials(user.role_code)) {
+    throw fail(403, "CREDENTIAL_CHANGE_NOT_ALLOWED", "You are not allowed to change account credentials.");
+  }
   return user;
+}
+
+// Uniqueness follows the column's own collation (the same comparison the UNIQUE
+// key and the login lookup use). Also reserved: another account's e-mail and a
+// pending invitation's e-mail/username, because login accepts username OR e-mail
+// and an accepted invitation becomes a user with that username.
+async function assertUsernameAvailable(conn, username, userId) {
+  const [[taken]] = await conn.execute(
+    `SELECT
+       (SELECT COUNT(*) FROM users WHERE username = ? AND id <> ?) AS by_username,
+       (SELECT COUNT(*) FROM users WHERE email = ? AND id <> ?) AS by_email,
+       (SELECT COUNT(*) FROM invitations WHERE (email = ? OR username = ?) AND status = 'PENDING') AS by_invitation`,
+    [username, userId, username, userId, username, username]
+  );
+  if (Number(taken.by_username) || Number(taken.by_email) || Number(taken.by_invitation)) {
+    throw fail(409, "USERNAME_TAKEN", "That username is already in use.");
+  }
 }
 
 async function assertCurrentPassword(user, currentPassword) {
@@ -109,7 +134,7 @@ async function assertIdentityPreserved(conn, before) {
        FROM users u LEFT JOIN roles r ON r.id = u.role_id WHERE u.id = ?`,
     [before.id]
   );
-  if (!after || after.role_id !== before.role_id || after.status !== before.status || after.role_code !== "SUPER_ADMIN" || Number(after.active_super_admins) < 1) {
+  if (!after || after.role_id !== before.role_id || after.status !== before.status || after.role_code !== before.role_code || Number(after.active_super_admins) < 1) {
     throw fail(500, "IDENTITY_CHANGED", "The change could not be completed.");
   }
 }
@@ -182,20 +207,7 @@ async function changeUsername({ actingUser, body = {}, meta = {} }) {
     await assertCurrentPassword(user, currentPassword);
     const username = normalizeUsername(newUsername);
     if (username === user.username) throw fail(400, "USERNAME_UNCHANGED", "The new username is the same as the current one.");
-    // Uniqueness follows the column's own collation (the same comparison the
-    // UNIQUE key and the login lookup use). Also reserved: another account's
-    // e-mail and a pending invitation's e-mail, because an accepted invitation
-    // becomes a user whose username IS that e-mail.
-    const [[taken]] = await conn.execute(
-      `SELECT
-         (SELECT COUNT(*) FROM users WHERE username = ? AND id <> ?) AS by_username,
-         (SELECT COUNT(*) FROM users WHERE email = ? AND id <> ?) AS by_email,
-         (SELECT COUNT(*) FROM invitations WHERE (email = ? OR username = ?) AND status = 'PENDING') AS by_invitation`,
-      [username, user.id, username, user.id, username, username]
-    );
-    if (Number(taken.by_username) || Number(taken.by_email) || Number(taken.by_invitation)) {
-      throw fail(409, "USERNAME_TAKEN", "That username is already in use.");
-    }
+    await assertUsernameAvailable(conn, username, user.id);
     let result;
     try {
       [result] = await conn.execute(
@@ -231,12 +243,131 @@ async function changeUsername({ actingUser, body = {}, meta = {} }) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Administrative changes to ANOTHER user's credentials
+// (POST /api/users/:id/reset-password, POST /api/users/:id/change-username).
+// Only where lib/credentialPolicy enables them (ALAS). Who may change whom is
+// the existing User Settings manage scope (userService.assertCanManage):
+// SUPER_ADMIN -> anyone; ADMIN -> Accountants sharing a company (a SUPER_ADMIN
+// target is invisible = 404, a fellow ADMIN = 403); ACCOUNTANT -> no one.
+// Your own account always goes through Account Security (current password).
+// Only the credential column is written: role, status, company/branch
+// assignments, permission overrides and the lockout state are never touched.
+
+async function lockManagedTarget(conn, actingUser, targetId) {
+  if (!CredentialPolicy.canManageOthersCredentials(actingUser.roleCode)) {
+    throw fail(403, "CREDENTIAL_ADMIN_NOT_ALLOWED", "You are not allowed to manage user credentials.");
+  }
+  const id = Number(targetId);
+  if (!Number.isInteger(id) || id <= 0) throw fail(404, "USER_NOT_FOUND", "User not found");
+  if (id === Number(actingUser.id)) {
+    throw fail(400, "USE_ACCOUNT_SECURITY", "Change your own username or password in Account Security.");
+  }
+  // Scope first (same 404/403 answers as every other User List action) ...
+  const UserService = require("./userService");
+  const visible = await UserService.getUserOr404(id).catch((err) => {
+    throw err.statusCode === 404 ? fail(404, "USER_NOT_FOUND", "User not found") : err;
+  });
+  await UserService.assertCanManage(visible, actingUser).catch((err) => {
+    throw fail(err.statusCode || 403, err.statusCode === 404 ? "USER_NOT_FOUND" : "USER_NOT_MANAGEABLE", err.message);
+  });
+  // ... then lock the row and make sure the role did not change in between.
+  const [rows] = await conn.execute(
+    `SELECT u.id, u.username, u.password, u.status, u.role_id, r.code AS role_code
+       FROM users u LEFT JOIN roles r ON r.id = u.role_id WHERE u.id = ? FOR UPDATE`,
+    [id]
+  );
+  const target = rows[0];
+  if (!target || target.role_id !== visible.role_id) throw fail(409, "CREDENTIAL_CONFLICT", "The change could not be completed. Please try again.");
+  return target;
+}
+
+async function adminResetPassword({ actingUser, targetId, body = {}, meta = {} }) {
+  const { newPassword, confirmPassword } = body;
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const target = await lockManagedTarget(conn, actingUser, targetId);
+    validateNewPassword(newPassword, confirmPassword);
+    const hash = await bcrypt.hash(newPassword, BCRYPT_COST);
+    // token_version + 1 signs the user out everywhere (authenticate.js checks it
+    // on every request). Lockout counters are left alone - Unlock stays separate.
+    const [result] = await conn.execute(
+      "UPDATE users SET password = ?, token_version = token_version + 1 WHERE id = ? AND role_id = ? AND status = ?",
+      [hash, target.id, target.role_id, target.status]
+    );
+    if (result.affectedRows !== 1) throw fail(409, "CREDENTIAL_CONFLICT", "The change could not be completed. Please try again.");
+    await assertIdentityPreserved(conn, target);
+    await logAudit(conn, {
+      module: "USERS",
+      entityType: "USER",
+      entityId: target.id,
+      action: "PASSWORD_RESET",
+      description: `${actingUser.username} reset the password for ${target.username}; all of their sessions were signed out`,
+      user: actingUser,
+      companyId: await soleCompanyOfUser(conn, target.id),
+      ...meta,
+    });
+    await conn.commit();
+    return { id: target.id, username: target.username, sessionsRevoked: true };
+  } catch (err) {
+    await conn.rollback().catch(() => {});
+    throw err;
+  } finally {
+    conn.release();
+  }
+}
+
+async function adminChangeUsername({ actingUser, targetId, body = {}, meta = {} }) {
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const target = await lockManagedTarget(conn, actingUser, targetId);
+    const username = normalizeUsername(body.newUsername);
+    if (username === target.username) throw fail(400, "USERNAME_UNCHANGED", "The new username is the same as the current one.");
+    await assertUsernameAvailable(conn, username, target.id);
+    let result;
+    try {
+      [result] = await conn.execute(
+        "UPDATE users SET username = ? WHERE id = ? AND role_id = ? AND status = ?",
+        [username, target.id, target.role_id, target.status]
+      );
+    } catch (err) {
+      if (err.code === "ER_DUP_ENTRY") throw fail(409, "USERNAME_TAKEN", "That username is already in use.");
+      throw err;
+    }
+    if (result.affectedRows !== 1) throw fail(409, "CREDENTIAL_CONFLICT", "The change could not be completed. Please try again.");
+    await assertIdentityPreserved(conn, target);
+    await logAudit(conn, {
+      module: "USERS",
+      entityType: "USER",
+      entityId: target.id,
+      action: "USERNAME_CHANGED",
+      description: `${actingUser.username} changed the username of ${target.username} to ${username}`,
+      beforeData: { username: target.username },
+      afterData: { username },
+      user: actingUser,
+      companyId: await soleCompanyOfUser(conn, target.id),
+      ...meta,
+    });
+    await conn.commit();
+    return { id: target.id, username };
+  } catch (err) {
+    await conn.rollback().catch(() => {});
+    throw err;
+  } finally {
+    conn.release();
+  }
+}
+
 module.exports = {
   PASSWORD_MIN_LENGTH,
   PASSWORD_MAX_BYTES,
   USERNAME_RE,
   changePassword,
   changeUsername,
+  adminResetPassword,
+  adminChangeUsername,
   // exported for unit tests
   validateNewPassword,
   normalizeUsername,

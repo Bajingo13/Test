@@ -1,6 +1,7 @@
 const RoleService = require("../services/roleService");
 const PermissionService = require("../services/permissionService");
 const UserAccessService = require("../services/userAccessService");
+const CredentialPolicy = require("../lib/credentialPolicy");
 const pool = require("../db");
 
 exports.listRoles = async (req, res) => {
@@ -41,7 +42,9 @@ exports.updateRolePermissions = async (req, res) => {
 
 exports.getMyPermissions = async (req, res) => {
   try {
-    res.json(await PermissionService.getEffectivePermissions(req.user.id));
+    const effective = await PermissionService.getEffectivePermissions(req.user.id);
+    // What the credential forms may offer this role (the server re-checks).
+    res.json({ ...effective, credentialManagement: CredentialPolicy.capabilitiesFor(req.user.roleCode) });
   } catch (err) {
     console.error("GET MY PERMISSIONS ERROR:", err.message);
     res.status(err.statusCode || 500).json({ message: err.message || "Failed to load effective permissions" });

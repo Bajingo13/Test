@@ -412,6 +412,8 @@ module.exports = {
   updateUserStatus,
   unlockUser,
   revokeSessions,
+  getUserOr404,
+  assertCanManage,
   MANAGEABLE_ROLES_BY_ACTOR,
   ASSIGNABLE_ROLES_BY_ACTOR,
 };

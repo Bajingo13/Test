@@ -1,5 +1,7 @@
 const UserService = require("../services/userService");
 const RestrictionService = require("../services/restrictionService");
+const AccountCredentialService = require("../services/accountCredentialService");
+const { requestMeta } = require("../lib/audit");
 
 exports.listUsers = async (req, res) => {
   try {
@@ -53,6 +55,32 @@ exports.revokeSessions = async (req, res) => {
   } catch (err) {
     console.error("REVOKE SESSIONS ERROR:", err.message);
     res.status(err.statusCode || 500).json({ message: err.message || "Failed to revoke sessions" });
+  }
+};
+
+// Administrative credential changes. Responses carry only a fixed message +
+// code - never the submitted password, a hash or a token.
+function sendCredentialError(res, err, label) {
+  if (err.statusCode && err.statusCode < 500) return res.status(err.statusCode).json({ message: err.message, code: err.code });
+  console.error(`${label} ERROR:`, err.code || err.message);
+  return res.status(500).json({ message: "The change could not be completed.", code: "SERVER_ERROR" });
+}
+
+exports.resetPassword = async (req, res) => {
+  try {
+    const r = await AccountCredentialService.adminResetPassword({ actingUser: req.user, targetId: req.params.id, body: req.body, meta: requestMeta(req) });
+    res.json({ success: true, ...r, message: `Password reset for ${r.username}. They have been signed out and must use the new password.` });
+  } catch (err) {
+    sendCredentialError(res, err, "RESET USER PASSWORD");
+  }
+};
+
+exports.changeUsername = async (req, res) => {
+  try {
+    const r = await AccountCredentialService.adminChangeUsername({ actingUser: req.user, targetId: req.params.id, body: req.body, meta: requestMeta(req) });
+    res.json({ success: true, ...r, message: `Username changed to ${r.username}.` });
+  } catch (err) {
+    sendCredentialError(res, err, "CHANGE USER USERNAME");
   }
 };
 
