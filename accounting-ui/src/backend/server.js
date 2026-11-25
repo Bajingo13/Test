@@ -40,9 +40,10 @@ const ArOverdueAccountsService = require("./services/ArOverdueAccountsService");
 const ApListOfPayablesPaymentsService = require("./services/ApListOfPayablesPaymentsService");
 const ApOverdueAccountsService = require("./services/ApOverdueAccountsService");
 const FixedAssetLapsingService = require("./services/FixedAssetLapsingService");
-const { buildXlsxTemplate } = require("./services/TemplateExportService");
+const { buildXlsxTemplate, buildMultiSheetXlsxTemplate } = require("./services/TemplateExportService");
 const { templateImportUpload, coaImportUpload, handleUpload } = require("./lib/uploadMiddleware");
 const COAImportService = require("./services/COAImportService");
+const ImportBranchResolver = require("./services/importBranchResolver");
 const GroupCodeImportService = require("./services/GroupCodeImportService");
 const GenLibImportService = require("./services/GenLibImportService");
 const GLBeginningBalanceService = require("./services/GLBeginningBalanceService");
@@ -557,10 +558,33 @@ app.delete("/api/genlib/:id", authenticateToken, authorizePermission("FILESETUP.
   }
 });
 
+// Branches the template's "Branches" sheet lists: those of the request's
+// company when it resolves, otherwise of every company the user belongs to.
+async function templateOwnerBranches(req, { companyScoped }) {
+  let companyId = null;
+  if (companyScoped) {
+    try {
+      companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.query.companyId);
+    } catch {
+      companyId = null;
+    }
+  }
+  return ImportBranchResolver.templateBranchRows(req.user, { companyId });
+}
+
+const OWNING_BRANCH_INSTRUCTIONS = (recordLabel) => [
+  `Owning Branch is optional. Leave it blank (or type SHARED) for a shared ${recordLabel} that every branch of the company can use - this is the default and how every earlier import worked.`,
+  `To create a branch-only ${recordLabel}, enter a Branch Code from the 'Branches' sheet. Only ACTIVE branches you are authorized for are accepted; an unknown, inactive, unauthorized or ambiguous branch skips the row with the reason.`,
+  "A blank Owning Branch is never assigned to a branch automatically, even when the company has only one branch.",
+  "The preview shows where every row will go (Shared or the branch code) before anything is saved.",
+];
+
 app.get("/api/genlib/template", authenticateToken, authorizePermission("FILESETUP.GENLIB", "VIEW"), async (req, res) => {
   try {
-    const buffer = await buildXlsxTemplate({
-      sheetName: "General Libraries",
+    const branches = await templateOwnerBranches(req, { companyScoped: true });
+    const buffer = await buildMultiSheetXlsxTemplate({ sheets: [{
+      type: "import",
+      name: "General Libraries",
       columns: [
         { key: "code", header: "Code", width: 14 },
         { key: "type", header: "Type", width: 14 },
@@ -580,11 +604,12 @@ app.get("/api/genlib/template", authenticateToken, authorizePermission("FILESETU
         { key: "atcCode", header: "ATC Code", width: 12 },
         { key: "ewtCode", header: "EWT Code", width: 12 },
         { key: "category", header: "Category", width: 14 },
-        { key: "branchCode", header: "Branch Code", width: 14 },
+        { key: "branchCode", header: "Branch Code", width: 14, note: "The party's BIR / TIN branch code (e.g. 000). Not the branch that owns the record - see Owning Branch." },
         { key: "rdoCode", header: "RDO Code", width: 12 },
         { key: "notes", header: "Notes", width: 24 },
         { key: "isProspective", header: "Is Prospective", width: 14, note: "YES or NO" },
         { key: "isClient", header: "Is Client", width: 12, note: "YES or NO" },
+        { key: "owningBranch", header: "Owning Branch", width: 16, note: "Optional. Blank or SHARED = shared by every branch. Or a Branch Code from the 'Branches' sheet for a branch-only record." },
       ],
       sampleRow: {
         code: "CUST-001",
@@ -596,6 +621,7 @@ app.get("/api/genlib/template", authenticateToken, authorizePermission("FILESETU
         category: "REGULAR",
         isProspective: "NO",
         isClient: "YES",
+        owningBranch: "",
       },
       dropdowns: {
         type: GenLibImportService.PARTY_TYPES,
@@ -604,7 +630,30 @@ app.get("/api/genlib/template", authenticateToken, authorizePermission("FILESETU
         isProspective: ["YES", "NO"],
         isClient: ["YES", "NO"],
       },
-    });
+    }, {
+      type: "reference",
+      name: "Branches",
+      columns: [
+        { key: "code", header: "Branch Code", width: 18 },
+        { key: "name", header: "Branch Name", width: 30 },
+        { key: "company", header: "Company", width: 30 },
+      ],
+      rows: [{ code: ImportBranchResolver.SHARED_KEYWORD, name: "Shared by every branch (default)", company: "" }, ...branches],
+    }, {
+      type: "instructions",
+      name: "Instructions",
+      title: "General Libraries Import Template",
+      meta: [`Generated ${new Date().toISOString().slice(0, 10)}. The Branches sheet lists the active branches you may assign at that time.`],
+      sections: [
+        { heading: "How the import works", body: [
+          "Only the first sheet ('General Libraries') is read. Code, Type and Name are required.",
+          "The grey sample row is an example - delete it before importing, or it is imported like any other row.",
+          "Codes are unique within the company. Existing codes are never overwritten; they are skipped with a reason.",
+          "You see a preview first; nothing is saved until you confirm.",
+        ] },
+        { heading: "Owning Branch", body: OWNING_BRANCH_INSTRUCTIONS("party") },
+      ],
+    }] });
 
     res.setHeader(
       "Content-Type",
@@ -629,7 +678,17 @@ async function parseGenLibImportFile(req, res) {
     res.status(400).json({ message: "No file uploaded" });
     return null;
   }
-  const parsed = await GenLibImportService.parseAndValidateRows(req.file.buffer, req.file.originalname);
+  // The import's company - resolved BEFORE validation (preview and confirm
+  // alike) so existing codes and Owning Branch are checked within it.
+  let companyId;
+  try {
+    companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.body?.companyId || req.query.companyId);
+  } catch (err) {
+    res.status(err.statusCode || 400).json({ message: err.message, code: err.code });
+    return null;
+  }
+  const parsed = await GenLibImportService.parseAndValidateRows(req.file.buffer, req.file.originalname, { companyId, user: req.user });
+  parsed.companyId = companyId;
   if (parsed.headers.length === 0) {
     res.status(400).json({ message: "The file appears to be empty" });
     return null;
@@ -650,12 +709,15 @@ app.post(
     try {
       const parsed = await parseGenLibImportFile(req, res);
       if (!parsed) return;
-      const { ready, skipped, warnings } = parsed;
+      const { ready, skipped, warnings, hasOwnerColumn } = parsed;
       res.json({
         success: true,
         totalRows: ready.length + skipped.length,
         readyCount: ready.length,
-        ready: ready.map((r) => ({ row: r.row, code: r.code, name: r.name, type: r.type, status: r.status })),
+        // owningBranch only when the file has the Owning Branch column, so a
+        // legacy file's preview is exactly what it was.
+        ready: ready.map((r) => ({ row: r.row, code: r.code, name: r.name, type: r.type, status: r.status, ...(hasOwnerColumn ? { owningBranch: r.owningBranchLabel } : {}) })),
+        ...(hasOwnerColumn ? { ownership: ImportBranchResolver.ownershipSummary(ready) } : {}),
         skipped,
         warnings,
       });
@@ -675,9 +737,8 @@ app.post(
     try {
       const parsed = await parseGenLibImportFile(req, res);
       if (!parsed) return;
-      const { ready, skipped, warnings } = parsed;
+      const { ready, skipped, warnings, companyId } = parsed;
 
-      const companyId = await CurrencyService.resolveCompanyIdForWrite(req.user, req.body?.companyId);
       let imported;
       try {
         imported = await GenLibImportService.insertGenLibRows(ready, companyId);
@@ -1007,8 +1068,10 @@ app.delete("/api/coa/:id", authenticateToken, authorizePermission("FILESETUP.COA
 
 app.get("/api/coa/template", authenticateToken, authorizePermission("FILESETUP.COA", "VIEW"), async (req, res) => {
   try {
-    const buffer = await buildXlsxTemplate({
-      sheetName: "Chart of Accounts",
+    const branches = await templateOwnerBranches(req, { companyScoped: false });
+    const buffer = await buildMultiSheetXlsxTemplate({ sheets: [{
+      type: "import",
+      name: "Chart of Accounts",
       columns: [
         { key: "code", header: "Code", width: 14 },
         { key: "date", header: "Date", width: 14, note: "Format: YYYY-MM-DD. Leave blank to default to today." },
@@ -1022,6 +1085,7 @@ app.get("/api/coa/template", authenticateToken, authorizePermission("FILESETUP.C
           note: `Semicolon-separated. Valid values: ${COAImportService.VALIDATION_OPTIONS.join("; ")}`,
         },
         { key: "groups", header: "Group Codes", width: 20, note: "Semicolon-separated group codes (see Group Codes setup)." },
+        { key: "owningBranch", header: "Owning Branch", width: 16, note: "Optional. Blank or SHARED = shared account (every branch). Or a Branch Code from the 'Branches' sheet for a branch-only account." },
       ],
       sampleRow: {
         code: "1010",
@@ -1031,11 +1095,36 @@ app.get("/api/coa/template", authenticateToken, authorizePermission("FILESETUP.C
         description: "Petty cash fund",
         validations: "BANK / CASH",
         groups: "",
+        owningBranch: "",
       },
       dropdowns: {
         accountClass: COAImportService.CLASS_OPTIONS,
       },
-    });
+    }, {
+      type: "reference",
+      name: "Branches",
+      columns: [
+        { key: "code", header: "Branch Code", width: 18 },
+        { key: "name", header: "Branch Name", width: 30 },
+        { key: "company", header: "Company", width: 30 },
+      ],
+      rows: [{ code: ImportBranchResolver.SHARED_KEYWORD, name: "Shared by every branch (default)", company: "" }, ...branches],
+    }, {
+      type: "instructions",
+      name: "Instructions",
+      title: "Chart of Accounts Import Template",
+      meta: [`Generated ${new Date().toISOString().slice(0, 10)}. The Branches sheet lists the active branches you may assign at that time.`],
+      sections: [
+        { heading: "How the import works", body: [
+          "Only the first sheet ('Chart of Accounts') is read. Code and Title are required; Account Class must be ASSET, LIABILITY, EQUITY, INCOME or EXPENSE.",
+          "The grey sample row is an example - delete it before importing, or it is imported like any other row.",
+          "Existing accounts are never overwritten; a code that already exists is skipped with the reason.",
+          "The same code may be used by branch-only accounts of different branches (same Account Class); a shared code cannot be reused by a branch and vice versa.",
+          "You see a preview first; nothing is saved until you confirm. Rows are listed by Account Code on the Chart of Accounts screen, not in file order.",
+        ] },
+        { heading: "Owning Branch", body: OWNING_BRANCH_INSTRUCTIONS("account") },
+      ],
+    }] });
 
     res.setHeader(
       "Content-Type",
@@ -1068,8 +1157,8 @@ app.post(
         return res.status(400).json({ message: "No file uploaded" });
       }
 
-      const { headers, ready, skipped, warnings, missingRequiredColumns } =
-        await COAImportService.parseAndValidateRows(req.file.buffer, req.file.originalname);
+      const { headers, ready, skipped, warnings, missingRequiredColumns, hasOwnerColumn } =
+        await COAImportService.parseAndValidateRows(req.file.buffer, req.file.originalname, { user: req.user });
 
       if (headers.length === 0) {
         return res.status(400).json({ message: "The file appears to be empty" });
@@ -1088,6 +1177,13 @@ app.post(
         readyCount: ready.length,
         skipped,
         warnings,
+        // Owning Branch column present: show where every ready row will go.
+        ...(hasOwnerColumn
+          ? {
+              ownership: ImportBranchResolver.ownershipSummary(ready),
+              ready: ready.map((r) => ({ row: r.rowNum, code: r.code, title: r.title, accountClass: r.accountClass, owningBranch: r.owningBranchLabel })),
+            }
+          : {}),
       });
     } catch (err) {
       console.error("COA IMPORT PREVIEW ERROR:", err);
@@ -1108,7 +1204,7 @@ app.post(
       }
 
       const { headers, ready, skipped, warnings, missingRequiredColumns } =
-        await COAImportService.parseAndValidateRows(req.file.buffer, req.file.originalname);
+        await COAImportService.parseAndValidateRows(req.file.buffer, req.file.originalname, { user: req.user });
 
       if (headers.length === 0) {
         return res.status(400).json({ message: "The file appears to be empty" });
@@ -1130,7 +1226,10 @@ app.post(
         // error stays server-side; the user gets an accurate, actionable
         // summary instead of a raw DB/library message.
         console.error("COA IMPORT - BATCH INSERT FAILED, ROLLED BACK:", insertErr);
-        return res.status(500).json({
+        // A code rule hit inside the transaction (another user created a
+        // conflicting code after validation) is a 409, not a server fault.
+        const conflict = insertErr && (insertErr.statusCode === 409 || insertErr.code === "ER_DUP_ENTRY");
+        return res.status(conflict && insertErr.statusCode === 409 ? 409 : 500).json({
           success: false,
           message: "Import failed and was rolled back. No accounts were imported from this file. Please try again.",
           skipped,

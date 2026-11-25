@@ -892,6 +892,26 @@ export default function COA() {
                     No accounts have been created yet. Review the rows below, then confirm to import.
                   </p>
 
+                  {/* Owning Branch column present: where each ready row will go. */}
+                  {previewResult.ownership?.length > 0 && (
+                    <p className="import-ownership-summary" data-testid="coa-import-ownership">
+                      Owning branch:{" "}
+                      {previewResult.ownership.map((o, i) => (
+                        <span key={o.owner}>{i > 0 ? ", " : ""}<strong>{o.owner}</strong> {o.count}</span>
+                      ))}
+                    </p>
+                  )}
+                  {previewResult.ready?.length > 0 && (
+                    <div className="coa-import-preview-section">
+                      <h4>Ready to import ({previewResult.ready.length})</h4>
+                      <ul className="coa-import-preview-list" tabIndex={0} aria-label="Ready to import">
+                        {previewResult.ready.map((r) => (
+                          <li key={r.row}>Row {r.row}: {r.code} {r.title} ({r.accountClass}) &rarr; {r.owningBranch}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
                   {previewResult.skipped?.length > 0 && (
                     <div className="coa-import-preview-section">
                       <h4>Skipped rows ({previewResult.skipped.length})</h4>

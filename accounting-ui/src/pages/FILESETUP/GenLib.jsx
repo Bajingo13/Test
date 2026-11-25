@@ -886,13 +886,23 @@ export default function GenLib() {
                   </p>
                   <p className="rtm-hint">Nothing has been saved yet. Review the rows below, then confirm to import.</p>
 
+                  {/* Owning Branch column present: where each ready row will go. */}
+                  {importPreview.ownership?.length > 0 && (
+                    <p className="import-ownership-summary" data-testid="genlib-import-ownership">
+                      Owning branch:{" "}
+                      {importPreview.ownership.map((o, i) => (
+                        <span key={o.owner}>{i > 0 ? ", " : ""}<strong>{o.owner}</strong> {o.count}</span>
+                      ))}
+                    </p>
+                  )}
+
                   {importPreview.ready?.length > 0 && (
                     <div className="gl-import-section">
                       <h4>Ready to import ({importPreview.ready.length})</h4>
                       <ul className="gl-import-list" tabIndex={0} aria-label="Ready to import">
                         {importPreview.ready.map((r) => (
                           <li key={r.row}>
-                            Row {r.row} | {r.code} | {r.name} ({r.type}, {r.status})
+                            Row {r.row} | {r.code} | {r.name} ({r.type}, {r.status}){r.owningBranch ? ` → ${r.owningBranch}` : ""}
                           </li>
                         ))}
                       </ul>

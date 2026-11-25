@@ -5,6 +5,36 @@ const {
   parseCsvRows,
   parseStatementDate,
 } = require("./StatementImportService");
+const { OWNING_BRANCH_ALIASES, buildOwningBranchResolver } = require("./importBranchResolver");
+const { assertCoaCodeAllowed } = require("./coaLookupService");
+
+// Phase B code rules (coaLookupService.assertCoaCodeAllowed), applied to the
+// whole file before anything is written. `taken` = existing accounts plus the
+// rows of this file already accepted ({ branchId, accountClass, inFile }).
+// Returns the refusal reason, or null when the row may be created. The
+// de8b06a reason texts are kept for the shared (legacy) cases.
+function coaCodeRefusal(code, branchId, accountClass, taken) {
+  if (branchId === null) {
+    if (taken.some((t) => t.branchId === null)) {
+      return taken.some((t) => t.branchId === null && t.inFile)
+        ? `Code "${code}" is a duplicate of another row in this file`
+        : `Code "${code}" already exists`;
+    }
+    if (taken.length) return `Code "${code}" is already used by a branch account; a shared account cannot reuse it`;
+    return null;
+  }
+  if (taken.some((t) => t.branchId === null)) return `Code "${code}" is a shared account; a branch account cannot reuse it`;
+  const same = taken.filter((t) => t.branchId === branchId);
+  if (same.length) {
+    return same.some((t) => t.inFile)
+      ? `Code "${code}" is a duplicate of another row in this file`
+      : `Code "${code}" already exists in this branch`;
+  }
+  if (taken.some((t) => String(t.accountClass).toUpperCase() !== accountClass)) {
+    return `Code "${code}" is used by another branch with a different account class; branches sharing a code must use the same class`;
+  }
+  return null; // the same code in another branch, same class - allowed (Phase B)
+}
 
 const CLASS_OPTIONS = ["ASSET", "LIABILITY", "EQUITY", "INCOME", "EXPENSE"];
 
@@ -42,6 +72,7 @@ const COA_FIELD_ALIASES = {
   description: ["description", "desc", "particulars"],
   validations: ["validations", "validation", "tags"],
   groups: ["group codes", "groups", "group code"],
+  owningBranch: OWNING_BRANCH_ALIASES,
 };
 
 function normalizeHeaderKey(header) {
@@ -84,7 +115,12 @@ function splitTokens(value) {
 // warnings (soft issue that doesn't block the row, e.g. an unrecognized
 // validation token that just gets dropped). Never overwrites an existing
 // account code - bulk import only ever adds new accounts.
-async function parseAndValidateRows(buffer, filename) {
+//
+// Post-File-Setup: an optional "Owning Branch" column assigns branch-only
+// accounts (importBranchResolver). Without the column every row is a shared
+// account exactly as before. `user` is required only when the column is
+// present (authority over the branch is re-checked on confirm as well).
+async function parseAndValidateRows(buffer, filename, { user = null } = {}) {
   const { headers, dataRows } = await extractRows(buffer, filename);
 
   if (headers.length === 0) {
@@ -105,8 +141,17 @@ async function parseAndValidateRows(buffer, filename) {
   // failure this checkpoint fixes. Comparison is normalized to uppercase;
   // the ORIGINAL casing the user typed is still what gets stored - this
   // never rewrites a code, only how two codes are compared for sameness.
-  const [existingRows] = await pool.execute("SELECT code FROM chart_of_accounts");
-  const existingCodesUpper = new Set(existingRows.map((r) => String(r.code).trim().toUpperCase()));
+  const [existingRows] = await pool.execute("SELECT code, branch_id, account_class FROM chart_of_accounts");
+  const takenByCode = new Map(); // upper-cased code -> [{ branchId, accountClass, inFile }]
+  for (const r of existingRows) {
+    const k = String(r.code).trim().toUpperCase();
+    if (!takenByCode.has(k)) takenByCode.set(k, []);
+    takenByCode.get(k).push({ branchId: r.branch_id === null ? null : Number(r.branch_id), accountClass: r.account_class, inFile: false });
+  }
+  const hasOwnerColumn = mapping.owningBranch !== undefined;
+  const owner = hasOwnerColumn
+    ? await buildOwningBranchResolver(user, { companyId: null })
+    : { resolve: () => ({ ok: true, branchId: null, label: "Shared" }) };
 
   const [groupRows] = await pool.execute(
     "SELECT group_code, group_description FROM account_group_codes"
@@ -116,7 +161,6 @@ async function parseAndValidateRows(buffer, filename) {
   const ready = [];
   const skipped = [];
   const warnings = [];
-  const seenInFileUpper = new Set();
 
   dataRows.forEach((rowValues, idx) => {
     const rowNum = idx + 2; // +1 for header row, +1 for 1-indexing
@@ -140,13 +184,14 @@ async function parseAndValidateRows(buffer, filename) {
     }
 
     const codeUpper = code.toUpperCase();
-    if (existingCodesUpper.has(codeUpper)) {
-      skipped.push({ row: rowNum, reason: `Code "${code}" already exists` });
-      return;
-    }
-    if (seenInFileUpper.has(codeUpper)) {
-      skipped.push({ row: rowNum, reason: `Code "${code}" is a duplicate of another row in this file` });
-      return;
+    const taken = takenByCode.get(codeUpper) || [];
+    const ownerResult = owner.resolve(get("owningBranch"));
+    const branchId = ownerResult.ok ? ownerResult.branchId : null;
+
+    // Shared rows keep the de8b06a order (code checks before class).
+    if (ownerResult.ok && branchId === null) {
+      const refusal = coaCodeRefusal(code, null, null, taken);
+      if (refusal) { skipped.push({ row: rowNum, reason: refusal }); return; }
     }
 
     let accountClass = get("accountClass") != null ? String(get("accountClass")).trim().toUpperCase() : "";
@@ -156,6 +201,12 @@ async function parseAndValidateRows(buffer, filename) {
         reason: `Account Class must be one of: ${CLASS_OPTIONS.join(", ")}`,
       });
       return;
+    }
+
+    if (!ownerResult.ok) { skipped.push({ row: rowNum, reason: ownerResult.reason }); return; }
+    if (branchId !== null) {
+      const refusal = coaCodeRefusal(code, branchId, accountClass, taken);
+      if (refusal) { skipped.push({ row: rowNum, reason: refusal }); return; }
     }
 
     const date = parseStatementDate(get("date")) || new Date().toISOString().slice(0, 10);
@@ -183,11 +234,12 @@ async function parseAndValidateRows(buffer, filename) {
       }
     }
 
-    seenInFileUpper.add(codeUpper);
-    ready.push({ code, date, title, accountClass, description, validations, groups });
+    if (!takenByCode.has(codeUpper)) takenByCode.set(codeUpper, []);
+    takenByCode.get(codeUpper).push({ branchId, accountClass, inFile: true });
+    ready.push({ rowNum, code, date, title, accountClass, description, validations, groups, branchId, owningBranchLabel: ownerResult.label });
   });
 
-  return { headers, mapping, ready, skipped, warnings };
+  return { headers, mapping, ready, skipped, warnings, hasOwnerColumn };
 }
 
 // Checkpoint (COA import reliability audit): ALL rows in one request now
@@ -208,10 +260,14 @@ async function insertCOARows(rows, syncBankCodeForAccount) {
     await conn.beginTransaction();
 
     for (const row of rows) {
+      const branchId = row.branchId ?? null;
+      // Phase B rules again inside the transaction (locking read): a code
+      // another user created after validation rolls the whole batch back.
+      await assertCoaCodeAllowed(conn, { code: row.code, branchId, accountClass: row.accountClass });
       const [result] = await conn.execute(
-        `INSERT INTO chart_of_accounts (code, account_date, title, account_class, description)
-         VALUES (?, ?, ?, ?, ?)`,
-        [row.code, row.date, row.title, row.accountClass, row.description]
+        `INSERT INTO chart_of_accounts (code, account_date, title, account_class, description, branch_id)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [row.code, row.date, row.title, row.accountClass, row.description, branchId]
       );
 
       const coaId = result.insertId;

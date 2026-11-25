@@ -5,6 +5,7 @@ const {
   parseCsvRows,
   parseStatementDate,
 } = require("./StatementImportService");
+const { OWNING_BRANCH_ALIASES, buildOwningBranchResolver } = require("./importBranchResolver");
 
 const PARTY_TYPES = ["CUSTOMER", "SUPPLIER", "EMPLOYEE", "AFFILIATE", "BRANCH", "OTHER"];
 const STATUS_OPTIONS = ["ACTIVE", "INACTIVE"];
@@ -34,6 +35,9 @@ const GENLIB_FIELD_ALIASES = {
   notes: ["notes", "remarks"],
   isProspective: ["is prospective", "prospective"],
   isClient: ["is client", "client"],
+  // Organizational owner (shared or one branch of the company). NOT the
+  // party's BIR "Branch Code" above, which stays a plain text field.
+  owningBranch: OWNING_BRANCH_ALIASES,
 };
 
 function normalizeHeaderKey(header) {
@@ -82,10 +86,17 @@ const TEXT_FIELDS = [
 // Read-only: used by BOTH the preview and the confirm request. Confirm calls
 // it again on the resubmitted file, so it always validates against the
 // database as it is at write time (a preview result is never trusted).
-// general_libraries.code is UNIQUE across all companies and the column
-// collation is case-insensitive, so existing / in-file duplicates are
-// compared case-insensitively - exactly what the INSERT would reject.
-async function parseAndValidateRows(buffer, filename) {
+// Since Multi-Branch Phase B general_libraries.code is UNIQUE per COMPANY
+// (uq_genlib_company_code) and the collation is case-insensitive, so existing
+// / in-file duplicates are compared case-insensitively within `companyId` -
+// exactly what the INSERT would reject. (de8b06a compared against every
+// company's codes: a code used only by ANOTHER company was wrongly refused as
+// "already exists", which also disclosed that company's code.)
+//
+// Post-File-Setup: optional "Owning Branch" column - shared (blank / SHARED)
+// or one branch of `companyId` (importBranchResolver). Without the column
+// every row is shared, exactly as before.
+async function parseAndValidateRows(buffer, filename, { companyId = null, user = null } = {}) {
   const { headers, dataRows } = await extractRows(buffer, filename);
 
   if (headers.length === 0) {
@@ -98,9 +109,15 @@ async function parseAndValidateRows(buffer, filename) {
     return { headers, mapping, ready: [], skipped: [], warnings: [], missingRequiredColumns: true };
   }
 
-  const [existingRows] = await pool.execute("SELECT code FROM general_libraries");
+  const [existingRows] = companyId
+    ? await pool.execute("SELECT code FROM general_libraries WHERE company_id = ?", [companyId])
+    : await pool.execute("SELECT code FROM general_libraries");
   const codeKey = (c) => String(c).trim().toLowerCase();
   const existingCodes = new Set(existingRows.map((r) => codeKey(r.code)));
+  const hasOwnerColumn = mapping.owningBranch !== undefined;
+  const owner = hasOwnerColumn
+    ? await buildOwningBranchResolver(user, { companyId })
+    : { resolve: () => ({ ok: true, branchId: null, label: "Shared" }) };
 
   const ready = [];
   const skipped = [];
@@ -136,6 +153,12 @@ async function parseAndValidateRows(buffer, filename) {
       return;
     }
 
+    const ownerResult = owner.resolve(get("owningBranch"));
+    if (!ownerResult.ok) {
+      skipped.push({ row: rowNum, code, reason: ownerResult.reason });
+      return;
+    }
+
     const rawStatus = get("status") != null ? String(get("status")).trim().toUpperCase() : "ACTIVE";
     const status = STATUS_OPTIONS.includes(rawStatus) ? rawStatus : "ACTIVE";
     if (get("status") && !STATUS_OPTIONS.includes(rawStatus)) {
@@ -163,6 +186,8 @@ async function parseAndValidateRows(buffer, filename) {
       category,
       isProspective: parseBoolean(get("isProspective")),
       isClient: parseBoolean(get("isClient")),
+      branchId: ownerResult.branchId,
+      owningBranchLabel: ownerResult.label,
     };
 
     for (const field of TEXT_FIELDS) {
@@ -173,7 +198,7 @@ async function parseAndValidateRows(buffer, filename) {
     ready.push(record);
   });
 
-  return { headers, mapping, ready, skipped, warnings };
+  return { headers, mapping, ready, skipped, warnings, hasOwnerColumn };
 }
 
 // All ready rows in ONE transaction (same pattern as COA / Group Codes
@@ -194,8 +219,8 @@ async function insertGenLibRows(rows, companyId) {
           address1, address2, address3, attention, position,
           telephone, fax, mobile, tin, email,
           atc_code, ewt_code, category, branch_code, rdo_code,
-          notes, is_prospective, is_client
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          notes, is_prospective, is_client, branch_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           companyId,
           item.code,
@@ -221,6 +246,7 @@ async function insertGenLibRows(rows, companyId) {
           item.notes,
           item.isProspective ? 1 : 0,
           item.isClient ? 1 : 0,
+          item.branchId ?? null,
         ]
       );
       imported++;
