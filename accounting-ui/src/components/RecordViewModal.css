@@ -58,7 +58,10 @@
   color: var(--text-secondary);
 }
 
-.rvm-filter input {
+/* Selects (Sort, Type, Status) get the same themed control as the date
+   inputs - unstyled they stayed white in dark mode. */
+.rvm-filter input,
+.rvm-filter select {
   box-sizing: border-box;
   height: 36px;
   border: 1px solid var(--border-color-strong);

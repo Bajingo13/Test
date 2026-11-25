@@ -176,8 +176,9 @@ export default function COA() {
     });
   }, [accounts, search, dateFrom, dateTo]);
 
-  // H9: the View dialog lists accounts in account-code order. Client-side
-  // only - the API order and the list Previous / Next walk are unchanged.
+  // The View dialog lists accounts in the selected order (default account
+  // code, natural); `accounts` - which Previous / Next walk - is kept in the
+  // same order. Client-side only: the API order is unchanged.
   const viewAccounts = useMemo(() => sortRecords(filteredAccounts, sortKey).map((a) => ({ ...a, branchName: ownershipLabel(a, branches) })), [filteredAccounts, branches, sortKey]);
 
   const currentIndex = accounts.findIndex((item) => item.id === selectedId);
