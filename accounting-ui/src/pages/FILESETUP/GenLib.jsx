@@ -4,7 +4,7 @@ import { authHeaders, handleAuthError } from "../../utils/authSession";
 import usePermissions from "../../hooks/usePermissions";
 import RecordViewModal from "../../components/RecordViewModal";
 import AutoResizeTextarea from "../../components/AutoResizeTextarea";
-import { filterGenLibRecords, statusBadge, toolbarState } from "./fileSetupRecords.mjs";
+import { DEFAULT_SORT, filterGenLibRecords, sortOptions, sortRecords, statusBadge, toolbarState } from "./fileSetupRecords.mjs";
 import useAuthorizedBranches from "../../hooks/useAuthorizedBranches";
 import { ownershipLabel, ownershipOptions, ownershipValue, branchIdPayload } from "./branchOwnership.mjs";
 import "./GenLib.css";
@@ -70,6 +70,9 @@ export default function GenLib() {
   const [loading, setLoading] = useState(false);
   const [typeFilter, setTypeFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
+  // Display order (default Code ascending, natural). `records` is kept in this
+  // order, so Previous / Next and the record opened first follow it.
+  const [sortKey, setSortKey] = useState(DEFAULT_SORT);
   const importInputRef = useRef(null);
 
   // Import is preview -> confirm (same flow as COA / Group Codes): choosing a
@@ -89,7 +92,13 @@ export default function GenLib() {
     loadRecords();
   }, []);
 
-  async function loadRecords() {
+  useEffect(() => {
+    setRecords((prev) => sortRecords(prev, sortKey, { titleField: "name" }));
+  }, [sortKey]);
+
+  // keepId: the record to stay on after a save (otherwise the first record in
+  // display order).
+  async function loadRecords(keepId = null) {
     try {
       setLoading(true);
 
@@ -106,11 +115,13 @@ export default function GenLib() {
         return;
       }
 
-      setRecords(data);
+      const ordered = sortRecords(data, sortKey, { titleField: "name" });
+      setRecords(ordered);
 
-      if (data.length > 0) {
-        setSelectedId(data[0].id);
-        setForm({ ...data[0] });
+      if (ordered.length > 0) {
+        const first = ordered.find((r) => keepId !== null && Number(r.id) === Number(keepId)) || ordered[0];
+        setSelectedId(first.id);
+        setForm({ ...first });
       } else {
         setSelectedId(null);
         setForm({ ...EMPTY_FORM });
@@ -126,8 +137,8 @@ export default function GenLib() {
   // H7: search (code, name, type, email, mobile, telephone, TIN, category,
   // status) plus exact Party Type / Status filters - all client-side.
   const filteredRecords = useMemo(
-    () => filterGenLibRecords(records, { search, type: typeFilter, status: statusFilter }),
-    [records, search, typeFilter, statusFilter]
+    () => sortRecords(filterGenLibRecords(records, { search, type: typeFilter, status: statusFilter }), sortKey, { titleField: "name" }),
+    [records, search, typeFilter, statusFilter, sortKey]
   );
 
   const currentIndex = records.findIndex((item) => item.id === selectedId);
@@ -259,7 +270,7 @@ export default function GenLib() {
       }
 
       alert(data.message || "Record saved successfully");
-      await loadRecords();
+      await loadRecords(data.id || form.id || null);
       setMode("view");
     } catch (error) {
       console.error("SAVE GENLIB ERROR:", error);
@@ -464,6 +475,14 @@ export default function GenLib() {
             searchPlaceholder="Search code, name, TIN, phone, email..."
             filters={
               <>
+                <label className="rvm-filter">
+                  Sort
+                  <select value={sortKey} onChange={(e) => setSortKey(e.target.value)} aria-label="Sort records" data-testid="genlib-sort">
+                    {sortOptions("Name").map((o) => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
+                  </select>
+                </label>
                 <label className="rvm-filter">
                   Type
                   <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} aria-label="Filter by party type">

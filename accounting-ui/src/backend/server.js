@@ -349,7 +349,8 @@ app.get("/api/genlib", authenticateToken, authorizePermission("FILESETUP.GENLIB"
         rdo_code AS rdoCode,
         notes,
         is_prospective AS isProspective,
-        is_client AS isClient
+        is_client AS isClient,
+        DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS createdAt
       FROM general_libraries
       WHERE company_id = ? AND ${BranchResolution.setupVisibilitySql("general_libraries", visibleBranchIds)}
       ORDER BY id DESC
@@ -810,7 +811,8 @@ app.get("/api/coa", authenticateToken, authorizePermission("FILESETUP.COA", "VIE
         title,
         account_class AS accountClass,
         description,
-        branch_id AS branchId
+        branch_id AS branchId,
+        DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS createdAt
       FROM chart_of_accounts
       WHERE ${BranchResolution.setupVisibilitySql("chart_of_accounts", visibleBranchIds)}
       ORDER BY id DESC

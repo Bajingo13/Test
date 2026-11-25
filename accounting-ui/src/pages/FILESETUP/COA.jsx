@@ -4,7 +4,7 @@ import usePermissions from "../../hooks/usePermissions";
 import { matchesDateRange } from "../../utils/dateRangeFilter.mjs";
 import RecordViewModal from "../../components/RecordViewModal";
 import AutoResizeTextarea from "../../components/AutoResizeTextarea";
-import { sortAccountsByCode, toolbarState } from "./fileSetupRecords.mjs";
+import { DEFAULT_SORT, sortOptions, sortRecords, toolbarState } from "./fileSetupRecords.mjs";
 import useAuthorizedBranches from "../../hooks/useAuthorizedBranches";
 import { ownershipLabel, ownershipOptions, ownershipValue, branchIdPayload } from "./branchOwnership.mjs";
 import "./COA.css";
@@ -68,6 +68,10 @@ export default function COA() {
   const [loading, setLoading] = useState(false);
   const [groupCode, setGroupCode] = useState("");
   const [showPicker, setShowPicker] = useState(false);
+  // Display order (default Account Code ascending, natural). `accounts` is
+  // kept in this order, so Previous / Next and the account opened first
+  // follow it - never the import / insertion order.
+  const [sortKey, setSortKey] = useState(DEFAULT_SORT);
   const importInputRef = useRef(null);
 
   // Preview/confirm import flow: selecting a file only ever calls the
@@ -86,6 +90,10 @@ export default function COA() {
     loadAccounts();
     loadGroupCodes();
   }, []);
+
+  useEffect(() => {
+    setAccounts((prev) => sortRecords(prev, sortKey));
+  }, [sortKey]);
 
   async function loadGroupCodes() {
     try {
@@ -111,7 +119,9 @@ export default function COA() {
     }
   }
 
-  async function loadAccounts() {
+  // keepId: the account to stay on after a save (otherwise the first account
+  // in display order).
+  async function loadAccounts(keepId = null) {
     try {
       setLoading(true);
 
@@ -128,14 +138,16 @@ export default function COA() {
         return;
       }
 
-      setAccounts(data);
+      const ordered = sortRecords(data, sortKey);
+      setAccounts(ordered);
 
-      if (data.length > 0) {
-        setSelectedId(data[0].id);
+      if (ordered.length > 0) {
+        const first = ordered.find((a) => keepId !== null && Number(a.id) === Number(keepId)) || ordered[0];
+        setSelectedId(first.id);
         setForm({
-          ...data[0],
-          validations: data[0].validations || [],
-          groups: data[0].groups || [],
+          ...first,
+          validations: first.validations || [],
+          groups: first.groups || [],
         });
       } else {
         setSelectedId(null);
@@ -165,7 +177,7 @@ export default function COA() {
 
   // H9: the View dialog lists accounts in account-code order. Client-side
   // only - the API order and the list Previous / Next walk are unchanged.
-  const viewAccounts = useMemo(() => sortAccountsByCode(filteredAccounts).map((a) => ({ ...a, branchName: ownershipLabel(a, branches) })), [filteredAccounts, branches]);
+  const viewAccounts = useMemo(() => sortRecords(filteredAccounts, sortKey).map((a) => ({ ...a, branchName: ownershipLabel(a, branches) })), [filteredAccounts, branches, sortKey]);
 
   const currentIndex = accounts.findIndex((item) => item.id === selectedId);
   const isEditing = mode === "add" || mode === "edit";
@@ -328,7 +340,7 @@ export default function COA() {
 
       alert(data.message || "Account saved successfully");
 
-      await loadAccounts();
+      await loadAccounts(data.id || form.id || null);
       setMode("view");
     } catch (error) {
       console.error("SAVE COA ERROR:", error);
@@ -609,6 +621,14 @@ export default function COA() {
             searchPlaceholder="Search code or title"
             filters={
               <>
+                <label className="rvm-filter">
+                  Sort
+                  <select value={sortKey} onChange={(e) => setSortKey(e.target.value)} aria-label="Sort accounts" data-testid="coa-sort">
+                    {sortOptions("Title").map((o) => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
+                  </select>
+                </label>
                 <label className="rvm-filter">
                   From
                   <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} aria-label="Filter from account date" />

@@ -22,6 +22,64 @@ export function sortAccountsByCode(accounts) {
 }
 
 // ---------------------------------------------------------------------------
+// Post-File-Setup: user-selectable order for the COA and General Libraries
+// screens (list, Previous / Next, View dialog, the record opened first). The
+// API returns newest-first (id DESC), so without this an imported file's LAST
+// row (often an expense account) was the first record shown. Display only:
+// records, codes and amounts are never changed; codes stay strings (leading
+// zeros, letters and separators keep their meaning) and compare naturally.
+export const DEFAULT_SORT = "code-asc";
+
+export function sortOptions(titleLabel = "Title") {
+  return [
+    { value: "code-asc", label: "Code: Ascending" },
+    { value: "code-desc", label: "Code: Descending" },
+    { value: "title-asc", label: `${titleLabel}: A-Z` },
+    { value: "title-desc", label: `${titleLabel}: Z-A` },
+    { value: "created-desc", label: "Date Created: Newest" },
+    { value: "created-asc", label: "Date Created: Oldest" },
+  ];
+}
+
+const SORT_KEYS = new Set(sortOptions().map((o) => o.value));
+
+function compareText(a, b) {
+  return String(a ?? "").localeCompare(String(b ?? ""), undefined, { numeric: true, sensitivity: "base" });
+}
+
+function createdTime(record) {
+  const t = Date.parse(String(record?.createdAt ?? "").replace(" ", "T"));
+  return Number.isNaN(t) ? null : t;
+}
+
+function compareCreated(a, b, direction) {
+  const ta = createdTime(a);
+  const tb = createdTime(b);
+  if (ta !== tb) {
+    if (ta === null) return 1; // unknown creation time always last
+    if (tb === null) return -1;
+    return direction * (ta - tb);
+  }
+  return direction * (Number(a?.id ?? 0) - Number(b?.id ?? 0));
+}
+
+// Returns a NEW array in the requested order (an unknown key = Code:
+// Ascending). Ties fall back to code, then id, so the order is stable.
+export function sortRecords(records, sortKey = DEFAULT_SORT, { titleField = "title" } = {}) {
+  const key = SORT_KEYS.has(sortKey) ? sortKey : DEFAULT_SORT;
+  const byCode = compareAccountCodes;
+  const cmp = {
+    "code-asc": byCode,
+    "code-desc": (a, b) => byCode(b, a),
+    "title-asc": (a, b) => compareText(a?.[titleField], b?.[titleField]) || byCode(a, b),
+    "title-desc": (a, b) => compareText(b?.[titleField], a?.[titleField]) || byCode(a, b),
+    "created-desc": (a, b) => compareCreated(a, b, -1),
+    "created-asc": (a, b) => compareCreated(a, b, 1),
+  }[key];
+  return [...(Array.isArray(records) ? records : [])].sort(cmp);
+}
+
+// ---------------------------------------------------------------------------
 // General Libraries: View dialog search + Party Type / Status filters.
 
 export const GENLIB_SEARCH_FIELDS = ["code", "name", "type", "email", "mobile", "telephone", "tin", "category", "status"];

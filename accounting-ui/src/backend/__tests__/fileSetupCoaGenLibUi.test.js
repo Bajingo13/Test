@@ -60,12 +60,66 @@ describe("TC-FS-COA-UI-001 - Chart of Accounts", () => {
       expect(M.sortAccountsByCode(null)).toEqual([]);
     });
 
-    test("the View dialog gets the code-sorted list; Previous / Next still walk `accounts`", () => {
-      expect(coa).toMatch(/const viewAccounts = useMemo\(\(\) => sortAccountsByCode\(filteredAccounts\)/);
+    // Post-File-Setup (Task 5): `accounts` itself is kept in the selected
+    // display order (default Code ascending), so Previous / Next and the
+    // account opened first follow it - never the API's newest-first order,
+    // which put an imported file's last row (an expense account) first.
+    test("the View dialog and Previous / Next follow the selected sort (default Code ascending)", () => {
+      expect(coa).toMatch(/const \[sortKey, setSortKey\] = useState\(DEFAULT_SORT\);/);
+      expect(coa).toMatch(/const ordered = sortRecords\(data, sortKey\);\s*setAccounts\(ordered\);/);
+      expect(coa).toMatch(/setAccounts\(\(prev\) => sortRecords\(prev, sortKey\)\);/);
+      expect(coa).toMatch(/const viewAccounts = useMemo\(\(\) => sortRecords\(filteredAccounts, sortKey\)/);
       expect(coa).toMatch(/records=\{viewAccounts\}/);
       expect(coa).toMatch(/loadAccount\(accounts\[currentIndex - 1\]\)/);
       expect(coa).toMatch(/loadAccount\(accounts\[currentIndex \+ 1\]\)/);
       expect(coa).toMatch(/const currentIndex = accounts\.findIndex/);
+      expect(coa).toMatch(/await loadAccounts\(data\.id \|\| form\.id \|\| null\);/); // stay on the saved account
+      expect(coa).toMatch(/sortOptions\("Title"\)/);
+      expect(gl).toMatch(/const ordered = sortRecords\(data, sortKey, \{ titleField: "name" \}\);/);
+      expect(gl).toMatch(/sortOptions\("Name"\)/);
+      expect(gl).toMatch(/sortRecords\(filterGenLibRecords\(records, \{ search, type: typeFilter, status: statusFilter \}\), sortKey, \{ titleField: "name" \}\)/);
+    });
+
+    describe("sortRecords (Task 5)", () => {
+      const rows = [
+        { id: 1, code: "100", title: "Zeta", createdAt: "2026-11-01 08:00:00" },
+        { id: 2, code: "9", title: "alpha", createdAt: "2026-11-03 08:00:00" },
+        { id: 3, code: "11", title: "Mid", createdAt: "2026-11-02 08:00:00" },
+        { id: 4, code: "2", title: "beta", createdAt: null },
+        { id: 5, code: "0010", title: "Leading zero", createdAt: "2026-11-02 08:00:00" },
+        { id: 6, code: "1", title: "One", createdAt: "2026-11-02 08:00:00" },
+        { id: 7, code: "20", title: "Twenty", createdAt: "2026-11-04 08:00:00" },
+        { id: 8, code: "3", title: "Three", createdAt: "2026-11-04 08:00:00" },
+        { id: 9, code: "10", title: "Ten", createdAt: "2026-11-04 08:00:00" },
+      ];
+      const codes = (list) => list.map((r) => r.code);
+      test("default is Code ascending, natural/numeric: 1, 2, 3, 9, 10, 11, 20, 100 (codes kept as strings)", () => {
+        expect(M.DEFAULT_SORT).toBe("code-asc");
+        const asc = codes(M.sortRecords(rows));
+        expect(asc.filter((c) => c !== "0010")).toEqual(["1", "2", "3", "9", "10", "11", "20", "100"]);
+        expect(asc).toContain("0010"); // never converted to 10
+        expect(codes(M.sortRecords(rows, "code-desc"))[0]).toBe("100");
+      });
+      test("Title / Name A-Z and Z-A (case-insensitive)", () => {
+        expect(M.sortRecords(rows, "title-asc").map((r) => r.title).slice(0, 2)).toEqual(["alpha", "beta"]);
+        expect(M.sortRecords(rows, "title-desc")[0].title).toBe("Zeta");
+        expect(M.sortRecords([{ id: 1, code: "B", name: "b" }, { id: 2, code: "A", name: "A" }], "title-asc", { titleField: "name" }).map((r) => r.code)).toEqual(["A", "B"]);
+      });
+      test("Date Created newest / oldest, unknown dates last, ties stable by id", () => {
+        expect(M.sortRecords(rows, "created-desc").map((r) => r.id)).toEqual([9, 8, 7, 2, 6, 5, 3, 1, 4]);
+        expect(M.sortRecords(rows, "created-asc").map((r) => r.id)).toEqual([1, 3, 5, 6, 2, 7, 8, 9, 4]);
+      });
+      test("returns a new array; never mutates records; unknown key falls back to Code ascending", () => {
+        const copy = rows.map((r) => ({ ...r }));
+        const out = M.sortRecords(rows, "nonsense");
+        expect(out).not.toBe(rows);
+        expect(rows).toEqual(copy);
+        expect(codes(out).slice(0, 3)).toEqual(["1", "2", "3"]);
+        expect(M.sortRecords(null)).toEqual([]);
+      });
+      test("six options with the screen's own title label", () => {
+        expect(M.sortOptions("Name").map((o) => o.label)).toEqual(["Code: Ascending", "Code: Descending", "Name: A-Z", "Name: Z-A", "Date Created: Newest", "Date Created: Oldest"]);
+      });
     });
 
     test("account search still covers code / title / class (unchanged)", () => {
