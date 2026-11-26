@@ -1,37 +1,27 @@
-import { useEffect, useState } from "react";
-import { authHeaders } from "../../utils/authSession";
-import { branchOptions, defaultBranch, branchLabel } from "./reportBranch.mjs";
+import { useActiveBranch } from "../../context/ActiveBranchContext";
+import { reportScope } from "../../utils/activeBranch.mjs";
+import { branchOptions, branchLabel } from "./reportBranch.mjs";
 
-const API_URL = import.meta.env.VITE_API_URL || "";
-
-// Multi-Branch Phase C-2A: the branches this user may report on, from the
-// server (GET /api/branch-scope/branches). A failed load simply means no
-// selector - the server still applies the user's branch scope to every report.
+// The report Branch selector, now driven by the system-wide Active Branch
+// (context/ActiveBranchContext) instead of a per-page selection:
+//   - options are unchanged (reportBranch.mjs: "All Branches" only for users
+//     allowed to consolidate - REPORTS.ALL_BRANCHES);
+//   - the value follows the active branch; for a user who may not consolidate
+//     and has the aggregate selected, the report runs for their FIRST assigned
+//     branch and `note` says so (reportScope) - never a wider scope;
+//   - choosing a branch here changes the active branch everywhere.
+// The server re-checks the branch on every report request.
 export default function useReportBranch() {
-  const [options, setOptions] = useState([]);
-  const [value, setValue] = useState("");
-  const [loaded, setLoaded] = useState(false);
-
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const res = await fetch(`${API_URL}/api/branch-scope/branches`, { credentials: "include", headers: authHeaders() });
-        const body = await res.json().catch(() => ({}));
-        if (!alive || !res.ok) return;
-        const opts = branchOptions(body);
-        setOptions(opts);
-        setValue((current) => (current && opts.some((o) => o.value === current) ? current : defaultBranch(opts)));
-      } catch {
-        // no selector; the server-side default scope still applies
-      } finally {
-        if (alive) setLoaded(true);
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  return { options, value, setValue, label: branchLabel(options, value), loaded };
+  const ab = useActiveBranch();
+  const options = branchOptions({ branches: ab.branches, canConsolidate: ab.canConsolidate });
+  const scope = reportScope({ value: ab.value, options: ab.options, canConsolidate: ab.canConsolidate });
+  const value = options.some((o) => o.value === scope.param) ? scope.param : options[0]?.value || "";
+  return {
+    options,
+    value,
+    setValue: (next) => ab.requestChange(next),
+    label: branchLabel(options, value) || scope.label,
+    note: scope.note,
+    loaded: ab.ready,
+  };
 }

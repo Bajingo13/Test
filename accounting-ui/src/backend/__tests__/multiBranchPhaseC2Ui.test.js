@@ -76,7 +76,10 @@ describe("report pages send the branch", () => {
     expect(hook).toContain('import useReportBranch from "./useReportBranch";');
     expect(hook).toContain("const snapshot = withBranch(current, branch.value, branch.label);");
     expect(hook).toContain("withBranch(resolvePeriod(next, { asOfStart }), branch.value, branch.label)");
-    expect(read("pages/REPORTS/useReportBranch.js")).toContain("/api/branch-scope/branches");
+    // System-wide Active Branch: the list comes from the shared context, which
+    // loads GET /api/branch-scope/branches once for the whole app.
+    expect(read("pages/REPORTS/useReportBranch.js")).toContain("useActiveBranch()");
+    expect(read("context/ActiveBranchContext.jsx")).toContain("/api/branch-scope/branches");
   });
 
   test("the shared filter shows Branch with the server-provided options; the label shows it on screen and in print", () => {

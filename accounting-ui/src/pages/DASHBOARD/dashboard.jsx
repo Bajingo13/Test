@@ -3,6 +3,8 @@ import { useNavigate } from "react-router-dom";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
 import { createRequestGuard } from "../../utils/trialBalanceCompany.mjs";
 import { branchOptions } from "../REPORTS/reportBranch.mjs";
+import { useActiveBranch } from "../../context/ActiveBranchContext";
+import { reportScope } from "../../utils/activeBranch.mjs";
 import { accountAnalysisLink } from "../../utils/accountAnalysisCompany.mjs";
 import {
   PRESETS,
@@ -191,10 +193,24 @@ export default function Dashboard() {
   const [companyState, setCompanyState] = useState({ status: "loading", companies: [], isSuperAdmin: false });
   const [companyId, setCompanyId] = useState("");
   const [signedInUsername, setSignedInUsername] = useState("");
-  // Multi-Branch: the branches this user may see in the selected company (the
-  // server's answer); the selected branch scopes every figure server-side.
-  const [branchState, setBranchState] = useState({ status: "idle", companyId: "", options: [] });
-  const [branchValue, setBranchValue] = useState("");
+  // System-wide Active Branch: the Dashboard's Branch selector IS the shared
+  // active branch (context/ActiveBranchContext) - choosing one here scopes
+  // every module, and the dashboard follows a choice made elsewhere. The
+  // company chosen here tells the context which company's branches to load.
+  // Options and value follow the report rules (reportScope): "All Branches"
+  // only for users allowed to consolidate. The server re-checks every figure.
+  const activeBranch = useActiveBranch();
+  const branchState = useMemo(() => {
+    const ready = !!companyId && activeBranch.ready && String(activeBranch.companyId) === String(companyId);
+    return {
+      status: !companyId ? "idle" : ready ? "ready" : "loading",
+      companyId: ready ? companyId : "",
+      options: ready ? branchOptions({ branches: activeBranch.branches, canConsolidate: activeBranch.canConsolidate }) : [],
+    };
+  }, [companyId, activeBranch.ready, activeBranch.companyId, activeBranch.branches, activeBranch.canConsolidate]);
+  const branchScope = reportScope({ value: activeBranch.value, options: activeBranch.options, canConsolidate: activeBranch.canConsolidate });
+  const branchValue = branchState.options.some((o) => o.value === branchScope.param) ? branchScope.param : dashboardBranchChoice(branchState.options, "");
+  const setBranchValue = (value) => activeBranch.requestChange(value);
   const [request, setRequest] = useState({ status: "idle", data: null, message: "" });
   const guard = useRef(createRequestGuard());
 
@@ -245,36 +261,13 @@ export default function Dashboard() {
     loadCompanies();
   }, [loadCompanies]);
 
-  // ---- branch context (GET /api/branch-scope/branches for this company) ---
+  // ---- branch context: the shared Active Branch loads this company's
+  // branches (GET /api/branch-scope/branches) ---------------------------
+  const setActiveCompany = activeBranch.setCompanyId;
   useEffect(() => {
-    if (!companyId) {
-      setBranchState({ status: "idle", companyId: "", options: [] });
-      setBranchValue("");
-      return undefined;
-    }
-    let alive = true;
-    setBranchState({ status: "loading", companyId, options: [] });
-    (async () => {
-      try {
-        const res = await fetch(`${API_URL}/api/branch-scope/branches?${new URLSearchParams({ companyId })}`, { credentials: "include", headers: authHeaders() });
-        if (handleAuthError(res.status)) return;
-        const body = await res.json().catch(() => ({}));
-        if (!alive) return;
-        // A failed lookup leaves no selector; the server still applies the
-        // user's own branch scope to the summary.
-        const options = res.ok ? branchOptions(body) : [];
-        setBranchState({ status: "ready", companyId, options });
-        setBranchValue((current) => dashboardBranchChoice(options, current));
-      } catch {
-        if (alive) {
-          setBranchState({ status: "ready", companyId, options: [] });
-          setBranchValue("");
-        }
-      }
-    })();
-    return () => {
-      alive = false;
-    };
+    setActiveCompany(companyId || "");
+    // setActiveCompany is recreated with the context value; the company is the trigger
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [companyId]);
 
   // ---- summary -------------------------------------------------------
@@ -471,6 +464,7 @@ export default function Dashboard() {
             ) : (
               <strong id="dash-branch">{branchOpts[0].label}</strong>
             )}
+            {branchScope.note ? <span className="dash-branch-note" role="status">{branchScope.note}</span> : null}
           </div>
         ) : null}
 

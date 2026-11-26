@@ -402,8 +402,12 @@ describe("Multi-Branch: company + branch context", () => {
 
   test("the page reuses the server's branch list and the report selector rules (no second authorization)", () => {
     expect(page).toContain('import { branchOptions } from "../REPORTS/reportBranch.mjs";');
-    expect(page).toContain("/api/branch-scope/branches?${new URLSearchParams({ companyId })}");
-    expect(page).toContain("const options = res.ok ? branchOptions(body) : [];");
+    // System-wide Active Branch: the branch list is the shared context's
+    // (one GET /api/branch-scope/branches for the chosen company), not a
+    // second Dashboard-only request.
+    expect(page).toContain("activeBranch.setCompanyId");
+    expect(page).toContain("branchOptions({ branches: activeBranch.branches, canConsolidate: activeBranch.canConsolidate })");
+    expect(page).toContain("const setBranchValue = (value) => activeBranch.requestChange(value);");
     expect(page).toMatch(/branchOpts\.length > 1 \? \(\s*<select id="dash-branch"/);
     expect(page).toContain('<strong id="dash-branch">{branchOpts[0].label}</strong>');
     expect(page).toContain('(r.data.meta.requestedBranch || "") === branchValue');

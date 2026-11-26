@@ -76,5 +76,6 @@ export default function useReportPeriod({ defaultMode = RANGE, defaultFrom, defa
     branch: branch.value,
     setBranch: branch.setValue,
     branchLabel: branch.label,
+    branchNote: branch.note,
   };
 }

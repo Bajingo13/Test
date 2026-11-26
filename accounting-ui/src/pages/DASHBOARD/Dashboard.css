@@ -1421,3 +1421,12 @@
     background: linear-gradient(135deg, #071b3a, var(--accent-teal) 68%, var(--accent-teal-light));
   }
 }
+
+/* System-wide Active Branch: why an aggregate selection shows one branch. */
+.dash-branch-note {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}

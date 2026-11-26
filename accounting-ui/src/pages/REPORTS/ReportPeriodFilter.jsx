@@ -87,6 +87,9 @@ export default function ReportPeriodFilter({ period, idPrefix }) {
               <option key={o.value} value={o.value}>{o.label}</option>
             ))}
           </select>
+          {/* System-wide Active Branch: the aggregate selection cannot be a
+              report scope for users who may not consolidate. */}
+          {period.branchNote ? <p className="rpf-branch-note" role="status">{period.branchNote}</p> : null}
         </div>
       ) : null}
 
