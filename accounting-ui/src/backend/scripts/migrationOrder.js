@@ -273,6 +273,12 @@ const MIGRATION_ORDER = [
   // branch_scope = IFNULL(branch_id, 0). Indexes + generated column only - no
   // row changes. Must run after multi_branch_phase_b_migration.sql.
   "genlib_branch_code_scope_migration.sql",
+  // General Libraries code registry + triggers: the database itself refuses a
+  // code held by a shared AND a branch-only record, and branch records of one
+  // code with different party types (race-free; serialized by a registry row
+  // lock). New table + triggers only - no general_libraries row changes. Must
+  // run after genlib_branch_code_scope_migration.sql.
+  "genlib_code_registry_migration.sql",
 ];
 
 module.exports = { MIGRATION_ORDER };

@@ -404,9 +404,13 @@ async function attachBookPartyFields(rows, companyId) {
       if (genRef || genName || d.line_party_id != null) {
         // Line-level party (e.g. different parties on different JV lines, or
         // the party stored on an AR/AP beginning-balance line).
+        // A stored party id (AR/AP beginning-balance lines) is authoritative;
+        // a code alone is resolved for the document's branch and is left
+        // unresolved (blank TIN; the line's stored name still shows) when
+        // that branch context cannot pick ONE record - never a guess.
         const lineMaster =
-          (genRef ? partyForCode(genRef, d.header_branch_id) : null) ||
           (d.line_party_id != null ? partyById.get(d.line_party_id) : null) ||
+          (genRef ? partyForCode(genRef, d.header_branch_id) : null) ||
           null;
         partyName = genName || (lineMaster ? clean(lineMaster.name) : "");
         if (lineMaster) {

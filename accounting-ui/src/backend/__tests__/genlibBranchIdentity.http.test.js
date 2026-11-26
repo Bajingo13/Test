@@ -93,6 +93,9 @@ afterAll(async () => {
     const cos = Object.values(co);
     await pool.query("DELETE l FROM jv_lines l JOIN jv_headers h ON h.id = l.jv_id WHERE h.company_id IN (?)", [cos]);
     await pool.query("DELETE FROM jv_headers WHERE company_id IN (?)", [cos]);
+    await pool.query("DELETE l FROM apv_lines l JOIN apv_headers h ON h.id = l.apv_id WHERE h.company_id IN (?)", [cos]);
+    await pool.query("DELETE FROM apv_headers WHERE company_id IN (?)", [cos]);
+    await pool.query("DELETE FROM transaction_tax_entries WHERE company_id IN (?)", [cos]).catch(() => {});
     await pool.query("DELETE FROM transaction_currency_snapshots WHERE company_id IN (?)", [cos]);
     await pool.query("DELETE FROM audit_logs WHERE company_id IN (?) OR user_id IN (?)", [cos, userIds]);
     await pool.query("DELETE FROM general_libraries WHERE company_id IN (?)", [cos]);
@@ -269,6 +272,87 @@ describe("7/11. code-based lookups pick the document branch's record; history un
     expect([delOut.status, delOut.body.code]).toEqual([409, "GENLIB_IN_USE"]);
     const [[jvRow]] = await pool.query("SELECT gen_ref FROM jv_lines WHERE jv_id = ? AND gen_ref <> ''", [ids["A.OUTSOURCE"]]);
     expect(jvRow.gen_ref).toBe(C1); // history untouched
+  });
+});
+
+describe("Phase 3: historical and code-keyed references (gen_ref) never resolve to a guessed record", () => {
+  const SC = `${P} SUP-SAME`;
+  const SOLO = `${P} SUP-SOLO`;
+  const party = {};
+  const apv = (branchKey, supplierKey, n, amount) => ({
+    voucherNo: `${P}-APV-${n}`, transactionDate: D, dueDate: D, referenceNo: `${P}-APV-${n}`, description: "x", status: "Draft",
+    companyId: co.A, currency: { companyId: co.A }, branchId: br[branchKey], supplierId: party[supplierKey].id, supplierName: party[supplierKey].name,
+    lines: [
+      { accountId: acc.EXP.id, accountCode: acc.EXP.code, accountTitle: "EXP", particulars: "x", debit: amount, credit: 0 },
+      { accountId: acc.AP.id, accountCode: acc.AP.code, accountTitle: "AP", particulars: "x", debit: 0, credit: amount, genRef: SC, genName: "" },
+    ],
+    totalDebit: amount, totalCredit: amount,
+  });
+  const ids = {};
+  beforeAll(async () => {
+    const mk = async (key, codeV, name, tin, branchKey) => {
+      const [r] = await pool.query("INSERT INTO general_libraries (company_id, code, party_type, name, status, tin, branch_id) VALUES (?, ?, 'SUPPLIER', ?, 'ACTIVE', ?, ?)", [co.A, codeV, name, tin, branchKey ? br[branchKey] : null]);
+      party[key] = { id: r.insertId, name };
+    };
+    await mk("OUT", SC, "Sup (OUT)", "111", "A.OUTSOURCE");
+    await mk("TAX", SC, "Sup (TAX)", "222", "A.TAX");
+    await mk("SOLO", SOLO, "Solo (OUT)", "333", "A.OUTSOURCE");
+  });
+  test("same-code suppliers: each branch's document saves, posts and reverses against ITS record", async () => {
+    for (const [b, s, n, amt] of [["A.TAX", "TAX", 1, 500], ["A.OUTSOURCE", "OUT", 2, 700]]) {
+      const c = await call("post", "adminA", "/api/apv", apv(b, s, n, amt));
+      expect(c.status).toBe(200);
+      ids[b] = c.body.id;
+      expect((await call("put", "adminA2", `/api/apv/${c.body.id}`, { ...apv(b, s, n, amt), status: "Posted" })).status).toBe(200);
+    }
+    // another branch's supplier record is refused on a TAX document
+    const wrong = await call("post", "adminA", "/api/apv", apv("A.TAX", "OUT", 3, 100));
+    expect(wrong.status).toBeGreaterThanOrEqual(400);
+    const rev = await call("post", "adminA2", `/api/apv/${ids["A.TAX"]}/reverse`, { reason: "uat reversal", companyId: co.A });
+    expect(rev.status).toBe(200);
+    const [[revJv]] = await pool.query(
+      "SELECT h.voucher_no, h.branch_id, DATE_FORMAT(h.transaction_date, '%Y-%m-%d') AS d FROM jv_headers h JOIN jv_lines l ON l.jv_id = h.id WHERE h.company_id = ? AND l.gen_ref = ? ORDER BY h.id DESC LIMIT 1", [co.A, SC]);
+    expect(revJv.branch_id).toBe(br["A.TAX"]);
+    ids.revJv = revJv.voucher_no;
+    ids.revDate = revJv.d;
+  });
+  test("AP aging is keyed by the header party id: the OUTSOURCE APV is the OUTSOURCE record (TAX was reversed)", async () => {
+    const res = await call("get", "adminA", `/api/reports/ap-aging?companyId=${co.A}&asOf=2098-02-28&branch=ALL`);
+    expect(res.status).toBe(200);
+    const row = (v) => res.body.rows.find((r) => r.referenceNo === v);
+    expect(row(`${P}-APV-2`)).toBeTruthy();
+    expect(Number(row(`${P}-APV-2`).partyId ?? row(`${P}-APV-2`).party_id)).toBe(party.OUT.id);
+    expect(row(`${P}-APV-1`)).toBeFalsy(); // reversed
+  });
+  test("books: TINs come from the document branch's record; the reversal keeps TAX's", async () => {
+    const ap = await call("get", "adminA", `/api/reports/books/accounts-payable?companyId=${co.A}&from=2098-02-01&to=2098-02-28&branch=ALL`);
+    const tinOf = (rows, voucher) => (rows.find((r) => r.reference_no === voucher && r.general_reference === SC) || {}).party_tin;
+    expect(tinOf(ap.body, `${P}-APV-2`)).toBe("111");
+    expect(tinOf(ap.body, `${P}-APV-1`)).toBe("222");
+    const jb = await call("get", "adminA", `/api/reports/books/journal?companyId=${co.A}&from=${ids.revDate}&to=${ids.revDate}&branch=ALL`);
+    expect(tinOf(jb.body, ids.revJv)).toBe("222");
+  });
+  test("a legacy document WITHOUT a branch: an ambiguous code stays unresolved (stored name, blank TIN); a one-record code still resolves", async () => {
+    const [h] = await pool.query("INSERT INTO jv_headers (company_id, branch_id, voucher_no, transaction_date, total_debit, total_credit, status) VALUES (?, NULL, ?, ?, 10, 10, 'Posted')", [co.A, `${P}-LEGACY`, D]);
+    for (const [codeV, name, d, c] of [[SC, "Legacy stored name", 10, 0], [SOLO, "", 0, 10]]) {
+      await pool.query("INSERT INTO jv_lines (jv_id, account_id, account_code, account_title, particulars, debit, credit, gen_ref, gen_name) VALUES (?, ?, ?, ?, 'x', ?, ?, ?, ?)",
+        [h.insertId, d ? acc.EXP.id : acc.AP.id, d ? acc.EXP.code : acc.AP.code, "x", d, c, codeV, name]);
+    }
+    const jb = await call("get", "adminA", `/api/reports/books/journal?companyId=${co.A}&from=2098-01-01&to=2098-12-31&branch=ALL`);
+    const legacy = (codeV) => jb.body.find((r) => r.reference_no === `${P}-LEGACY` && r.general_reference === codeV) || {};
+    expect([legacy(SC).party_name, legacy(SC).party_tin]).toEqual(["Legacy stored name", ""]);
+    expect([legacy(SOLO).party_name, legacy(SOLO).party_tin]).toEqual(["Solo (OUT)", "333"]);
+  });
+  test("a shared supplier code resolves to the shared record from any branch", async () => {
+    const shared = (await rowsOf(SH))[0];
+    expect(Policy.resolvePartyForBranch([{ id: shared.id, branch_id: null }], br["A.TAX"]).id).toBe(shared.id);
+    expect((await call("post", "adminA", "/api/jv", {
+      voucherNo: `${P}-JV-SH`, transactionDate: D, dueDate: D, totalDebit: 5, totalCredit: 5, status: "Draft", companyId: co.A, currency: { companyId: co.A }, branchId: br["A.OUTSOURCE"],
+      lines: [
+        { accountId: acc.EXP.id, accountCode: acc.EXP.code, accountTitle: "EXP", particulars: "x", debit: 5, credit: 0, genRef: SH, genName: "" },
+        { accountId: acc.AP.id, accountCode: acc.AP.code, accountTitle: "AP", particulars: "x", debit: 0, credit: 5 },
+      ],
+    })).status).toBe(200);
   });
 });
 

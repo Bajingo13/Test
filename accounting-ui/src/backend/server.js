@@ -460,6 +460,8 @@ app.post("/api/genlib", authenticateToken, authorizePermission("FILESETUP.GENLIB
       id: result.insertId,
     });
   } catch (err) {
+    const dbRefusal = GenLibCodePolicy.fromDatabaseError(err);
+    if (dbRefusal) return res.status(dbRefusal.statusCode).json({ message: dbRefusal.message, code: dbRefusal.code });
     console.error("CREATE GENLIB ERROR:", err);
 
     if (err.statusCode) return res.status(err.statusCode).json({ message: err.message, code: err.code });
@@ -561,6 +563,8 @@ app.put("/api/genlib/:id", authenticateToken, authorizePermission("FILESETUP.GEN
       message: "Record updated successfully",
     });
   } catch (err) {
+    const dbRefusal = GenLibCodePolicy.fromDatabaseError(err);
+    if (dbRefusal) return res.status(dbRefusal.statusCode).json({ message: dbRefusal.message, code: dbRefusal.code });
     console.error("UPDATE GENLIB ERROR:", err);
     if (err.statusCode) return res.status(err.statusCode).json({ message: err.message, code: err.code });
     if (err.code === "ER_DUP_ENTRY") return res.status(400).json({ message: "Code already exists" });
@@ -791,7 +795,9 @@ app.post(
         // were committed. A duplicate here means another user created one of
         // these codes after this request validated the file.
         console.error("GENLIB IMPORT - BATCH INSERT FAILED, ROLLED BACK:", insertErr);
-        const concurrent = insertErr && insertErr.code === "ER_DUP_ENTRY";
+        // a code created / changed by another user meanwhile: the unique key
+        // (ER_DUP_ENTRY), the code-registry triggers or a registry deadlock
+        const concurrent = GenLibCodePolicy.isConcurrentCodeConflict(insertErr);
         return res.status(concurrent ? 409 : 500).json({
           success: false,
           message: concurrent

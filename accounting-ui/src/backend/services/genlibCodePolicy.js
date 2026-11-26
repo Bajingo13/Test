@@ -67,6 +67,15 @@ function genlibCodeRefusal(code, branchId, partyType, taken = []) {
 // Transactional check for one manual create / edit. Locks the code's rows in
 // the company (FOR UPDATE) so two concurrent writers cannot both pass.
 async function assertGenLibCodeAllowed(conn, { companyId, code, branchId, partyType, excludeId = null }) {
+  // Serialize every writer of this company + code on its registry row FIRST -
+  // the same row lock the triggers take (genlib_code_registry_migration.sql),
+  // so concurrent writers queue instead of deadlocking on index gap locks. A
+  // new code gets a zero-count row; the INSERT's trigger counts it, and a
+  // refused / rolled-back write removes it with the transaction.
+  await conn.execute(
+    "INSERT INTO general_library_code_registry (company_id, code, shared_count, branch_count) VALUES (?, ?, 0, 0) ON DUPLICATE KEY UPDATE company_id = company_id",
+    [companyId, String(code ?? "").trim()]
+  );
   const [rows] = await conn.execute(
     "SELECT id, branch_id, party_type FROM general_libraries WHERE company_id = ? AND code = ? FOR UPDATE",
     [companyId, String(code ?? "").trim()]
@@ -98,4 +107,27 @@ function resolvePartyForBranch(rows, branchId) {
   return list.length === 1 ? list[0] : null;
 }
 
-module.exports = { codeKey, ownerKey, genlibCodeRefusal, assertGenLibCodeAllowed, resolvePartyForBranch };
+// The database's own enforcement (genlib_code_registry_migration.sql): its
+// triggers SIGNAL (errno 1644) when a concurrent writer slipped past the check
+// above; two writers of one code can also deadlock on the registry row (1213).
+const DB_REFUSALS = {
+  GENLIB_CODE_SHARED_BRANCH_CONFLICT: "This code is already used by another record of a different owner (a code is either one shared record or branch-only records). Nothing was saved.",
+  GENLIB_CODE_TYPE_CONFLICT: "This code is used by another branch with a different type; branches sharing a code must use the same type. Nothing was saved.",
+};
+function fromDatabaseError(err) {
+  if (!err) return null;
+  if (err.errno === 1644) {
+    const key = Object.keys(DB_REFUSALS).find((k) => String(err.sqlMessage || err.message || "").includes(k));
+    if (key) return new HttpError(400, DB_REFUSALS[key], key);
+  }
+  if (err.errno === 1213 || err.code === "ER_LOCK_DEADLOCK") {
+    return new HttpError(409, "Another user changed this code at the same time. Nothing was saved; please try again.", "GENLIB_CODE_CONCURRENT_CHANGE");
+  }
+  return null;
+}
+// True when another writer created / changed one of the codes meanwhile: the
+// unique key (ER_DUP_ENTRY) or the code-registry triggers (errno 1644). A
+// deadlock stays a generic "rolled back, try again" failure for imports.
+const isConcurrentCodeConflict = (err) => !!err && (err.code === "ER_DUP_ENTRY" || err.errno === 1644);
+
+module.exports = { codeKey, ownerKey, genlibCodeRefusal, assertGenLibCodeAllowed, resolvePartyForBranch, fromDatabaseError, isConcurrentCodeConflict };
