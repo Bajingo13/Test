@@ -394,6 +394,10 @@ async function attachBookPartyFields(rows, companyId) {
 
     let partyName = "";
     let partyTin = "";
+    // true when the line carries a party code that cannot be resolved to ONE
+    // record for this document's branch (resolvePartyForBranch): the stored
+    // name is shown, master-data fields stay blank - never a guessed record.
+    let partyRefUnresolved = false;
     const genRef = clean(d && d.gen_ref);
     const genName = clean(d && d.gen_name);
 
@@ -412,6 +416,7 @@ async function attachBookPartyFields(rows, companyId) {
           (d.line_party_id != null ? partyById.get(d.line_party_id) : null) ||
           (genRef ? partyForCode(genRef, d.header_branch_id) : null) ||
           null;
+        if (genRef && !lineMaster) partyRefUnresolved = true;
         partyName = genName || (lineMaster ? clean(lineMaster.name) : "");
         if (lineMaster) {
           const isHeaderParty = headerMaster && headerMaster.id === lineMaster.id;
@@ -426,6 +431,7 @@ async function attachBookPartyFields(rows, companyId) {
 
     row.party_name = partyName;
     row.party_tin = partyTin;
+    row.party_reference_unresolved = partyRefUnresolved;
     row.general_reference = genRef;
     row.proj_dept_code = null;
     row.document_ref = row.reference_no;

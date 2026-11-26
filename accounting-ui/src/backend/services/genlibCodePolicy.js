@@ -92,19 +92,22 @@ async function assertGenLibCodeAllowed(conn, { companyId, code, branchId, partyT
 }
 
 // Picks the record a code means for a document of `branchId` from `rows`
-// (all records of that code in the company): the branch's own record, else
-// the shared record, else - only for a document WITHOUT a branch (legacy /
-// company-level) or when the code exists exactly once - that single record.
-// Never another branch's record when the code is reused by several branches.
+// (all records of that code in the company):
+//   1. the document branch's own record;
+//   2. otherwise the shared record (a shared code is never reused by a branch);
+//   3. otherwise NOTHING (null = unresolved).
+// A document without a branch can only mean a shared record. Another branch's
+// record is never returned - not even when it is the only record with that
+// code: it may be an unrelated party created later under a freed code, or a
+// party moved between branches, and a code alone cannot tell which. Callers
+// show the line's own stored name and leave master-data fields blank.
 function resolvePartyForBranch(rows, branchId) {
   const list = Array.isArray(rows) ? rows : [];
   if (!list.length) return null;
   const want = ownerKey(branchId);
   const own = want ? list.find((r) => ownerKey(r.branch_id ?? r.branchId) === want) : null;
   if (own) return own;
-  const shared = list.find((r) => ownerKey(r.branch_id ?? r.branchId) === 0);
-  if (shared) return shared;
-  return list.length === 1 ? list[0] : null;
+  return list.find((r) => ownerKey(r.branch_id ?? r.branchId) === 0) || null;
 }
 
 // The database's own enforcement (genlib_code_registry_migration.sql): its

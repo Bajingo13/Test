@@ -30,6 +30,12 @@
 --   DROP TRIGGER IF EXISTS trg_genlib_code_ad;
 --   DROP TABLE IF EXISTS general_library_code_registry;
 
+-- Fail fast instead of waiting (default lock_wait_timeout = 1 year) when a
+-- long transaction holds general_libraries: the startup migration then stops
+-- with an error (the server refuses to boot) rather than hanging the deploy.
+-- Session-level only (this migration connection).
+SET SESSION lock_wait_timeout = 60;
+
 -- 1. Registry table; `code` uses general_libraries.code's own character set and
 --    collation, so "the same code" means exactly what it means there.
 SET @cs = (SELECT CHARACTER_SET_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'general_libraries' AND COLUMN_NAME = 'code');

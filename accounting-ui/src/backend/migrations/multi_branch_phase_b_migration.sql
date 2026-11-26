@@ -42,7 +42,12 @@ SET @sql = IF(@c > 0, 'ALTER TABLE chart_of_accounts DROP INDEX `code`', 'SELECT
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 -- 2. general_libraries
-SET @c = (SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'general_libraries' AND INDEX_NAME = 'uq_genlib_company_code');
+-- (Guard extended for genlib_branch_code_scope_migration.sql, which later
+-- replaces this key with uq_genlib_company_code_branch: once that key exists
+-- the per-company key is never re-added - a full re-run (scripts/migrate.js,
+-- or a first run without a ledger) would otherwise fail as soon as two
+-- branches own the same code. A fresh database ends in the same state.)
+SET @c = (SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'general_libraries' AND INDEX_NAME IN ('uq_genlib_company_code', 'uq_genlib_company_code_branch'));
 SET @sql = IF(@c = 0, 'ALTER TABLE general_libraries ADD UNIQUE KEY uq_genlib_company_code (company_id, code)', 'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 

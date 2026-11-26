@@ -332,16 +332,40 @@ describe("Phase 3: historical and code-keyed references (gen_ref) never resolve 
     const jb = await call("get", "adminA", `/api/reports/books/journal?companyId=${co.A}&from=${ids.revDate}&to=${ids.revDate}&branch=ALL`);
     expect(tinOf(jb.body, ids.revJv)).toBe("222");
   });
-  test("a legacy document WITHOUT a branch: an ambiguous code stays unresolved (stored name, blank TIN); a one-record code still resolves", async () => {
-    const [h] = await pool.query("INSERT INTO jv_headers (company_id, branch_id, voucher_no, transaction_date, total_debit, total_credit, status) VALUES (?, NULL, ?, ?, 10, 10, 'Posted')", [co.A, `${P}-LEGACY`, D]);
-    for (const [codeV, name, d, c] of [[SC, "Legacy stored name", 10, 0], [SOLO, "", 0, 10]]) {
-      await pool.query("INSERT INTO jv_lines (jv_id, account_id, account_code, account_title, particulars, debit, credit, gen_ref, gen_name) VALUES (?, ?, ?, ?, 'x', ?, ?, ?, ?)",
-        [h.insertId, d ? acc.EXP.id : acc.AP.id, d ? acc.EXP.code : acc.AP.code, "x", d, c, codeV, name]);
-    }
+  test("legacy / cross-branch lines: a code that is not the document branch's own and not shared stays UNRESOLVED (stored name, blank TIN, explicit flag) - never another branch's record", async () => {
+    const legacyJv = async (voucher, branchId, lines) => {
+      const [h] = await pool.query("INSERT INTO jv_headers (company_id, branch_id, voucher_no, transaction_date, total_debit, total_credit, status) VALUES (?, ?, ?, ?, 10, 10, 'Posted')", [co.A, branchId, voucher, D]);
+      for (const [codeV, name, d, c] of lines) {
+        await pool.query("INSERT INTO jv_lines (jv_id, account_id, account_code, account_title, particulars, debit, credit, gen_ref, gen_name) VALUES (?, ?, ?, ?, 'x', ?, ?, ?, ?)",
+          [h.insertId, d ? acc.EXP.id : acc.AP.id, d ? acc.EXP.code : acc.AP.code, "x", d, c, codeV, name]);
+      }
+    };
+    // a document WITHOUT a branch: two-owner code, one-owner (branch) code, shared code
+    await legacyJv(`${P}-LEGACY`, null, [[SC, "Legacy stored name", 10, 0], [SOLO, "", 0, 5], [SH, "", 0, 5]]);
+    // an AUDIT document referencing a code only OUTSOURCE owns (a legacy cross-branch line)
+    await legacyJv(`${P}-XBR`, br["A.AUDIT"], [[SOLO, "Stored on the line", 10, 0], [SH, "", 0, 10]]);
     const jb = await call("get", "adminA", `/api/reports/books/journal?companyId=${co.A}&from=2098-01-01&to=2098-12-31&branch=ALL`);
-    const legacy = (codeV) => jb.body.find((r) => r.reference_no === `${P}-LEGACY` && r.general_reference === codeV) || {};
-    expect([legacy(SC).party_name, legacy(SC).party_tin]).toEqual(["Legacy stored name", ""]);
-    expect([legacy(SOLO).party_name, legacy(SOLO).party_tin]).toEqual(["Solo (OUT)", "333"]);
+    const line = (voucher, codeV) => jb.body.find((r) => r.reference_no === voucher && r.general_reference === codeV) || {};
+    const view = (r) => [r.party_name, r.party_tin, r.party_reference_unresolved];
+    expect(view(line(`${P}-LEGACY`, SC))).toEqual(["Legacy stored name", "", true]);
+    expect(view(line(`${P}-LEGACY`, SOLO))).toEqual(["", "", true]); // the only record is OUTSOURCE's - not guessed
+    expect(view(line(`${P}-LEGACY`, SH))).toEqual(["Shared one", "", false]); // shared: resolvable from anywhere
+    expect(view(line(`${P}-XBR`, SOLO))).toEqual(["Stored on the line", "", true]);
+    expect(view(line(`${P}-XBR`, SH))).toEqual(["Shared one", "", false]);
+    // the stored line itself (amounts, code, name, document ownership) is untouched by reading it
+    const [[stored]] = await pool.query("SELECT l.gen_ref, l.gen_name, l.debit, h.branch_id FROM jv_lines l JOIN jv_headers h ON h.id = l.jv_id WHERE h.voucher_no = ? AND l.gen_ref = ?", [`${P}-XBR`, SOLO]);
+    expect([stored.gen_ref, stored.gen_name, Number(stored.debit), stored.branch_id]).toEqual([SOLO, "Stored on the line", 10, br["A.AUDIT"]]);
+  });
+  test("a code freed by a deleted record and reused by another branch is NOT attributed to the old documents", async () => {
+    const FREE = `${P} FREED`;
+    const [a] = await pool.query("INSERT INTO general_libraries (company_id, code, party_type, name, status, tin, branch_id) VALUES (?, ?, 'SUPPLIER', 'Original (OUT)', 'ACTIVE', '444', ?)", [co.A, FREE, br["A.OUTSOURCE"]]);
+    const [h] = await pool.query("INSERT INTO jv_headers (company_id, branch_id, voucher_no, transaction_date, total_debit, total_credit, status) VALUES (?, ?, ?, ?, 1, 1, 'Posted')", [co.A, br["A.OUTSOURCE"], `${P}-FREED`, D]);
+    await pool.query("INSERT INTO jv_lines (jv_id, account_id, account_code, account_title, particulars, debit, credit, gen_ref, gen_name) VALUES (?, ?, ?, 'x', 'x', 1, 0, ?, '')", [h.insertId, acc.EXP.id, acc.EXP.code, FREE]);
+    await pool.query("DELETE FROM general_libraries WHERE id = ?", [a.insertId]); // (bypassing the app's reference guard on purpose)
+    await pool.query("INSERT INTO general_libraries (company_id, code, party_type, name, status, tin, branch_id) VALUES (?, ?, 'SUPPLIER', 'Unrelated (TAX)', 'ACTIVE', '555', ?)", [co.A, FREE, br["A.TAX"]]);
+    const jb = await call("get", "adminA", `/api/reports/books/journal?companyId=${co.A}&from=2098-01-01&to=2098-12-31&branch=ALL`);
+    const r = jb.body.find((x) => x.reference_no === `${P}-FREED` && x.general_reference === FREE) || {};
+    expect([r.party_name, r.party_tin, r.party_reference_unresolved]).toEqual(["", "", true]);
   });
   test("a shared supplier code resolves to the shared record from any branch", async () => {
     const shared = (await rowsOf(SH))[0];
@@ -357,11 +381,15 @@ describe("Phase 3: historical and code-keyed references (gen_ref) never resolve 
 });
 
 describe("policy unit rules", () => {
-  test("resolvePartyForBranch: own branch, else shared, else a lone record; never another branch's when the code is reused", () => {
+  test("resolvePartyForBranch: own branch, else shared, else null - never another branch's record, not even a lone one", () => {
     const rows = [{ id: 1, branch_id: 11 }, { id: 2, branch_id: 12 }];
     expect(Policy.resolvePartyForBranch(rows, 12).id).toBe(2);
     expect(Policy.resolvePartyForBranch(rows, 13)).toBeNull();
+    expect(Policy.resolvePartyForBranch(rows, null)).toBeNull(); // no branch context, no shared record
     expect(Policy.resolvePartyForBranch([{ id: 3, branch_id: null }, ...rows], 13).id).toBe(3);
-    expect(Policy.resolvePartyForBranch([{ id: 4, branch_id: 11 }], 12).id).toBe(4); // moved record keeps its history
+    expect(Policy.resolvePartyForBranch([{ id: 3, branch_id: null }], null).id).toBe(3);
+    expect(Policy.resolvePartyForBranch([{ id: 4, branch_id: 11 }], 12)).toBeNull(); // lone OTHER-branch record: unresolved
+    expect(Policy.resolvePartyForBranch([{ id: 4, branch_id: 11 }], null)).toBeNull();
+    expect(Policy.resolvePartyForBranch([], 11)).toBeNull();
   });
 });

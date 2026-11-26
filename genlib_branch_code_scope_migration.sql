@@ -28,6 +28,12 @@
 --   ALTER TABLE general_libraries DROP INDEX uq_genlib_company_code_branch;
 --   ALTER TABLE general_libraries DROP COLUMN branch_scope;
 
+-- Fail fast instead of waiting (default lock_wait_timeout = 1 year) when a
+-- long transaction holds general_libraries: the startup migration then stops
+-- with an error (the server refuses to boot) rather than hanging the deploy.
+-- Session-level only (this migration connection).
+SET SESSION lock_wait_timeout = 60;
+
 SET @c = (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'general_libraries' AND COLUMN_NAME = 'branch_scope');
 SET @sql = IF(@c = 0, 'ALTER TABLE general_libraries ADD COLUMN branch_scope INT GENERATED ALWAYS AS (IFNULL(branch_id, 0)) STORED', 'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
