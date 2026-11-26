@@ -1,4 +1,5 @@
 import { handleAuthError } from "./authSession";
+import { withActiveBranchHeader } from "./activeBranchHeader";
 
 // System-wide authentication audit: most pages (~40) have no local 401
 // handling at all - a failed request just falls into that page's own
@@ -26,7 +27,10 @@ export function installAuthFetchGuard() {
 
   const originalFetch = window.fetch.bind(window);
 
-  window.fetch = async (...args) => {
+  window.fetch = async (...rawArgs) => {
+    // System-wide Active Branch: this app's own /api requests carry the
+    // active branch (X-Active-Branch). The server only ever NARROWS with it.
+    const args = withActiveBranchHeader(rawArgs);
     const response = await originalFetch(...args);
 
     if (response.status === 401) {

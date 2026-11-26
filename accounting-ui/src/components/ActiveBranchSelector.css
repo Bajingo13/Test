@@ -1,0 +1,131 @@
+/* System-wide Active Branch selector (sidebar + Dashboard). Theme tokens only. */
+.abs {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.abs-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.abs-select {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  border-radius: 8px;
+  padding: 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.abs-single {
+  font-size: 14px;
+}
+
+.abs-hint {
+  font-size: 11px;
+}
+
+/* sidebar variant - follows the sidebar palette */
+.abs-sidebar {
+  margin: 0 0 14px;
+  padding: 10px;
+  border: 1px solid var(--sidebar-border);
+  border-radius: 10px;
+  color: var(--sidebar-text);
+}
+
+.abs-sidebar .abs-label,
+.abs-sidebar .abs-hint {
+  color: var(--sidebar-text-muted);
+}
+
+.abs-sidebar .abs-select {
+  border: 1px solid var(--sidebar-border);
+  background: var(--sidebar-bg);
+  color: var(--sidebar-text);
+}
+
+.abs-sidebar .abs-select:focus-visible {
+  outline: 2px solid var(--sidebar-focus-ring);
+  outline-offset: 1px;
+}
+
+/* dashboard variant - follows the page palette */
+.abs-dashboard {
+  color: var(--text-primary);
+}
+
+.abs-dashboard .abs-label {
+  color: var(--text-secondary);
+}
+
+.abs-dashboard .abs-hint {
+  color: var(--text-secondary);
+}
+
+.abs-dashboard .abs-select {
+  border: 1px solid var(--border-color-strong);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+
+/* collapsed sidebar: a small badge with the active branch. The collapsed
+   sidebar is transparent over the PAGE, so the badge uses page tokens (the
+   sidebar text colour is white in both themes and would vanish here). */
+.abs-collapsed {
+  box-sizing: border-box;
+  margin: 0 auto 14px;
+  max-width: 90px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-color-strong);
+  border-radius: 999px;
+  background: var(--bg-surface);
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.abs-confirm {
+  margin-top: 6px;
+  padding: 8px;
+  border-radius: 8px;
+  background: var(--sidebar-danger-hover-bg);
+  color: var(--sidebar-text);
+  font-size: 12px;
+}
+
+.abs-confirm p {
+  margin: 0 0 6px;
+}
+
+.abs-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.abs-btn {
+  border: 1px solid var(--sidebar-border);
+  background: var(--sidebar-bg);
+  color: var(--sidebar-text);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.abs-btn-danger {
+  color: var(--sidebar-danger-text);
+}

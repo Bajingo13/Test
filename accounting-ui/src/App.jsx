@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { ThemeProvider } from "./context/ThemeContext";
+import { ActiveBranchProvider, useActiveBranch } from "./context/ActiveBranchContext";
 import ErrorBoundary from "./components/ErrorBoundary";
 import Sidebar from "./components/sidebar/sidebar";
 import SessionKeepAlive from "./components/SessionKeepAlive";
@@ -124,6 +125,7 @@ function PlaceholderPage({ title }) {
 
 function AppLayout() {
   const location = useLocation();
+  const activeBranch = useActiveBranch();
   const isLoginPage = location.pathname === "/login" || location.pathname === "/accept-invite" || location.pathname === "/verify-email";
   // Standard Letter Invoice printable: full-bleed, no sidebar/app chrome -
   // it's a Letter-sized document, not an app screen, and is also what
@@ -161,7 +163,11 @@ function AppLayout() {
           transition: "margin-left 0.3s ease",
         }}
       >
-        <ErrorBoundary key={location.pathname} backTo="/dashboard" backToLabel="Back to Dashboard">
+        {/* System-wide Active Branch: a branch change remounts the page, so it
+            reloads under the new branch and no list, selection or form state
+            of the previous branch survives. The Dashboard reacts in place
+            (it keeps its company / period choice). */}
+        <ErrorBoundary key={location.pathname === "/dashboard" ? location.pathname : `${location.pathname}|${activeBranch.renderKey}`} backTo="/dashboard" backToLabel="Back to Dashboard">
         <Routes>
           <Route path="/" element={<Navigate to="/login" replace />} />
           <Route path="/login" element={<Login />} />
@@ -295,7 +301,9 @@ export default function App() {
   return (
     <ThemeProvider>
       <BrowserRouter>
-        <AppLayout />
+        <ActiveBranchProvider>
+          <AppLayout />
+        </ActiveBranchProvider>
       </BrowserRouter>
     </ThemeProvider>
   );

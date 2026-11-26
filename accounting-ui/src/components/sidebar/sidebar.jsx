@@ -7,6 +7,7 @@ import { TRANSACTIONS_MENU } from "./transactionsMenuConfig";
 import { ADMINISTRATION_MENU } from "./administrationMenuConfig";
 import usePermissions from "../../hooks/usePermissions";
 import ThemeToggle from "../ThemeToggle";
+import ActiveBranchSelector from "../ActiveBranchSelector";
 import "./Sidebar.css";
 
 export default function Sidebar({ sidebarOpen, setSidebarOpen }) {
@@ -82,6 +83,9 @@ export default function Sidebar({ sidebarOpen, setSidebarOpen }) {
       <div className="sidebar-theme-toggle-row">
         <ThemeToggle />
       </div>
+
+      {/* System-wide Active Branch: the same selection as the Dashboard's. */}
+      <ActiveBranchSelector variant="sidebar" collapsed={!sidebarOpen} />
 
       {sidebarOpen && (
         <nav className="sidebar-nav">
