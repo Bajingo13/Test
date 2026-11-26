@@ -40,19 +40,33 @@ SET SESSION lock_wait_timeout = 60;
 --    collation, so "the same code" means exactly what it means there.
 SET @cs = (SELECT CHARACTER_SET_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'general_libraries' AND COLUMN_NAME = 'code');
 SET @co = (SELECT COLLATION_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'general_libraries' AND COLUMN_NAME = 'code');
+SET @pcs = (SELECT CHARACTER_SET_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'general_libraries' AND COLUMN_NAME = 'party_type');
+SET @pco = (SELECT COLLATION_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'general_libraries' AND COLUMN_NAME = 'party_type');
 SET @sql = CONCAT(
   'CREATE TABLE IF NOT EXISTS general_library_code_registry (',
   ' company_id INT NOT NULL,',
   ' code VARCHAR(50) CHARACTER SET ', @cs, ' COLLATE ', @co, ' NOT NULL,',
   ' shared_count INT NOT NULL DEFAULT 0,',
   ' branch_count INT NOT NULL DEFAULT 0,',
-  ' branch_party_type VARCHAR(50) NULL,',
+  ' branch_party_type VARCHAR(50) CHARACTER SET ', @pcs, ' COLLATE ', @pco, ' NULL,',
   ' PRIMARY KEY (company_id, code)',
   ') ENGINE=InnoDB'
 );
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
--- 2. Triggers.
+-- An existing registry (an earlier run of this file) is brought to the same
+-- charset / collation as the live columns - never the database default, which
+-- can differ from the columns (e.g. default utf8mb4_0900_ai_ci, columns
+-- utf8mb4_general_ci).
+SET @sql = CONCAT('ALTER TABLE general_library_code_registry',
+  ' MODIFY code VARCHAR(50) CHARACTER SET ', @cs, ' COLLATE ', @co, ' NOT NULL,',
+  ' MODIFY branch_party_type VARCHAR(50) CHARACTER SET ', @pcs, ' COLLATE ', @pco, ' NULL');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- 2. Triggers. Party types are compared in ONE explicit collation
+--    (utf8mb4_bin on upper-cased values): a trigger's local variables take the
+--    DATABASE default collation, which may differ from the table's columns, and
+--    MySQL refuses to compare two different implicit collations.
 DROP TRIGGER IF EXISTS trg_genlib_code_bi;
 CREATE TRIGGER trg_genlib_code_bi BEFORE INSERT ON general_libraries FOR EACH ROW
 BEGIN
@@ -64,13 +78,13 @@ BEGIN
   ON DUPLICATE KEY UPDATE
     shared_count = shared_count + IF(NEW.branch_id IS NULL, 1, 0),
     branch_count = branch_count + IF(NEW.branch_id IS NULL, 0, 1),
-    branch_party_type = IF(branch_party_type IS NULL AND NEW.branch_id IS NOT NULL, NEW.party_type, branch_party_type);
+    branch_party_type = IF(branch_party_type IS NULL AND NEW.branch_id IS NOT NULL, CONVERT(NEW.party_type USING utf8mb4), CONVERT(branch_party_type USING utf8mb4));
   SELECT shared_count, branch_count, branch_party_type INTO v_shared, v_branch, v_type
     FROM general_library_code_registry WHERE company_id = NEW.company_id AND code = NEW.code;
   IF v_shared > 0 AND v_branch > 0 THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'GENLIB_CODE_SHARED_BRANCH_CONFLICT';
   END IF;
-  IF NEW.branch_id IS NOT NULL AND UPPER(v_type) <> UPPER(NEW.party_type) THEN
+  IF NEW.branch_id IS NOT NULL AND CONVERT(UPPER(v_type) USING utf8mb4) COLLATE utf8mb4_bin <> CONVERT(UPPER(NEW.party_type) USING utf8mb4) COLLATE utf8mb4_bin THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'GENLIB_CODE_TYPE_CONFLICT';
   END IF;
 END;
@@ -83,7 +97,7 @@ BEGIN
   DECLARE v_type VARCHAR(50) DEFAULT NULL;
   IF NOT (OLD.company_id <=> NEW.company_id) OR OLD.code <> NEW.code
      OR (OLD.branch_id IS NULL) <> (NEW.branch_id IS NULL)
-     OR UPPER(OLD.party_type) <> UPPER(NEW.party_type) THEN
+     OR CONVERT(UPPER(OLD.party_type) USING utf8mb4) COLLATE utf8mb4_bin <> CONVERT(UPPER(NEW.party_type) USING utf8mb4) COLLATE utf8mb4_bin THEN
     -- take the OLD identity out (locks its registry row) ...
     UPDATE general_library_code_registry
        SET shared_count = shared_count - IF(OLD.branch_id IS NULL, 1, 0),
@@ -99,13 +113,13 @@ BEGIN
     ON DUPLICATE KEY UPDATE
       shared_count = shared_count + IF(NEW.branch_id IS NULL, 1, 0),
       branch_count = branch_count + IF(NEW.branch_id IS NULL, 0, 1),
-      branch_party_type = IF(branch_party_type IS NULL AND NEW.branch_id IS NOT NULL, NEW.party_type, branch_party_type);
+      branch_party_type = IF(branch_party_type IS NULL AND NEW.branch_id IS NOT NULL, CONVERT(NEW.party_type USING utf8mb4), CONVERT(branch_party_type USING utf8mb4));
     SELECT shared_count, branch_count, branch_party_type INTO v_shared, v_branch, v_type
       FROM general_library_code_registry WHERE company_id = NEW.company_id AND code = NEW.code;
     IF v_shared > 0 AND v_branch > 0 THEN
       SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'GENLIB_CODE_SHARED_BRANCH_CONFLICT';
     END IF;
-    IF NEW.branch_id IS NOT NULL AND UPPER(v_type) <> UPPER(NEW.party_type) THEN
+    IF NEW.branch_id IS NOT NULL AND CONVERT(UPPER(v_type) USING utf8mb4) COLLATE utf8mb4_bin <> CONVERT(UPPER(NEW.party_type) USING utf8mb4) COLLATE utf8mb4_bin THEN
       SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'GENLIB_CODE_TYPE_CONFLICT';
     END IF;
   END IF;
