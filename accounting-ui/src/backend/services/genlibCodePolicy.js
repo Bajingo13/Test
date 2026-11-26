@@ -1,0 +1,101 @@
+// General Libraries - branch-aware party code identity (one rule, used by the
+// import preview, the import confirm, manual create / edit and the backend).
+//
+// Identity of a party = (company, code, owner) where owner is SHARED or ONE
+// branch. Codes compare trimmed and case-insensitively (the column collation
+// is case-insensitive). Within one company:
+//
+//   same code + same owner (shared/shared or branch X/branch X) -> duplicate
+//   same code + different branches                              -> allowed,
+//        when both records have the same party type, so a code still means
+//        one kind of party wherever it is consolidated
+//   shared code <-> branch-only code                            -> refused,
+//        both ways: a branch record would shadow the shared one (and a new
+//        shared record would make existing branch records ambiguous), so a
+//        shared code always means exactly ONE record
+//   another company                                             -> never a
+//        conflict (companies are isolated; uq_genlib_company_code_branch)
+//
+// The database enforces (company_id, code, branch_scope) - branch_scope =
+// IFNULL(branch_id, 0) - (genlib_branch_code_scope_migration.sql); the shared
+// <-> branch and party-type rules are enforced here, like the Chart of
+// Accounts (coaLookupService.assertCoaCodeAllowed).
+//
+// Transaction lines keep referencing a party by code (gen_ref); a code is
+// resolved for the line's OWN branch (resolvePartyForBranch): that branch's
+// record, else the shared one - never another branch's record.
+const { HttpError } = require("../lib/httpError");
+
+const codeKey = (code) => String(code ?? "").trim().toLowerCase();
+const ownerKey = (branchId) => (branchId === null || branchId === undefined ? 0 : Number(branchId));
+
+// Pure. `taken` = records already holding this code in the company (database
+// rows and / or rows accepted earlier in the same file):
+//   [{ branchId, partyType, inFile, row }]
+// Returns null when (code, branchId, partyType) may be created, otherwise
+// { code, reason } (reason is user-facing; it never names another branch).
+function genlibCodeRefusal(code, branchId, partyType, taken = []) {
+  const shared = taken.filter((t) => ownerKey(t.branchId) === 0);
+  const fileNote = (t) => (t && t.inFile ? ` (row ${t.row} of this file)` : "");
+  // Same owner: the long-standing wordings (unchanged for shared records).
+  const duplicate = (t, where) => (t.inFile
+    ? { code: "GENLIB_CODE_EXISTS", reason: `Code "${code}" is repeated in this file (first used on row ${t.row})` }
+    : { code: "GENLIB_CODE_EXISTS", reason: `Code "${code}" already exists${where}` });
+  if (ownerKey(branchId) === 0) {
+    if (shared.length) return duplicate(shared[0], "");
+    if (taken.length) {
+      return { code: "GENLIB_CODE_USED_BY_BRANCH", reason: `Code "${code}" is already used by a branch-only record${fileNote(taken[0])}; a shared record cannot reuse it` };
+    }
+    return null;
+  }
+  if (shared.length) {
+    return { code: "GENLIB_CODE_SHARED_CONFLICT", reason: `Code "${code}" is a shared record${fileNote(shared[0])}; a branch-only record cannot reuse it` };
+  }
+  const same = taken.filter((t) => ownerKey(t.branchId) === ownerKey(branchId));
+  if (same.length) return duplicate(same[0], " in this branch");
+  const type = String(partyType || "").toUpperCase();
+  const otherType = taken.find((t) => String(t.partyType || "").toUpperCase() !== type);
+  if (otherType) {
+    return {
+      code: "GENLIB_CODE_TYPE_CONFLICT",
+      reason: `Code "${code}" is used by another branch as a ${String(otherType.partyType || "").toUpperCase()}${fileNote(otherType)}; branches sharing a code must use the same type`,
+    };
+  }
+  return null; // same code, another branch, same type - allowed
+}
+
+// Transactional check for one manual create / edit. Locks the code's rows in
+// the company (FOR UPDATE) so two concurrent writers cannot both pass.
+async function assertGenLibCodeAllowed(conn, { companyId, code, branchId, partyType, excludeId = null }) {
+  const [rows] = await conn.execute(
+    "SELECT id, branch_id, party_type FROM general_libraries WHERE company_id = ? AND code = ? FOR UPDATE",
+    [companyId, String(code ?? "").trim()]
+  );
+  const taken = rows
+    .filter((r) => excludeId === null || Number(r.id) !== Number(excludeId))
+    .map((r) => ({ branchId: r.branch_id === null ? null : Number(r.branch_id), partyType: r.party_type }));
+  const refusal = genlibCodeRefusal(String(code ?? "").trim(), branchId, partyType, taken);
+  if (!refusal) return;
+  // 400 like the existing create / edit contract; a plain duplicate keeps its
+  // long-standing message, the branch-identity conflicts explain themselves.
+  if (refusal.code === "GENLIB_CODE_EXISTS") throw new HttpError(400, "Code already exists", refusal.code);
+  throw new HttpError(400, `${refusal.reason}.`, refusal.code);
+}
+
+// Picks the record a code means for a document of `branchId` from `rows`
+// (all records of that code in the company): the branch's own record, else
+// the shared record, else - only for a document WITHOUT a branch (legacy /
+// company-level) or when the code exists exactly once - that single record.
+// Never another branch's record when the code is reused by several branches.
+function resolvePartyForBranch(rows, branchId) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) return null;
+  const want = ownerKey(branchId);
+  const own = want ? list.find((r) => ownerKey(r.branch_id ?? r.branchId) === want) : null;
+  if (own) return own;
+  const shared = list.find((r) => ownerKey(r.branch_id ?? r.branchId) === 0);
+  if (shared) return shared;
+  return list.length === 1 ? list[0] : null;
+}
+
+module.exports = { codeKey, ownerKey, genlibCodeRefusal, assertGenLibCodeAllowed, resolvePartyForBranch };

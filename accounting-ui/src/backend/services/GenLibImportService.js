@@ -7,6 +7,7 @@ const {
 } = require("./StatementImportService");
 const { OWNING_BRANCH_ALIASES, buildOwningBranchResolver } = require("./importBranchResolver");
 const { GENLIB_EXAMPLE, GENLIB_EXAMPLE_FIELDS, EXAMPLE_ROW_REASON, isExampleRow } = require("./templateExamples");
+const { codeKey, genlibCodeRefusal } = require("./genlibCodePolicy");
 
 const PARTY_TYPES = ["CUSTOMER", "SUPPLIER", "EMPLOYEE", "AFFILIATE", "BRANCH", "OTHER"];
 const STATUS_OPTIONS = ["ACTIVE", "INACTIVE"];
@@ -87,10 +88,11 @@ const TEXT_FIELDS = [
 // Read-only: used by BOTH the preview and the confirm request. Confirm calls
 // it again on the resubmitted file, so it always validates against the
 // database as it is at write time (a preview result is never trusted).
-// Since Multi-Branch Phase B general_libraries.code is UNIQUE per COMPANY
-// (uq_genlib_company_code) and the collation is case-insensitive, so existing
-// / in-file duplicates are compared case-insensitively within `companyId` -
-// exactly what the INSERT would reject. (de8b06a compared against every
+// Codes are unique per company AND owner (shared, or one branch) -
+// uq_genlib_company_code_branch + genlibCodePolicy: the same code may be owned
+// by several branches (same party type), never by a branch AND as shared.
+// Existing / in-file duplicates are compared case-insensitively within
+// `companyId`, for the row's resolved Owning Branch. (de8b06a compared against every
 // company's codes: a code used only by ANOTHER company was wrongly refused as
 // "already exists", which also disclosed that company's code.)
 //
@@ -110,11 +112,18 @@ async function parseAndValidateRows(buffer, filename, { companyId = null, user =
     return { headers, mapping, ready: [], skipped: [], warnings: [], missingRequiredColumns: true };
   }
 
+  // Branch-aware identity (genlibCodePolicy): a code is taken per OWNER
+  // (shared, or one branch) - the same code may be owned by several branches.
   const [existingRows] = companyId
-    ? await pool.execute("SELECT code FROM general_libraries WHERE company_id = ?", [companyId])
-    : await pool.execute("SELECT code FROM general_libraries");
-  const codeKey = (c) => String(c).trim().toLowerCase();
-  const existingCodes = new Set(existingRows.map((r) => codeKey(r.code)));
+    ? await pool.execute("SELECT code, branch_id, party_type FROM general_libraries WHERE company_id = ?", [companyId])
+    : await pool.execute("SELECT code, branch_id, party_type FROM general_libraries");
+  const takenByCode = new Map(); // code key -> [{ branchId, partyType, inFile, row }]
+  const takenFor = (code) => takenByCode.get(codeKey(code)) || [];
+  for (const r of existingRows) {
+    const k = codeKey(r.code);
+    if (!takenByCode.has(k)) takenByCode.set(k, []);
+    takenByCode.get(k).push({ branchId: r.branch_id === null ? null : Number(r.branch_id), partyType: r.party_type, inFile: false });
+  }
   const hasOwnerColumn = mapping.owningBranch !== undefined;
   const owner = hasOwnerColumn
     ? await buildOwningBranchResolver(user, { companyId })
@@ -123,7 +132,6 @@ async function parseAndValidateRows(buffer, filename, { companyId = null, user =
   const ready = [];
   const skipped = [];
   const warnings = [];
-  const seenInFile = new Map(); // code key -> first row number that used it
 
   dataRows.forEach((rowValues, idx) => {
     const rowNum = idx + 2;
@@ -143,16 +151,6 @@ async function parseAndValidateRows(buffer, filename, { companyId = null, user =
       return;
     }
 
-    if (existingCodes.has(codeKey(code))) {
-      skipped.push({ row: rowNum, code, reason: `Code "${code}" already exists` });
-      return;
-    }
-
-    if (seenInFile.has(codeKey(code))) {
-      skipped.push({ row: rowNum, code, reason: `Code "${code}" is repeated in this file (first used on row ${seenInFile.get(codeKey(code))})` });
-      return;
-    }
-
     const rawType = get("type") != null ? String(get("type")).trim().toUpperCase() : "";
     const type = PARTY_TYPES.find((t) => t === rawType);
     if (!type) {
@@ -163,6 +161,16 @@ async function parseAndValidateRows(buffer, filename, { companyId = null, user =
     const ownerResult = owner.resolve(get("owningBranch"));
     if (!ownerResult.ok) {
       skipped.push({ row: rowNum, code, reason: ownerResult.reason });
+      return;
+    }
+
+    // Duplicate check for THIS row's owner - existing records and rows of
+    // this file alike (preview and confirm run this same code).
+    const refusal = genlibCodeRefusal(code, ownerResult.branchId, type, takenFor(code));
+    if (refusal) {
+      // owningBranch only for files with the Owning Branch column (a legacy
+      // file's response is exactly what it was)
+      skipped.push({ row: rowNum, code, reason: refusal.reason, ...(hasOwnerColumn ? { owningBranch: ownerResult.label } : {}) });
       return;
     }
 
@@ -201,7 +209,9 @@ async function parseAndValidateRows(buffer, filename, { companyId = null, user =
       record[field] = get(field) != null ? String(get(field)).trim() : "";
     }
 
-    seenInFile.set(codeKey(code), rowNum);
+    const k = codeKey(code);
+    if (!takenByCode.has(k)) takenByCode.set(k, []);
+    takenByCode.get(k).push({ branchId: ownerResult.branchId, partyType: type, inFile: true, row: rowNum });
     ready.push(record);
   });
 

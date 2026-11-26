@@ -1,6 +1,7 @@
 const pool = require("../db");
 const { coaByCodeSql } = require("./coaLookupService"); // one COA row per code (Phase B branch-reused codes)
 const { postedOnlySql } = require("./reportRecognitionService");
+const { resolvePartyForBranch } = require("./genlibCodePolicy"); // branch-aware gen_ref (codes reused by branches)
 
 // Every transaction-line table that carries an account_code, unioned into one
 // ledger stream. Same table set trial-balance/income-statement already union
@@ -340,7 +341,8 @@ async function attachBookPartyFields(rows, companyId) {
                 ${src.linePartyId ? `l.${src.linePartyId}` : "NULL"} AS line_party_id,
                 ${src.partyId ? `h.${src.partyId}` : "NULL"} AS header_party_id,
                 ${src.partyName ? `h.${src.partyName}` : "NULL"} AS header_party_name,
-                ${src.storedTin ? `h.${src.storedTin}` : "NULL"} AS header_stored_tin
+                ${src.storedTin ? `h.${src.storedTin}` : "NULL"} AS header_stored_tin,
+                h.branch_id AS header_branch_id
            FROM ${src.lines} l
            JOIN ${src.headers} h ON h.id = l.${src.fk}
           WHERE h.company_id = ? AND l.id IN (?)`,
@@ -359,26 +361,31 @@ async function attachBookPartyFields(rows, companyId) {
     if (d.header_party_id != null) partyIds.add(d.header_party_id);
   }
 
-  const partyByCode = new Map(); // general_libraries.code is UNIQUE (case-insensitive)
+  // A code may be owned by several branches (genlibCodePolicy): every record
+  // of each code is kept, and a line's code is resolved for the line's OWN
+  // document branch (resolvePartyForBranch) - never another branch's record.
+  const partiesByCode = new Map(); // lower-cased code -> [records]
   const partyById = new Map();
-  const remember = (p) => {
-    partyById.set(p.id, p);
-    partyByCode.set(clean(p.code).toLowerCase(), p);
-  };
   for (const codeChunk of chunk([...codes], IN_CHUNK_SIZE)) {
     const [found] = await pool.query(
-      "SELECT id, code, name, tin FROM general_libraries WHERE company_id = ? AND code IN (?)",
+      "SELECT id, code, name, tin, branch_id FROM general_libraries WHERE company_id = ? AND code IN (?)",
       [companyId, codeChunk]
     );
-    found.forEach(remember);
+    for (const p of found) {
+      partyById.set(p.id, p);
+      const k = clean(p.code).toLowerCase();
+      if (!partiesByCode.has(k)) partiesByCode.set(k, []);
+      partiesByCode.get(k).push(p);
+    }
   }
   for (const idChunk of chunk([...partyIds], IN_CHUNK_SIZE)) {
     const [found] = await pool.query(
-      "SELECT id, code, name, tin FROM general_libraries WHERE company_id = ? AND id IN (?)",
+      "SELECT id, code, name, tin, branch_id FROM general_libraries WHERE company_id = ? AND id IN (?)",
       [companyId, idChunk]
     );
-    found.forEach(remember);
+    found.forEach((p) => partyById.set(p.id, p));
   }
+  const partyForCode = (code, branchId) => resolvePartyForBranch(partiesByCode.get(code.toLowerCase()) || [], branchId);
 
   // 3. Resolve per row.
   for (const row of rows) {
@@ -398,7 +405,7 @@ async function attachBookPartyFields(rows, companyId) {
         // Line-level party (e.g. different parties on different JV lines, or
         // the party stored on an AR/AP beginning-balance line).
         const lineMaster =
-          (genRef ? partyByCode.get(genRef.toLowerCase()) : null) ||
+          (genRef ? partyForCode(genRef, d.header_branch_id) : null) ||
           (d.line_party_id != null ? partyById.get(d.line_party_id) : null) ||
           null;
         partyName = genName || (lineMaster ? clean(lineMaster.name) : "");

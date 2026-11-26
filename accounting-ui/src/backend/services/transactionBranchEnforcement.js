@@ -91,13 +91,24 @@ async function validateReferences(db, { companyId, branchId, partyIds = [], line
     if (partyId === undefined || partyId === null || partyId === "") continue;
     await TransactionBranchService.assertPartyUsableInBranch({ companyId, partyId, branchId }, db);
   }
-  // Line-level parties (Gen Ref = General Library code, company-unique).
+  // Line-level parties (Gen Ref = General Library code). A code may be owned
+  // by several branches (genlibCodePolicy): it is usable when the document's
+  // branch owns it or it is shared, and refused only when EVERY record of
+  // that code belongs to another branch.
   const codes = [...new Set((Array.isArray(lines) ? lines : []).map((l) => String(l?.genRef || "").trim()).filter(Boolean))];
   if (codes.length) {
     const [rows] = await db.query("SELECT code, branch_id FROM general_libraries WHERE company_id = ? AND code IN (?)", [companyId, codes]);
-    const foreign = rows.filter((r) => r.branch_id !== null && !sameBranch(r.branch_id, branchId));
+    const byCode = new Map();
+    for (const r of rows) {
+      const k = String(r.code).trim().toLowerCase();
+      if (!byCode.has(k)) byCode.set(k, []);
+      byCode.get(k).push(r);
+    }
+    const foreign = [...byCode.values()]
+      .filter((list) => !list.some((r) => r.branch_id === null || sameBranch(r.branch_id, branchId)))
+      .map((list) => list[0].code);
     if (foreign.length) {
-      throw new HttpError(400, `Party ${foreign.map((r) => r.code).join(", ")} belongs to another branch.`, "PARTY_BRANCH_MISMATCH");
+      throw new HttpError(400, `Party ${foreign.join(", ")} belongs to another branch.`, "PARTY_BRANCH_MISMATCH");
     }
   }
 }

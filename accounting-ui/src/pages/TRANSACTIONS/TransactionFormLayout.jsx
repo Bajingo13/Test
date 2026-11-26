@@ -2024,7 +2024,9 @@ if (code === "OR" || code === "CV") {
   // relying on `partyOptions` state, which wouldn't reflect a record created
   // a moment earlier in the same tick (see handlePartyCreated below).
   function handlePartyChange(value, optionsOverride) {
-    const options = optionsOverride || partyOptions;
+    // Only this document's branch parties (shared + its own branch): several
+    // branches may own a party with the same code and name.
+    const options = (optionsOverride || partyOptions).filter((p) => visibleInBranch(p, txBranchId));
     const selectedParty = options.find(
       (party) => party.name.toLowerCase() === value.toLowerCase()
     );
@@ -2089,8 +2091,11 @@ if (code === "OR" || code === "CV") {
         if (field === "debit" && value !== "") updated.credit = "";
         if (field === "credit" && value !== "") updated.debit = "";
 
+        // Branch-aware party codes: several branches may own the same code,
+        // so a code / name is matched only among this document's branch
+        // parties (shared + its own branch) - never another branch's record.
         if (field === "accountId") {
-          const selectedParty = partyOptions.find(
+          const selectedParty = branchPartyOptions.find(
             (party) => party.name.toLowerCase() === form.party.toLowerCase()
           );
 
@@ -2104,8 +2109,8 @@ if (code === "OR" || code === "CV") {
         }
 
         if (field === "genRef") {
-          const selectedParty = partyOptions.find(
-            (party) => party.code === value
+          const selectedParty = branchPartyOptions.find(
+            (party) => String(party.code).trim().toLowerCase() === String(value).trim().toLowerCase()
           );
 
           if (selectedParty) {
@@ -3814,7 +3819,7 @@ if (code === "OR") {
               onClose={() => { setShowVatEntryModal(false); setEditingTaxLineId(null); }}
               direction={vatEntryDirection}
               partyLabel={partyLabel}
-              partyOptions={partyOptions}
+              partyOptions={branchPartyOptions}
               taxAccountOptions={vatModalAccounts}
               missingAccountMessage={vatMissingMessage}
               vatRateCodes={vatRateCodes}

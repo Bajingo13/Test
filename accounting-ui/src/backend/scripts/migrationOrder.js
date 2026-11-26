@@ -268,6 +268,11 @@ const MIGRATION_ORDER = [
   // single unambiguous CREATE / latest EDIT audit entries. Must run after the
   // header tables and audit_logs exist.
   "posting_control_migration.sql",
+  // General Libraries branch-aware codes: UNIQUE (company_id, code) becomes
+  // UNIQUE (company_id, code, branch_scope) via a stored generated column
+  // branch_scope = IFNULL(branch_id, 0). Indexes + generated column only - no
+  // row changes. Must run after multi_branch_phase_b_migration.sql.
+  "genlib_branch_code_scope_migration.sql",
 ];
 
 module.exports = { MIGRATION_ORDER };

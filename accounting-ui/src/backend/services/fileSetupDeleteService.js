@@ -81,10 +81,15 @@ async function countPartyReferences(party) {
     const [[row]] = await pool.execute(`SELECT COUNT(*) AS n FROM ${table} WHERE ${col} = ?`, [party.id]);
     if (Number(row.n)) references[table] = Number(row.n);
   }
+  // gen_ref carries only the code, which several branches may own
+  // (genlibCodePolicy): a branch-only party counts the lines of its OWN
+  // branch's documents (plus documents without a branch, conservatively); a
+  // shared party - whose code no branch record may reuse - every line.
+  const branchOnly = party.branch_id !== null && party.branch_id !== undefined;
   for (const [lines, fk, headers] of PARTY_CODE_LINE_SOURCES) {
     const [[row]] = await pool.execute(
-      `SELECT COUNT(*) AS n FROM ${lines} l JOIN ${headers} h ON h.id = l.${fk} WHERE h.company_id = ? AND l.gen_ref = ?`,
-      [party.company_id, party.code]
+      `SELECT COUNT(*) AS n FROM ${lines} l JOIN ${headers} h ON h.id = l.${fk} WHERE h.company_id = ? AND l.gen_ref = ?${branchOnly ? " AND (h.branch_id = ? OR h.branch_id IS NULL)" : ""}`,
+      branchOnly ? [party.company_id, party.code, party.branch_id] : [party.company_id, party.code]
     );
     if (Number(row.n)) references[`${lines}.gen_ref`] = Number(row.n);
   }

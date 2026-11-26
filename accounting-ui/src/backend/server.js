@@ -79,6 +79,7 @@ const { assertSameBranchApplication } = require("./services/branchApplicationGua
 const ReversalBranchService = require("./services/reversalBranchService");
 const BranchResolution = require("./lib/branchResolution");
 const ActiveBranch = require("./lib/activeBranchContext");
+const GenLibCodePolicy = require("./services/genlibCodePolicy");
 const { assertCoaCodeAllowed } = require("./services/coaLookupService");
 const InvoiceVerificationService = require("./services/invoiceVerificationService");
 
@@ -402,7 +403,14 @@ app.post("/api/genlib", authenticateToken, authorizePermission("FILESETUP.GENLIB
     // Multi-Branch Foundation: optional branch-only party (validated, never trusted).
     const branchId = await BranchResolution.resolveBranch(req.user, companyId, req.body?.branchId, { required: false });
 
-    const [result] = await pool.execute(
+    // Branch-aware code identity (genlibCodePolicy), checked and inserted in
+    // one transaction so a concurrent writer cannot slip the same code in.
+    const conn = await pool.getConnection();
+    let result;
+    try {
+      await conn.beginTransaction();
+      await GenLibCodePolicy.assertGenLibCodeAllowed(conn, { companyId, code: item.code, branchId, partyType: item.type });
+    [result] = await conn.execute(
       `INSERT INTO general_libraries (
         company_id, code, party_type, name, status, start_date,
         address1, address2, address3, attention, position,
@@ -438,6 +446,13 @@ app.post("/api/genlib", authenticateToken, authorizePermission("FILESETUP.GENLIB
         branchId,
       ]
     );
+      await conn.commit();
+    } catch (txErr) {
+      await conn.rollback().catch(() => {});
+      throw txErr;
+    } finally {
+      conn.release();
+    }
 
     res.json({
       success: true,
@@ -473,7 +488,11 @@ app.put("/api/genlib/:id", authenticateToken, authorizePermission("FILESETUP.GEN
       ? await BranchResolution.resolveBranch(req.user, companyId, req.body.branchId, { required: false })
       : ownerRows[0].branch_id;
 
-    await pool.execute(
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      await GenLibCodePolicy.assertGenLibCodeAllowed(conn, { companyId, code: item.code, branchId, partyType: item.type, excludeId: id });
+    await conn.execute(
       `UPDATE general_libraries SET
         code = ?,
         party_type = ?,
@@ -529,6 +548,13 @@ app.put("/api/genlib/:id", authenticateToken, authorizePermission("FILESETUP.GEN
         companyId,
       ]
     );
+      await conn.commit();
+    } catch (txErr) {
+      await conn.rollback().catch(() => {});
+      throw txErr;
+    } finally {
+      conn.release();
+    }
 
     res.json({
       success: true,
@@ -555,7 +581,7 @@ app.delete("/api/genlib/:id", authenticateToken, authorizePermission("FILESETUP.
 
     // Post-File-Setup fix: a party that transactions / beginning balances /
     // templates use is never deleted (no FK protects these references).
-    const [[party]] = await pool.execute("SELECT id, code, company_id FROM general_libraries WHERE id = ?", [id]);
+    const [[party]] = await pool.execute("SELECT id, code, company_id, branch_id FROM general_libraries WHERE id = ?", [id]);
     const references = await FileSetupDeleteService.countPartyReferences(party);
     if (Object.keys(references).length) {
       return res.status(409).json({
@@ -666,7 +692,7 @@ app.get("/api/genlib/template", authenticateToken, authorizePermission("FILESETU
           "Only the first sheet ('General Libraries') is read. Code, Type and Name are required.",
           "The first sheet starts empty - enter your records from row 2. The 'Example' sheet shows a filled-in row for reference and is never imported.",
           "If a file from an older template still contains its example row (CUST-001 Sample Customer Inc.), that row is skipped with a reason, not imported.",
-          "Codes are unique within the company. Existing codes are never overwritten; they are skipped with a reason.",
+          "Codes are unique per Owning Branch within the company: the same code may be owned by several branches (with the same Type), but a shared code cannot also be used by a branch-only record (or the reverse). Existing codes are never overwritten; they are skipped with a reason.",
           "You see a preview first; nothing is saved until you confirm.",
         ] },
         { heading: "Owning Branch", body: OWNING_BRANCH_INSTRUCTIONS("party") },

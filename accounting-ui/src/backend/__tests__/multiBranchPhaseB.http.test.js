@@ -235,7 +235,9 @@ describe("General Libraries: company-scoped codes, branch isolation", () => {
     const b = await post("adminB", "/api/genlib", { companyId: co.B, code: "UAT-MBB-P1", name: "P1 B", type: "SUPPLIER" });
     expect([a.status, b.status]).toEqual([200, 200]);
     const dup = await post("adminA", "/api/genlib", { companyId: co.A, code: "UAT-MBB-P1", name: "dup", type: "SUPPLIER", branchId: br.A1 });
-    expect([dup.status, dup.body.message]).toEqual([400, "Code already exists"]);
+    // Branch-aware party codes (genlibCodePolicy): a branch-only record still
+    // cannot reuse a SHARED code - now with the specific reason.
+    expect([dup.status, dup.body.code, dup.body.message]).toEqual([400, "GENLIB_CODE_SHARED_CONFLICT", 'Code "UAT-MBB-P1" is a shared record; a branch-only record cannot reuse it.']);
     expect((await get("adminB", `/api/genlib?companyId=${co.B}`)).body.map((r) => r.id)).not.toContain(a.body.id);
   });
 
