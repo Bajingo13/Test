@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import BeginningBalanceImportModal from "../../components/BeginningBalanceImportModal";
 import BeginningBalanceBranchField from "../../components/BeginningBalanceBranchField";
 import useAuthorizedBranches from "../../hooks/useAuthorizedBranches";
+import { useActiveBranch } from "../../context/ActiveBranchContext";
+import { defaultFormBranch } from "../../utils/activeBranch.mjs";
 import { branchFieldMode, defaultTransactionBranch } from "../TRANSACTIONS/transactionBranch.mjs";
 import "./BeginningBalanceGL.css";
 
@@ -51,11 +53,13 @@ export default function BeginningBalance() {
   const [baseCurrency, setBaseCurrency] = useState(null);
   // Multi-Branch Phase C-3: the branch these balances belong to.
   const { branches: userBranches } = useAuthorizedBranches();
+  // System-wide Active Branch: a new balance defaults to the active branch.
+  const activeBranch = useActiveBranch();
   const [branchId, setBranchId] = useState("");
   const [branchError, setBranchError] = useState("");
   useEffect(() => {
-    setBranchId((current) => current || defaultTransactionBranch(userBranches));
-  }, [userBranches]);
+    setBranchId((current) => current || defaultFormBranch(activeBranch.value, userBranches) || defaultTransactionBranch(userBranches));
+  }, [userBranches, activeBranch.value]);
   const branchQuery = branchId ? `&branchId=${encodeURIComponent(branchId)}` : "";
 
   useEffect(() => {

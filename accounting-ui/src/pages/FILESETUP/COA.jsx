@@ -7,6 +7,7 @@ import AutoResizeTextarea from "../../components/AutoResizeTextarea";
 import { DEFAULT_SORT, sortOptions, sortRecords, toolbarState } from "./fileSetupRecords.mjs";
 import { postBulkDelete } from "../../utils/fileSetupBulkDelete";
 import useAuthorizedBranches from "../../hooks/useAuthorizedBranches";
+import { useActiveBranchDirtyGuard } from "../../context/ActiveBranchContext";
 import { ownershipLabel, ownershipOptions, ownershipValue, branchIdPayload } from "./branchOwnership.mjs";
 import "./COA.css";
 import "../../components/RecurringTemplateModal.css";
@@ -58,6 +59,8 @@ export default function COA() {
   const [groupCodeOptions, setGroupCodeOptions] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [mode, setMode] = useState("view");
+  // System-wide Active Branch: switching branch while adding/editing asks first.
+  useActiveBranchDirtyGuard("coa-form", mode === "add" || mode === "edit");
   const [search, setSearch] = useState("");
   // Phase 5: filters the account's own account_date (a required, genuine
   // business field on chart_of_accounts - NOT a technical created_at/

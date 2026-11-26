@@ -39,6 +39,8 @@ import { authHeaders, handleAuthError } from "../../utils/authSession";
 // Multi-Branch Phase C-2B: transaction branch + branch-aware pickers + payment
 // application from the AP / AR amount field (rules in transactionBranch.mjs).
 import useAuthorizedBranches from "../../hooks/useAuthorizedBranches";
+import { useActiveBranch, useActiveBranchDirtyGuard } from "../../context/ActiveBranchContext";
+import { defaultFormBranch } from "../../utils/activeBranch.mjs";
 import { activeBranches, defaultTransactionBranch, branchFieldMode, visibleInBranch, branchName, ownershipSuffix, applicationTrigger, applicationAmountError } from "./transactionBranch.mjs";
 import "./TransactionFormLayout.css";
 
@@ -149,6 +151,12 @@ export default function TransactionFormLayout({
   // Multi-Branch Phase C-2B. The server validates the branch, every account,
   // party and payment application on save; this only drives what is offered.
   const { branches: userBranches } = useAuthorizedBranches();
+  // System-wide Active Branch: a NEW document starts in the active branch
+  // (when it is one of the user's active branches); the user may still pick
+  // another authorized branch, and the server re-validates it on save. A
+  // branch switch while this form is being edited asks for confirmation.
+  const activeBranch = useActiveBranch();
+  useActiveBranchDirtyGuard("transaction-form", mode === "form" && formMode === "edit");
   const [branchId, setBranchId] = useState("");
   const [applicationError, setApplicationError] = useState("");
   const applicationLineRef = useRef(null);
@@ -163,9 +171,9 @@ export default function TransactionFormLayout({
   const branchPartyOptions = useMemo(() => partyOptions.filter((p) => visibleInBranch(p, txBranchId)), [partyOptions, txBranchId]);
   useEffect(() => {
     if (isExistingRecord || branchId) return;
-    const preset = defaultTransactionBranch(userBranches);
+    const preset = defaultFormBranch(activeBranch.value, userBranches) || defaultTransactionBranch(userBranches);
     if (preset) setBranchId(preset);
-  }, [userBranches, isExistingRecord, branchId]);
+  }, [userBranches, isExistingRecord, branchId, activeBranch.value]);
   const [unpaidApvs, setUnpaidApvs] = useState([]);
   const [showApvModal, setShowApvModal] = useState(false);
   const [apvApplications, setApvApplications] = useState([]);
@@ -549,11 +557,15 @@ export default function TransactionFormLayout({
     }
   }
 
+  // The pickers load every account / party the user may use ("X-Active-Branch:
+  // ALL") and are then filtered per document branch (visibleInBranch): shared
+  // records + the document's own branch - so a document of another authorized
+  // branch than the active one still shows its own branch's records.
   async function loadAccounts() {
     try {
       const res = await fetch(`${API_BASE}/api/coa`, {
         credentials: "include",
-        headers: authHeaders(),
+        headers: { ...authHeaders(), "X-Active-Branch": "ALL" },
       });
 
       const data = await res.json();
@@ -574,7 +586,7 @@ export default function TransactionFormLayout({
     try {
       const res = await fetch(`${API_BASE}/api/genlib`, {
         credentials: "include",
-        headers: authHeaders(),
+        headers: { ...authHeaders(), "X-Active-Branch": "ALL" },
       });
 
       const data = await res.json();

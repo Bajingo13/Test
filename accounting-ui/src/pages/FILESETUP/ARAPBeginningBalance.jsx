@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import BeginningBalanceImportModal from "../../components/BeginningBalanceImportModal";
 import BeginningBalanceBranchField from "../../components/BeginningBalanceBranchField";
 import useAuthorizedBranches from "../../hooks/useAuthorizedBranches";
+import { useActiveBranch } from "../../context/ActiveBranchContext";
+import { defaultFormBranch } from "../../utils/activeBranch.mjs";
 import { branchFieldMode, defaultTransactionBranch, visibleInBranch } from "../TRANSACTIONS/transactionBranch.mjs";
 import AutoResizeTextarea from "../../components/AutoResizeTextarea";
 import { authHeaders, handleAuthError } from "../../utils/authSession";
@@ -64,11 +66,13 @@ export default function ARAPBeginningBalance({ balanceType }) {
   // Multi-Branch Phase C-3: a new balance's branch; an edited line keeps its
   // own header's branch (pickers follow whichever applies).
   const { branches: userBranches } = useAuthorizedBranches();
+  // System-wide Active Branch: a new balance defaults to the active branch.
+  const activeBranch = useActiveBranch();
   const [branchId, setBranchId] = useState("");
   const [branchError, setBranchError] = useState("");
   useEffect(() => {
-    setBranchId((current) => current || defaultTransactionBranch(userBranches));
-  }, [userBranches]);
+    setBranchId((current) => current || defaultFormBranch(activeBranch.value, userBranches) || defaultTransactionBranch(userBranches));
+  }, [userBranches, activeBranch.value]);
   const showBranchColumn = userBranches.length > 0;
 
   useEffect(() => {
@@ -100,7 +104,7 @@ export default function ARAPBeginningBalance({ balanceType }) {
     try {
       const res = await fetch(`${API_BASE}/api/genlib`, {
         credentials: "include",
-        headers: authHeaders(),
+        headers: { ...authHeaders(), "X-Active-Branch": "ALL" }, // pickers filter per balance branch
       });
 
       const data = await res.json();
@@ -125,7 +129,7 @@ export default function ARAPBeginningBalance({ balanceType }) {
     try {
       const res = await fetch(`${API_BASE}/api/coa`, {
         credentials: "include",
-        headers: authHeaders(),
+        headers: { ...authHeaders(), "X-Active-Branch": "ALL" }, // pickers filter per balance branch
       });
 
       const data = await res.json();

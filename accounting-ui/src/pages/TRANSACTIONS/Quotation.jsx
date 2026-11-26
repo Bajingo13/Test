@@ -5,6 +5,8 @@ import "./TransactionFormLayout.css";
 import "./Quotation.css";
 // Multi-Branch Phase C-2B (same rules as TransactionFormLayout; server-validated).
 import useAuthorizedBranches from "../../hooks/useAuthorizedBranches";
+import { useActiveBranch } from "../../context/ActiveBranchContext";
+import { defaultFormBranch } from "../../utils/activeBranch.mjs";
 import { activeBranches, defaultTransactionBranch, branchFieldMode, visibleInBranch, branchName } from "./transactionBranch.mjs";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
@@ -82,15 +84,17 @@ export default function Quotation() {
   const [accounts, setAccounts] = useState([]);
   const [selected, setSelected] = useState(null);
   const { branches: userBranches } = useAuthorizedBranches();
+  // System-wide Active Branch: a new quotation defaults to the active branch.
+  const activeBranch = useActiveBranch();
   const [branchId, setBranchId] = useState("");
   const [branchError, setBranchError] = useState("");
   const quotationBranchId = selected?.id ? (selected.branchId ?? selected.branch_id ?? "") : branchId;
   const quotationBranchMode = selected?.id ? (quotationBranchId ? "locked" : "none") : branchFieldMode(userBranches);
   useEffect(() => {
     if (selected?.id || branchId) return;
-    const preset = defaultTransactionBranch(userBranches);
+    const preset = defaultFormBranch(activeBranch.value, userBranches) || defaultTransactionBranch(userBranches);
     if (preset) setBranchId(preset);
-  }, [userBranches, selected, branchId]);
+  }, [userBranches, selected, branchId, activeBranch.value]);
 
   const [form, setForm] = useState(emptyForm);
   const [lines, setLines] = useState([createItemLine()]);
@@ -106,7 +110,8 @@ export default function Quotation() {
     try {
       const res = await fetch(`${API_BASE}/api/coa`, {
         credentials: "include",
-        headers: authHeaders(),
+        // the pickers filter per quotation branch (visibleInBranch)
+        headers: { ...authHeaders(), "X-Active-Branch": "ALL" },
       });
       const data = await res.json();
 
@@ -144,7 +149,8 @@ export default function Quotation() {
     try {
       const res = await fetch(`${API_BASE}/api/genlib`, {
         credentials: "include",
-        headers: authHeaders(),
+        // the pickers filter per quotation branch (visibleInBranch)
+        headers: { ...authHeaders(), "X-Active-Branch": "ALL" },
       });
       const data = await res.json();
 

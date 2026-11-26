@@ -7,6 +7,7 @@ import AutoResizeTextarea from "../../components/AutoResizeTextarea";
 import { DEFAULT_SORT, filterGenLibRecords, sortOptions, sortRecords, statusBadge, toolbarState } from "./fileSetupRecords.mjs";
 import { postBulkDelete } from "../../utils/fileSetupBulkDelete";
 import useAuthorizedBranches from "../../hooks/useAuthorizedBranches";
+import { useActiveBranchDirtyGuard } from "../../context/ActiveBranchContext";
 import { ownershipLabel, ownershipOptions, ownershipValue, branchIdPayload } from "./branchOwnership.mjs";
 import "./GenLib.css";
 import "../../components/RecurringTemplateModal.css";
@@ -64,6 +65,8 @@ export default function GenLib() {
   const [records, setRecords] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [mode, setMode] = useState("view");
+  // System-wide Active Branch: switching branch while adding/editing asks first.
+  useActiveBranchDirtyGuard("genlib-form", mode === "add" || mode === "edit");
   const [search, setSearch] = useState("");
   const [activeTab, setActiveTab] = useState("main");
   const [showTable, setShowTable] = useState(false);
