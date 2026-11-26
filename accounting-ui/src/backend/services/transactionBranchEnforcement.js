@@ -32,6 +32,7 @@
 const pool = require("../db");
 const { HttpError } = require("../lib/httpError");
 const BranchResolution = require("../lib/branchResolution");
+const ActiveBranch = require("../lib/activeBranchContext");
 const TransactionBranchService = require("./transactionBranchService");
 const UserAccessService = require("./userAccessService");
 const { authenticateToken } = require("../middleware/authenticate");
@@ -46,9 +47,13 @@ async function transactionScope(user, companyId, db = pool) {
 }
 
 // SQL predicate for list / lookup queries on header alias `alias`.
+// System-wide Active Branch: narrowed to the request's active branch when one
+// applies (lib/activeBranchContext - can only narrow, never widen).
 async function visibleSql(user, companyId, alias, db = pool) {
-  if (isSuper(user)) return "1 = 1";
-  return BranchResolution.branchScopeSql(alias, await transactionScope(user, companyId, db));
+  const base = isSuper(user) ? "ALL" : await transactionScope(user, companyId, db);
+  const scope = await ActiveBranch.narrowScope(companyId, base, db);
+  if (scope === "ALL") return "1 = 1";
+  return BranchResolution.branchScopeSql(alias, scope);
 }
 
 // Multi-Branch Phase C-3 - print isolation. A serializable form of the

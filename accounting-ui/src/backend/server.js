@@ -78,6 +78,7 @@ const { findPostedReversalJv, buildReversalLine, buildReversalTaxEntry, reversal
 const { assertSameBranchApplication } = require("./services/branchApplicationGuard");
 const ReversalBranchService = require("./services/reversalBranchService");
 const BranchResolution = require("./lib/branchResolution");
+const ActiveBranch = require("./lib/activeBranchContext");
 const { assertCoaCodeAllowed } = require("./services/coaLookupService");
 const InvoiceVerificationService = require("./services/invoiceVerificationService");
 
@@ -105,6 +106,10 @@ app.use(cors({
 }));
 
 app.use(express.json());
+// System-wide Active Branch (X-Active-Branch): a request context that can only
+// NARROW what the user may already see (lib/activeBranchContext). Never an
+// authorization grant; explicit ?branchId / ?branch parameters take precedence.
+app.use("/api", require("./lib/activeBranchContext").middleware);
 // Multi-Branch Phase C-1: transactions are branch-owned. /api/<module>/:id is
 // isolated by branch before the module routes run (services/transactionBranchEnforcement).
 const TxBranch = require("./services/transactionBranchEnforcement");
@@ -5381,10 +5386,29 @@ app.get("/api/posting/pending", authenticateToken, authorizePermission("POSTING"
     // branch of their companies already, so no extra filter applies to them.
     let branchFilter = "";
     let branchParams = [];
-    if (req.user.roleCode !== "SUPER_ADMIN" && req.user.roleCode !== "ADMIN") {
-      const allowed = await BranchResolution.authorizedBranchIdsAnyCompany(req.user);
+    const fullAuthority = req.user.roleCode === "SUPER_ADMIN" || req.user.roleCode === "ADMIN";
+    const allowed = fullAuthority ? null : await BranchResolution.authorizedBranchIdsAnyCompany(req.user);
+    if (!fullAuthority) {
       branchFilter = allowed.length ? "AND (h.branch_id IS NULL OR h.branch_id IN (?))" : "AND h.branch_id IS NULL";
       branchParams = allowed.length ? [allowed] : [];
+    }
+    // System-wide Active Branch: narrow to the active branch (never widen).
+    // A branch the caller may not act on narrows to nothing; a branch of a
+    // company outside this request's scope does not apply.
+    const activeBranch = ActiveBranch.requestedBranchId();
+    if (activeBranch) {
+      const owner = await ActiveBranch.branchCompany(activeBranch);
+      const inScope = owner !== null && (scope === null || (Array.isArray(scope) ? scope.map(Number).includes(owner) : Number(scope) === owner));
+      if (inScope) {
+        const authorized = fullAuthority || allowed.map(Number).includes(activeBranch);
+        if (!authorized) {
+          branchFilter += " AND 1 = 0";
+        } else {
+          const [[cnt]] = await pool.execute("SELECT COUNT(*) AS n FROM branches WHERE company_id = ?", [owner]);
+          branchFilter += Number(cnt.n) === 1 ? " AND (h.branch_id = ? OR h.branch_id IS NULL)" : " AND h.branch_id = ?";
+          branchParams = [...branchParams, activeBranch];
+        }
+      }
     }
     const scopeFilter = `${companyFilter.replace(/company_id/g, "h.company_id")} ${branchFilter}`;
     const scopeParams = [...filterParams, ...branchParams];
@@ -5538,13 +5562,17 @@ app.post("/api/posting/post", authenticateToken, authorizePermission("POSTING", 
       // in scope), and - separation of duties - never a draft the caller made
       // or last edited, nor one whose maker is unknown.
       const bulkBranchIds = await BranchResolution.authorizedBranchIds(req.user, companyId, conn);
+      // System-wide Active Branch: the batch is narrowed to the active branch
+      // (never widened; an unauthorized one narrows to nothing).
+      const bulkScope = await ActiveBranch.narrowScope(companyId, { branchIds: bulkBranchIds, includeUnassigned: true }, conn);
+      const bulkBranchSql = BranchResolution.branchScopeSql("t", bulkScope).replace(/\bt\.branch_id\b/g, "branch_id");
       const [rawDraftRows] = await conn.query(
         `SELECT id, transaction_date AS transactionDate, created_by AS createdBy, updated_by AS updatedBy
            FROM ${target.table}
           WHERE UPPER(status) = 'DRAFT' AND company_id = ?
-            AND (branch_id IS NULL ${bulkBranchIds.length ? "OR branch_id IN (?)" : ""})
+            AND ${bulkBranchSql}
           FOR UPDATE`,
-        bulkBranchIds.length ? [companyId, bulkBranchIds] : [companyId]
+        [companyId]
       );
       draftRows = rawDraftRows;
       if (PostingControl.sodEnforced()) {

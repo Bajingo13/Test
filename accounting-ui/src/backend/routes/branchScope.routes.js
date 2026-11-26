@@ -33,7 +33,11 @@ router.get("/branches", authenticateToken, async (req, res) => {
   try {
     const companyId = await companyOf(req);
     const branches = await BranchResolution.authorizedBranches(req.user, companyId);
-    res.json({ companyId, branches, canConsolidate: await BranchResolution.canConsolidate(req.user) });
+    // totalBranches (additive): lets the Active Branch selector say "All
+    // Branches" (the user covers every branch of the company) or "All
+    // Assigned Branches" (a subset) - display only, never a permission.
+    const [[total]] = await pool.execute("SELECT COUNT(*) AS n FROM branches WHERE company_id = ?", [companyId]);
+    res.json({ companyId, branches, canConsolidate: await BranchResolution.canConsolidate(req.user), totalBranches: Number(total.n) });
   } catch (err) {
     sendError(res, err, "Failed to load branches");
   }

@@ -79,7 +79,15 @@ async function middleware(req, res, next) {
       }
       return next();
     }
-    const requested = req.query.branch;
+    let requested = req.query.branch;
+    // System-wide Active Branch: with no ?branch, the request's active branch
+    // (X-Active-Branch) is the report branch - validated exactly like ?branch
+    // (403 when not authorized). One of another company does not apply.
+    if (requested === undefined || requested === "") {
+      const ActiveBranch = require("./activeBranchContext");
+      const active = ActiveBranch.requestedBranchId();
+      if (active && (await ActiveBranch.branchCompany(active)) === Number(companyId)) requested = String(active);
+    }
     if (requested !== undefined && requested !== "") {
       const scope = await BranchResolution.resolveReportBranchScope(req.user, companyId, requested);
       if (!scope.consolidated) {

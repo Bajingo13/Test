@@ -173,7 +173,19 @@ async function setupBranchIds(user, { companyId = null, requestedBranchId } = {}
       : await resolveBranchAnyCompany(user, requestedBranchId, db);
     return [id];
   }
-  return companyId ? authorizedBranchIds(user, companyId, db) : authorizedBranchIdsAnyCompany(user, db);
+  const ids = companyId ? await authorizedBranchIds(user, companyId, db) : await authorizedBranchIdsAnyCompany(user, db);
+  // System-wide Active Branch: shared rows + the ACTIVE branch's own rows.
+  // Never widens: an active branch outside the user's authority leaves shared
+  // rows only; one of another company (company-scoped lists) does not apply.
+  const active = require("./activeBranchContext").requestedBranchId();
+  if (active) {
+    if (companyId) {
+      const owner = await require("./activeBranchContext").branchCompany(active, db);
+      if (owner !== null && owner !== Number(companyId)) return ids;
+    }
+    return ids.includes(active) ? [active] : [];
+  }
+  return ids;
 }
 
 async function assertSetupRecordVisible(user, branchId, db = pool) {
