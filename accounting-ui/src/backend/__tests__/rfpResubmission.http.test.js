@@ -274,13 +274,19 @@ describe("resubmit", () => {
     ["21. total differs from the lines", (id) => pool.execute("UPDATE rfp_headers SET total_amount = 1 WHERE id = ?", [id])],
     ["missing purpose", (id) => pool.execute("UPDATE rfp_headers SET purpose = NULL WHERE id = ?", [id])],
     ["missing requested payment date", (id) => pool.execute("UPDATE rfp_headers SET requested_payment_date = NULL WHERE id = ?", [id])],
-  ])("16, 22-24. full revalidation on resubmit: %s -> 409, still RETURNED, no history, no audit", async (_label, corrupt) => {
+  ])("16, 22-24. full revalidation on resubmit: %s -> refused, still RETURNED, no history, no audit", async (label, corrupt) => {
     const { id } = await returned();
     await corrupt(id);
     const before = await header(id);
     const res = await act("acctA", id, "submit");
-    expect(res.status).toBe(409);
-    expect(res.body.message).toMatch(/cannot be submitted/);
+    if (label.startsWith("18.")) {
+      // Since the RFP branch-scope fix a branch-restricted requester cannot
+      // see an RFP outside their branches at all: 404 (not 409), untouched.
+      expect(res.status).toBe(404);
+    } else {
+      expect(res.status).toBe(409);
+      expect(res.body.message).toMatch(/cannot be submitted/);
+    }
     expect(await header(id)).toEqual(before);
     expect(await history(id)).toHaveLength(2);
     expect(await audits(id, "SUBMIT")).toHaveLength(1);

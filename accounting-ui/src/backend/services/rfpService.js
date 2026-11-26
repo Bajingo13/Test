@@ -111,10 +111,22 @@ function assertNoServerFields(body) {
 
 // --- company scope -------------------------------------------------------
 
-// SQL fragment limiting rfp_headers (alias h) to the caller's companies.
+// SQL fragment limiting rfp_headers (alias h) to the caller's companies - and,
+// for branch-restricted roles, to their assigned branches. Fix: this was a
+// company-only scope, so an Accountant assigned to one branch could list,
+// open and act on another branch's RFPs, unlike every transaction module.
+// Same rule as Posting (Maker-Checker R1 / B1): SUPER_ADMIN and ADMIN act on
+// every branch of their companies; anyone else sees company-level RFPs (no
+// branch) and those of the branches assigned to them. One fragment serves
+// the list, the record read, history and every requester action.
 function companyScopeSql(user) {
   if (isSuperAdmin(user)) return { sql: "", params: [] };
-  return { sql: " AND h.company_id IN (SELECT uc.company_id FROM user_companies uc WHERE uc.user_id = ?)", params: [user?.id ?? 0] };
+  const company = " AND h.company_id IN (SELECT uc.company_id FROM user_companies uc WHERE uc.user_id = ?)";
+  if (user?.roleCode === "ADMIN") return { sql: company, params: [user?.id ?? 0] };
+  return {
+    sql: `${company} AND (h.branch_id IS NULL OR h.branch_id IN (SELECT ub.branch_id FROM user_branches ub WHERE ub.user_id = ?))`,
+    params: [user?.id ?? 0, user?.id ?? 0],
+  };
 }
 
 // Locks (optionally) and returns an RFP the caller may see; another
@@ -431,11 +443,26 @@ async function listRfps({ user, query = {} }) {
     const companyId = await resolveSelectedCompany(user, query.companyId);
     where.push("h.company_id = ?");
     params.push(companyId);
-  } else if (!isSuperAdmin(user)) {
-    // No filter: the union of the caller's companies (Super Admin: all).
+  }
+  // The caller's company + branch scope always applies (Super Admin: none).
+  if (!isSuperAdmin(user)) {
     const scope = companyScopeSql(user);
     where.push(scope.sql.replace(/^ AND /, ""));
     params.push(...scope.params);
+  }
+  // System-wide Active Branch: narrow the list to the active branch (the
+  // scope above still applies, so an unassigned branch yields nothing). A
+  // branch of another company than an explicit company filter does not apply.
+  const ActiveBranch = require("../lib/activeBranchContext");
+  const activeBranch = ActiveBranch.requestedBranchId();
+  if (activeBranch) {
+    const owner = await ActiveBranch.branchCompany(activeBranch);
+    const selectedCompany = hasCompany ? Number(params[0]) : null;
+    if (owner !== null && (selectedCompany === null || selectedCompany === owner)) {
+      const [[cnt]] = await pool.execute("SELECT COUNT(*) AS n FROM branches WHERE company_id = ?", [owner]);
+      where.push(Number(cnt.n) === 1 ? "(h.branch_id = ? OR (h.branch_id IS NULL AND h.company_id = ?))" : "h.branch_id = ?");
+      params.push(activeBranch, ...(Number(cnt.n) === 1 ? [owner] : []));
+    }
   }
 
   if (query.status !== undefined && String(query.status).trim() !== "") {
