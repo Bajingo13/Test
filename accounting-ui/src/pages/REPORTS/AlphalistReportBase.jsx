@@ -76,14 +76,20 @@ export default function AlphalistReportBase({ title, reportTitle, taxType }) {
         { credentials: "include", headers: authHeaders() }
       );
 
-      if (!res.ok) throw new Error("Failed to generate alphalist report");
+      if (!res.ok) {
+        // a refusal the user can act on (e.g. REPORT_BRANCH_REQUIRED) is shown as-is
+        const body = await res.json().catch(() => null);
+        const err = new Error("Failed to generate alphalist report");
+        if (res.status < 500 && body?.message) err.userMessage = body.message;
+        throw err;
+      }
 
       const data = await res.json();
       setRows(Array.isArray(data) ? data : []);
       setGenerated(true);
     } catch (err) {
       console.error(err);
-      alert(`Failed to generate ${title}. Please check backend/server.`);
+      alert(err.userMessage || `Failed to generate ${title}. Please check backend/server.`);
       setRows([]);
       setGenerated(true);
     } finally {

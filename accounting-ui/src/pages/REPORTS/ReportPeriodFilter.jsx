@@ -82,14 +82,17 @@ export default function ReportPeriodFilter({ period, idPrefix }) {
             value={period.branch}
             onChange={(e) => period.setBranch(e.target.value)}
             disabled={period.branchOptions.length === 1}
+            aria-invalid={period.branchRequired ? "true" : undefined}
           >
+            {/* no specific branch yet (consolidation not allowed): an explicit choice is required */}
+            {period.branch === "" ? <option value="" disabled>Select a branch...</option> : null}
             {period.branchOptions.map((o) => (
               <option key={o.value} value={o.value}>{o.label}</option>
             ))}
           </select>
-          {/* System-wide Active Branch: the aggregate selection cannot be a
+          {/* System-wide Active Branch: the aggregate selection is not a
               report scope for users who may not consolidate. */}
-          {period.branchNote ? <p className="rpf-branch-note" role="status">{period.branchNote}</p> : null}
+          {period.branchNote && !period.error ? <p className="rpf-branch-note" role="status">{period.branchNote}</p> : null}
         </div>
       ) : null}
 

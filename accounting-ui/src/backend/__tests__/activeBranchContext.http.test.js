@@ -82,6 +82,15 @@ beforeAll(async () => {
   await mkUser("adminB", "ADMIN", [co.B]);
   await mkUser("adminS", "ADMIN", [co.S]);
   await mkUser("super", "SUPER_ADMIN", []);
+  // consolidation permission (REPORTS.ALL_BRANCHES / VIEW) per user, for the
+  // report matrix: granted to two accountants, revoked from one ADMIN
+  await mkUser("acctOTc", "ACCOUNTANT", [co.A], [br.OUTSOURCE, br.TAX], true);
+  await mkUser("acctAllc", "ACCOUNTANT", [co.A], [br.AUDIT, br.OUTSOURCE, br.TAX], true);
+  await mkUser("adminNoCon", "ADMIN", [co.A]);
+  const consolidate = await permissionId("REPORTS.ALL_BRANCHES", "VIEW");
+  for (const [tag, granted] of [["acctOTc", 1], ["acctAllc", 1], ["adminNoCon", 0]]) {
+    await pool.query("INSERT INTO user_permissions (user_id, permission_id, granted, reason) VALUES (?, ?, ?, 'UAT-ABC')", [usr[tag].id, consolidate, granted]);
+  }
   await pool.query("INSERT INTO account_group_codes (group_code, group_description, account_class, status) VALUES (?, 'EXP', 'EXPENSE', 'ACTIVE'), (?, 'LIA', 'LIABILITY', 'ACTIVE')", [`${P}EXPG`, `${P}LIAG`]);
   const mkAcc = async (key, cls, group, branchId = null) => {
     const [r] = await pool.query("INSERT INTO chart_of_accounts (code, account_date, title, account_class, branch_id) VALUES (?, '2096-01-01', ?, ?, ?)", [`${P}${key}`, `${P}${key}`, cls, branchId]);
@@ -264,6 +273,55 @@ describe("reports: the active branch is the report branch when none is given", (
   test("another company's branch (overlapping code) does not apply to company A's report", async () => {
     expect(expOf((await is("adminA", br["B.AUDIT"])).body)).toBe(-25705);
     expect((await call("get", "adminB", `/api/reports/income-statement?companyId=${co.A}&${RANGE}`, { active: br.AUDIT })).status).toBe(403);
+  });
+});
+
+describe("report consolidation needs REPORTS.ALL_BRANCHES; an aggregate selection never bypasses it", () => {
+  const is = (who, active, extra = "") => call("get", who, `/api/reports/income-statement?companyId=${co.A}&${RANGE}${extra}`, { active });
+  const MSG = "Select a specific branch to generate this report. Consolidated reporting is not available for your account.";
+  const refused = (r) => [r.status, r.body.code, r.body.message];
+
+  test("without the permission: ONE assigned branch -> that branch; several or all -> 400 REPORT_BRANCH_REQUIRED (nothing substituted)", async () => {
+    expect(expOf((await is("acctAud", undefined)).body)).toBe(-15000);
+    for (const who of ["acctOT", "acctAll", "adminNoCon"]) {
+      expect(refused(await is(who, undefined))).toEqual([400, "REPORT_BRANCH_REQUIRED", MSG]);
+      expect(refused(await is(who, "ALL"))).toEqual([400, "REPORT_BRANCH_REQUIRED", MSG]); // aggregate header = no branch
+    }
+  });
+  test("without the permission: an explicit ?branch=ALL is still 403", async () => {
+    for (const who of ["acctOT", "acctAll", "adminNoCon"]) {
+      const r = await is(who, undefined, "&branch=ALL");
+      expect([r.status, r.body.code]).toEqual([403, "CONSOLIDATED_NOT_ALLOWED"]);
+    }
+  });
+  test("without the permission: a specific authorized branch always works (header or ?branch)", async () => {
+    expect(expOf((await is("acctOT", br.OUTSOURCE)).body)).toBe(-10000);
+    expect(expOf((await is("acctOT", undefined, `&branch=${br.TAX}`)).body)).toBe(-705);
+    expect(expOf((await is("acctAll", br.AUDIT)).body)).toBe(-15000);
+    expect(expOf((await is("adminNoCon", br.TAX)).body)).toBe(-705);
+  });
+  test("with the permission: consolidated across the user's AUTHORIZED branches only", async () => {
+    expect(expOf((await is("acctOTc", undefined)).body)).toBe(-10705); // OUTSOURCE + TAX, never AUDIT
+    expect(expOf((await is("acctOTc", undefined, "&branch=ALL")).body)).toBe(-10705);
+    expect(expOf((await is("acctAllc", undefined, "&branch=ALL")).body)).toBe(-25705);
+    expect(expOf((await is("adminA", undefined, "&branch=ALL")).body)).toBe(-25705);
+    expect(expOf((await is("super", undefined, "&branch=ALL")).body)).toBe(-25705);
+    expect(expOf((await is("super", undefined)).body)).toBe(-25705);
+  });
+  test("the Dashboard summary follows the same rule", async () => {
+    const dash = (who, active) => call("get", who, `/api/dashboard/summary?companyId=${co.A}&from=2096-05-01&to=2096-05-31`, { active });
+    expect(refused(await dash("acctOT", undefined))).toEqual([400, "REPORT_BRANCH_REQUIRED", MSG]);
+    expect((await dash("acctOT", br.OUTSOURCE)).status).toBe(200);
+    expect((await dash("acctOTc", undefined)).status).toBe(200);
+    expect((await dash("acctAud", undefined)).status).toBe(200);
+  });
+  test("no permission is granted by the selection: the branch list reports canConsolidate unchanged", async () => {
+    const flag = async (who) => (await call("get", who, `/api/branch-scope/branches?companyId=${co.A}`)).body.canConsolidate;
+    expect([await flag("acctOT"), await flag("acctAll"), await flag("acctOTc"), await flag("adminNoCon"), await flag("adminA")]).toEqual([false, false, true, false, true]);
+  });
+  test("the Trial Balance checker workflow keeps its existing scope (not refused for a missing branch)", async () => {
+    const r = await call("get", "acctOT", `/api/reports/trial-balance-checker/status?companyId=${co.A}`);
+    expect(r.body?.code).not.toBe("REPORT_BRANCH_REQUIRED");
   });
 });
 

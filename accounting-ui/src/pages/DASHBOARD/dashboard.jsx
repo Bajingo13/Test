@@ -4,7 +4,7 @@ import { authHeaders, handleAuthError } from "../../utils/authSession";
 import { createRequestGuard } from "../../utils/trialBalanceCompany.mjs";
 import { branchOptions } from "../REPORTS/reportBranch.mjs";
 import { useActiveBranch } from "../../context/ActiveBranchContext";
-import { reportScope } from "../../utils/activeBranch.mjs";
+import { labelFor, reportScope } from "../../utils/activeBranch.mjs";
 import { accountAnalysisLink } from "../../utils/accountAnalysisCompany.mjs";
 import {
   PRESETS,
@@ -138,6 +138,7 @@ function WidgetFrame({ widget, children, onRemove, onMoveUp, onMoveDown }) {
 // Loading / error / no-permission states shared by every data widget.
 function SectionGate({ state, onRetry, children }) {
   if (state.kind === "idle") return <p className="dash-state">Select a company to load the dashboard.</p>;
+  if (state.kind === "branch") return <p className="dash-state">Select a branch to load this information.</p>;
   if (state.kind === "loading") return <p className="dash-state dash-loading" role="status">Loading...</p>;
   if (state.kind === "forbidden") return <p className="dash-state">You do not have permission to view this information.</p>;
   if (state.kind === "error") {
@@ -205,11 +206,20 @@ export default function Dashboard() {
     return {
       status: !companyId ? "idle" : ready ? "ready" : "loading",
       companyId: ready ? companyId : "",
-      options: ready ? branchOptions({ branches: activeBranch.branches, canConsolidate: activeBranch.canConsolidate }) : [],
+      // the consolidated option is named for what it covers ("All Assigned
+      // Branches" unless the user holds every branch)
+      options: ready
+        ? branchOptions({ branches: activeBranch.branches, canConsolidate: activeBranch.canConsolidate }).map((o) =>
+            o.value === "ALL" && labelFor(activeBranch.options, "ALL") ? { ...o, label: labelFor(activeBranch.options, "ALL") } : o
+          )
+        : [],
     };
-  }, [companyId, activeBranch.ready, activeBranch.companyId, activeBranch.branches, activeBranch.canConsolidate]);
+  }, [companyId, activeBranch.ready, activeBranch.companyId, activeBranch.branches, activeBranch.canConsolidate, activeBranch.options]);
   const branchScope = reportScope({ value: activeBranch.value, options: activeBranch.options, canConsolidate: activeBranch.canConsolidate });
-  const branchValue = branchState.options.some((o) => o.value === branchScope.param) ? branchScope.param : dashboardBranchChoice(branchState.options, "");
+  // A user who may not consolidate, with the aggregate selected, gets NO
+  // branch: the dashboard waits for an explicit choice (nothing substituted).
+  const branchNeeded = branchState.status === "ready" && branchScope.needsBranch;
+  const branchValue = branchNeeded ? "" : branchState.options.some((o) => o.value === branchScope.param) ? branchScope.param : dashboardBranchChoice(branchState.options, "");
   const setBranchValue = (value) => activeBranch.requestChange(value);
   const [request, setRequest] = useState({ status: "idle", data: null, message: "" });
   const guard = useRef(createRequestGuard());
@@ -281,6 +291,10 @@ export default function Dashboard() {
     // carries the selected branch.
     if (branchState.status !== "ready" || branchState.companyId !== companyId) return;
     const ticket = guard.current.next();
+    if (branchNeeded) {
+      setRequest({ status: "branch", data: null, message: branchScope.note });
+      return;
+    }
     // Keep showing the previous figures only while they belong to the same
     // company AND branch; a company or branch switch clears them first.
     setRequest((r) => ({
@@ -302,7 +316,7 @@ export default function Dashboard() {
     } catch {
       if (guard.current.isCurrent(ticket)) setRequest({ status: "error", data: null, message: "Unable to reach the server." });
     }
-  }, [companyId, period.from, period.to, branchState, branchValue]);
+  }, [companyId, period.from, period.to, branchState, branchValue, branchNeeded, branchScope.note]);
 
   useEffect(() => {
     loadSummary();
@@ -456,7 +470,8 @@ export default function Dashboard() {
           <div className="dash-company dash-branch">
             <label htmlFor="dash-branch">Branch</label>
             {branchOpts.length > 1 ? (
-              <select id="dash-branch" value={branchValue} onChange={(e) => setBranchValue(e.target.value)}>
+              <select id="dash-branch" value={branchValue} onChange={(e) => setBranchValue(e.target.value)} aria-invalid={branchNeeded ? "true" : undefined}>
+                {branchValue === "" ? <option value="" disabled>Select a branch...</option> : null}
                 {branchOpts.map((o) => (
                   <option key={o.value} value={o.value}>{o.label}</option>
                 ))}
@@ -464,7 +479,6 @@ export default function Dashboard() {
             ) : (
               <strong id="dash-branch">{branchOpts[0].label}</strong>
             )}
-            {branchScope.note ? <span className="dash-branch-note" role="status">{branchScope.note}</span> : null}
           </div>
         ) : null}
 
@@ -497,6 +511,11 @@ export default function Dashboard() {
           </form>
         ) : null}
 
+        {request.status === "branch" ? (
+          <div className="dash-banner dash-banner-info" role="status" data-testid="dash-branch-required">
+            {request.message}
+          </div>
+        ) : null}
         {request.status === "error" ? (
           <div className="dash-banner" role="alert">
             {request.message} <button type="button" onClick={loadSummary}>Try again</button>
@@ -591,7 +610,7 @@ function SummaryWidget({ summary, request, navigate, retry, access, signedInUser
             <button type="button" onClick={retry}>Retry</button>
           </div>
         ) : !summary ? (
-          <p>{request.status === "idle" ? "Select a company to see its figures." : "Loading the latest figures..."}</p>
+          <p>{request.status === "idle" ? "Select a company to see its figures." : request.status === "branch" ? "Select a branch to see its figures." : "Loading the latest figures..."}</p>
         ) : (
           <>
             <p>
@@ -986,7 +1005,7 @@ function TopCustomersWidget({ st, currency, retry }) {
 
 function IndicatorsWidget({ summary, request, retry }) {
   if (request.status === "error") return <SectionGate state={{ kind: "error" }} onRetry={retry} />;
-  if (!summary) return <SectionGate state={{ kind: request.status === "idle" ? "idle" : "loading" }} />;
+  if (!summary) return <SectionGate state={{ kind: request.status === "idle" ? "idle" : request.status === "branch" ? "branch" : "loading" }} />;
   const items = financialIndicators(summary.sections);
   if (!items.length) return <p className="dash-state">You do not have permission to view this information.</p>;
   return (
@@ -1004,7 +1023,7 @@ function IndicatorsWidget({ summary, request, retry }) {
 
 function AlertsWidget({ summary, request, navigate, retry, access }) {
   if (request.status === "error") return <SectionGate state={{ kind: "error" }} onRetry={retry} />;
-  if (!summary) return <SectionGate state={{ kind: request.status === "idle" ? "idle" : "loading" }} />;
+  if (!summary) return <SectionGate state={{ kind: request.status === "idle" ? "idle" : request.status === "branch" ? "branch" : "loading" }} />;
   const failed = Object.values(summary.sections).some((s) => s.status === "error");
   return (
     <div className="alert-list">

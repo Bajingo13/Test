@@ -1422,11 +1422,11 @@
   }
 }
 
-/* System-wide Active Branch: why an aggregate selection shows one branch. */
-.dash-branch-note {
-  display: block;
-  margin-top: 4px;
-  font-size: 12px;
-  color: var(--text-secondary);
+/* System-wide Active Branch: a user who may not consolidate must choose one
+   branch (an information banner, not an error). */
+.dash-banner.dash-banner-info {
+  background: var(--accent-indigo-bg);
+  color: var(--text-primary);
+  border: 1px solid var(--accent-indigo-border);
   overflow-wrap: anywhere;
 }

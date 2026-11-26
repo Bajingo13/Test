@@ -83,26 +83,51 @@ describe("storage keys are per user and per company", () => {
   });
 });
 
-describe("report scope never widens", () => {
+describe("report scope: consolidation needs the permission; nothing is substituted", () => {
+  const one = () => AB.buildOptions({ branches: [AUDIT], totalBranches: 3 });
   const sub = () => AB.buildOptions({ branches: [OUT, TAX], totalBranches: 3 });
   const full = () => AB.buildOptions({ branches: [AUDIT, OUT, TAX], totalBranches: 3 });
 
-  test("a consolidator with the aggregate -> consolidated (ALL)", () => {
-    expect(AB.reportScope({ value: "ALL", options: full(), canConsolidate: true })).toEqual({ param: "ALL", label: "All Branches", note: "" });
+  test("with the permission, aggregate -> consolidated (ALL) over the user's branches", () => {
+    expect(AB.reportScope({ value: "ALL", options: full(), canConsolidate: true })).toMatchObject({ param: "ALL", label: "All Branches", needsBranch: false, note: "" });
+    expect(AB.reportScope({ value: "ALL", options: sub(), canConsolidate: true })).toMatchObject({ param: "ALL", label: "All Assigned Branches", needsBranch: false });
   });
-  test("a non-consolidator with the aggregate -> first assigned branch + a note", () => {
-    const s = AB.reportScope({ value: "ALL", options: sub(), canConsolidate: false });
-    expect(s.param).toBe("12");
-    expect(s.note).toMatch(/not available for your role/);
+  test("without the permission, aggregate (several or all branches) -> no branch, explicit choice required + message", () => {
+    for (const options of [sub(), full()]) {
+      const s = AB.reportScope({ value: "ALL", options, canConsolidate: false });
+      expect(s).toEqual({ param: "", label: "", needsBranch: true, note: AB.BRANCH_SELECTION_MESSAGE });
+    }
+    expect(AB.BRANCH_SELECTION_MESSAGE).toBe("Select a specific branch to generate this report. Consolidated reporting is not available for your account.");
   });
-  test("a specific branch -> that branch, no note", () => {
-    expect(AB.reportScope({ value: "13", options: sub(), canConsolidate: false })).toEqual({ param: "13", label: "Tax", note: "" });
+  test("a stale / unassigned value behaves like the aggregate (never another branch)", () => {
+    expect(AB.reportScope({ value: "11", options: sub(), canConsolidate: false }).needsBranch).toBe(true);
+    expect(AB.reportScope({ value: "11", options: sub(), canConsolidate: true }).param).toBe("ALL");
   });
-  test("one branch -> it, no note", () => {
-    expect(AB.reportScope({ value: "11", options: AB.buildOptions({ branches: [AUDIT] }), canConsolidate: false }).note).toBe("");
+  test("a specific branch -> that branch, with or without the permission", () => {
+    for (const canConsolidate of [false, true]) {
+      expect(AB.reportScope({ value: "13", options: sub(), canConsolidate })).toEqual({ param: "13", label: "Tax", needsBranch: false, note: "" });
+    }
   });
-  test("no branches -> no branch param (company report)", () => {
-    expect(AB.reportScope({ value: "", options: [], canConsolidate: true }).param).toBe("");
+  test("one branch -> it (aggregate or not), no message", () => {
+    for (const value of ["ALL", "11", ""]) expect(AB.reportScope({ value, options: one(), canConsolidate: false })).toMatchObject({ param: "11", needsBranch: false, note: "" });
+  });
+  test("no branches -> no branch param (company report), nothing required", () => {
+    expect(AB.reportScope({ value: "", options: [], canConsolidate: false })).toMatchObject({ param: "", needsBranch: false });
+  });
+});
+
+describe("report pages and the Dashboard wait for an explicit branch", () => {
+  test("the period hook refuses to generate (apply and drill-down select) while a branch is required", () => {
+    const hook = read("pages/REPORTS/useReportPeriod.js");
+    expect(hook).toContain("if (problem || branchMissing) return null;");
+    expect(hook).toMatch(/if \(branchMissing\) \{\s*setAttempted\(true\);\s*return null;/);
+    expect(read("pages/REPORTS/useReportBranch.js")).toContain('const value = scope.needsBranch ? "" :');
+    expect(read("pages/REPORTS/ReportPeriodFilter.jsx")).toContain('<option value="" disabled>Select a branch...</option>');
+  });
+  test("the Dashboard does not request figures without a branch and shows the message", () => {
+    const dash = read("pages/DASHBOARD/dashboard.jsx");
+    expect(dash).toContain('setRequest({ status: "branch", data: null, message: branchScope.note });');
+    expect(dash).toContain('const branchValue = branchNeeded ? "" :');
   });
 });
 

@@ -60,21 +60,26 @@ export function headerValue(value) {
 export const storageKey = (userId, companyId) => `${STORAGE_PREFIX}.${userId || "anon"}.${companyId || "default"}`;
 export const lastKey = (userId) => `${STORAGE_PREFIX}.${userId || "anon"}.last`;
 
-// Reports and the dashboard: a consolidated (all-branch) report needs the
+// Shown when a report needs a specific branch (matches the server's
+// REPORT_BRANCH_REQUIRED message).
+export const BRANCH_SELECTION_MESSAGE = "Select a specific branch to generate this report. Consolidated reporting is not available for your account.";
+
+// Reports and the dashboard: a consolidated (several-branch) report needs the
 // REPORTS.ALL_BRANCHES permission (canConsolidate). For users without it the
-// aggregate selection cannot be a report scope, so the report runs for their
-// FIRST assigned branch and says so - it never silently widens.
+// aggregate selection is NOT a report scope: nothing is substituted - the
+// report waits for an explicit branch (needsBranch + message). The scope is
+// always exactly one of: one branch, ALL (consolidated), or none (no branches).
 export function reportScope({ value, options = [], canConsolidate = false } = {}) {
   const branches = options.filter((o) => o.value !== ALL);
-  if (!branches.length) return { param: "", label: "", note: "" };
-  if (!isAll(value)) return { param: String(value), label: labelFor(options, value), note: "" };
-  if (canConsolidate && branches.length > 1) return { param: ALL, label: labelFor(options, ALL), note: "" };
-  const first = branches[0];
-  return {
-    param: first.value,
-    label: first.label,
-    note: branches.length > 1 ? `Consolidated reports are not available for your role - showing ${first.label}. Choose a branch to change it.` : "",
-  };
+  const none = { param: "", label: "", note: "", needsBranch: false };
+  if (!branches.length) return none;
+  // a specific branch the user holds -> that branch (an unknown / stale value
+  // is treated exactly like the aggregate below)
+  const label = isAll(value) ? "" : labelFor(branches, value);
+  if (label) return { ...none, param: String(value), label };
+  if (branches.length === 1) return { ...none, param: branches[0].value, label: branches[0].label };
+  if (canConsolidate) return { ...none, param: ALL, label: labelFor(options, ALL) || "All Branches" };
+  return { ...none, needsBranch: true, note: BRANCH_SELECTION_MESSAGE };
 }
 
 // The branch a NEW transaction / beginning balance starts with: the active

@@ -23,6 +23,16 @@ const { AsyncLocalStorage } = require("async_hooks");
 
 const als = new AsyncLocalStorage();
 
+// Shown when a user without REPORTS.ALL_BRANCHES asks for a report over
+// several branches (System-wide Active Branch: aggregate selection).
+const BRANCH_SELECTION_MESSAGE = "Select a specific branch to generate this report. Consolidated reporting is not available for your account.";
+
+// The Trial Balance checker (sign-off workflow, not a report figure endpoint)
+// keeps its existing scope.
+function isConsolidationExempt(req) {
+  return /^\/trial-balance-checker(\/|$)/.test(String(req.path || ""));
+}
+
 function current() {
   return als.getStore() || null;
 }
@@ -97,6 +107,14 @@ async function middleware(req, res, next) {
       ctx = { companyId, ...scope };
     } else {
       const scope = await TxBranch.transactionScope(req.user, companyId);
+      // No branch chosen (the aggregate selection). A report over SEVERAL
+      // branches is a consolidated report: without REPORTS.ALL_BRANCHES it is
+      // refused - never answered for all assigned branches, never silently
+      // narrowed to one of them. (One authorized branch = that branch, as
+      // before; companies with 0 / 1 branch are unchanged.)
+      if (req.user.roleCode !== "SUPER_ADMIN" && scope.branchIds.length > 1 && !isConsolidationExempt(req) && !(await BranchResolution.canConsolidate(req.user))) {
+        return res.status(400).json({ message: BRANCH_SELECTION_MESSAGE, code: "REPORT_BRANCH_REQUIRED" });
+      }
       if (!scope.includeUnassigned && req.user.roleCode !== "SUPER_ADMIN") {
         ctx = { companyId, consolidated: false, branchIds: scope.branchIds, includeUnassigned: false };
       }
@@ -112,4 +130,4 @@ async function middleware(req, res, next) {
   return als.run(ctx, () => next());
 }
 
-module.exports = { middleware, current, predicate };
+module.exports = { middleware, current, predicate, BRANCH_SELECTION_MESSAGE };

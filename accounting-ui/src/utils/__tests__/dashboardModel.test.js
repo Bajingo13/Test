@@ -71,6 +71,8 @@ describe("section state - zero is data, a failure is not", () => {
     expect(m.sectionState({ status: "loading", data: null }, "income").kind).toBe("loading");
     expect(m.sectionState({ status: "idle", data: null }, "income").kind).toBe("idle");
     expect(m.sectionState({ ...ok, status: "loading" }, "income").stale).toBe(true);
+    // a specific branch must be chosen first (no consolidation permission)
+    expect(m.sectionState({ status: "branch", data: null, message: "x" }, "income").kind).toBe("branch");
   });
 });
 

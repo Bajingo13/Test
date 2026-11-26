@@ -117,7 +117,8 @@ export function periodText(from, to) {
 //   ok        - data
 export function sectionState(request, key) {
   if (request.status === "error") return { kind: "error", message: request.message || "Unable to load data." };
-  if (!request.data) return { kind: request.status === "idle" ? "idle" : "loading" };
+  // "branch": a specific branch must be chosen first (no consolidation permission)
+  if (!request.data) return { kind: request.status === "idle" ? "idle" : request.status === "branch" ? "branch" : "loading" };
   const s = request.data.sections?.[key];
   if (!s) return { kind: "error", message: "Unable to load data." };
   if (s.status === "forbidden") return { kind: "forbidden" };

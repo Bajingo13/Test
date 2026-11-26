@@ -33,9 +33,13 @@ export default function useReportPeriod({ defaultMode = RANGE, defaultFrom, defa
     setAttempted(false);
   }
 
+  // System-wide Active Branch: with branches but no specific branch (a user
+  // who may not consolidate, aggregate selected) nothing is generated.
+  const branchMissing = !!branch.required;
+
   function apply() {
     setAttempted(true);
-    if (problem) return null;
+    if (problem || branchMissing) return null;
     const snapshot = withBranch(current, branch.value, branch.label);
     setApplied(snapshot);
     return snapshot;
@@ -49,6 +53,10 @@ export default function useReportPeriod({ defaultMode = RANGE, defaultFrom, defa
     } else {
       setFrom(next.from);
       setTo(next.to);
+    }
+    if (branchMissing) {
+      setAttempted(true);
+      return null;
     }
     const snapshot = withBranch(resolvePeriod(next, { asOfStart }), branch.value, branch.label);
     setApplied(snapshot);
@@ -71,11 +79,12 @@ export default function useReportPeriod({ defaultMode = RANGE, defaultFrom, defa
     fromDate: dates.fromDate,
     toDate: dates.toDate,
     asOfDate: dates.asOfDate,
-    error: problem && (attempted || problem.code === "FROM_AFTER_TO") ? problem.message : null,
+    error: problem && (attempted || problem.code === "FROM_AFTER_TO") ? problem.message : branchMissing && attempted ? branch.note : null,
     branchOptions: branch.options,
     branch: branch.value,
     setBranch: branch.setValue,
     branchLabel: branch.label,
     branchNote: branch.note,
+    branchRequired: branchMissing,
   };
 }
